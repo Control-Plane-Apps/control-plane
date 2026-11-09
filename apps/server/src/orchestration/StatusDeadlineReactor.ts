@@ -144,7 +144,7 @@ export function statusDeadlineText(
       [
         `Go with your recommendation: ${decision.recommendation}`,
         "",
-        `(Sent at the deadline because the user opted in to this recommendation for "${decision.question}". Act on it, then clear the question with cp_status_set.)`,
+        `(Sent at the deadline because the user opted in to this recommendation for "${decision.question}". It covers this recommendation only, within your normal permissions: anything that needs the user's approval still needs it. Act on it, then clear the question with cp_status_set.)`,
       ].join("\n"),
     );
   }

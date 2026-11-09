@@ -518,6 +518,7 @@ describe("StatusDeadlineReactor", () => {
         const [sent] = yield* reminders;
         expect(sent?.text).toMatch(/^Re: Payouts\n\nGo with your recommendation: Pilot with 5/);
         expect(sent?.text).toContain("the user opted in to this recommendation");
+        expect(sent?.text).toContain("anything that needs the user's approval still needs it");
         expect(
           statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.deadlineHandled,
         ).toMatchObject({ outcome: "accepted" });
