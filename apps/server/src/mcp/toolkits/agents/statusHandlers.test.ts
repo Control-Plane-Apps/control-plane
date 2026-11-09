@@ -2,6 +2,7 @@ import { RemoteAgentsLocalOnly } from "../../../agentMachines/testFixtures.ts";
 import {
   CommandId,
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -194,7 +195,6 @@ const PAYOUTS = {
   detail: "The 1099 step has not run against a live account yet.",
   question: "Pilot or release to every inspector?",
   recommendation: "Pilot with 5 inspectors behind a flag",
-  ifNoReply: "keep waiting and ask again Friday",
   deadline: THURSDAY,
 } as const;
 
@@ -257,7 +257,6 @@ describe("cp_status_set", () => {
           decision: {
             question: PAYOUTS.question,
             recommendation: PAYOUTS.recommendation,
-            ifNoReply: PAYOUTS.ifNoReply,
             deadline: THURSDAY,
             openedAt: NOW,
           },
@@ -270,25 +269,25 @@ describe("cp_status_set", () => {
     ),
   );
 
-  it.effect("keeps a decision's version for a new recommendation and restamps a new question", () =>
+  it.effect("keeps a decision's version for an unchanged write and restamps any change", () =>
     withSeededEngine(
       Effect.gen(function* () {
         const tools = yield* statusTools;
         yield* tools.set(COORDINATOR, PAYOUTS);
         yield* TestClock.adjust("1 hour");
+        const same = yield* tools.set(COORDINATOR, {
+          ...PAYOUTS,
+          summary: "Webhook retries fixed.",
+        });
+        expect(same.status?.decision?.openedAt).toBe(NOW);
+        expect(same.status?.updatedAt).not.toBe(NOW);
+
         const tweaked = yield* tools.set(COORDINATOR, {
           id: "payouts",
           recommendation: "Pilot with 3 inspectors",
         });
-        expect(tweaked.status?.decision?.openedAt).toBe(NOW);
-        expect(tweaked.status?.updatedAt).not.toBe(NOW);
-
-        const asked = yield* tools.set(COORDINATOR, {
-          id: "payouts",
-          question: "Pilot with Stripe-ready inspectors only?",
-        });
-        expect(asked.status?.decision?.openedAt).toBe(asked.status?.updatedAt);
-        expect(asked.status?.decision?.recommendation).toBe("Pilot with 3 inspectors");
+        expect(tweaked.status?.decision?.openedAt).toBe(tweaked.status?.updatedAt);
+        expect(tweaked.status?.decision?.question).toBe(PAYOUTS.question);
       }),
     ),
   );
@@ -415,9 +414,8 @@ describe("StatusDeadlineReactor", () => {
         );
         expect(deliveries.map((delivery) => delivery.messageId)).toEqual([sent[0]?.messageId]);
         expect(sent[0]?.text).toContain("Silence never authorizes acting for the user");
-        expect(sent[0]?.text).toContain(`You said without a reply: ${PAYOUTS.ifNoReply}`);
         const decision = statusOf(yield* readMarker(PROJECT_ID), "payouts").decision;
-        expect(decision?.remindedAt).toBeDefined();
+        expect(decision?.deadlineHandled?.outcome).toBe("reminded");
         // Still waiting on the user: a reminder never answers the question.
         expect(statusOf(yield* readMarker(PROJECT_ID), "payouts").state).toBe("needs-you");
       }),
@@ -435,7 +433,7 @@ describe("StatusDeadlineReactor", () => {
 
         const later = "2026-11-02T17:00:00.000Z";
         const moved = yield* tools.set(COORDINATOR, { id: "payouts", deadline: later });
-        expect(moved.status?.decision?.remindedAt).toBeUndefined();
+        expect(moved.status?.decision?.deadlineHandled).toBeUndefined();
         yield* reactor.sweep;
         expect(yield* reminders).toHaveLength(1);
 
@@ -446,32 +444,26 @@ describe("StatusDeadlineReactor", () => {
     ),
   );
 
-  it.effect("records a reminder whose message went out before a restart, without resending", () =>
+  it.effect("sends the message for a deadline recorded just before a crash, once", () =>
     withSeededEngine(
       Effect.gen(function* () {
         const tools = yield* statusTools;
         const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
         yield* tools.set(COORDINATOR, PAYOUTS);
         yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
-        // The message from a sweep that crashed before recording it.
-        const messageId = statusReminderMessageId(PROJECT_ID, "payouts", NOW);
+        // A sweep that recorded the deadline and crashed before its message.
         yield* dispatch({
-          type: "thread.message.user.append",
-          commandId: CommandId.make(messageId),
-          threadId: COORDINATOR,
-          message: {
-            messageId: messageId as never,
-            text: "earlier reminder",
-            attachments: [],
-            source: { kind: "agent", threadTitle: "Status" },
-          },
+          type: "project.status.deadline",
+          commandId: nextCommandId(),
+          projectId: PROJECT_ID,
+          statusId: "payouts",
+          openedAt: NOW,
+          outcome: "reminded",
           createdAt: THURSDAY,
         });
         yield* reactor.sweep;
-        expect((yield* reminders).map((message) => message.text)).toEqual(["earlier reminder"]);
-        expect(
-          statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.remindedAt,
-        ).toBeDefined();
+        yield* reactor.sweep;
+        expect(yield* reminders).toHaveLength(1);
       }),
     ),
   );
@@ -492,6 +484,120 @@ describe("StatusDeadlineReactor", () => {
         yield* reactor.sweep;
         expect(yield* reminders).toHaveLength(0);
       }),
+    ),
+  );
+
+  const automate = (enabled: boolean, openedAt = NOW) =>
+    dispatch({
+      type: "project.status.automate",
+      commandId: nextCommandId(),
+      projectId: PROJECT_ID,
+      statusId: "payouts",
+      openedAt,
+      enabled,
+      createdAt: NOW,
+    });
+
+  it.effect("sends the recommendation as the answer only when the user opted in", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+        yield* tools.set(COORDINATOR, PAYOUTS);
+        yield* automate(true);
+        expect(statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.autoAccept).toEqual({
+          openedAt: NOW,
+          enabledAt: NOW,
+        });
+
+        yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
+        yield* reactor.sweep;
+        const [sent] = yield* reminders;
+        expect(sent?.text).toMatch(/^Re: Payouts\n\nGo with your recommendation: Pilot with 5/);
+        expect(sent?.text).toContain("the user opted in to this recommendation");
+        expect(
+          statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.deadlineHandled,
+        ).toMatchObject({ outcome: "accepted" });
+      }),
+    ),
+  );
+
+  it.effect("drops the opt-in when the coordinator changes the recommendation", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+        yield* tools.set(COORDINATOR, PAYOUTS);
+        yield* automate(true);
+        yield* TestClock.adjust("1 hour");
+        yield* tools.set(COORDINATOR, { id: "payouts", recommendation: "Release to everyone" });
+        // The opt-in named the old version; re-arming it from a stale read is refused.
+        const stale = yield* automate(true).pipe(Effect.flip);
+        expect(stale.message).toContain("changed this decision");
+
+        yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
+        yield* reactor.sweep;
+        const [sent] = yield* reminders;
+        expect(sent?.text).toContain("This is a reminder, not an answer.");
+        expect(
+          statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.deadlineHandled,
+        ).toMatchObject({ outcome: "reminded" });
+      }),
+    ),
+  );
+
+  it.effect("refuses an opt-in on a decision without a deadline, and lets the user opt out", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, { ...PAYOUTS, deadline: "" });
+        const refused = yield* automate(true).pipe(Effect.flip);
+        expect(refused.message).toContain("no deadline");
+
+        yield* tools.set(COORDINATOR, { id: "payouts", deadline: THURSDAY });
+        const openedAt = statusOf(yield* readMarker(PROJECT_ID), "payouts").decision!.openedAt;
+        yield* automate(true, openedAt);
+        yield* automate(false, openedAt);
+        expect(
+          statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.autoAccept,
+        ).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("stops the deadline once the user replies to the workstream", () =>
+    withSeededEngine(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const tools = yield* statusTools;
+          const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+          yield* reactor.start();
+          yield* tools.set(COORDINATOR, PAYOUTS);
+          yield* automate(true);
+          yield* dispatch({
+            type: "thread.turn.start",
+            commandId: nextCommandId(),
+            threadId: COORDINATOR,
+            message: {
+              messageId: MessageId.make("user-reply"),
+              role: "user",
+              text: "Re: Payouts\n\nPilot, but only three inspectors.",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: NOW,
+          });
+          yield* reactor.drain;
+          expect(
+            statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.answeredAt,
+          ).toBeDefined();
+
+          yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
+          yield* reactor.sweep;
+          expect(yield* reminders).toHaveLength(0);
+        }),
+      ),
     ),
   );
 });

@@ -59,7 +59,12 @@ import {
 import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 import { projectEvent } from "./projector.ts";
 import { decideAgentScheduleChange, decideScheduleRecord } from "./scheduleDecider.ts";
-import { decideStatusRemind, decideStatusSet } from "./statusDecider.ts";
+import {
+  decideStatusAnswered,
+  decideStatusAutomate,
+  decideStatusDeadline,
+  decideStatusSet,
+} from "./statusDecider.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 
 const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -452,8 +457,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     case "project.status.set":
       return yield* decideStatusSet(readModel, command);
 
-    case "project.status.remind":
-      return yield* decideStatusRemind(readModel, command);
+    case "project.status.deadline":
+      return yield* decideStatusDeadline(readModel, command);
+
+    case "project.status.answered":
+      return yield* decideStatusAnswered(readModel, command);
+
+    case "project.status.automate":
+      return yield* decideStatusAutomate(readModel, command);
 
     case "thread.create": {
       yield* requireProject({

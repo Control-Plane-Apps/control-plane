@@ -30,7 +30,12 @@ import {
   ProjectScheduleId,
   ProjectScheduleRun,
 } from "./assistants.ts";
-import { ProjectStatus, ProjectStatusChange, ProjectStatusId } from "./projectStatus.ts";
+import {
+  ProjectStatus,
+  ProjectStatusChange,
+  ProjectStatusDeadlineOutcome,
+  ProjectStatusId,
+} from "./projectStatus.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   PullRequestActor,
@@ -1540,11 +1545,28 @@ const ThreadSessionStopCommand = Schema.Struct({
   onlyIfSettled: Schema.optional(Schema.Boolean),
 });
 
+/**
+ * The user's opt-in (or opt-out) to go with a decision's recommendation if
+ * its deadline passes without a reply. Clients only: no agent tool sends it,
+ * so an agent can never authorize itself. `openedAt` binds it to the version
+ * the user saw; a changed decision refuses it.
+ */
+export const ProjectStatusAutomateCommand = Schema.Struct({
+  type: Schema.Literal("project.status.automate"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  statusId: ProjectStatusId,
+  openedAt: IsoDateTime,
+  enabled: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectReorderCommand,
   ProjectDeleteCommand,
+  ProjectStatusAutomateCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1579,6 +1601,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ProjectMetaUpdateCommand,
   ProjectReorderCommand,
   ProjectDeleteCommand,
+  ProjectStatusAutomateCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1805,20 +1828,32 @@ const ProjectStatusSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-/** Marks a decision's deadline reminder delivered. Server only. */
-const ProjectStatusRemindCommand = Schema.Struct({
-  type: Schema.Literal("project.status.remind"),
+/** Records how a decision's passed deadline was handled. Server only. */
+const ProjectStatusDeadlineCommand = Schema.Struct({
+  type: Schema.Literal("project.status.deadline"),
   commandId: CommandId,
   projectId: ProjectId,
   statusId: ProjectStatusId,
-  /** The decision version the reminder was for; a newer version refuses it. */
+  /** The decision version handled; a newer version refuses it. */
+  openedAt: IsoDateTime,
+  outcome: ProjectStatusDeadlineOutcome,
+  createdAt: IsoDateTime,
+});
+
+/** The user replied to a workstream (a `Re: <title>` message), so its deadline stops. Server only. */
+const ProjectStatusAnsweredCommand = Schema.Struct({
+  type: Schema.Literal("project.status.answered"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  statusId: ProjectStatusId,
   openedAt: IsoDateTime,
   createdAt: IsoDateTime,
 });
 
 const InternalOrchestrationCommand = Schema.Union([
   ProjectStatusSetCommand,
-  ProjectStatusRemindCommand,
+  ProjectStatusDeadlineCommand,
+  ProjectStatusAnsweredCommand,
   ProjectScheduleRecordCommand,
   ProjectScheduleAgentChangeCommand,
   ThreadAutoSettleCommand,

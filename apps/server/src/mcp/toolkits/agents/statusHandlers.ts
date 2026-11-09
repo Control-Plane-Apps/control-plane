@@ -79,7 +79,6 @@ export function statusChangeOf(input: StatusSetInput): ProjectStatusChange | str
     ...(input.agents !== undefined ? { agents: input.agents.map((id) => ThreadId.make(id)) } : {}),
     ...(input.question !== undefined ? { question: input.question } : {}),
     ...(input.recommendation !== undefined ? { recommendation: input.recommendation } : {}),
-    ...(input.ifNoReply !== undefined ? { ifNoReply: input.ifNoReply } : {}),
     ...(deadline !== undefined
       ? {
           deadline:

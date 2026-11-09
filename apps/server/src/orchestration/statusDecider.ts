@@ -5,8 +5,9 @@
  * Only the coordinator writes, one record per command, so a write built from
  * a stale read never touches another workstream. Every write stamps
  * `updatedAt`, which is what the UI ages and marks stale. A decision's
- * `openedAt` restamps when its question or deadline changes, so a deadline
- * reminder is owed at most once per version.
+ * `openedAt` restamps when its question, recommendation or deadline changes,
+ * which drops the user's opt-in, and its deadline is handled at most once per
+ * version. Only the user's own client command arms auto-accept.
  */
 import {
   PROJECT_STATUS_AGENTS_MAX,
@@ -19,6 +20,7 @@ import {
   type ProjectAssistant,
   type ProjectStatus,
   type ProjectStatusDecision,
+  isAutoAcceptArmed,
   type ThreadId,
 } from "@t3tools/contracts";
 import type * as Crypto from "effect/Crypto";
@@ -29,7 +31,9 @@ import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 
 type StatusSetCommand = Extract<OrchestrationCommand, { type: "project.status.set" }>;
-type StatusRemindCommand = Extract<OrchestrationCommand, { type: "project.status.remind" }>;
+type StatusDeadlineCommand = Extract<OrchestrationCommand, { type: "project.status.deadline" }>;
+type StatusAnsweredCommand = Extract<OrchestrationCommand, { type: "project.status.answered" }>;
+type StatusAutomateCommand = Extract<OrchestrationCommand, { type: "project.status.automate" }>;
 type UpsertChange = Extract<StatusSetCommand["change"], { kind: "upsert" }>;
 
 function invariant(commandType: string, detail: string) {
@@ -57,7 +61,6 @@ function nextDecision(
   const touchesDecision =
     change.question !== undefined ||
     change.recommendation !== undefined ||
-    change.ifNoReply !== undefined ||
     change.deadline !== undefined;
   if (change.clearDecision === true) {
     return touchesDecision
@@ -80,17 +83,22 @@ function nextDecision(
       return "The deadline must be in the future.";
     }
   }
-  const ifNoReply = optionalText(change.ifNoReply, stored?.ifNoReply);
-  const sameVersion =
-    stored !== undefined && stored.question === question && stored.deadline === deadline;
+  // The user opted in to a specific recommendation by a specific time; any
+  // change makes it a new decision they have not seen.
+  if (
+    stored !== undefined &&
+    stored.question === question &&
+    stored.recommendation === recommendation &&
+    stored.deadline === deadline
+  ) {
+    return { decision: stored };
+  }
   return {
     decision: {
       question,
       recommendation,
-      ...(ifNoReply !== undefined ? { ifNoReply } : {}),
       ...(deadline !== undefined ? { deadline } : {}),
-      openedAt: sameVersion ? stored.openedAt : now,
-      ...(sameVersion && stored.remindedAt !== undefined ? { remindedAt: stored.remindedAt } : {}),
+      openedAt: now,
     },
   };
 }
@@ -118,8 +126,7 @@ export function applyStatusUpsert(input: {
     tooLong("The summary", summary, PROJECT_STATUS_LINE_MAX) ??
     tooLong("The detail", change.detail?.trim(), PROJECT_STATUS_LINE_MAX) ??
     tooLong("The question", change.question, PROJECT_STATUS_LINE_MAX) ??
-    tooLong("The recommendation", change.recommendation, PROJECT_STATUS_LINE_MAX) ??
-    tooLong("ifNoReply", change.ifNoReply?.trim(), PROJECT_STATUS_LINE_MAX);
+    tooLong("The recommendation", change.recommendation, PROJECT_STATUS_LINE_MAX);
   if (lengthError !== null) return lengthError;
   if (title.includes("\n")) return "A title is one line.";
   const folded = title.toLowerCase();
@@ -171,7 +178,7 @@ export function applyStatusUpsert(input: {
 }
 
 function statusEvent(
-  command: StatusSetCommand | StatusRemindCommand,
+  command: StatusSetCommand | StatusDeadlineCommand | StatusAnsweredCommand | StatusAutomateCommand,
   statusId: string,
   status: ProjectStatus | null,
 ) {
@@ -188,6 +195,24 @@ function statusEvent(
       payload: { projectId: command.projectId, statusId, status },
     }),
   );
+}
+
+/** The live decision `command` names, at the version it names, or why not. */
+function decisionAt(
+  readModel: OrchestrationReadModel,
+  command: { readonly projectId: string; readonly statusId: string; readonly openedAt: string },
+): { readonly status: ProjectStatus; readonly decision: ProjectStatusDecision } | string {
+  const project = readModel.projects.find((entry) => entry.id === command.projectId);
+  const status =
+    project?.deletedAt === null && project.assistant?.archivedAt == null
+      ? project.assistant?.statuses?.find((entry) => entry.id === command.statusId)
+      : undefined;
+  const decision = status?.decision;
+  if (status === undefined || decision === undefined) return "That decision is no longer open.";
+  if (decision.openedAt !== command.openedAt) {
+    return "The coordinator changed this decision since it was read. Review it again.";
+  }
+  return { status, decision };
 }
 
 /** `project.status.set`: one coordinator write. */
@@ -233,36 +258,83 @@ export const decideStatusSet = Effect.fn("decideStatusSet")(function* (
 });
 
 /**
- * `project.status.remind`: the deadline reminder for this decision version
- * went out. Refused when the decision changed or was already reminded, which
- * keeps the reminder once per version.
+ * `project.status.deadline`: the deadline for this decision version passed
+ * and was handled. Refused for a changed, answered or already-handled
+ * version, which keeps it once per version, and `accepted` is refused unless
+ * the user's opt-in still covers this version.
  */
-export const decideStatusRemind = Effect.fn("decideStatusRemind")(function* (
+export const decideStatusDeadline = Effect.fn("decideStatusDeadline")(function* (
   readModel: OrchestrationReadModel,
-  command: StatusRemindCommand,
+  command: StatusDeadlineCommand,
 ): Effect.fn.Return<
   PlannedOrchestrationEvent,
   OrchestrationCommandInvariantError | PlatformError.PlatformError,
   Crypto.Crypto
 > {
-  const project = readModel.projects.find((entry) => entry.id === command.projectId);
-  const status =
-    project?.deletedAt === null
-      ? project.assistant?.statuses?.find((entry) => entry.id === command.statusId)
-      : undefined;
-  const decision = status?.decision;
-  if (
-    status === undefined ||
-    decision === undefined ||
-    decision.openedAt !== command.openedAt ||
-    decision.remindedAt !== undefined
-  ) {
-    return yield* invariant(command.type, "That decision is no longer waiting on a reminder.");
+  const found = decisionAt(readModel, command);
+  if (typeof found === "string") return yield* invariant(command.type, found);
+  const { status, decision } = found;
+  if (decision.deadlineHandled !== undefined || decision.answeredAt !== undefined) {
+    return yield* invariant(command.type, "That deadline no longer needs handling.");
   }
-  // Keeps updatedAt: a reminder is not the coordinator checking in.
+  if (command.outcome === "accepted" && !isAutoAcceptArmed(decision)) {
+    return yield* invariant(command.type, "The user has not opted in to this recommendation.");
+  }
+  // Keeps updatedAt: handling a deadline is not the coordinator checking in.
   return yield* statusEvent(command, status.id, {
     ...status,
-    decision: { ...decision, remindedAt: command.createdAt },
+    decision: { ...decision, deadlineHandled: { at: command.createdAt, outcome: command.outcome } },
+  });
+});
+
+/** `project.status.answered`: the user replied to this version, so its deadline stops. */
+export const decideStatusAnswered = Effect.fn("decideStatusAnswered")(function* (
+  readModel: OrchestrationReadModel,
+  command: StatusAnsweredCommand,
+): Effect.fn.Return<
+  PlannedOrchestrationEvent,
+  OrchestrationCommandInvariantError | PlatformError.PlatformError,
+  Crypto.Crypto
+> {
+  const found = decisionAt(readModel, command);
+  if (typeof found === "string") return yield* invariant(command.type, found);
+  const { status, decision } = found;
+  if (decision.answeredAt !== undefined) {
+    return yield* invariant(command.type, "That decision is already answered.");
+  }
+  return yield* statusEvent(command, status.id, {
+    ...status,
+    decision: { ...decision, answeredAt: command.createdAt },
+  });
+});
+
+/**
+ * `project.status.automate`: the user's own opt-in or opt-out. Only clients
+ * send it; the decision must still be the version the user saw.
+ */
+export const decideStatusAutomate = Effect.fn("decideStatusAutomate")(function* (
+  readModel: OrchestrationReadModel,
+  command: StatusAutomateCommand,
+): Effect.fn.Return<
+  PlannedOrchestrationEvent,
+  OrchestrationCommandInvariantError | PlatformError.PlatformError,
+  Crypto.Crypto
+> {
+  const found = decisionAt(readModel, command);
+  if (typeof found === "string") return yield* invariant(command.type, found);
+  const { status, decision } = found;
+  if (command.enabled && decision.deadline === undefined) {
+    return yield* invariant(command.type, "This decision has no deadline to act at.");
+  }
+  if (decision.deadlineHandled !== undefined || decision.answeredAt !== undefined) {
+    return yield* invariant(command.type, "This decision is no longer waiting on its deadline.");
+  }
+  const { autoAccept: _previous, ...rest } = decision;
+  return yield* statusEvent(command, status.id, {
+    ...status,
+    decision: command.enabled
+      ? { ...rest, autoAccept: { openedAt: decision.openedAt, enabledAt: command.createdAt } }
+      : rest,
   });
 });
 

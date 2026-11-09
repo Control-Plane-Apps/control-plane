@@ -23,20 +23,36 @@ export const ProjectStatusState = Schema.Literals(["needs-you", "working", "done
 export type ProjectStatusState = typeof ProjectStatusState.Type;
 
 /**
+ * How a passed deadline was handled. `reminded` (the default) tells the
+ * coordinator and keeps waiting on the user. `accepted` sent the
+ * recommendation as the answer, which only the user's own opt-in for that
+ * exact version allows.
+ */
+export const ProjectStatusDeadlineOutcome = Schema.Literals(["reminded", "accepted"]);
+export type ProjectStatusDeadlineOutcome = typeof ProjectStatusDeadlineOutcome.Type;
+
+/**
  * A question for the user on the workstream it blocks. `openedAt` names this
- * version of the question: rewording it keeps the stamp, asking a different
- * question or moving the deadline restamps it, and a reminder is owed once
- * per stamp.
+ * version: any change to the question, recommendation or deadline restamps
+ * it, which drops the user's opt-in and owes a fresh deadline handling.
  */
 export const ProjectStatusDecision = Schema.Struct({
   question: TrimmedNonEmptyString,
   recommendation: TrimmedNonEmptyString,
-  /** What the coordinator says it will do if the deadline passes without a reply. */
-  ifNoReply: Schema.optional(TrimmedNonEmptyString),
   deadline: Schema.optional(IsoDateTime),
   openedAt: IsoDateTime,
-  /** Set once the server has reminded the coordinator that the deadline passed. */
-  remindedAt: Schema.optional(IsoDateTime),
+  /**
+   * The user's opt-in to go with the recommendation if the deadline passes
+   * without a reply. Only the user's `project.status.automate` sets it, and it
+   * counts only while its `openedAt` matches the decision's.
+   */
+  autoAccept: Schema.optional(Schema.Struct({ openedAt: IsoDateTime, enabledAt: IsoDateTime })),
+  /** The user replied to this workstream; its deadline no longer fires. */
+  answeredAt: Schema.optional(IsoDateTime),
+  /** Set once the deadline passed and was handled; at most once per version. */
+  deadlineHandled: Schema.optional(
+    Schema.Struct({ at: IsoDateTime, outcome: ProjectStatusDeadlineOutcome }),
+  ),
 });
 export type ProjectStatusDecision = typeof ProjectStatusDecision.Type;
 
@@ -72,7 +88,6 @@ export const ProjectStatusChange = Schema.Union([
     agents: Schema.optional(Schema.Array(ThreadId)),
     question: Schema.optional(TrimmedNonEmptyString),
     recommendation: Schema.optional(TrimmedNonEmptyString),
-    ifNoReply: Schema.optional(Schema.String),
     deadline: Schema.optional(Schema.NullOr(IsoDateTime)),
     clearDecision: Schema.optional(Schema.Boolean),
   }),
@@ -92,6 +107,16 @@ export function statusReminderMessageId(
   return `${STATUS_MESSAGE_PREFIX}${projectId}:${statusId}:${Date.parse(openedAt)}`;
 }
 
+/** Whether the user's opt-in applies to the decision as it stands now. */
+export function isAutoAcceptArmed(decision: ProjectStatusDecision | undefined): boolean {
+  return (
+    decision?.deadline !== undefined &&
+    decision.autoAccept?.openedAt === decision.openedAt &&
+    decision.answeredAt === undefined &&
+    decision.deadlineHandled === undefined
+  );
+}
+
 /** Records waiting on the user, first. Stable otherwise. */
 export function sortProjectStatuses<T extends { readonly state: ProjectStatusState }>(
   statuses: ReadonlyArray<T>,
@@ -100,7 +125,7 @@ export function sortProjectStatuses<T extends { readonly state: ProjectStatusSta
     state === "needs-you" ? 0 : state === "working" ? 1 : state === "queued" ? 2 : 3;
   return statuses
     .map((status, index) => ({ status, index }))
-    .toSorted((a, b) => rank(a.status.state) - rank(b.status.state) || a.index - b.index)
+    .sort((a, b) => rank(a.status.state) - rank(b.status.state) || a.index - b.index)
     .map(({ status }) => status);
 }
 

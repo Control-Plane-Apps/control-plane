@@ -477,16 +477,10 @@ export const StatusSetInput = Schema.Struct({
   recommendation: Schema.optional(
     TrimmedNonEmptyString.annotate({ description: "What you recommend, in a short phrase." }),
   ),
-  ifNoReply: Schema.optional(
-    StatusLine.annotate({
-      description:
-        'What you will do if the deadline passes without a reply, such as "keep waiting and ask again". A passed deadline only reminds you; silence never authorizes an action.',
-    }),
-  ),
   deadline: Schema.optional(
     Schema.String.annotate({
       description:
-        "ISO date-time by which you need the answer, in the future. Empty removes it. When it passes you get one reminder.",
+        "ISO date-time by which you need the answer, in the future. Empty removes it. When it passes without a reply you get one reminder and the question stays open, unless the user opted in to your recommendation for this decision, in which case it is sent to you as their answer. Changing the question, recommendation or deadline cancels that opt-in.",
     }),
   ),
   clearDecision: Schema.optional(
