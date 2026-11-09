@@ -29,6 +29,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  countStatusesNeedingUser,
   type DesktopWslState,
   type EnvironmentId,
   type EnvironmentMachineKind,
@@ -47,6 +48,7 @@ import {
   ChartNoAxesColumnIcon,
   CircleCheckIcon,
   ClockIcon,
+  ListChecksIcon,
   CornerLeftUpIcon,
   FileSearchIcon,
   FolderIcon,
@@ -2096,6 +2098,25 @@ function OpenCommandPaletteDialog(props: {
     });
     const { environmentId } = assistantProject;
     const { coordinatorThreadId } = contextualProject.assistant;
+    if (serverConfigs.get(environmentId)?.environment.capabilities.projectStatus === true) {
+      const needs = countStatusesNeedingUser(contextualProject.assistant.statuses);
+      actionItems.push({
+        kind: "action",
+        value: "action:project-status",
+        searchTerms: ["project", "status", "workstreams", "decisions", "needs you", "progress"],
+        title: needs > 0 ? `Project status (${needs} need you)` : "Project status",
+        description: assistantProject.title,
+        icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          const threadRef = scopeThreadRef(environmentId, coordinatorThreadId);
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(threadRef),
+          });
+          useRightPanelStore.getState().open(threadRef, "status");
+        },
+      });
+    }
     if (serverConfigs.get(environmentId)?.environment.capabilities.projectSchedules !== undefined) {
       actionItems.push({
         kind: "action",

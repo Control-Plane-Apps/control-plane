@@ -565,39 +565,140 @@ describe("StatusDeadlineReactor", () => {
     ),
   );
 
-  it.effect("stops the deadline once the user replies to the workstream", () =>
-    withSeededEngine(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const tools = yield* statusTools;
-          const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
-          yield* reactor.start();
-          yield* tools.set(COORDINATOR, PAYOUTS);
-          yield* automate(true);
-          yield* dispatch({
-            type: "thread.turn.start",
-            commandId: nextCommandId(),
-            threadId: COORDINATOR,
-            message: {
-              messageId: MessageId.make("user-reply"),
-              role: "user",
-              text: "Re: Payouts\n\nPilot, but only three inspectors.",
-              attachments: [],
-            },
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            createdAt: NOW,
-          });
-          yield* reactor.drain;
-          expect(
-            statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.answeredAt,
-          ).toBeDefined();
+  const userMessage = (text: string) =>
+    dispatch({
+      type: "thread.turn.start",
+      commandId: nextCommandId(),
+      threadId: COORDINATOR,
+      message: {
+        messageId: MessageId.make(`user-${commandCounter}`),
+        role: "user",
+        text,
+        attachments: [],
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt: NOW,
+    });
 
-          yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
-          yield* reactor.sweep;
-          expect(yield* reminders).toHaveLength(0);
-        }),
-      ),
+  it.effect("records a Re: reply with the message itself, so the deadline stops", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+        yield* tools.set(COORDINATOR, PAYOUTS);
+        yield* automate(true);
+        const answeredAt = Effect.map(
+          readMarker(PROJECT_ID),
+          (marker) => statusOf(marker, "payouts").decision?.answeredAt,
+        );
+        // Untagged chat does not answer; the tag matches the title in any case.
+        yield* userMessage("Thanks, looking now.");
+        expect(yield* answeredAt).toBeUndefined();
+        yield* userMessage("Re: payouts\n\nPilot, but only three inspectors.");
+        expect(yield* answeredAt).toBe(NOW);
+
+        yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
+        yield* reactor.sweep;
+        expect(yield* reminders).toHaveLength(0);
+
+        // A tagged message from an agent never answers for the user.
+        yield* tools.set(COORDINATOR, {
+          id: "payouts",
+          question: "Which three?",
+          deadline: "2026-11-02T17:00:00.000Z",
+        });
+        yield* dispatch({
+          type: "thread.message.user.append",
+          commandId: nextCommandId(),
+          threadId: COORDINATOR,
+          message: {
+            messageId: MessageId.make("agent-says"),
+            text: "Re: Payouts\n\nGo with it.",
+            attachments: [],
+            source: { kind: "agent", threadId: SALES, threadTitle: "Sales" },
+          },
+          createdAt: THURSDAY,
+        });
+        expect(yield* answeredAt).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("reminds instead when a refused auto-accept left a rejected receipt", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+        yield* tools.set(COORDINATOR, PAYOUTS);
+        yield* tools.set(OTHER_COORDINATOR, { ...PAYOUTS, id: "launch", title: "Launch" });
+        yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
+        // A sweep that read an opt-in the user withdrew before it dispatched.
+        yield* dispatch({
+          type: "project.status.deadline",
+          commandId: CommandId.make(
+            `${statusReminderMessageId(PROJECT_ID, "payouts", NOW)}:handled:accepted`,
+          ),
+          projectId: PROJECT_ID,
+          statusId: "payouts",
+          openedAt: NOW,
+          outcome: "accepted",
+          createdAt: THURSDAY,
+        }).pipe(Effect.flip);
+
+        yield* reactor.sweep;
+        for (const [projectId, id] of [
+          [PROJECT_ID, "payouts"],
+          [OTHER_PROJECT_ID, "launch"],
+        ] as const) {
+          expect(
+            statusOf(yield* readMarker(projectId), id).decision?.deadlineHandled,
+          ).toMatchObject({ outcome: "reminded" });
+        }
+      }),
+    ),
+  );
+
+  it.effect("never carries a passed deadline into a new version of the question", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+        yield* tools.set(COORDINATOR, PAYOUTS);
+        yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
+        yield* reactor.sweep;
+        const asked = yield* tools.set(COORDINATOR, {
+          id: "payouts",
+          question: "Pilot with three?",
+        });
+        expect(asked.status?.decision?.deadline).toBeUndefined();
+        yield* reactor.sweep;
+        expect(yield* reminders).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("drops an opt-in whose deadline lapsed while the Project was archived", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+        yield* tools.set(COORDINATOR, PAYOUTS);
+        yield* automate(true);
+        const archive = (archived: boolean) =>
+          dispatch({
+            type: "project.meta.update",
+            commandId: nextCommandId(),
+            projectId: PROJECT_ID,
+            assistant: { archived },
+          });
+        yield* archive(true);
+        yield* TestClock.setTime(Date.parse(THURSDAY) + 7 * 86_400_000);
+        yield* archive(false);
+        yield* reactor.sweep;
+        const [sent] = yield* reminders;
+        expect(sent?.text).toContain("This is a reminder, not an answer.");
+      }),
     ),
   );
 });

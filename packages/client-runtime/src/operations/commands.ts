@@ -32,6 +32,7 @@ export type CreateProjectInput = CommandInput<"project.create">;
 export type UpdateProjectInput = CommandInput<"project.meta.update">;
 export type ReorderProjectInput = CommandInput<"project.reorder">;
 export type DeleteProjectInput = CommandInput<"project.delete">;
+export type AutomateProjectStatusInput = CommandInput<"project.status.automate">;
 export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
@@ -124,6 +125,18 @@ export const reorderProject: (input: ReorderProjectInput) => CommandEffect = Eff
     commandId: yield* commandId(input),
   });
 });
+
+/** The user's opt-in to go with a decision's recommendation at its deadline. */
+export const automateProjectStatus: (input: AutomateProjectStatusInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.automateProjectStatus")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "project.status.automate",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
 
 export const deleteProject: (input: DeleteProjectInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.deleteProject",

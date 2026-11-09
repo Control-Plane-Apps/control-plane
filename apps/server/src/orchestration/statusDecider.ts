@@ -21,6 +21,7 @@ import {
   type ProjectStatus,
   type ProjectStatusDecision,
   isAutoAcceptArmed,
+  parseStatusReply,
   type ThreadId,
 } from "@t3tools/contracts";
 import type * as Crypto from "effect/Crypto";
@@ -32,7 +33,6 @@ import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 
 type StatusSetCommand = Extract<OrchestrationCommand, { type: "project.status.set" }>;
 type StatusDeadlineCommand = Extract<OrchestrationCommand, { type: "project.status.deadline" }>;
-type StatusAnsweredCommand = Extract<OrchestrationCommand, { type: "project.status.answered" }>;
 type StatusAutomateCommand = Extract<OrchestrationCommand, { type: "project.status.automate" }>;
 type UpsertChange = Extract<StatusSetCommand["change"], { kind: "upsert" }>;
 
@@ -93,11 +93,15 @@ function nextDecision(
   ) {
     return { decision: stored };
   }
+  // A new version never inherits a deadline that already passed: that one
+  // was handled, and the next needs a deadline of its own.
+  const liveDeadline =
+    deadline !== undefined && Date.parse(deadline) <= Date.parse(now) ? undefined : deadline;
   return {
     decision: {
       question,
       recommendation,
-      ...(deadline !== undefined ? { deadline } : {}),
+      ...(liveDeadline !== undefined ? { deadline: liveDeadline } : {}),
       openedAt: now,
     },
   };
@@ -178,7 +182,7 @@ export function applyStatusUpsert(input: {
 }
 
 function statusEvent(
-  command: StatusSetCommand | StatusDeadlineCommand | StatusAnsweredCommand | StatusAutomateCommand,
+  command: StatusSetCommand | StatusDeadlineCommand | StatusAutomateCommand,
   statusId: string,
   status: ProjectStatus | null,
 ) {
@@ -287,27 +291,6 @@ export const decideStatusDeadline = Effect.fn("decideStatusDeadline")(function* 
   });
 });
 
-/** `project.status.answered`: the user replied to this version, so its deadline stops. */
-export const decideStatusAnswered = Effect.fn("decideStatusAnswered")(function* (
-  readModel: OrchestrationReadModel,
-  command: StatusAnsweredCommand,
-): Effect.fn.Return<
-  PlannedOrchestrationEvent,
-  OrchestrationCommandInvariantError | PlatformError.PlatformError,
-  Crypto.Crypto
-> {
-  const found = decisionAt(readModel, command);
-  if (typeof found === "string") return yield* invariant(command.type, found);
-  const { status, decision } = found;
-  if (decision.answeredAt !== undefined) {
-    return yield* invariant(command.type, "That decision is already answered.");
-  }
-  return yield* statusEvent(command, status.id, {
-    ...status,
-    decision: { ...decision, answeredAt: command.createdAt },
-  });
-});
-
 /**
  * `project.status.automate`: the user's own opt-in or opt-out. Only clients
  * send it; the decision must still be the version the user saw.
@@ -337,6 +320,79 @@ export const decideStatusAutomate = Effect.fn("decideStatusAutomate")(function* 
       : rest,
   });
 });
+
+/**
+ * The user's own message (no `source`) in a coordinator thread that starts
+ * `Re: <title>` answers that workstream's open decision. Planned with the
+ * message itself, so no deadline can act between the reply and its record.
+ */
+export const statusReplyEvents = Effect.fn("statusReplyEvents")(function* (
+  readModel: OrchestrationReadModel,
+  input: {
+    readonly threadId: ThreadId;
+    readonly text: string;
+    readonly hasSource: boolean;
+    readonly commandId: OrchestrationCommand["commandId"];
+    readonly createdAt: string;
+  },
+): Effect.fn.Return<
+  ReadonlyArray<PlannedOrchestrationEvent>,
+  PlatformError.PlatformError,
+  Crypto.Crypto
+> {
+  if (input.hasSource) return [];
+  const reply = parseStatusReply(input.text);
+  if (reply === null) return [];
+  const project = readModel.projects.find(
+    (entry) => entry.deletedAt === null && entry.assistant?.coordinatorThreadId === input.threadId,
+  );
+  const folded = reply.title.toLowerCase();
+  const status = project?.assistant?.statuses?.find(
+    (entry) => entry.title.toLowerCase() === folded,
+  );
+  const decision = status?.decision;
+  if (project === undefined || status === undefined || decision === undefined) return [];
+  if (decision.answeredAt !== undefined) return [];
+  const base = yield* withEventBase({
+    aggregateKind: "project",
+    aggregateId: project.id,
+    occurredAt: input.createdAt,
+    commandId: input.commandId,
+  });
+  return [
+    {
+      ...base,
+      type: "project.status-updated" as const,
+      payload: {
+        projectId: project.id,
+        statusId: status.id,
+        status: { ...status, decision: { ...decision, answeredAt: input.createdAt } },
+      },
+    },
+  ];
+});
+
+/**
+ * Unarchiving drops opt-ins whose deadline passed while archived, so an old
+ * opt-in cannot act weeks late; those deadlines get a reminder instead.
+ */
+export function withoutLapsedOptIns(
+  statuses: ReadonlyArray<ProjectStatus>,
+  now: string,
+): ReadonlyArray<ProjectStatus> {
+  return statuses.map((status) => {
+    const decision = status.decision;
+    if (
+      decision?.autoAccept === undefined ||
+      decision.deadline === undefined ||
+      Date.parse(decision.deadline) > Date.parse(now)
+    ) {
+      return status;
+    }
+    const { autoAccept: _lapsed, ...rest } = decision;
+    return { ...status, decision: rest };
+  });
+}
 
 /** The marker with one record written (in place, or appended) or removed (`null`). */
 export function withStatus(

@@ -19,7 +19,9 @@ import {
 import { useAttachmentUploadStore } from "../lib/attachmentUploadQueue";
 import {
   assistantThreadRole,
+  countStatusesNeedingUser,
   isStandingAgent,
+  type ProjectStatus,
   type AssistantCitation,
   type ApprovalRequestId,
   type ChatFileAttachment,
@@ -221,6 +223,18 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
 import { SchedulesPanel } from "./schedules/SchedulesPanel";
+import { ProjectStatusPanel } from "./status/ProjectStatusPanel";
+import { StatusReplyChip, useStatusComposerBanner } from "./status/StatusComposerStrip";
+import {
+  ASK_FOR_UPDATE_PROMPT,
+  decisionKey,
+  recommendationReplyText,
+} from "./status/projectStatus.logic";
+import {
+  applyStatusReplyTag,
+  useStatusReplyStore,
+  useStatusReplyTag,
+} from "./status/statusReplyStore";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
@@ -545,6 +559,7 @@ import {
 } from "./chat/composerPromptHistory";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_PROJECT_STATUSES: ReadonlyArray<ProjectStatus> = [];
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
@@ -4732,6 +4747,82 @@ export default function ChatView(props: ChatViewProps) {
   const openSchedulesSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "schedules");
   }, [activeThreadRef]);
+  // The coordinator's Status board: one record per workstream, written by the
+  // coordinator. Replies and recommendations go out as ordinary messages.
+  const statusBoardEnabled =
+    assistantRole === "coordinator" &&
+    activeThreadRef !== null &&
+    serverConfig?.environment.capabilities.projectStatus === true;
+  const projectStatuses = statusBoardEnabled
+    ? (activeProject?.assistant?.statuses ?? EMPTY_PROJECT_STATUSES)
+    : EMPTY_PROJECT_STATUSES;
+  const statusNeedsCount = countStatusesNeedingUser(projectStatuses);
+  const statusPanelOpen = rightPanelOpen && activeRightPanelSurface?.kind === "status";
+  const toggleStatusSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().toggle(activeThreadRef, "status");
+  }, [activeThreadRef]);
+  const openStatusSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "status");
+  }, [activeThreadRef]);
+  const statusReplyTag = useStatusReplyTag(statusBoardEnabled ? activeThreadKey : null);
+  const startStatusReply = useCallback(
+    (title: string, prefillWhenEmpty?: string) => {
+      if (!activeThreadKey) return;
+      useStatusReplyStore.getState().setTag(activeThreadKey, title);
+      if (prefillWhenEmpty !== undefined && promptRef.current.trim().length === 0) {
+        composerRef.current?.insertTextAtEnd(prefillWhenEmpty);
+      }
+      composerRef.current?.focusAtEnd();
+    },
+    [activeThreadKey],
+  );
+  const askStatusUpdate = useCallback(
+    (title: string) => startStatusReply(title, ASK_FOR_UPDATE_PROMPT),
+    [startStatusReply],
+  );
+  const clearStatusReply = useCallback(() => {
+    if (activeThreadKey) useStatusReplyStore.getState().clearTag(activeThreadKey);
+  }, [activeThreadKey]);
+  // "Go with recommendation" queues an ordinary message, so it leaves through
+  // the same send path, now when the coordinator is idle or at its next
+  // boundary when it is busy. The live draft and its Re: tag stay as they are.
+  const goWithStatusRecommendation = useCallback(
+    (status: ProjectStatus) => {
+      const decision = status.decision;
+      if (!activeThreadKey || decision === undefined || decision.answeredAt !== undefined) return;
+      const store = useStatusReplyStore.getState();
+      const key = decisionKey(status, decision);
+      if (store.pendingDecisions.includes(`${activeThreadKey}|${key}`)) return;
+      store.markDecisionPending(activeThreadKey, key);
+      useQueuedMessageStore.getState().enqueue(activeThreadKey, {
+        prompt: recommendationReplyText(status.title, decision.recommendation),
+        images: [],
+        files: [],
+        terminalContexts: [],
+        previewAnnotations: [],
+        reviewComments: [],
+        submissionIntent: "foreground",
+        queuedAfterToolActivityId: latestCompletedToolActivityId(threadActivities),
+        createdAt: new Date().toISOString(),
+      });
+    },
+    [activeThreadKey, threadActivities],
+  );
+  const statusComposerBannerItem = useStatusComposerBanner({
+    enabled: statusBoardEnabled,
+    threadKey: activeThreadKey,
+    statuses: projectStatuses,
+    panelOpen: statusPanelOpen,
+    onReply: startStatusReply,
+    onOpenStatus: openStatusSurface,
+  });
+  const statusReplyChip = useMemo(
+    () =>
+      statusReplyTag === null ? null : (
+        <StatusReplyChip title={statusReplyTag} onRemove={clearStatusReply} />
+      ),
+    [clearStatusReply, statusReplyTag],
+  );
   // Handoff links can outlive their thread, since rows re-read the shell only
   // when they render.
   const openLinkedThread = useCallback(
@@ -6616,11 +6707,13 @@ export default function ChatView(props: ChatViewProps) {
     // The user asked for this one, so it leads the notice tier instead of trailing it.
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
+    const statusItems = statusComposerBannerItem === null ? [] : [statusComposerBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
         ...usageLimitsItems,
         ...projectCloneItems,
+        ...statusItems,
         ...systemComposerBannerItems,
         ...backgroundLivenessItems,
         ...resumeCompactionItems,
@@ -6632,6 +6725,7 @@ export default function ChatView(props: ChatViewProps) {
       ...feedbackBannerItems,
       ...usageLimitsItems,
       ...projectCloneItems,
+      ...statusItems,
       ...systemComposerBannerItems,
       ...backgroundLivenessItems,
       ...resumeCompactionItems,
@@ -6685,6 +6779,7 @@ export default function ChatView(props: ChatViewProps) {
     localCheckoutBranchMismatch,
     parkedThreadBannerItem,
     projectCloneBannerItem,
+    statusComposerBannerItem,
     resumeCompactionBannerItem,
     showBranchMismatchBanner,
     systemComposerBannerItems,
@@ -7776,6 +7871,11 @@ export default function ChatView(props: ChatViewProps) {
       );
       return;
     }
+    // The composer's "Re: <workstream>" tag rides on the live draft only.
+    const statusReplyTitleForSend =
+      !queuedMessage && !directAnnotation && statusBoardEnabled && activeThreadKey
+        ? (useStatusReplyStore.getState().tagsByThreadKey[activeThreadKey] ?? null)
+        : null;
     if (
       !queuedMessage &&
       !directAnnotation &&
@@ -7783,11 +7883,13 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadKey &&
       (settings.followUpBehavior === "queue") !== (submissionIntent === "alternate")
     ) {
-      if (composerRef.current?.validateProviderInput(promptForSend) === false) {
+      const queuedPrompt = applyStatusReplyTag(promptForSend, statusReplyTitleForSend);
+      if (composerRef.current?.validateProviderInput(queuedPrompt) === false) {
         return;
       }
+      if (statusReplyTitleForSend !== null) clearStatusReply();
       useQueuedMessageStore.getState().enqueue(activeThreadKey, {
-        prompt: promptForSend,
+        prompt: queuedPrompt,
         images: [...composerImages],
         files: [...composerFiles],
         terminalContexts: [...composerTerminalContexts],
@@ -7860,7 +7962,10 @@ export default function ChatView(props: ChatViewProps) {
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+      text: applyStatusReplyTag(
+        messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+        statusReplyTitleForSend,
+      ),
     });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       // A queued message that no longer fits is held at the head for the
@@ -8415,6 +8520,7 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
+      if (statusReplyTitleForSend !== null) clearStatusReply();
     }
 
     let firstComposerImageName: string | null = null;
@@ -8691,6 +8797,9 @@ export default function ChatView(props: ChatViewProps) {
           return next.length === existing.length ? existing : next;
         });
         promptRef.current = messageTextForSend;
+        if (statusReplyTitleForSend !== null && activeThreadKey) {
+          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTitleForSend);
+        }
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
         composerFilesRef.current = composerFilesSnapshot;
@@ -9826,6 +9935,14 @@ export default function ChatView(props: ChatViewProps) {
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
     ) : renderedRightPanelSurface?.kind === "schedules" && activeThreadRef ? (
       <SchedulesPanel threadRef={activeThreadRef} project={activeProject} />
+    ) : renderedRightPanelSurface?.kind === "status" && activeThreadRef ? (
+      <ProjectStatusPanel
+        threadRef={activeThreadRef}
+        project={activeProject}
+        onReply={startStatusReply}
+        onAskForUpdate={askStatusUpdate}
+        onGoWithRecommendation={goWithStatusRecommendation}
+      />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         model={agentPanelModel}
@@ -9955,6 +10072,13 @@ export default function ChatView(props: ChatViewProps) {
               : { onOpenPullRequest: openProjectPullRequest })}
             assistantRole={assistantRole}
             showGitActions={assistantChrome.showPullRequestControls}
+            {...(statusBoardEnabled
+              ? {
+                  onToggleStatus: toggleStatusSurface,
+                  statusNeedsCount,
+                  statusOpen: statusPanelOpen,
+                }
+              : {})}
             {...(assistantRole === "coordinator" ? { onOpenMemory: openMemorySurface } : {})}
             {...(assistantRole === "coordinator" && supportsProjectSchedules
               ? { onOpenSchedules: openSchedulesSurface }
@@ -10238,6 +10362,7 @@ export default function ChatView(props: ChatViewProps) {
                             }
                             isPreparingWorktree={isPreparingWorktree}
                             bannerItems={composerBannerItems}
+                            leadingContent={statusReplyChip}
                             // With attachments or contexts aboard the pick just inserts the
                             // text, so it sends as a prompt like the typed path would.
                             onUsageLimitsCommand={

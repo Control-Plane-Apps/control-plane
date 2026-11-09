@@ -4,6 +4,7 @@ export type AssistantProjectMenuAction =
   | "rename"
   | "settings"
   | "schedules"
+  | "status"
   | "open-folder"
   | "archive"
   | "move-to-tasks"
@@ -17,10 +18,14 @@ export type AssistantProjectMenuAction =
 export function buildAssistantProjectMenuItems(input: {
   readonly canOpenFolder: boolean;
   readonly canSchedule: boolean;
+  readonly canShowStatus?: boolean;
 }): ReadonlyArray<ContextMenuItem<AssistantProjectMenuAction>> {
   return [
     { id: "rename", label: "Rename", icon: "pencil" },
     { id: "settings", label: "Settings", icon: "settings" },
+    ...(input.canShowStatus === true
+      ? [{ id: "status" as const, label: "Status", icon: "list-checks" }]
+      : []),
     ...(input.canSchedule ? [{ id: "schedules" as const, label: "Schedules", icon: "clock" }] : []),
     ...(input.canOpenFolder
       ? [{ id: "open-folder" as const, label: "Open folder", icon: "folder" }]
@@ -36,6 +41,7 @@ export function isAssistantProjectMenuAction(value: string): value is AssistantP
     value === "rename" ||
     value === "settings" ||
     value === "schedules" ||
+    value === "status" ||
     value === "open-folder" ||
     value === "archive" ||
     value === "move-to-tasks" ||

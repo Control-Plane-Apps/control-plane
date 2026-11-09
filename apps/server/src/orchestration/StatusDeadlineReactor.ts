@@ -1,6 +1,7 @@
 /**
- * Handles a Status decision's deadline once it passes without a reply, and
- * notices when the user replies to a workstream. Fork-owned.
+ * Handles a Status decision's deadline once it passes without a reply.
+ * Fork-owned. (A user's `Re:` reply is recorded by the decider with the
+ * message itself, so it always lands before any deadline can act.)
  *
  * By default a passed deadline only reminds the coordinator: silence is not
  * approval, so the question stays open. Only when the user opted in for that
@@ -18,14 +19,12 @@ import {
   isAutoAcceptArmed,
   MessageId,
   type OrchestrationEvent,
-  parseStatusReply,
   type ProjectAssistant,
   type ProjectId,
   type ProjectStatus,
   type ProjectStatusDeadlineOutcome,
   statusReminderMessageId,
   statusReplyText,
-  type ThreadId,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
@@ -34,7 +33,6 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -43,7 +41,6 @@ import { ProjectionProjectRepository } from "../persistence/Services/ProjectionP
 import { forkParked } from "../serverActivation.ts";
 import { isOrchestrationCommandRejection } from "./Errors.ts";
 import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
-import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
 
 export class StatusDeadlineReactor extends Context.Service<
   StatusDeadlineReactor,
@@ -51,7 +48,7 @@ export class StatusDeadlineReactor extends Context.Service<
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
     /** Sweeps now and waits for it. Tests use this instead of the clock. */
     readonly sweep: Effect.Effect<void>;
-    /** Waits for queued reply checks and sweeps. */
+    /** Waits for queued sweeps. */
     readonly drain: Effect.Effect<void>;
   }
 >()("t3/orchestration/StatusDeadlineReactor") {}
@@ -154,14 +151,10 @@ export function statusDeadlineText(
 export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const projects = yield* ProjectionProjectRepository;
-  const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   // Earliest pending deadline from the last sweep. The minute tick reads the
   // projects table only once it has passed or a status write invalidated it.
   let nextAtMs: number | null = null;
   let dirty = true;
-  // The first sweep resends messages for deadlines recorded just before a
-  // crash; their receipts make the ones already sent a no-op.
-  let recovered = false;
 
   const logRejected =
     (step: string, entry: { readonly projectId: ProjectId; readonly statusId: string }) =>
@@ -218,7 +211,9 @@ export const make = Effect.gen(function* () {
     const recorded = yield* engine
       .dispatch({
         type: "project.status.deadline",
-        commandId: CommandId.make(`${messageId}:handled`),
+        // Per outcome: a refused `accepted` (the user opted out meanwhile)
+        // must not make the `reminded` retry look like a replay.
+        commandId: CommandId.make(`${messageId}:handled:${outcome}`),
         projectId: entry.projectId,
         statusId: entry.status.id,
         openedAt: decision.openedAt,
@@ -235,57 +230,37 @@ export const make = Effect.gen(function* () {
     yield* sendDeadlineMessage(entry, outcome, createdAt);
   });
 
-  /** A `Re: <title>` message from the user in a coordinator thread answers that workstream. */
-  const markAnswered = Effect.fn("StatusDeadlineReactor.markAnswered")(function* (
-    threadId: ThreadId,
-    text: string,
-  ) {
-    const reply = parseStatusReply(text);
-    if (reply === null) return;
-    const thread = yield* snapshots.getThreadShellById(threadId);
-    if (Option.isNone(thread)) return;
-    const project = Option.getOrUndefined(
-      yield* projects.getById({ projectId: thread.value.projectId }),
+  /** One decision's failure never holds up another's. */
+  const isolated = <E, R>(entry: DueDeadline, effect: Effect.Effect<void, E, R>) =>
+    effect.pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("status deadline step failed", {
+              projectId: entry.projectId,
+              statusId: entry.status.id,
+              cause: Cause.pretty(cause),
+            }),
+      ),
     );
-    const assistant = project?.assistant;
-    if (assistant == null || assistant.coordinatorThreadId !== threadId) return;
-    const status = assistant.statuses?.find((entry) => entry.title === reply.title);
-    const decision = status?.decision;
-    if (status === undefined || decision === undefined || decision.answeredAt !== undefined) return;
-    const createdAt = DateTime.formatIso(yield* DateTime.now);
-    yield* engine
-      .dispatch({
-        type: "project.status.answered",
-        commandId: CommandId.make(
-          `${statusReminderMessageId(thread.value.projectId, status.id, decision.openedAt)}:answered`,
-        ),
-        projectId: thread.value.projectId,
-        statusId: status.id,
-        openedAt: decision.openedAt,
-        createdAt,
-      })
-      .pipe(
-        Effect.catchIf(
-          isOrchestrationCommandRejection,
-          logRejected("answered", { projectId: thread.value.projectId, statusId: status.id }),
-        ),
-      );
-  });
 
   const sweepOnce = Effect.fn("StatusDeadlineReactor.sweep")(function* (force: boolean) {
     const nowMs = yield* Clock.currentTimeMillis;
     if (!force && !dirty && (nextAtMs === null || nextAtMs > nowMs)) return;
     dirty = false;
     const rows = yield* projects.listAll();
-    if (!recovered) {
-      recovered = true;
-      yield* Effect.forEach(handledDeadlines(rows), (entry) =>
-        sendDeadlineMessage(entry, entry.outcome, entry.at),
-      );
-    }
+    // Resend messages for deadlines recorded before a failed send or a crash;
+    // their receipts make the ones already sent a no-op.
+    yield* Effect.forEach(
+      handledDeadlines(rows),
+      (entry) => isolated(entry, sendDeadlineMessage(entry, entry.outcome, entry.at)),
+      { discard: true },
+    );
     const result = dueDeadlines(rows, nowMs);
     nextAtMs = result.nextAtMs;
-    yield* Effect.forEach(result.due, handleDeadline, { discard: true });
+    yield* Effect.forEach(result.due, (entry) => isolated(entry, handleDeadline(entry)), {
+      discard: true,
+    });
   });
 
   const runSweep = (force: boolean) =>
@@ -301,26 +276,9 @@ export const make = Effect.gen(function* () {
     );
 
   const worker = yield* makeDrainableWorker((force: boolean) => runSweep(force));
-  const replies = yield* makeDrainableWorker(
-    (reply: { readonly threadId: ThreadId; readonly text: string }) =>
-      markAnswered(reply.threadId, reply.text).pipe(
-        Effect.catchCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.failCause(cause)
-            : Effect.logWarning("status reply check failed", { cause: Cause.pretty(cause) }),
-        ),
-      ),
-  );
 
   const processEvent = (event: OrchestrationEvent) => {
     switch (event.type) {
-      case "thread.message-sent":
-        // Cheap prefilter: only the user's own `Re: ` messages can answer a workstream.
-        return event.payload.role === "user" &&
-          event.payload.source === undefined &&
-          event.payload.text.startsWith("Re: ")
-          ? replies.enqueue({ threadId: event.payload.threadId, text: event.payload.text })
-          : Effect.void;
       case "project.status-updated":
       case "project.meta-updated":
       case "project.deleted":
@@ -344,7 +302,7 @@ export const make = Effect.gen(function* () {
   return {
     start,
     sweep: Effect.andThen(worker.enqueue(true), worker.drain),
-    drain: Effect.andThen(replies.drain, worker.drain),
+    drain: worker.drain,
   } satisfies StatusDeadlineReactor["Service"];
 });
 

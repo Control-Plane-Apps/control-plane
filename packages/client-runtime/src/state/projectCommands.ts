@@ -9,10 +9,12 @@ import {
   createEnvironmentRpcQueryAtomFamily,
 } from "./runtime.ts";
 import {
+  type AutomateProjectStatusInput,
   type CreateProjectInput,
   type DeleteProjectInput,
   type ReorderProjectInput,
   type UpdateProjectInput,
+  automateProjectStatus,
   createProject,
   deleteProject,
   reorderProject,
@@ -97,6 +99,13 @@ export function createProjectEnvironmentAtoms<R, E>(
     delete: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:project:delete",
       execute: (input: DeleteProjectInput) => deleteProject(input),
+      scheduler: projectScheduler,
+      concurrency: projectConcurrency,
+    }),
+    /** The user's deadline opt-in on one Status decision. */
+    automateStatus: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:project:status-automate",
+      execute: (input: AutomateProjectStatusInput) => automateProjectStatus(input),
       scheduler: projectScheduler,
       concurrency: projectConcurrency,
     }),

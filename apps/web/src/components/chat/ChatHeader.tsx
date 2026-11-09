@@ -12,7 +12,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronDownIcon, ClockIcon, NotebookTextIcon } from "lucide-react";
+import { ChevronDownIcon, ClockIcon, ListChecksIcon, NotebookTextIcon } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -26,6 +26,7 @@ import {
 import GitActionsControl from "../GitActionsControl";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { type DraftId } from "~/composerDraftStore";
+import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import ProjectScriptsControl, {
@@ -71,6 +72,12 @@ interface ChatHeaderProps {
   assistantRole?: AssistantThreadRole | null | undefined;
   /** False hides git and pull request actions (Project threads working Local). */
   showGitActions?: boolean | undefined;
+  /** Toggles the Project's Status panel; absent when its server has no Status board. */
+  onToggleStatus?: (() => void) | undefined;
+  /** Workstreams waiting on the user, shown on the Status button. */
+  statusNeedsCount?: number | undefined;
+  /** Whether the Status panel is the open surface. */
+  statusOpen?: boolean | undefined;
   /** Opens the coordinator's `MEMORY.md`. */
   onOpenMemory?: (() => void) | undefined;
   /** Opens the Project's Schedules panel; absent when its server has no schedules. */
@@ -148,6 +155,9 @@ export const ChatHeader = memo(function ChatHeader({
   gitCwd,
   assistantRole = null,
   showGitActions = true,
+  onToggleStatus,
+  statusNeedsCount = 0,
+  statusOpen = false,
   onOpenMemory,
   onOpenSchedules,
   onOpenCoordinator,
@@ -448,6 +458,38 @@ export const ChatHeader = memo(function ChatHeader({
         data-chat-header-actions
         className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3"
       >
+        {onToggleStatus ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  type="button"
+                  aria-label={
+                    statusNeedsCount > 0 ? `Status, ${statusNeedsCount} need you` : "Status"
+                  }
+                  aria-pressed={statusOpen}
+                  className={statusOpen ? "bg-accent" : undefined}
+                  onClick={onToggleStatus}
+                />
+              }
+            >
+              <ListChecksIcon />
+              <span className="hidden @3xl/header-actions:inline">Status</span>
+              {statusNeedsCount > 0 ? (
+                <Badge variant="warning" size="sm" className="tabular-nums">
+                  {statusNeedsCount}
+                </Badge>
+              ) : null}
+            </TooltipTrigger>
+            <TooltipPopup>
+              {statusNeedsCount > 0
+                ? `${statusNeedsCount} ${statusNeedsCount === 1 ? "workstream needs" : "workstreams need"} you`
+                : "Workstream status"}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
         {onOpenMemory ? (
           <Tooltip>
             <TooltipTrigger

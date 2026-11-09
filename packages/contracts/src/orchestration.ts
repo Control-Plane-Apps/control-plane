@@ -1840,20 +1840,9 @@ const ProjectStatusDeadlineCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-/** The user replied to a workstream (a `Re: <title>` message), so its deadline stops. Server only. */
-const ProjectStatusAnsweredCommand = Schema.Struct({
-  type: Schema.Literal("project.status.answered"),
-  commandId: CommandId,
-  projectId: ProjectId,
-  statusId: ProjectStatusId,
-  openedAt: IsoDateTime,
-  createdAt: IsoDateTime,
-});
-
 const InternalOrchestrationCommand = Schema.Union([
   ProjectStatusSetCommand,
   ProjectStatusDeadlineCommand,
-  ProjectStatusAnsweredCommand,
   ProjectScheduleRecordCommand,
   ProjectScheduleAgentChangeCommand,
   ThreadAutoSettleCommand,

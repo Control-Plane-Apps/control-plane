@@ -60,10 +60,10 @@ import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 import { projectEvent } from "./projector.ts";
 import { decideAgentScheduleChange, decideScheduleRecord } from "./scheduleDecider.ts";
 import {
-  decideStatusAnswered,
   decideStatusAutomate,
   decideStatusDeadline,
   decideStatusSet,
+  statusReplyEvents,
 } from "./statusDecider.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 
@@ -459,9 +459,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "project.status.deadline":
       return yield* decideStatusDeadline(readModel, command);
-
-    case "project.status.answered":
-      return yield* decideStatusAnswered(readModel, command);
 
     case "project.status.automate":
       return yield* decideStatusAutomate(readModel, command);
@@ -1608,9 +1605,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      const statusReplies = userMessageEvent
+        ? yield* statusReplyEvents(readModel, {
+            threadId: command.threadId,
+            text: command.message.text,
+            hasSource: command.message.source !== undefined,
+            commandId: command.commandId,
+            createdAt: command.createdAt,
+          })
+        : [];
       return [
         ...lifecycleResetEvents,
         ...(userMessageEvent ? [userMessageEvent] : []),
+        ...statusReplies,
         turnStartRequestedEvent,
       ];
     }
@@ -1634,7 +1641,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Message '${command.message.messageId}' already exists on thread '${command.threadId}'.`,
         });
       }
-      return {
+      const appended: PlannedOrchestrationEvent = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1657,6 +1664,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      const statusReplies = yield* statusReplyEvents(readModel, {
+        threadId: command.threadId,
+        text: command.message.text,
+        hasSource: command.message.source !== undefined,
+        commandId: command.commandId,
+        createdAt: command.createdAt,
+      });
+      return statusReplies.length === 0 ? appended : [appended, ...statusReplies];
     }
 
     case "thread.turn.interrupt": {
