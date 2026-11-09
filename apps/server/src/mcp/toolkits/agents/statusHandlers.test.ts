@@ -676,6 +676,27 @@ describe("StatusDeadlineReactor", () => {
     ),
   );
 
+  it.effect("never lets a reply started before the question answer it", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, { id: "pdf", title: "PDF export", summary: "Grids break." });
+        yield* tools.set(COORDINATOR, {
+          id: "pdf",
+          question: "Ship without grids?",
+          recommendation: "yes",
+        });
+        // "Ask for update" was clicked while the row had no question: id, no version.
+        yield* userMessage(statusReplyText("PDF export", "Any update?", { statusId: "pdf" }));
+        expect(statusOf(yield* readMarker(PROJECT_ID), "pdf").decision?.answeredAt).toBeUndefined();
+        const refused = yield* tools
+          .set(COORDINATOR, { id: "pdf", title: "PDF [status:x]" })
+          .pipe(Effect.flip);
+        expect(refused.message).toContain("cannot contain");
+      }),
+    ),
+  );
+
   it.effect("turns an opt-in withdrawn mid-sweep into a reminder, and keeps others moving", () =>
     withSeededEngine(
       Effect.gen(function* () {

@@ -13,10 +13,13 @@ import {
   describeDecisionDeadline,
   describeLiveAgent,
   formatDeadlineShort,
+  isRecommendationPending,
   isRecommendationQueued,
+  recommendationKey,
   formatStatusAge,
   isStatusStale,
   recommendationReplyText,
+  sentRecommendationKeys,
   statusCountLine,
 } from "./projectStatus.logic";
 
@@ -217,23 +220,41 @@ describe("replies", () => {
     });
   });
 
-  it("reads Go with recommendation as in flight only while its message is queued", () => {
+  it("reads Go with recommendation as pending while it is queued or sent but not yet answered", () => {
     const go = { prompt: recommendationReplyText(payouts, payouts.decision) };
+    const none = new Set<string>();
     expect(isRecommendationQueued([go], payouts)).toBe(true);
-    // Removed, restored to the composer or sent: the queue no longer holds it.
+    // The model's effort line in front still matches by id and version.
+    expect(isRecommendationQueued([{ prompt: `Ultrathink:\n${go.prompt}` }], payouts)).toBe(true);
+    // Removed, restored or failed: the queue no longer holds it.
     expect(isRecommendationQueued([{ prompt: "something else" }], payouts)).toBe(false);
-    expect(isRecommendationQueued([], payouts)).toBe(false);
+    // Another reply to the same question is not the recommendation.
     expect(
-      isRecommendationQueued([go], {
-        ...payouts,
-        decision: { ...payouts.decision, answeredAt: at(-60_000) },
-      }),
+      isRecommendationQueued(
+        [{ prompt: go.prompt.replace("Go with your recommendation: pilot", "Hold off") }],
+        payouts,
+      ),
     ).toBe(false);
     // A newer version of the question is a different message.
+    const reworded = {
+      ...payouts,
+      decision: { ...payouts.decision, openedAt: "2026-11-11T11:30:00.000Z" },
+    };
+    expect(isRecommendationQueued([go], reworded)).toBe(false);
+
+    const sent = sentRecommendationKeys([
+      { role: "user", text: go.prompt },
+      { role: "assistant", text: go.prompt },
+    ]);
+    expect([...sent]).toEqual([recommendationKey(payouts, payouts.decision)]);
+    expect(isRecommendationPending({ status: payouts, queue: [], sentKeys: sent })).toBe(true);
+    expect(isRecommendationPending({ status: payouts, queue: [], sentKeys: none })).toBe(false);
+    expect(isRecommendationPending({ status: reworded, queue: [], sentKeys: sent })).toBe(false);
     expect(
-      isRecommendationQueued([go], {
-        ...payouts,
-        decision: { ...payouts.decision, openedAt: "2026-11-11T11:30:00.000Z" },
+      isRecommendationPending({
+        status: { ...payouts, decision: { ...payouts.decision, answeredAt: at(-60_000) } },
+        queue: [go],
+        sentKeys: sent,
       }),
     ).toBe(false);
   });

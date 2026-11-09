@@ -3,6 +3,7 @@ import {
   PROJECT_STATUS_STALE_MS,
   countStatusesNeedingUser,
   isAutoAcceptArmed,
+  parseStatusReply,
   statusReplyText,
   type OrchestrationThreadShell,
   type ProjectStatus,
@@ -168,15 +169,52 @@ export function describeLiveAgent(
 
 export const ASK_FOR_UPDATE_PROMPT = "Any update?";
 
+const RECOMMENDATION_BODY_PREFIX = "Go with your recommendation:";
+
 /** The message "Go with recommendation" sends, naming the workstream and the question's version. */
 export function recommendationReplyText(
   status: Pick<ProjectStatus, "id" | "title">,
   decision: Pick<ProjectStatusDecision, "recommendation" | "openedAt">,
 ): string {
-  return statusReplyText(status.title, `Go with your recommendation: ${decision.recommendation}`, {
+  return statusReplyText(status.title, `${RECOMMENDATION_BODY_PREFIX} ${decision.recommendation}`, {
     statusId: status.id,
     openedAt: decision.openedAt,
   });
+}
+
+/** `<statusId>@<revision>`: one version of one workstream's question. */
+export function recommendationKey(
+  status: Pick<ProjectStatus, "id">,
+  decision: Pick<ProjectStatusDecision, "openedAt">,
+): string {
+  return `${status.id}@${Date.parse(decision.openedAt)}`;
+}
+
+/** The key of a "Go with recommendation" message, or null for any other text. */
+export function recommendationKeyOfText(text: string): string | null {
+  const reply = parseStatusReply(text);
+  if (
+    reply === null ||
+    reply.statusId === undefined ||
+    reply.revision === undefined ||
+    !reply.body.startsWith(RECOMMENDATION_BODY_PREFIX)
+  ) {
+    return null;
+  }
+  return `${reply.statusId}@${reply.revision}`;
+}
+
+/** Keys of the "Go with recommendation" messages among a thread's user messages. */
+export function sentRecommendationKeys(
+  messages: ReadonlyArray<{ readonly role: string; readonly text: string }>,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== "user") continue;
+    const key = recommendationKeyOfText(message.text);
+    if (key !== null) keys.add(key);
+  }
+  return keys;
 }
 
 /** Identity of one version of a decision, for toggles in flight. */
@@ -188,16 +226,34 @@ export function decisionKey(
 }
 
 /**
- * Whether this decision's "Go with recommendation" is still waiting in the
- * composer queue. Derived from the queue itself, so a removed, restored or
- * failed message frees the button again.
+ * Whether this decision's "Go with recommendation" is waiting in the composer
+ * queue. Matched by workstream id and question version, so a removed,
+ * restored or failed message frees the button again.
  */
 export function isRecommendationQueued(
   queue: ReadonlyArray<{ readonly prompt: string }>,
-  status: Pick<ProjectStatus, "id" | "title" | "decision">,
+  status: Pick<ProjectStatus, "id" | "decision">,
 ): boolean {
   const decision = status.decision;
   if (decision === undefined || decision.answeredAt !== undefined) return false;
-  const text = recommendationReplyText(status, decision);
-  return queue.some((message) => message.prompt === text);
+  const key = recommendationKey(status, decision);
+  return queue.some((message) => recommendationKeyOfText(message.prompt) === key);
+}
+
+/**
+ * Whether "Go with recommendation" is on its way for the decision as it
+ * stands: queued, or already in the thread while the server has not marked
+ * the decision answered yet.
+ */
+export function isRecommendationPending(input: {
+  readonly status: Pick<ProjectStatus, "id" | "decision">;
+  readonly queue: ReadonlyArray<{ readonly prompt: string }>;
+  readonly sentKeys: ReadonlySet<string>;
+}): boolean {
+  const decision = input.status.decision;
+  if (decision === undefined || decision.answeredAt !== undefined) return false;
+  return (
+    isRecommendationQueued(input.queue, input.status) ||
+    input.sentKeys.has(recommendationKey(input.status, decision))
+  );
 }

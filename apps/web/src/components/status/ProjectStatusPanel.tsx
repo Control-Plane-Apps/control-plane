@@ -39,7 +39,7 @@ import {
   describeLiveAgent,
   formatDeadlineShort,
   formatStatusAge,
-  isRecommendationQueued,
+  isRecommendationPending,
   isStatusStale,
   statusCountLine,
 } from "./projectStatus.logic";
@@ -68,6 +68,8 @@ export interface ProjectStatusActions {
   readonly onAskForUpdate: (status: ProjectStatus) => void;
   /** Sends the recommendation through the composer's normal send path. */
   readonly onGoWithRecommendation: (status: ProjectStatus) => void;
+  /** "Go with recommendation" messages already in the thread, by question version. */
+  readonly sentRecommendations: ReadonlySet<string>;
 }
 
 /** A minute tick while `active`: ages and deadlines move, nothing animates. */
@@ -194,7 +196,11 @@ function ProjectStatusPanelContent(
                 key={status.id}
                 status={status}
                 now={now}
-                sending={isRecommendationQueued(queuedMessages, status)}
+                sending={isRecommendationPending({
+                  status,
+                  queue: queuedMessages,
+                  sentKeys: props.sentRecommendations,
+                })}
                 automating={
                   status.decision !== undefined &&
                   automating.has(decisionKey(status, status.decision))
@@ -347,7 +353,7 @@ function StatusRow(props: {
                 disabled={props.sending}
                 onClick={() => actions.onGoWithRecommendation(status)}
               >
-                {props.sending ? "Queued" : "Go with recommendation"}
+                {props.sending ? "Sending..." : "Go with recommendation"}
               </Button>
             ) : null}
             <Button

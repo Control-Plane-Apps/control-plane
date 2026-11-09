@@ -103,20 +103,17 @@ function StatusStripTitle(props: {
 /** The composer's "Re: <workstream>" tag. Removing it keeps the draft. */
 export function StatusReplyChip(props: {
   readonly title: string;
-  /** The question was reworded or replaced since this reply started. */
-  readonly questionChanged: boolean;
+  /** The workstream left the board, or its question changed, since this reply started. */
+  readonly drift: "removed" | "changed" | null;
   readonly onRemove: () => void;
 }) {
   return (
     <div className="mb-2 flex">
       <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-warning/24 bg-warning/8 py-0.5 ps-2 pe-0.5 text-warning-foreground text-xs dark:bg-warning/16">
         <span className="min-w-0 truncate">Re: {props.title}</span>
-        {props.questionChanged ? (
-          <span
-            className="shrink-0 text-muted-foreground"
-            aria-label="The coordinator changed this question since you started replying"
-          >
-            · question changed
+        {props.drift !== null ? (
+          <span className="shrink-0 text-muted-foreground">
+            {props.drift === "removed" ? "· workstream removed" : "· question changed"}
           </span>
         ) : null}
         <Button

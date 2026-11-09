@@ -130,44 +130,75 @@ export function applyStatusReplyTag(text: string, tag: StatusReplyTag | null): s
       });
 }
 
-/**
- * Whether the question a tag was started on has since been reworded or
- * replaced. The reply still sends; the chip just says so.
- */
-export function statusReplyTagChanged(
-  tag: StatusReplyTag,
-  statuses: ReadonlyArray<Pick<ProjectStatus, "id" | "decision">>,
-): boolean {
-  if (tag.statusId === undefined || tag.openedAt === undefined) return false;
-  const status = statuses.find((entry) => entry.id === tag.statusId);
-  return status !== undefined && status.decision?.openedAt !== tag.openedAt;
+/** A header's reference, comparable to a tag's: title, id and question version. */
+function referenceOf(tag: StatusReplyTag): string {
+  return tag.statusId === undefined
+    ? `title:${tag.title}`
+    : `${tag.statusId}@${tag.openedAt === undefined ? "" : Date.parse(tag.openedAt)}`;
+}
+
+function tagOfReply(reply: NonNullable<ReturnType<typeof parseStatusReply>>): StatusReplyTag {
+  return {
+    title: reply.title,
+    ...(reply.statusId !== undefined ? { statusId: reply.statusId } : {}),
+    // `Date.parse` of this ISO string gives back the same revision the server compares.
+    ...(reply.statusId !== undefined && reply.revision !== undefined
+      ? { openedAt: new Date(reply.revision).toISOString() }
+      : {}),
+  };
 }
 
 /**
- * Queued prompts going back into the composer: their Re: headers come off,
- * and the first one becomes the tag (id and version included) when none is
- * live. With a live tag the bodies join untagged, so a send never carries two
- * headers.
+ * Whether the question a tag was started on is gone from the board
+ * (`removed`) or was reworded or replaced since (`changed`). The reply still
+ * sends; the chip just says so.
+ */
+export function statusReplyTagDrift(
+  tag: StatusReplyTag,
+  statuses: ReadonlyArray<Pick<ProjectStatus, "id" | "decision">>,
+): "removed" | "changed" | null {
+  if (tag.statusId === undefined) return null;
+  const status = statuses.find((entry) => entry.id === tag.statusId);
+  if (status === undefined) return "removed";
+  if (tag.openedAt === undefined) return null;
+  const current = status.decision?.openedAt;
+  return current !== undefined && Date.parse(current) === Date.parse(tag.openedAt)
+    ? null
+    : "changed";
+}
+
+/**
+ * Queued prompts going back into the composer. A header comes off only when
+ * the composer's tag says the same thing, so a send never carries it twice;
+ * every other header stays in the text, still naming its own workstream.
+ * With no live tag and an empty draft, prompts that all reply to one
+ * question give that question back as the tag; anything mixed keeps its
+ * headers and no tag is adopted.
  */
 export function restoreStatusReplyPrompts(
   prompts: ReadonlyArray<string>,
   liveTag: StatusReplyTag | null,
+  draftEmpty: boolean,
 ): { readonly prompts: string[]; readonly tag: StatusReplyTag | null } {
+  const replies = prompts.map((prompt) => parseStatusReply(prompt));
   let tag: StatusReplyTag | null = null;
-  const bodies = prompts.map((prompt) => {
-    const reply = parseStatusReply(prompt);
-    if (reply === null) return prompt;
-    if (liveTag === null && tag === null) {
-      tag = {
-        title: reply.title,
-        ...(reply.statusId !== undefined ? { statusId: reply.statusId } : {}),
-        // `Date.parse` of this ISO string gives back the same revision the server compares.
-        ...(reply.statusId !== undefined && reply.revision !== undefined
-          ? { openedAt: new Date(reply.revision).toISOString() }
-          : {}),
-      };
+  if (liveTag === null && draftEmpty && replies.length > 0 && replies.every((r) => r !== null)) {
+    const first = tagOfReply(replies[0]!);
+    if (replies.every((reply) => referenceOf(tagOfReply(reply!)) === referenceOf(first))) {
+      tag = first;
     }
-    return reply.body;
-  });
-  return { prompts: bodies, tag };
+  }
+  const strip = tag ?? liveTag;
+  return {
+    prompts: prompts.map((prompt, index) => {
+      const reply = replies[index];
+      return reply !== null &&
+        reply !== undefined &&
+        strip !== null &&
+        referenceOf(tagOfReply(reply)) === referenceOf(strip)
+        ? reply.body
+        : prompt;
+    }),
+    tag,
+  };
 }

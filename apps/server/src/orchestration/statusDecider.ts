@@ -133,6 +133,7 @@ export function applyStatusUpsert(input: {
     tooLong("The recommendation", change.recommendation, PROJECT_STATUS_LINE_MAX);
   if (lengthError !== null) return lengthError;
   if (title.includes("\n")) return "A title is one line.";
+  if (title.includes("[status:")) return 'A title cannot contain "[status:".';
   const folded = title.toLowerCase();
   if (statuses.some((status) => status.id !== change.id && status.title.toLowerCase() === folded)) {
     return `Another workstream is already titled '${title}'.`;
@@ -361,8 +362,9 @@ export const statusReplyEvents = Effect.fn("statusReplyEvents")(function* (
   const decision = status?.decision;
   if (project === undefined || status === undefined || decision === undefined) return [];
   if (decision.answeredAt !== undefined) return [];
-  // A reply to an earlier version of the question does not answer this one.
-  if (reply.revision !== undefined && reply.revision !== Date.parse(decision.openedAt)) return [];
+  // An id-tagged reply answers only the question version the user saw: a reply
+  // started before the question existed, or to an earlier wording, does not.
+  if (reply.statusId !== undefined && reply.revision !== Date.parse(decision.openedAt)) return [];
   const base = yield* withEventBase({
     aggregateKind: "project",
     aggregateId: project.id,

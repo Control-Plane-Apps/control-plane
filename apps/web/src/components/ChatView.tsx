@@ -227,13 +227,15 @@ import { ProjectStatusPanel } from "./status/ProjectStatusPanel";
 import { StatusReplyChip, useStatusComposerBanner } from "./status/StatusComposerStrip";
 import {
   ASK_FOR_UPDATE_PROMPT,
-  isRecommendationQueued,
+  isRecommendationPending,
+  recommendationKey,
   recommendationReplyText,
+  sentRecommendationKeys,
 } from "./status/projectStatus.logic";
 import {
   applyStatusReplyTag,
   restoreStatusReplyPrompts,
-  statusReplyTagChanged,
+  statusReplyTagDrift,
   statusReplyTagFor,
   useStatusReplyStore,
   useStatusReplyTag,
@@ -563,6 +565,7 @@ import {
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROJECT_STATUSES: ReadonlyArray<ProjectStatus> = [];
+const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
@@ -4768,6 +4771,12 @@ export default function ChatView(props: ChatViewProps) {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "status");
   }, [activeThreadRef]);
   const statusReplyTag = useStatusReplyTag(statusBoardEnabled ? activeThreadKey : null);
+  // "Go with recommendation" messages already in the thread, by question version.
+  const sentStatusRecommendations = useMemo(
+    () => (statusBoardEnabled ? sentRecommendationKeys(timelineMessages) : EMPTY_KEY_SET),
+    [statusBoardEnabled, timelineMessages],
+  );
+  const recommendationsInFlightRef = useRef(new Set<string>());
   const startStatusReply = useCallback(
     (status: ProjectStatus, prefillWhenEmpty?: string) => {
       if (!activeThreadKey) return;
@@ -4794,7 +4803,12 @@ export default function ChatView(props: ChatViewProps) {
       const decision = status.decision;
       if (!activeThreadKey || decision === undefined || decision.answeredAt !== undefined) return;
       const queue = useQueuedMessageStore.getState().queuesByThreadKey[activeThreadKey] ?? [];
-      if (isRecommendationQueued(queue, status)) return;
+      if (isRecommendationPending({ status, queue, sentKeys: sentStatusRecommendations })) return;
+      // The queue hands the message to the send before it shows in the thread;
+      // a click in that gap must not queue a second one.
+      const key = recommendationKey(status, decision);
+      if (recommendationsInFlightRef.current.has(key) && sendInFlightRef.current) return;
+      recommendationsInFlightRef.current.add(key);
       useQueuedMessageStore.getState().enqueue(activeThreadKey, {
         prompt: recommendationReplyText(status, decision),
         images: [],
@@ -4807,7 +4821,7 @@ export default function ChatView(props: ChatViewProps) {
         createdAt: new Date().toISOString(),
       });
     },
-    [activeThreadKey, threadActivities],
+    [activeThreadKey, sentStatusRecommendations, threadActivities],
   );
   const statusComposerBannerItem = useStatusComposerBanner({
     enabled: statusBoardEnabled,
@@ -4822,7 +4836,7 @@ export default function ChatView(props: ChatViewProps) {
       statusReplyTag === null ? null : (
         <StatusReplyChip
           title={statusReplyTag.title}
-          questionChanged={statusReplyTagChanged(statusReplyTag, projectStatuses)}
+          drift={statusReplyTagDrift(statusReplyTag, projectStatuses)}
           onRemove={clearStatusReply}
         />
       ),
@@ -7458,6 +7472,7 @@ export default function ChatView(props: ChatViewProps) {
       ? restoreStatusReplyPrompts(
           messages.map((message) => message.prompt),
           liveTag,
+          promptRef.current.trim().length === 0,
         )
       : { prompts: messages.map((message) => message.prompt), tag: null };
     if (restoredReplies.tag !== null && activeThreadKey) {
@@ -9969,6 +9984,7 @@ export default function ChatView(props: ChatViewProps) {
         onReply={startStatusReply}
         onAskForUpdate={askStatusUpdate}
         onGoWithRecommendation={goWithStatusRecommendation}
+        sentRecommendations={sentStatusRecommendations}
       />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
