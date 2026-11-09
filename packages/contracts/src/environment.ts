@@ -162,6 +162,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       timeZone: TrimmedNonEmptyString,
     }),
   ),
+  /** Server stores the coordinator's Status board (`statuses` on the assistant marker).
+      Absent on older and upstream servers, so clients hide the Status panel. */
+  projectStatus: Schema.optionalKey(Schema.Boolean),
   /** Server understands regenerateTitle on thread.meta.update. Absent on
       older servers, so clients hide the action instead of sending it. */
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),

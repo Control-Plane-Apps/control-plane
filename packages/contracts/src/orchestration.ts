@@ -30,6 +30,7 @@ import {
   ProjectScheduleId,
   ProjectScheduleRun,
 } from "./assistants.ts";
+import { ProjectStatus, ProjectStatusChange, ProjectStatusId } from "./projectStatus.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   PullRequestActor,
@@ -1794,7 +1795,30 @@ const ProjectScheduleAgentChangeCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** One coordinator write to the Status board, from `cp_status_set`. Server only. */
+const ProjectStatusSetCommand = Schema.Struct({
+  type: Schema.Literal("project.status.set"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  actorThreadId: ThreadId,
+  change: ProjectStatusChange,
+  createdAt: IsoDateTime,
+});
+
+/** Marks a decision's deadline reminder delivered. Server only. */
+const ProjectStatusRemindCommand = Schema.Struct({
+  type: Schema.Literal("project.status.remind"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  statusId: ProjectStatusId,
+  /** The decision version the reminder was for; a newer version refuses it. */
+  openedAt: IsoDateTime,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  ProjectStatusSetCommand,
+  ProjectStatusRemindCommand,
   ProjectScheduleRecordCommand,
   ProjectScheduleAgentChangeCommand,
   ThreadAutoSettleCommand,
@@ -1830,6 +1854,7 @@ export const OrchestrationEventType = Schema.Literals([
   "project.meta-updated",
   "project.deleted",
   "project.schedule-run-recorded",
+  "project.status-updated",
   "thread.created",
   "thread.deleted",
   "thread.archived",
@@ -1908,6 +1933,13 @@ export const ProjectScheduleRunRecordedPayload = Schema.Struct({
   projectId: ProjectId,
   scheduleId: ProjectScheduleId,
   run: ProjectScheduleRun,
+});
+
+/** One Status record written or removed (`status: null`). Leaves the Project's `updatedAt` alone. */
+export const ProjectStatusUpdatedPayload = Schema.Struct({
+  projectId: ProjectId,
+  statusId: ProjectStatusId,
+  status: Schema.NullOr(ProjectStatus),
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
@@ -2204,6 +2236,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("project.schedule-run-recorded"),
     payload: ProjectScheduleRunRecordedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("project.status-updated"),
+    payload: ProjectStatusUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

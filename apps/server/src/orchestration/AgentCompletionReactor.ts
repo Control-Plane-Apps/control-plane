@@ -24,6 +24,7 @@ import {
   MessageId,
   canManageAgent,
   isScheduleMessageId,
+  isStatusMessageId,
   type OrchestrationEvent,
   type OrchestrationThreadActivityTone,
   type ProjectAssistant,
@@ -430,7 +431,8 @@ export const make = Effect.gen(function* () {
           : enqueueThreadProject(event.payload.threadId, false);
       case "thread.message-sent":
         return event.payload.messageId.startsWith(AGENT_SEND_MESSAGE_PREFIX) ||
-          isScheduleMessageId(event.payload.messageId)
+          isScheduleMessageId(event.payload.messageId) ||
+          isStatusMessageId(event.payload.messageId)
           ? enqueueThreadProject(event.payload.threadId, true)
           : Effect.void;
       case "thread.activity-appended":

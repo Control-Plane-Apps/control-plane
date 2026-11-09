@@ -858,6 +858,7 @@ const makeWsRpcLayer = (
           case "project.created":
           case "project.meta-updated":
           case "project.schedule-run-recorded":
+          case "project.status-updated":
             return projectUpsertOrRemove(ProjectId.make(event.aggregateId), event.sequence);
           case "project.deleted":
             return Effect.succeed(

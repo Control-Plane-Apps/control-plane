@@ -1,6 +1,11 @@
 import {
   IsoDateTime,
   McpCapabilityUnavailableError,
+  PROJECT_STATUS_LINE_MAX,
+  PROJECT_STATUS_TITLE_MAX,
+  ProjectStatus,
+  ProjectStatusId,
+  ProjectStatusState,
   PROJECT_SCHEDULE_NAME_MAX,
   PROJECT_SCHEDULE_PROMPT_MAX,
   ProjectScheduleActor,
@@ -185,6 +190,22 @@ export const ScheduleToolError = Schema.Union([
   AgentToolFailedError,
 ]);
 export type ScheduleToolError = typeof ScheduleToolError.Type;
+
+export class StatusCoordinatorOnlyError extends Schema.TaggedError<StatusCoordinatorOnlyError>()(
+  "StatusCoordinatorOnlyError",
+  {},
+) {
+  override get message(): string {
+    return "Only the Project's coordinator can read or write Status.";
+  }
+}
+
+export const StatusToolError = Schema.Union([
+  McpCapabilityUnavailableError,
+  StatusCoordinatorOnlyError,
+  AgentToolFailedError,
+]);
+export type StatusToolError = typeof StatusToolError.Type;
 
 const AgentRef = TrimmedNonEmptyString.annotate({
   description: "The agent's threadId (preferred) or its exact title.",
@@ -411,6 +432,86 @@ export const ScheduleDeleteResult = Schema.Struct({
 });
 export type ScheduleDeleteResult = typeof ScheduleDeleteResult.Type;
 
+const StatusLine = Schema.String.annotate({
+  description: `At most ${PROJECT_STATUS_LINE_MAX} characters.`,
+});
+
+export const StatusSetInput = Schema.Struct({
+  id: ProjectStatusId.annotate({
+    description:
+      'The workstream\'s stable id: 1-40 lowercase letters, digits or hyphens, such as "payouts". Reuse it for every update.',
+  }),
+  title: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description: `A short name, at most ${PROJECT_STATUS_TITLE_MAX} characters, unique in the Project. Required for a new workstream.`,
+    }),
+  ),
+  state: Schema.optional(
+    ProjectStatusState.annotate({
+      description:
+        "working, done, queued, or needs-you. A question always makes it needs-you; clearing one returns it to working unless you pass a state.",
+    }),
+  ),
+  summary: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description: `First line: where it stands. Required for a new workstream. At most ${PROJECT_STATUS_LINE_MAX} characters.`,
+    }),
+  ),
+  detail: Schema.optional(
+    StatusLine.annotate({
+      description: "Optional second line: what is still moving or what is not. Empty removes it.",
+    }),
+  ),
+  agents: Schema.optional(
+    Schema.Array(ThreadId).annotate({
+      description:
+        "threadIds of the agents on this workstream (at most 8). The panel shows their live state. An empty list removes them.",
+    }),
+  ),
+  question: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description:
+        "A decision only the user can make, phrased as a question. Needs a recommendation.",
+    }),
+  ),
+  recommendation: Schema.optional(
+    TrimmedNonEmptyString.annotate({ description: "What you recommend, in a short phrase." }),
+  ),
+  ifNoReply: Schema.optional(
+    StatusLine.annotate({
+      description:
+        'What you will do if the deadline passes without a reply, such as "keep waiting and ask again". A passed deadline only reminds you; silence never authorizes an action.',
+    }),
+  ),
+  deadline: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "ISO date-time by which you need the answer, in the future. Empty removes it. When it passes you get one reminder.",
+    }),
+  ),
+  clearDecision: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "true once the user has answered: removes the question.",
+    }),
+  ),
+  remove: Schema.optional(
+    Schema.Boolean.annotate({ description: "true removes the workstream from the board." }),
+  ),
+});
+export type StatusSetInput = typeof StatusSetInput.Type;
+
+export const StatusSetResult = Schema.Struct({
+  id: Schema.String,
+  status: Schema.NullOr(ProjectStatus).annotate({
+    description: "The saved record, or null once removed.",
+  }),
+  needsYou: Schema.Int.annotate({ description: "Workstreams now waiting on the user." }),
+});
+export type StatusSetResult = typeof StatusSetResult.Type;
+
+export const StatusListResult = Schema.Struct({ statuses: Schema.Array(ProjectStatus) });
+export type StatusListResult = typeof StatusListResult.Type;
+
 const AgentCreateTool = Tool.make("cp_agent_create", {
   description:
     "Start an agent in this Project with a first message. Its final message comes back to you, and it stays available for follow-ups. Only the coordinator settles a one-off agent with cp_agent_settle once its work is complete and no follow-ups remain. It may run on another linked machine, per the user's settings.",
@@ -532,6 +633,32 @@ const ScheduleDeleteTool = Tool.make("cp_schedule_delete", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const StatusListTool = Tool.make("cp_status_list", {
+  description: "List this Project's Status board: one record per workstream.",
+  success: StatusListResult,
+  failure: StatusToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "List status")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const StatusSetTool = Tool.make("cp_status_set", {
+  description:
+    "Create, update or remove one workstream on the Project's Status board, which the user reads to see where everything stands and what needs them. Omitted fields keep their value; every call marks the record fresh. Put a decision only the user can make on the workstream it blocks, with your recommendation; clear it once they answer.",
+  parameters: StatusSetInput,
+  success: StatusSetResult,
+  failure: StatusToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Set status")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const AgentsToolkit = Toolkit.make(
   AgentCreateTool,
   AgentListTool,
@@ -542,4 +669,6 @@ export const AgentsToolkit = Toolkit.make(
   ScheduleCreateTool,
   ScheduleUpdateTool,
   ScheduleDeleteTool,
+  StatusListTool,
+  StatusSetTool,
 );

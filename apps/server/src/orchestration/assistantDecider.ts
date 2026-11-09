@@ -274,6 +274,8 @@ export const decideAssistantMetaUpdate = Effect.fn("decideAssistantMetaUpdate")(
       coordinatorThreadId,
       ...(formerTitle !== undefined ? { formerTitle } : {}),
       ...(archivedAt !== undefined ? { archivedAt } : {}),
+      // Users never write Status; the coordinator's board survives meta updates.
+      ...(current?.statuses !== undefined ? { statuses: current.statuses } : {}),
       ...(yield* mergeSchedules({
         readModel,
         projectId: command.projectId,

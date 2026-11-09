@@ -90,6 +90,7 @@ import { RemoteAgentBridgeLive } from "./agentMachines/RemoteAgentBridge.ts";
 import { RemoteAgentsLive } from "./agentMachines/RemoteAgents.ts";
 import { RemoteAgentStoreLive } from "./agentMachines/RemoteAgentStore.ts";
 import * as AgentCompletionReactor from "./orchestration/AgentCompletionReactor.ts";
+import * as StatusDeadlineReactor from "./orchestration/StatusDeadlineReactor.ts";
 import * as ScheduleHost from "./schedules/ScheduleHost.ts";
 import * as ScheduleRunner from "./schedules/ScheduleRunner.ts";
 import * as ScheduleService from "./schedules/ScheduleService.ts";
@@ -270,6 +271,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ScheduleService.layer),
   Layer.provideMerge(ScheduleHost.layer),
   Layer.provideMerge(ScheduleRunner.layer),
+  Layer.provideMerge(StatusDeadlineReactor.layer),
   Layer.provideMerge(PullRequestSyncReactor.layer),
   Layer.provideMerge(ThreadPullRequestReactor.layer),
   Layer.provideMerge(

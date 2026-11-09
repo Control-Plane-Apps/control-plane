@@ -8,6 +8,7 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas.ts";
+import { ProjectStatus } from "./projectStatus.ts";
 
 // Fork-owned. Imports only baseSchemas so orchestration.ts can import this
 // module without a cycle.
@@ -91,6 +92,8 @@ export const ProjectAssistant = Schema.Struct({
   schedulePrompts: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** Last run per schedule id. */
   scheduleRuns: Schema.optional(Schema.Record(Schema.String, ProjectScheduleRun)),
+  /** The Status board, written by the coordinator. */
+  statuses: Schema.optional(Schema.Array(ProjectStatus)),
 });
 export type ProjectAssistant = typeof ProjectAssistant.Type;
 

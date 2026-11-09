@@ -8,6 +8,7 @@ import {
   isAgentPushMessageId,
   isImportedAgentSessionMessageId,
   isScheduleMessageId,
+  isStatusMessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -58,6 +59,7 @@ import {
 import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 import { projectEvent } from "./projector.ts";
 import { decideAgentScheduleChange, decideScheduleRecord } from "./scheduleDecider.ts";
+import { decideStatusRemind, decideStatusSet } from "./statusDecider.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 
 const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -446,6 +448,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "project.schedule.agent-change":
       return yield* decideAgentScheduleChange(readModel, command);
+
+    case "project.status.set":
+      return yield* decideStatusSet(readModel, command);
+
+    case "project.status.remind":
+      return yield* decideStatusRemind(readModel, command);
 
     case "thread.create": {
       yield* requireProject({
@@ -1571,7 +1579,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         targetThread.snoozedUntil != null &&
         !isAgentPushMessageId(command.message.messageId) &&
-        !isScheduleMessageId(command.message.messageId)
+        !isScheduleMessageId(command.message.messageId) &&
+        !isStatusMessageId(command.message.messageId)
       ) {
         lifecycleResetEvents.push({
           ...(yield* withEventBase({

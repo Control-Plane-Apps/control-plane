@@ -72,6 +72,8 @@ function commandToAggregateRef(command: OrchestrationCommand): {
     case "project.delete":
     case "project.schedule.record":
     case "project.schedule.agent-change":
+    case "project.status.set":
+    case "project.status.remind":
       return {
         aggregateKind: "project",
         aggregateId: command.projectId,

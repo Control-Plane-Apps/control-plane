@@ -62,6 +62,7 @@ import {
   stricterRuntimeMode,
 } from "./agentScope.ts";
 import { makeScheduleHandlers } from "./scheduleHandlers.ts";
+import { makeStatusHandlers } from "./statusHandlers.ts";
 import {
   AgentAmbiguousError,
   AgentBusyError,
@@ -111,6 +112,7 @@ const make = Effect.gen(function* () {
   // Serializes creates so two calls cannot both pass the running cap.
   const createLock = yield* Semaphore.make(1);
   const scheduleHandlers = yield* makeScheduleHandlers;
+  const statusHandlers = yield* makeStatusHandlers;
   const remote = yield* RemoteAgents;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -343,6 +345,7 @@ const make = Effect.gen(function* () {
 
   return AgentsToolkit.of({
     ...scheduleHandlers,
+    ...statusHandlers,
     cp_agent_create: (input) =>
       Effect.gen(function* () {
         const manager = yield* requireManager();
