@@ -281,13 +281,14 @@ export const decideStatusDeadline = Effect.fn("decideStatusDeadline")(function* 
   if (decision.deadlineHandled !== undefined || decision.answeredAt !== undefined) {
     return yield* invariant(command.type, "That deadline no longer needs handling.");
   }
-  if (command.outcome === "accepted" && !isAutoAcceptArmed(decision)) {
-    return yield* invariant(command.type, "The user has not opted in to this recommendation.");
-  }
+  // An opt-in withdrawn after the sweep read it turns the answer into a
+  // reminder. The reactor sends the message for whatever outcome is stored.
+  const outcome =
+    command.outcome === "accepted" && !isAutoAcceptArmed(decision) ? "reminded" : command.outcome;
   // Keeps updatedAt: handling a deadline is not the coordinator checking in.
   return yield* statusEvent(command, status.id, {
     ...status,
-    decision: { ...decision, deadlineHandled: { at: command.createdAt, outcome: command.outcome } },
+    decision: { ...decision, deadlineHandled: { at: command.createdAt, outcome } },
   });
 });
 
@@ -306,8 +307,12 @@ export const decideStatusAutomate = Effect.fn("decideStatusAutomate")(function* 
   const found = decisionAt(readModel, command);
   if (typeof found === "string") return yield* invariant(command.type, found);
   const { status, decision } = found;
-  if (command.enabled && decision.deadline === undefined) {
-    return yield* invariant(command.type, "This decision has no deadline to act at.");
+  if (
+    command.enabled &&
+    (decision.deadline === undefined ||
+      Date.parse(decision.deadline) <= Date.parse(command.createdAt))
+  ) {
+    return yield* invariant(command.type, "This decision has no deadline still ahead to act at.");
   }
   if (decision.deadlineHandled !== undefined || decision.answeredAt !== undefined) {
     return yield* invariant(command.type, "This decision is no longer waiting on its deadline.");

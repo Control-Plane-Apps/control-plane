@@ -86,6 +86,14 @@ export function describeDecisionDeadline(
   if (decision.deadlineHandled?.outcome === "accepted") {
     return { text: "Recommendation sent at the deadline.", tone: "handled" };
   }
+  // Armed and past due: the server's sweep is about to send it.
+  if (
+    decision.deadlineHandled === undefined &&
+    isDeadlineOverdue(deadline, nowMs) &&
+    isAutoAcceptArmed(decision)
+  ) {
+    return { text: "Sending the recommendation now.", tone: "handled" };
+  }
   if (decision.deadlineHandled?.outcome === "reminded" || isDeadlineOverdue(deadline, nowMs)) {
     return { text: "Deadline passed, still waiting on you.", tone: "overdue" };
   }
@@ -165,10 +173,25 @@ export function recommendationReplyText(title: string, recommendation: string): 
   return statusReplyText(title, `Go with your recommendation: ${recommendation}`);
 }
 
-/** Identity of one version of a decision, for the "already sent" guard. */
+/** Identity of one version of a decision, for toggles in flight. */
 export function decisionKey(
   status: Pick<ProjectStatus, "id">,
   decision: Pick<ProjectStatusDecision, "openedAt">,
 ): string {
   return `${status.id}@${decision.openedAt}`;
+}
+
+/**
+ * Whether this decision's "Go with recommendation" is still waiting in the
+ * composer queue. Derived from the queue itself, so a removed, restored or
+ * failed message frees the button again.
+ */
+export function isRecommendationQueued(
+  queue: ReadonlyArray<{ readonly prompt: string }>,
+  status: Pick<ProjectStatus, "title" | "decision">,
+): boolean {
+  const decision = status.decision;
+  if (decision === undefined || decision.answeredAt !== undefined) return false;
+  const text = recommendationReplyText(status.title, decision.recommendation);
+  return queue.some((message) => message.prompt === text);
 }

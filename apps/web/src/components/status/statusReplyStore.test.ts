@@ -3,11 +3,12 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   applyStatusReplyTag,
   mergeStatusReplyState,
+  restoreStatusReplyPrompts,
   useStatusReplyStore,
 } from "./statusReplyStore";
 
 describe("statusReplyStore", () => {
-  beforeEach(() => useStatusReplyStore.setState({ tagsByThreadKey: {}, pendingDecisions: [] }));
+  beforeEach(() => useStatusReplyStore.setState({ tagsByThreadKey: {} }));
 
   it("keeps one Re: tag per thread and clears only that thread's", () => {
     const store = useStatusReplyStore.getState();
@@ -18,15 +19,6 @@ describe("statusReplyStore", () => {
     expect(useStatusReplyStore.getState().tagsByThreadKey).toEqual({
       "env:coordinator-b": "Navigation copy",
     });
-  });
-
-  it("holds a recommendation click once until the server marks it answered", () => {
-    const store = useStatusReplyStore.getState();
-    store.markDecisionPending("env:coordinator-a", "payouts@1");
-    store.markDecisionPending("env:coordinator-a", "payouts@1");
-    expect(useStatusReplyStore.getState().pendingDecisions).toEqual([
-      "env:coordinator-a|payouts@1",
-    ]);
   });
 
   it("restores a persisted tag after reload and drops malformed entries", () => {
@@ -47,5 +39,19 @@ describe("statusReplyStore", () => {
     expect(applyStatusReplyTag("Pilot with three.", "Payouts")).toBe(
       "Re: Payouts\n\nPilot with three.",
     );
+  });
+
+  it("turns a restored queued reply back into a tag instead of a second header", () => {
+    expect(
+      restoreStatusReplyPrompts(["Re: Payouts\n\nPilot with three.", "And ship it."], null),
+    ).toEqual({ prompts: ["Pilot with three.", "And ship it."], tag: "Payouts" });
+    // A live tag stays; the restored body joins without its header.
+    expect(
+      restoreStatusReplyPrompts(["Re: Payouts\n\nPilot with three."], "Navigation copy"),
+    ).toEqual({ prompts: ["Pilot with three."], tag: null });
+    expect(restoreStatusReplyPrompts(["Plain text."], null)).toEqual({
+      prompts: ["Plain text."],
+      tag: null,
+    });
   });
 });

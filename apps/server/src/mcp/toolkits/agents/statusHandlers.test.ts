@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -488,15 +489,17 @@ describe("StatusDeadlineReactor", () => {
   );
 
   const automate = (enabled: boolean, openedAt = NOW) =>
-    dispatch({
-      type: "project.status.automate",
-      commandId: nextCommandId(),
-      projectId: PROJECT_ID,
-      statusId: "payouts",
-      openedAt,
-      enabled,
-      createdAt: NOW,
-    });
+    Effect.flatMap(DateTime.now, (now) =>
+      dispatch({
+        type: "project.status.automate",
+        commandId: nextCommandId(),
+        projectId: PROJECT_ID,
+        statusId: "payouts",
+        openedAt,
+        enabled,
+        createdAt: DateTime.formatIso(now),
+      }),
+    );
 
   it.effect("sends the recommendation as the answer only when the user opted in", () =>
     withSeededEngine(
@@ -621,11 +624,28 @@ describe("StatusDeadlineReactor", () => {
           createdAt: THURSDAY,
         });
         expect(yield* answeredAt).toBeUndefined();
+
+        // A tagged user append replays idempotently.
+        yield* tools.set(COORDINATOR, { id: "payouts", question: "Which four?" });
+        const append = dispatch({
+          type: "thread.message.user.append",
+          commandId: CommandId.make("tagged-append"),
+          threadId: COORDINATOR,
+          message: {
+            messageId: MessageId.make("tagged-append"),
+            text: "Re: Payouts\n\nThe four on Stripe.",
+            attachments: [],
+          },
+          createdAt: THURSDAY,
+        });
+        const first = yield* append;
+        expect(yield* append).toEqual(first);
+        expect(yield* answeredAt).toBeDefined();
       }),
     ),
   );
 
-  it.effect("reminds instead when a refused auto-accept left a rejected receipt", () =>
+  it.effect("turns an opt-in withdrawn mid-sweep into a reminder, and keeps others moving", () =>
     withSeededEngine(
       Effect.gen(function* () {
         const tools = yield* statusTools;
@@ -644,9 +664,14 @@ describe("StatusDeadlineReactor", () => {
           openedAt: NOW,
           outcome: "accepted",
           createdAt: THURSDAY,
-        }).pipe(Effect.flip);
+        });
+        // Opting back in once the deadline was handled is refused.
+        const late = yield* automate(true).pipe(Effect.flip);
+        expect(late.message).toContain("no deadline still ahead");
 
         yield* reactor.sweep;
+        const [sent] = yield* reminders;
+        expect(sent?.text).toContain("This is a reminder, not an answer.");
         for (const [projectId, id] of [
           [PROJECT_ID, "payouts"],
           [OTHER_PROJECT_ID, "launch"],

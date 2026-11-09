@@ -1,4 +1,4 @@
-import { statusReplyText } from "@t3tools/contracts";
+import { parseStatusReply, statusReplyText } from "@t3tools/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -7,21 +7,15 @@ import { resolveStorage } from "../../lib/storage";
 /**
  * The coordinator composer's "Re: <workstream>" tag, per thread, persisted so
  * a reload keeps it; the draft text itself stays in the composer draft store.
- * Also the "Go with recommendation" clicks still on their way, session only:
- * once the server marks the decision answered, `answeredAt` takes over.
  */
 export const STATUS_REPLY_STORAGE_KEY = "t3code:status-reply:v1";
 const MAX_TAGS = 100;
-const MAX_PENDING_DECISIONS = 200;
 
 export interface StatusReplyState {
   /** Workstream title per thread key. */
   tagsByThreadKey: Record<string, string>;
-  /** `${threadKey}|${decisionKey}` for recommendations sent from here, not yet answered. */
-  pendingDecisions: string[];
   setTag: (threadKey: string, title: string) => void;
   clearTag: (threadKey: string) => void;
-  markDecisionPending: (threadKey: string, decisionKey: string) => void;
 }
 
 function boundedRecord(record: Record<string, string>, max: number): Record<string, string> {
@@ -33,7 +27,6 @@ export const useStatusReplyStore = create<StatusReplyState>()(
   persist(
     (set) => ({
       tagsByThreadKey: {},
-      pendingDecisions: [],
       setTag: (threadKey, title) =>
         set((state) => {
           if (state.tagsByThreadKey[threadKey] === title) return state;
@@ -45,14 +38,6 @@ export const useStatusReplyStore = create<StatusReplyState>()(
           if (!(threadKey in state.tagsByThreadKey)) return state;
           const { [threadKey]: _removed, ...rest } = state.tagsByThreadKey;
           return { tagsByThreadKey: rest };
-        }),
-      markDecisionPending: (threadKey, decisionKey) =>
-        set((state) => {
-          const key = `${threadKey}|${decisionKey}`;
-          if (state.pendingDecisions.includes(key)) return state;
-          return {
-            pendingDecisions: [...state.pendingDecisions, key].slice(-MAX_PENDING_DECISIONS),
-          };
         }),
     }),
     {
@@ -92,4 +77,23 @@ export function useStatusReplyTag(threadKey: string | null): string | null {
 /** The text a send carries: the composer text, prefixed when a Re: tag is set. */
 export function applyStatusReplyTag(text: string, title: string | null): string {
   return title === null ? text : statusReplyText(title, text);
+}
+
+/**
+ * Queued prompts going back into the composer: their Re: headers come off,
+ * and the first one becomes the tag when none is live. With a live tag the
+ * bodies join untagged, so a send never carries two headers.
+ */
+export function restoreStatusReplyPrompts(
+  prompts: ReadonlyArray<string>,
+  liveTag: string | null,
+): { readonly prompts: string[]; readonly tag: string | null } {
+  let tag: string | null = null;
+  const bodies = prompts.map((prompt) => {
+    const reply = parseStatusReply(prompt);
+    if (reply === null) return prompt;
+    if (liveTag === null && tag === null) tag = reply.title;
+    return reply.body;
+  });
+  return { prompts: bodies, tag };
 }

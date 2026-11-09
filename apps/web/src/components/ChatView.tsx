@@ -227,11 +227,12 @@ import { ProjectStatusPanel } from "./status/ProjectStatusPanel";
 import { StatusReplyChip, useStatusComposerBanner } from "./status/StatusComposerStrip";
 import {
   ASK_FOR_UPDATE_PROMPT,
-  decisionKey,
+  isRecommendationQueued,
   recommendationReplyText,
 } from "./status/projectStatus.logic";
 import {
   applyStatusReplyTag,
+  restoreStatusReplyPrompts,
   useStatusReplyStore,
   useStatusReplyTag,
 } from "./status/statusReplyStore";
@@ -4790,10 +4791,8 @@ export default function ChatView(props: ChatViewProps) {
     (status: ProjectStatus) => {
       const decision = status.decision;
       if (!activeThreadKey || decision === undefined || decision.answeredAt !== undefined) return;
-      const store = useStatusReplyStore.getState();
-      const key = decisionKey(status, decision);
-      if (store.pendingDecisions.includes(`${activeThreadKey}|${key}`)) return;
-      store.markDecisionPending(activeThreadKey, key);
+      const queue = useQueuedMessageStore.getState().queuesByThreadKey[activeThreadKey] ?? [];
+      if (isRecommendationQueued(queue, status)) return;
       useQueuedMessageStore.getState().enqueue(activeThreadKey, {
         prompt: recommendationReplyText(status.title, decision.recommendation),
         images: [],
@@ -7444,7 +7443,21 @@ export default function ChatView(props: ChatViewProps) {
   // send. Prompts join with blank lines; attachments and contexts are added.
   const restoreQueuedMessagesToComposer = (messages: ReadonlyArray<QueuedComposerMessage>) => {
     if (messages.length === 0) return;
-    const prompts = [promptRef.current, ...messages.map((message) => message.prompt)]
+    // A queued reply carries its Re: header in the text; it goes back to being a tag.
+    const liveTag =
+      statusBoardEnabled && activeThreadKey
+        ? (useStatusReplyStore.getState().tagsByThreadKey[activeThreadKey] ?? null)
+        : null;
+    const restoredReplies = statusBoardEnabled
+      ? restoreStatusReplyPrompts(
+          messages.map((message) => message.prompt),
+          liveTag,
+        )
+      : { prompts: messages.map((message) => message.prompt), tag: null };
+    if (restoredReplies.tag !== null && activeThreadKey) {
+      useStatusReplyStore.getState().setTag(activeThreadKey, restoredReplies.tag);
+    }
+    const prompts = [promptRef.current, ...restoredReplies.prompts]
       .map((prompt) => prompt.trim())
       .filter((prompt) => prompt.length > 0);
     const nextPrompt = prompts.join("\n\n");
@@ -7758,6 +7771,11 @@ export default function ChatView(props: ChatViewProps) {
 
       return;
     }
+    // The composer's "Re: <workstream>" tag rides on the live draft only.
+    const statusReplyTitleForSend =
+      !queuedMessage && !directAnnotation && statusBoardEnabled && activeThreadKey
+        ? (useStatusReplyStore.getState().tagsByThreadKey[activeThreadKey] ?? null)
+        : null;
     if (
       !directAnnotation &&
       !queuedMessage &&
@@ -7767,10 +7785,14 @@ export default function ChatView(props: ChatViewProps) {
       composerImages.length === 0 &&
       composerFiles.length === 0
     ) {
-      const followUp = resolvePlanFollowUpSubmission({
+      const resolvedFollowUp = resolvePlanFollowUpSubmission({
         draftText: promptForSend,
         planMarkdown: activeProposedPlan.planMarkdown,
       });
+      const followUp = {
+        ...resolvedFollowUp,
+        text: applyStatusReplyTag(resolvedFollowUp.text.trim(), statusReplyTitleForSend),
+      };
       const outgoingFollowUpText = formatOutgoingPrompt({
         provider: ctxSelectedProvider,
         model: ctxSelectedModel,
@@ -7791,6 +7813,7 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
+      if (statusReplyTitleForSend !== null) clearStatusReply();
       const followUpSent = await onSubmitPlanFollowUp({
         text: followUp.text,
         context: buildMessageContext({
@@ -7802,6 +7825,9 @@ export default function ChatView(props: ChatViewProps) {
       });
       if (!followUpSent) {
         promptRef.current = followUpPromptSnapshot;
+        if (statusReplyTitleForSend !== null && activeThreadKey) {
+          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTitleForSend);
+        }
         composerTerminalContextsRef.current = [...followUpTerminalContexts];
         restorePlanFollowUpComposer({
           snapshot: {
@@ -7871,11 +7897,6 @@ export default function ChatView(props: ChatViewProps) {
       );
       return;
     }
-    // The composer's "Re: <workstream>" tag rides on the live draft only.
-    const statusReplyTitleForSend =
-      !queuedMessage && !directAnnotation && statusBoardEnabled && activeThreadKey
-        ? (useStatusReplyStore.getState().tagsByThreadKey[activeThreadKey] ?? null)
-        : null;
     if (
       !queuedMessage &&
       !directAnnotation &&

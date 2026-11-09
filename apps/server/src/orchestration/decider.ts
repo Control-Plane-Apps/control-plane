@@ -1671,7 +1671,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         commandId: command.commandId,
         createdAt: command.createdAt,
       });
-      return statusReplies.length === 0 ? appended : [appended, ...statusReplies];
+      // The command's own event goes last: its receipt records the last event's aggregate.
+      return statusReplies.length === 0 ? appended : [...statusReplies, appended];
     }
 
     case "thread.turn.interrupt": {

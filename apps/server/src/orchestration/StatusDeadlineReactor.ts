@@ -33,14 +33,24 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 import { forkParked } from "../serverActivation.ts";
-import { isOrchestrationCommandRejection } from "./Errors.ts";
+import {
+  isOrchestrationCommandRejection,
+  OrchestrationCommandIdConflictError,
+  OrchestrationCommandPreviouslyRejectedError,
+} from "./Errors.ts";
 import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
+
+const isPreviouslyRejected = Schema.is(OrchestrationCommandPreviouslyRejectedError);
+const isIdConflict = Schema.is(OrchestrationCommandIdConflictError);
+const isSettledReplay = (error: unknown) => isPreviouslyRejected(error) || isIdConflict(error);
 
 export class StatusDeadlineReactor extends Context.Service<
   StatusDeadlineReactor,
@@ -207,12 +217,11 @@ export const make = Effect.gen(function* () {
     const ids = { projectId: entry.projectId, statusId: entry.status.id };
     const messageId = statusReminderMessageId(entry.projectId, entry.status.id, decision.openedAt);
     // Record first: the decider re-checks the opt-in against the stored
-    // version, so a decision changed since this sweep read it sends nothing.
+    // version and turns a withdrawn one into a reminder, so the message goes
+    // out for the outcome it stored, never the one this sweep guessed.
     const recorded = yield* engine
       .dispatch({
         type: "project.status.deadline",
-        // Per outcome: a refused `accepted` (the user opted out meanwhile)
-        // must not make the `reminded` retry look like a replay.
         commandId: CommandId.make(`${messageId}:handled:${outcome}`),
         projectId: entry.projectId,
         statusId: entry.status.id,
@@ -227,21 +236,36 @@ export const make = Effect.gen(function* () {
         ),
       );
     if (!recorded) return;
-    yield* sendDeadlineMessage(entry, outcome, createdAt);
+    const stored = Option.getOrUndefined(
+      yield* projects.getById({ projectId: entry.projectId }),
+    )?.assistant?.statuses?.find((status) => status.id === entry.status.id);
+    const handled = stored?.decision?.deadlineHandled;
+    if (stored === undefined || handled === undefined) return;
+    yield* sendDeadlineMessage({ ...entry, status: stored }, handled.outcome, handled.at);
   });
 
   /** One decision's failure never holds up another's. */
   const isolated = <E, R>(entry: DueDeadline, effect: Effect.Effect<void, E, R>) =>
     effect.pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.failCause(cause)
-          : Effect.logWarning("status deadline step failed", {
-              projectId: entry.projectId,
-              statusId: entry.status.id,
-              cause: Cause.pretty(cause),
-            }),
-      ),
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+        const ids = { projectId: entry.projectId, statusId: entry.status.id };
+        const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+        // A replayed id is settled for good (sent before, or its coordinator
+        // was replaced); anything else is retried on the next tick.
+        return isSettledReplay(error)
+          ? Effect.logDebug("status deadline step already settled", ids)
+          : Effect.sync(() => {
+              dirty = true;
+            }).pipe(
+              Effect.andThen(
+                Effect.logWarning("status deadline step failed", {
+                  ...ids,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            );
+      }),
     );
 
   const sweepOnce = Effect.fn("StatusDeadlineReactor.sweep")(function* (force: boolean) {

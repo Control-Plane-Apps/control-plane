@@ -39,10 +39,11 @@ import {
   describeLiveAgent,
   formatDeadlineShort,
   formatStatusAge,
+  isRecommendationQueued,
   isStatusStale,
   statusCountLine,
 } from "./projectStatus.logic";
-import { useStatusReplyStore } from "./statusReplyStore";
+import { useQueuedMessages } from "../../queuedMessageStore";
 
 const MINUTE_MS = 60_000;
 
@@ -125,7 +126,7 @@ function ProjectStatusPanelContent(
     [threads],
   );
   const threadKey = scopedThreadKey(threadRef);
-  const pendingDecisions = useStatusReplyStore((state) => state.pendingDecisions);
+  const queuedMessages = useQueuedMessages(threadKey);
   const automateStatus = useAtomCommand(projectEnvironment.automateStatus, {
     reportFailure: false,
   });
@@ -193,11 +194,7 @@ function ProjectStatusPanelContent(
                 key={status.id}
                 status={status}
                 now={now}
-                sending={
-                  status.decision !== undefined &&
-                  status.decision.answeredAt === undefined &&
-                  pendingDecisions.includes(`${threadKey}|${decisionKey(status, status.decision)}`)
-                }
+                sending={isRecommendationQueued(queuedMessages, status)}
                 automating={
                   status.decision !== undefined &&
                   automating.has(decisionKey(status, status.decision))
@@ -350,7 +347,7 @@ function StatusRow(props: {
                 disabled={props.sending}
                 onClick={() => actions.onGoWithRecommendation(status)}
               >
-                {props.sending ? "Sending..." : "Go with recommendation"}
+                {props.sending ? "Queued" : "Go with recommendation"}
               </Button>
             ) : null}
             <Button

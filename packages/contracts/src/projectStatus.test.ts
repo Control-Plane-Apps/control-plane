@@ -15,6 +15,7 @@ describe("project status helpers", () => {
       title: "Payouts",
       body: "Pilot, but only three inspectors.\n\nHold 1099s.",
     });
+    expect(parseStatusReply(`Ultrathink:\n${text}`)?.title).toBe("Payouts");
     expect(parseStatusReply("Re: the email from Friday, can you check?")).toBeNull();
     expect(parseStatusReply("Where are we on payouts?")).toBeNull();
   });
@@ -35,6 +36,12 @@ describe("project status helpers", () => {
       "a",
     ]);
     expect(countStatusesNeedingUser(statuses)).toBe(2);
+    expect(
+      countStatusesNeedingUser([
+        ...statuses,
+        { state: "needs-you" as const, decision: { answeredAt: "2026-11-09T00:00:00.000Z" } },
+      ]),
+    ).toBe(2);
     expect(countStatusesNeedingUser(undefined)).toBe(0);
   });
 

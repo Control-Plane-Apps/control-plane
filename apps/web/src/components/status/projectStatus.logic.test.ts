@@ -13,6 +13,7 @@ import {
   describeDecisionDeadline,
   describeLiveAgent,
   formatDeadlineShort,
+  isRecommendationQueued,
   formatStatusAge,
   isStatusStale,
   recommendationReplyText,
@@ -121,6 +122,17 @@ describe("decision deadlines", () => {
     expect(describeDecisionDeadline(decision({ answeredAt: at(-60_000) }), NOW)).toBeNull();
   });
 
+  it("says the recommendation is going out when an armed deadline passes before the sweep", () => {
+    const armedPast = decision({
+      deadline: at(-60_000),
+      autoAccept: { openedAt: at(-HOUR), enabledAt: at(-HOUR) },
+    });
+    expect(describeDecisionDeadline(armedPast, NOW)).toEqual({
+      text: "Sending the recommendation now.",
+      tone: "handled",
+    });
+  });
+
   it("offers the opt-in only while the deadline is still ahead and unanswered", () => {
     expect(canToggleAutoAccept(decision(), NOW)).toBe(true);
     expect(canToggleAutoAccept(decision({ deadline: undefined }), NOW)).toBe(false);
@@ -188,6 +200,28 @@ describe("replies", () => {
       title: "Payouts",
       body: "Go with your recommendation: pilot with 5 inspectors",
     });
+  });
+
+  it("reads Go with recommendation as in flight only while its message is queued", () => {
+    const status = {
+      title: "Payouts",
+      decision: {
+        question: "Pilot?",
+        recommendation: "pilot with 5 inspectors",
+        openedAt: at(-HOUR),
+      },
+    };
+    const go = { prompt: recommendationReplyText("Payouts", "pilot with 5 inspectors") };
+    expect(isRecommendationQueued([go], status)).toBe(true);
+    // Removed, restored to the composer or sent: the queue no longer holds it.
+    expect(isRecommendationQueued([{ prompt: "something else" }], status)).toBe(false);
+    expect(isRecommendationQueued([], status)).toBe(false);
+    expect(
+      isRecommendationQueued([go], {
+        ...status,
+        decision: { ...status.decision, answeredAt: at(-60_000) },
+      }),
+    ).toBe(false);
   });
 
   it("keys a decision by its version", () => {

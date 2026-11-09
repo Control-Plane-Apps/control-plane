@@ -129,10 +129,19 @@ export function sortProjectStatuses<T extends { readonly state: ProjectStatusSta
     .map(({ status }) => status);
 }
 
+/** Workstreams waiting on the user. A question they already answered waits on the coordinator. */
 export function countStatusesNeedingUser(
-  statuses: ReadonlyArray<{ readonly state: ProjectStatusState }> | null | undefined,
+  statuses:
+    | ReadonlyArray<{
+        readonly state: ProjectStatusState;
+        readonly decision?: { readonly answeredAt?: string | undefined } | undefined;
+      }>
+    | null
+    | undefined,
 ): number {
-  return (statuses ?? []).filter((status) => status.state === "needs-you").length;
+  return (statuses ?? []).filter(
+    (status) => status.state === "needs-you" && status.decision?.answeredAt === undefined,
+  ).length;
 }
 
 /** A reply to a workstream as the coordinator reads it: the composer's Re: tag, then the text. */
@@ -140,11 +149,14 @@ export function statusReplyText(title: string, body: string): string {
   return `Re: ${title}\n\n${body}`;
 }
 
-/** Splits a composer `Re: <title>` first line off a coordinator message. */
+/**
+ * Splits a composer `Re: <title>` header off a coordinator message. Tolerates
+ * the `Ultrathink:` line a Claude effort setting puts in front of the text.
+ */
 export function parseStatusReply(
   text: string,
 ): { readonly title: string; readonly body: string } | null {
-  const match = /^Re: ([^\n]{1,80})\n\n/.exec(text);
+  const match = /^(?:Ultrathink:[ \t]*\n)?Re: ([^\n]{1,80})\n\n/.exec(text);
   if (match === null) return null;
   return { title: match[1]!.trim(), body: text.slice(match[0].length) };
 }
