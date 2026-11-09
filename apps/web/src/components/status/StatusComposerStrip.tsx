@@ -23,7 +23,10 @@ export function useStatusComposerBanner(input: {
   const { enabled, threadKey, statuses, panelOpen, onReply, onOpenStatus } = input;
   return useMemo(() => {
     if (!enabled || threadKey === null) return null;
-    const waiting = sortProjectStatuses(statuses).filter((status) => status.state === "needs-you");
+    // Same rule as the header and sidebar counts: a question already answered waits on the coordinator.
+    const waiting = sortProjectStatuses(statuses).filter(
+      (status) => status.state === "needs-you" && status.decision?.answeredAt === undefined,
+    );
     if (waiting.length === 0) return null;
     return {
       id: `status-needs-you:${threadKey}`,
