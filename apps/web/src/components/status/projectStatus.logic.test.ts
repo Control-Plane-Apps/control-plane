@@ -193,33 +193,47 @@ describe("describeLiveAgent", () => {
 });
 
 describe("replies", () => {
-  it("sends the recommendation as a Re: reply the timeline can label", () => {
-    const text = recommendationReplyText("Payouts", "pilot with 5 inspectors");
-    expect(text).toBe("Re: Payouts\n\nGo with your recommendation: pilot with 5 inspectors");
+  const payouts = {
+    id: "payouts",
+    title: "Payouts",
+    decision: {
+      question: "Pilot?",
+      recommendation: "pilot with 5 inspectors",
+      openedAt: "2026-11-11T11:00:00.000Z",
+    },
+  };
+
+  it("sends the recommendation naming the workstream and the question's version", () => {
+    const text = recommendationReplyText(payouts, payouts.decision);
+    const revision = Date.parse(payouts.decision.openedAt);
+    expect(text).toBe(
+      `Re: Payouts [status:payouts@${revision}]\n\nGo with your recommendation: pilot with 5 inspectors`,
+    );
     expect(parseStatusReply(text)).toEqual({
       title: "Payouts",
       body: "Go with your recommendation: pilot with 5 inspectors",
+      statusId: "payouts",
+      revision,
     });
   });
 
   it("reads Go with recommendation as in flight only while its message is queued", () => {
-    const status = {
-      title: "Payouts",
-      decision: {
-        question: "Pilot?",
-        recommendation: "pilot with 5 inspectors",
-        openedAt: at(-HOUR),
-      },
-    };
-    const go = { prompt: recommendationReplyText("Payouts", "pilot with 5 inspectors") };
-    expect(isRecommendationQueued([go], status)).toBe(true);
+    const go = { prompt: recommendationReplyText(payouts, payouts.decision) };
+    expect(isRecommendationQueued([go], payouts)).toBe(true);
     // Removed, restored to the composer or sent: the queue no longer holds it.
-    expect(isRecommendationQueued([{ prompt: "something else" }], status)).toBe(false);
-    expect(isRecommendationQueued([], status)).toBe(false);
+    expect(isRecommendationQueued([{ prompt: "something else" }], payouts)).toBe(false);
+    expect(isRecommendationQueued([], payouts)).toBe(false);
     expect(
       isRecommendationQueued([go], {
-        ...status,
-        decision: { ...status.decision, answeredAt: at(-60_000) },
+        ...payouts,
+        decision: { ...payouts.decision, answeredAt: at(-60_000) },
+      }),
+    ).toBe(false);
+    // A newer version of the question is a different message.
+    expect(
+      isRecommendationQueued([go], {
+        ...payouts,
+        decision: { ...payouts.decision, openedAt: "2026-11-11T11:30:00.000Z" },
       }),
     ).toBe(false);
   });

@@ -7,6 +7,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   statusReminderMessageId,
+  statusReplyText,
   type OrchestrationCommand,
   type ProjectAssistant,
 } from "@t3tools/contracts";
@@ -516,7 +517,9 @@ describe("StatusDeadlineReactor", () => {
         yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
         yield* reactor.sweep;
         const [sent] = yield* reminders;
-        expect(sent?.text).toMatch(/^Re: Payouts\n\nGo with your recommendation: Pilot with 5/);
+        expect(sent?.text).toMatch(
+          /^Re: Payouts \[status:payouts@\d+\]\n\nGo with your recommendation: Pilot with 5/,
+        );
         expect(sent?.text).toContain("the user opted in to this recommendation");
         expect(sent?.text).toContain("anything that needs the user's approval still needs it");
         expect(
@@ -641,6 +644,33 @@ describe("StatusDeadlineReactor", () => {
         });
         const first = yield* append;
         expect(yield* append).toEqual(first);
+        expect(yield* answeredAt).toBeDefined();
+      }),
+    ),
+  );
+
+  it.effect("matches a reply by workstream id and question version, not just title", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, PAYOUTS);
+        const answeredAt = Effect.map(
+          readMarker(PROJECT_ID),
+          (marker) => statusOf(marker, "payouts").decision?.answeredAt,
+        );
+        // Renamed since the user started replying: the id still finds it.
+        yield* tools.set(COORDINATOR, { id: "payouts", title: "Payouts rollout" });
+        // A reply to an older version of the question does not answer the new one.
+        yield* TestClock.adjust("1 hour");
+        yield* tools.set(COORDINATOR, { id: "payouts", recommendation: "Pilot with 3" });
+        yield* userMessage(
+          statusReplyText("Payouts", "Yes, pilot.", { statusId: "payouts", openedAt: NOW }),
+        );
+        expect(yield* answeredAt).toBeUndefined();
+        const current = statusOf(yield* readMarker(PROJECT_ID), "payouts").decision!.openedAt;
+        yield* userMessage(
+          statusReplyText("Payouts", "Yes, three.", { statusId: "payouts", openedAt: current }),
+        );
         expect(yield* answeredAt).toBeDefined();
       }),
     ),

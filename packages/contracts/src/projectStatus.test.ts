@@ -17,6 +17,20 @@ describe("project status helpers", () => {
     });
     expect(parseStatusReply(`Ultrathink:\n${text}`)?.title).toBe("Payouts");
     expect(parseStatusReply("Re: the email from Friday, can you check?")).toBeNull();
+    const tagged = statusReplyText("Payouts", "Pilot.", {
+      statusId: "payouts",
+      openedAt: "2026-10-28T12:00:00.000Z",
+    });
+    expect(tagged.split("\n")[0]).toBe("Re: Payouts [status:payouts@1793188800000]");
+    expect(parseStatusReply(tagged)).toEqual({
+      title: "Payouts",
+      body: "Pilot.",
+      statusId: "payouts",
+      revision: 1793188800000,
+    });
+    expect(
+      parseStatusReply(statusReplyText("PDF export", "Any update?", { statusId: "pdf" })),
+    ).toEqual({ title: "PDF export", body: "Any update?", statusId: "pdf" });
     expect(parseStatusReply("Where are we on payouts?")).toBeNull();
   });
 

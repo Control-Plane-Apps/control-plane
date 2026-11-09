@@ -233,6 +233,8 @@ import {
 import {
   applyStatusReplyTag,
   restoreStatusReplyPrompts,
+  statusReplyTagChanged,
+  statusReplyTagFor,
   useStatusReplyStore,
   useStatusReplyTag,
 } from "./status/statusReplyStore";
@@ -4767,9 +4769,9 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThreadRef]);
   const statusReplyTag = useStatusReplyTag(statusBoardEnabled ? activeThreadKey : null);
   const startStatusReply = useCallback(
-    (title: string, prefillWhenEmpty?: string) => {
+    (status: ProjectStatus, prefillWhenEmpty?: string) => {
       if (!activeThreadKey) return;
-      useStatusReplyStore.getState().setTag(activeThreadKey, title);
+      useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTagFor(status));
       if (prefillWhenEmpty !== undefined && promptRef.current.trim().length === 0) {
         composerRef.current?.insertTextAtEnd(prefillWhenEmpty);
       }
@@ -4778,7 +4780,7 @@ export default function ChatView(props: ChatViewProps) {
     [activeThreadKey],
   );
   const askStatusUpdate = useCallback(
-    (title: string) => startStatusReply(title, ASK_FOR_UPDATE_PROMPT),
+    (status: ProjectStatus) => startStatusReply(status, ASK_FOR_UPDATE_PROMPT),
     [startStatusReply],
   );
   const clearStatusReply = useCallback(() => {
@@ -4794,7 +4796,7 @@ export default function ChatView(props: ChatViewProps) {
       const queue = useQueuedMessageStore.getState().queuesByThreadKey[activeThreadKey] ?? [];
       if (isRecommendationQueued(queue, status)) return;
       useQueuedMessageStore.getState().enqueue(activeThreadKey, {
-        prompt: recommendationReplyText(status.title, decision.recommendation),
+        prompt: recommendationReplyText(status, decision),
         images: [],
         files: [],
         terminalContexts: [],
@@ -4818,9 +4820,13 @@ export default function ChatView(props: ChatViewProps) {
   const statusReplyChip = useMemo(
     () =>
       statusReplyTag === null ? null : (
-        <StatusReplyChip title={statusReplyTag} onRemove={clearStatusReply} />
+        <StatusReplyChip
+          title={statusReplyTag.title}
+          questionChanged={statusReplyTagChanged(statusReplyTag, projectStatuses)}
+          onRemove={clearStatusReply}
+        />
       ),
-    [clearStatusReply, statusReplyTag],
+    [clearStatusReply, projectStatuses, statusReplyTag],
   );
   // Handoff links can outlive their thread, since rows re-read the shell only
   // when they render.
@@ -7772,7 +7778,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     // The composer's "Re: <workstream>" tag rides on the live draft only.
-    const statusReplyTitleForSend =
+    const statusReplyTagForSend =
       !queuedMessage && !directAnnotation && statusBoardEnabled && activeThreadKey
         ? (useStatusReplyStore.getState().tagsByThreadKey[activeThreadKey] ?? null)
         : null;
@@ -7791,7 +7797,7 @@ export default function ChatView(props: ChatViewProps) {
       });
       const followUp = {
         ...resolvedFollowUp,
-        text: applyStatusReplyTag(resolvedFollowUp.text.trim(), statusReplyTitleForSend),
+        text: applyStatusReplyTag(resolvedFollowUp.text.trim(), statusReplyTagForSend),
       };
       const outgoingFollowUpText = formatOutgoingPrompt({
         provider: ctxSelectedProvider,
@@ -7813,7 +7819,7 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      if (statusReplyTitleForSend !== null) clearStatusReply();
+      if (statusReplyTagForSend !== null) clearStatusReply();
       const followUpSent = await onSubmitPlanFollowUp({
         text: followUp.text,
         context: buildMessageContext({
@@ -7825,8 +7831,8 @@ export default function ChatView(props: ChatViewProps) {
       });
       if (!followUpSent) {
         promptRef.current = followUpPromptSnapshot;
-        if (statusReplyTitleForSend !== null && activeThreadKey) {
-          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTitleForSend);
+        if (statusReplyTagForSend !== null && activeThreadKey) {
+          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTagForSend);
         }
         composerTerminalContextsRef.current = [...followUpTerminalContexts];
         restorePlanFollowUpComposer({
@@ -7904,11 +7910,11 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadKey &&
       (settings.followUpBehavior === "queue") !== (submissionIntent === "alternate")
     ) {
-      const queuedPrompt = applyStatusReplyTag(promptForSend, statusReplyTitleForSend);
+      const queuedPrompt = applyStatusReplyTag(promptForSend, statusReplyTagForSend);
       if (composerRef.current?.validateProviderInput(queuedPrompt) === false) {
         return;
       }
-      if (statusReplyTitleForSend !== null) clearStatusReply();
+      if (statusReplyTagForSend !== null) clearStatusReply();
       useQueuedMessageStore.getState().enqueue(activeThreadKey, {
         prompt: queuedPrompt,
         images: [...composerImages],
@@ -7985,7 +7991,7 @@ export default function ChatView(props: ChatViewProps) {
       effort: ctxSelectedPromptEffort,
       text: applyStatusReplyTag(
         messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
-        statusReplyTitleForSend,
+        statusReplyTagForSend,
       ),
     });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
@@ -8541,7 +8547,7 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      if (statusReplyTitleForSend !== null) clearStatusReply();
+      if (statusReplyTagForSend !== null) clearStatusReply();
     }
 
     let firstComposerImageName: string | null = null;
@@ -8818,8 +8824,8 @@ export default function ChatView(props: ChatViewProps) {
           return next.length === existing.length ? existing : next;
         });
         promptRef.current = messageTextForSend;
-        if (statusReplyTitleForSend !== null && activeThreadKey) {
-          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTitleForSend);
+        if (statusReplyTagForSend !== null && activeThreadKey) {
+          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTagForSend);
         }
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;

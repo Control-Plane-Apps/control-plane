@@ -168,9 +168,15 @@ export function describeLiveAgent(
 
 export const ASK_FOR_UPDATE_PROMPT = "Any update?";
 
-/** The message "Go with recommendation" sends. */
-export function recommendationReplyText(title: string, recommendation: string): string {
-  return statusReplyText(title, `Go with your recommendation: ${recommendation}`);
+/** The message "Go with recommendation" sends, naming the workstream and the question's version. */
+export function recommendationReplyText(
+  status: Pick<ProjectStatus, "id" | "title">,
+  decision: Pick<ProjectStatusDecision, "recommendation" | "openedAt">,
+): string {
+  return statusReplyText(status.title, `Go with your recommendation: ${decision.recommendation}`, {
+    statusId: status.id,
+    openedAt: decision.openedAt,
+  });
 }
 
 /** Identity of one version of a decision, for toggles in flight. */
@@ -188,10 +194,10 @@ export function decisionKey(
  */
 export function isRecommendationQueued(
   queue: ReadonlyArray<{ readonly prompt: string }>,
-  status: Pick<ProjectStatus, "title" | "decision">,
+  status: Pick<ProjectStatus, "id" | "title" | "decision">,
 ): boolean {
   const decision = status.decision;
   if (decision === undefined || decision.answeredAt !== undefined) return false;
-  const text = recommendationReplyText(status.title, decision.recommendation);
+  const text = recommendationReplyText(status, decision);
   return queue.some((message) => message.prompt === text);
 }

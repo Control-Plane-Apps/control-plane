@@ -144,19 +144,49 @@ export function countStatusesNeedingUser(
   ).length;
 }
 
-/** A reply to a workstream as the coordinator reads it: the composer's Re: tag, then the text. */
-export function statusReplyText(title: string, body: string): string {
-  return `Re: ${title}\n\n${body}`;
+/** Which workstream, and which version of its question, a reply answers. */
+export interface StatusReplyRef {
+  readonly statusId: string;
+  /** The decision's `openedAt` the user saw; absent for a row without a question. */
+  readonly openedAt?: string | undefined;
 }
 
 /**
- * Splits a composer `Re: <title>` header off a coordinator message. Tolerates
- * the `Ultrathink:` line a Claude effort setting puts in front of the text.
+ * A reply to a workstream as the coordinator reads it: a readable `Re: <title>`
+ * header carrying the stable workstream id and question version, then the text.
+ * `Re: Payouts [status:payouts@1793188800000]`.
  */
-export function parseStatusReply(
-  text: string,
-): { readonly title: string; readonly body: string } | null {
-  const match = /^(?:Ultrathink:[ \t]*\n)?Re: ([^\n]{1,80})\n\n/.exec(text);
+export function statusReplyText(title: string, body: string, ref?: StatusReplyRef): string {
+  const tag =
+    ref === undefined
+      ? ""
+      : ` [status:${ref.statusId}${ref.openedAt === undefined ? "" : `@${Date.parse(ref.openedAt)}`}]`;
+  return `Re: ${title}${tag}\n\n${body}`;
+}
+
+export interface ParsedStatusReply {
+  readonly title: string;
+  readonly body: string;
+  readonly statusId?: string;
+  /** `Date.parse` of the decision's `openedAt` the user replied to. */
+  readonly revision?: number;
+}
+
+/**
+ * Splits a composer `Re:` header off a coordinator message. Tolerates the
+ * `Ultrathink:` line a Claude effort setting puts in front of the text, and a
+ * header without the id (typed by hand, or from an older client).
+ */
+export function parseStatusReply(text: string): ParsedStatusReply | null {
+  const match =
+    /^(?:Ultrathink:[ \t]*\n)?Re: ([^\n]{1,80}?)(?: \[status:([a-z0-9-]{1,40})(?:@(\d{1,16}))?\])?\n\n/.exec(
+      text,
+    );
   if (match === null) return null;
-  return { title: match[1]!.trim(), body: text.slice(match[0].length) };
+  return {
+    title: match[1]!.trim(),
+    body: text.slice(match[0].length),
+    ...(match[2] !== undefined ? { statusId: match[2] } : {}),
+    ...(match[3] !== undefined ? { revision: Number(match[3]) } : {}),
+  };
 }

@@ -351,13 +351,18 @@ export const statusReplyEvents = Effect.fn("statusReplyEvents")(function* (
   const project = readModel.projects.find(
     (entry) => entry.deletedAt === null && entry.assistant?.coordinatorThreadId === input.threadId,
   );
+  // The id survives renames; a header without one (typed by hand) falls back to the title.
   const folded = reply.title.toLowerCase();
-  const status = project?.assistant?.statuses?.find(
-    (entry) => entry.title.toLowerCase() === folded,
+  const status = project?.assistant?.statuses?.find((entry) =>
+    reply.statusId !== undefined
+      ? entry.id === reply.statusId
+      : entry.title.toLowerCase() === folded,
   );
   const decision = status?.decision;
   if (project === undefined || status === undefined || decision === undefined) return [];
   if (decision.answeredAt !== undefined) return [];
+  // A reply to an earlier version of the question does not answer this one.
+  if (reply.revision !== undefined && reply.revision !== Date.parse(decision.openedAt)) return [];
   const base = yield* withEventBase({
     aggregateKind: "project",
     aggregateId: project.id,

@@ -17,7 +17,7 @@ export function useStatusComposerBanner(input: {
   readonly threadKey: string | null;
   readonly statuses: ReadonlyArray<ProjectStatus>;
   readonly panelOpen: boolean;
-  readonly onReply: (title: string) => void;
+  readonly onReply: (status: ProjectStatus) => void;
   readonly onOpenStatus: () => void;
 }): ComposerBannerStackItem | null {
   const { enabled, threadKey, statuses, panelOpen, onReply, onOpenStatus } = input;
@@ -53,7 +53,7 @@ export function useStatusComposerBanner(input: {
 /** Owns its minute tick, so a moving deadline re-renders the strip, not the chat. */
 function StatusStripTitle(props: {
   readonly waiting: ReadonlyArray<ProjectStatus>;
-  readonly onReply: (title: string) => void;
+  readonly onReply: (status: ProjectStatus) => void;
 }) {
   const { waiting, onReply } = props;
   const now = useMinuteNow(waiting.some((status) => status.decision?.deadline !== undefined));
@@ -74,7 +74,7 @@ function StatusStripTitle(props: {
             variant="outline"
             className="h-6 max-w-56 border-warning/24 font-normal"
             aria-label={`Reply to ${status.title}`}
-            onClick={() => onReply(status.title)}
+            onClick={() => onReply(status)}
           >
             <span className="truncate">{status.title}</span>
             {replied ? (
@@ -98,11 +98,24 @@ function StatusStripTitle(props: {
 }
 
 /** The composer's "Re: <workstream>" tag. Removing it keeps the draft. */
-export function StatusReplyChip(props: { readonly title: string; readonly onRemove: () => void }) {
+export function StatusReplyChip(props: {
+  readonly title: string;
+  /** The question was reworded or replaced since this reply started. */
+  readonly questionChanged: boolean;
+  readonly onRemove: () => void;
+}) {
   return (
     <div className="mb-2 flex">
       <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-warning/24 bg-warning/8 py-0.5 ps-2 pe-0.5 text-warning-foreground text-xs dark:bg-warning/16">
         <span className="min-w-0 truncate">Re: {props.title}</span>
+        {props.questionChanged ? (
+          <span
+            className="shrink-0 text-muted-foreground"
+            aria-label="The coordinator changed this question since you started replying"
+          >
+            · question changed
+          </span>
+        ) : null}
         <Button
           type="button"
           variant="ghost"

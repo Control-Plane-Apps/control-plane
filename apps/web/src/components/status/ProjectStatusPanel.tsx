@@ -63,9 +63,9 @@ const STATE_TEXT: Record<ProjectStatusState, string> = {
 
 export interface ProjectStatusActions {
   /** Puts a "Re: <title>" tag on the coordinator's composer, keeping its draft. */
-  readonly onReply: (title: string) => void;
+  readonly onReply: (status: ProjectStatus) => void;
   /** The same tag, with a short question when the draft is empty. */
-  readonly onAskForUpdate: (title: string) => void;
+  readonly onAskForUpdate: (status: ProjectStatus) => void;
   /** Sends the recommendation through the composer's normal send path. */
   readonly onGoWithRecommendation: (status: ProjectStatus) => void;
 }
@@ -291,7 +291,7 @@ function StatusRow(props: {
               variant="link"
               size="xs"
               className="h-auto px-1 py-0 text-xs"
-              onClick={() => actions.onAskForUpdate(status.title)}
+              onClick={() => actions.onAskForUpdate(status)}
             >
               Ask for update
             </Button>
@@ -354,7 +354,7 @@ function StatusRow(props: {
               type="button"
               size="xs"
               variant="outline"
-              onClick={() => actions.onReply(status.title)}
+              onClick={() => actions.onReply(status)}
             >
               Reply
             </Button>
