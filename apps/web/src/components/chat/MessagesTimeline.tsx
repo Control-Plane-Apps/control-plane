@@ -1,4 +1,4 @@
-import { ArrowUpIcon, ClockIcon } from "lucide-react";
+import { ArrowUpIcon, ClockIcon, ReplyIcon } from "lucide-react";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
@@ -2328,7 +2328,21 @@ function UserTimelineRow({
           ) : null}
           <div onCopyCapture={onBodyCopyCapture}>
             {statusReply !== null ? (
-              <p className="mb-1 truncate text-muted-foreground text-xs">Re: {statusReply.title}</p>
+              <p
+                data-status-reply-header
+                className="mb-2 flex min-w-0 items-start gap-1.5 border-b pb-1.5 text-xs"
+              >
+                <ReplyIcon
+                  aria-hidden
+                  className="mt-px size-3.5 shrink-0"
+                  data-status-reply-muted
+                />
+                {/* Long titles wrap to two lines instead of hiding behind an ellipsis. */}
+                <span className="line-clamp-2 min-w-0 break-words">
+                  <span data-status-reply-muted>Re: </span>
+                  <span className="font-medium">{statusReply.title}</span>
+                </span>
+              </p>
             ) : null}
             <CollapsibleUserMessageBody
               text={statusReply?.body ?? resolvedContext.text}

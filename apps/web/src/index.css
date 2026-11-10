@@ -1848,6 +1848,16 @@ html
   color: var(--contrast-message-foreground);
 }
 
+/* A workstream reply's "Re:" header inks with the bubble, not the page: the title in the
+   bubble's own foreground, its prefix and divider mixed down from it, as blockquotes are. */
+html [data-status-reply-header] {
+  border-color: color-mix(in srgb, currentColor 24%, transparent);
+}
+
+html [data-status-reply-muted] {
+  color: color-mix(in srgb, currentColor 80%, transparent);
+}
+
 /* Inline context chips sit on the bubble, not the page, so they ink with its foreground. */
 html [data-user-message-body] {
   --context-chip-foreground: var(--contrast-message-foreground);

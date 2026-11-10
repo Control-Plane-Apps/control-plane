@@ -7,7 +7,14 @@ import {
   TurnId,
   type ComposerContextRecord,
 } from "@t3tools/contracts";
-import { act, createRef, useLayoutEffect, type ReactNode, type Ref } from "react";
+import {
+  act,
+  createRef,
+  useLayoutEffect,
+  type ComponentProps,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -724,6 +731,32 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("t3code — Tests");
     expect(markup).not.toContain('src="data:image/png;base64,aWNvbg=="');
     expect(markup).not.toContain("h-28 w-52 max-w-full");
+  });
+
+  it("shows the status reply title as a separate header without the hidden marker", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        assistantTimeline={
+          {
+            role: "coordinator",
+            projectThreadTitle: () => null,
+            onOpenThread: () => {},
+          } as unknown as ComponentProps<typeof MessagesTimeline>["assistantTimeline"]
+        }
+        timelineEntries={[
+          buildUserTimelineEntry(
+            "Re: Spring inspector outreach drafts [status:outreach@1794324000000]\n\nKeep the referral line.",
+          ),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("data-status-reply-header");
+    expect(markup).toContain("Spring inspector outreach drafts");
+    expect(markup).toContain("Keep the referral line.");
+    expect(markup).not.toContain("[status:");
+    expect(markup).not.toContain("1794324000000");
   });
 
   it("does not reserve end space for a follow-up user message", () => {
