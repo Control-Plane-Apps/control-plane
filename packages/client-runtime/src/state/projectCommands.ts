@@ -10,11 +10,13 @@ import {
 } from "./runtime.ts";
 import {
   type AutomateProjectStatusInput,
+  type DismissProjectStatusInput,
   type CreateProjectInput,
   type DeleteProjectInput,
   type ReorderProjectInput,
   type UpdateProjectInput,
   automateProjectStatus,
+  dismissProjectStatus,
   createProject,
   deleteProject,
   reorderProject,
@@ -106,6 +108,13 @@ export function createProjectEnvironmentAtoms<R, E>(
     automateStatus: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:project:status-automate",
       execute: (input: AutomateProjectStatusInput) => automateProjectStatus(input),
+      scheduler: projectScheduler,
+      concurrency: projectConcurrency,
+    }),
+    /** The user's check-off (or undo) of one finished Status row. */
+    dismissStatus: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:project:status-dismiss",
+      execute: (input: DismissProjectStatusInput) => dismissProjectStatus(input),
       scheduler: projectScheduler,
       concurrency: projectConcurrency,
     }),

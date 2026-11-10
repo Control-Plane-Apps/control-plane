@@ -12,8 +12,13 @@
 import {
   PROJECT_STATUS_AGENTS_MAX,
   PROJECT_STATUS_LIMIT,
+  PROJECT_STATUS_ANSWER_MAX,
+  PROJECT_STATUS_DETAIL_MAX,
   PROJECT_STATUS_LINE_MAX,
+  PROJECT_STATUS_QUESTION_MAX,
+  PROJECT_STATUS_SUMMARY_MAX,
   PROJECT_STATUS_TITLE_MAX,
+  PROJECT_STATUS_WHY_MAX,
   agentManagerRole,
   type OrchestrationCommand,
   type OrchestrationReadModel,
@@ -34,6 +39,7 @@ import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 type StatusSetCommand = Extract<OrchestrationCommand, { type: "project.status.set" }>;
 type StatusDeadlineCommand = Extract<OrchestrationCommand, { type: "project.status.deadline" }>;
 type StatusAutomateCommand = Extract<OrchestrationCommand, { type: "project.status.automate" }>;
+type StatusDismissCommand = Extract<OrchestrationCommand, { type: "project.status.dismiss" }>;
 type UpsertChange = Extract<StatusSetCommand["change"], { kind: "upsert" }>;
 
 function invariant(commandType: string, detail: string) {
@@ -58,16 +64,24 @@ function nextDecision(
   stored: ProjectStatusDecision | undefined,
   now: string,
 ): { readonly decision: ProjectStatusDecision | undefined } | string {
+  // An empty "why" only clears; it never opens or reshapes a decision.
+  const setsWhy = change.why !== undefined && change.why.trim().length > 0;
   const touchesDecision =
     change.question !== undefined ||
     change.recommendation !== undefined ||
+    change.answer !== undefined ||
+    setsWhy ||
     change.deadline !== undefined;
   if (change.clearDecision === true) {
     return touchesDecision
       ? "Pass clearDecision alone, or a new question without clearDecision."
       : { decision: undefined };
   }
-  if (!touchesDecision) return { decision: stored };
+  if (!touchesDecision) {
+    if (stored === undefined || change.why === undefined) return { decision: stored };
+    const { why: _cleared, ...rest } = stored;
+    return { decision: rest };
+  }
 
   const question = change.question ?? stored?.question;
   const recommendation = change.recommendation ?? stored?.recommendation;
@@ -83,15 +97,32 @@ function nextDecision(
       return "The deadline must be in the future.";
     }
   }
+  // A label belongs to the recommendation it names: a new question or
+  // recommendation needs its own, so the button never says one thing and
+  // sends another.
+  const reworded =
+    (change.question !== undefined && change.question !== stored?.question) ||
+    (change.recommendation !== undefined && change.recommendation !== stored?.recommendation);
+  const answer = change.answer ?? (reworded ? undefined : stored?.answer);
+  // The why explains one recommendation; a reworded decision needs its own.
+  const why = optionalText(change.why, reworded ? undefined : stored?.why);
   // The user opted in to a specific recommendation by a specific time; any
-  // change makes it a new decision they have not seen.
+  // change to what they saw makes it a new decision. The "why" explains the
+  // recommendation without changing it, so it keeps the version.
   if (
     stored !== undefined &&
     stored.question === question &&
     stored.recommendation === recommendation &&
+    stored.answer === answer &&
     stored.deadline === deadline
   ) {
-    return { decision: stored };
+    const { why: _why, ...rest } = stored;
+    return { decision: why !== undefined ? { ...rest, why } : rest };
+  }
+  // Every new version carries a short answer label for its button; records
+  // from before labels existed keep working until the question is re-asked.
+  if (answer === undefined) {
+    return "A decision needs your recommended answer as a short button label (answer).";
   }
   // A new version never inherits a deadline that already passed: that one
   // was handled, and the next needs a deadline of its own.
@@ -101,6 +132,8 @@ function nextDecision(
     decision: {
       question,
       recommendation,
+      answer,
+      ...(why !== undefined ? { why } : {}),
       ...(liveDeadline !== undefined ? { deadline: liveDeadline } : {}),
       openedAt: now,
     },
@@ -127,10 +160,13 @@ export function applyStatusUpsert(input: {
   }
   const lengthError =
     tooLong("A title", title, PROJECT_STATUS_TITLE_MAX) ??
-    tooLong("The summary", summary, PROJECT_STATUS_LINE_MAX) ??
-    tooLong("The detail", change.detail?.trim(), PROJECT_STATUS_LINE_MAX) ??
-    tooLong("The question", change.question, PROJECT_STATUS_LINE_MAX) ??
-    tooLong("The recommendation", change.recommendation, PROJECT_STATUS_LINE_MAX);
+    // Limits apply to what this write sends. Older stored text stays as it was.
+    tooLong("The summary", change.summary, PROJECT_STATUS_SUMMARY_MAX) ??
+    tooLong("The detail", change.detail?.trim(), PROJECT_STATUS_DETAIL_MAX) ??
+    tooLong("The question", change.question, PROJECT_STATUS_QUESTION_MAX) ??
+    tooLong("The answer label", change.answer, PROJECT_STATUS_ANSWER_MAX) ??
+    tooLong("The recommendation", change.recommendation, PROJECT_STATUS_LINE_MAX) ??
+    tooLong("The why", change.why?.trim(), PROJECT_STATUS_WHY_MAX);
   if (lengthError !== null) return lengthError;
   if (title.includes("\n")) return "A title is one line.";
   if (title.includes("[status:")) return 'A title cannot contain "[status:".';
@@ -170,6 +206,9 @@ export function applyStatusUpsert(input: {
         ? "working"
         : requested;
   const detail = optionalText(change.detail, stored?.detail);
+  // A checked-off row stays hidden while it stays done; any move back to
+  // active work shows it again, so new work or a new question is never hidden.
+  const dismissedAt = state === "done" ? stored?.dismissedAt : undefined;
   return {
     id: change.id,
     title,
@@ -179,11 +218,12 @@ export function applyStatusUpsert(input: {
     ...(agents !== undefined ? { agents } : {}),
     ...(decision !== undefined ? { decision } : {}),
     updatedAt: now,
+    ...(dismissedAt !== undefined ? { dismissedAt } : {}),
   };
 }
 
 function statusEvent(
-  command: StatusSetCommand | StatusDeadlineCommand | StatusAutomateCommand,
+  command: StatusSetCommand | StatusDeadlineCommand | StatusAutomateCommand | StatusDismissCommand,
   statusId: string,
   status: ProjectStatus | null,
 ) {
@@ -225,7 +265,7 @@ export const decideStatusSet = Effect.fn("decideStatusSet")(function* (
   readModel: OrchestrationReadModel,
   command: StatusSetCommand,
 ): Effect.fn.Return<
-  PlannedOrchestrationEvent,
+  PlannedOrchestrationEvent | ReadonlyArray<PlannedOrchestrationEvent>,
   OrchestrationCommandInvariantError | PlatformError.PlatformError,
   Crypto.Crypto
 > {
@@ -251,15 +291,76 @@ export const decideStatusSet = Effect.fn("decideStatusSet")(function* (
     }
     return yield* statusEvent(command, change.id, null);
   }
+  // A full board makes room by dropping the longest checked-off row: the user
+  // already hid it, and its history stays in the coordinator's thread.
+  const evicted =
+    statuses.length >= PROJECT_STATUS_LIMIT && !statuses.some((status) => status.id === change.id)
+      ? oldestDismissed(statuses)
+      : undefined;
   const next = applyStatusUpsert({
     readModel,
     projectId: command.projectId,
-    statuses,
+    statuses:
+      evicted === undefined ? statuses : statuses.filter((status) => status.id !== evicted.id),
     change,
     now: command.createdAt,
   });
   if (typeof next === "string") return yield* invariant(command.type, next);
-  return yield* statusEvent(command, change.id, next);
+  const written = yield* statusEvent(command, change.id, next);
+  if (evicted === undefined) return written;
+  return [yield* statusEvent(command, evicted.id, null), written];
+});
+
+function oldestDismissed(statuses: ReadonlyArray<ProjectStatus>): ProjectStatus | undefined {
+  let oldest: ProjectStatus | undefined;
+  for (const status of statuses) {
+    if (status.dismissedAt === undefined) continue;
+    if (oldest === undefined || Date.parse(status.dismissedAt) < Date.parse(oldest.dismissedAt!)) {
+      oldest = status;
+    }
+  }
+  return oldest;
+}
+
+/**
+ * `project.status.dismiss`: the user checks a finished row off, or undoes it.
+ * Dismissing needs the record to still be done at the version the user saw.
+ * Undo only clears the mark, keeping every coordinator edit made since.
+ */
+export const decideStatusDismiss = Effect.fn("decideStatusDismiss")(function* (
+  readModel: OrchestrationReadModel,
+  command: StatusDismissCommand,
+): Effect.fn.Return<
+  PlannedOrchestrationEvent,
+  OrchestrationCommandInvariantError | PlatformError.PlatformError,
+  Crypto.Crypto
+> {
+  const project = readModel.projects.find((entry) => entry.id === command.projectId);
+  const status =
+    project?.deletedAt === null && project.assistant?.archivedAt == null
+      ? project.assistant?.statuses?.find((entry) => entry.id === command.statusId)
+      : undefined;
+  if (status === undefined) {
+    return yield* invariant(command.type, "That workstream is no longer on the board.");
+  }
+  if (command.dismissed) {
+    if (status.dismissedAt !== undefined) {
+      return yield* invariant(command.type, "That workstream is already checked off.");
+    }
+    if (status.state !== "done" || status.updatedAt !== command.updatedAt) {
+      return yield* invariant(
+        command.type,
+        "The coordinator updated this workstream since you saw it. Review it again.",
+      );
+    }
+    // Keeps updatedAt: checking a row off is not the coordinator checking in.
+    return yield* statusEvent(command, status.id, { ...status, dismissedAt: command.createdAt });
+  }
+  if (status.dismissedAt === undefined) {
+    return yield* invariant(command.type, "That workstream is already showing.");
+  }
+  const { dismissedAt: _undone, ...shown } = status;
+  return yield* statusEvent(command, status.id, shown);
 });
 
 /**

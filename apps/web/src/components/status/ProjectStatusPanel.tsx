@@ -6,9 +6,8 @@ import {
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   isAutoAcceptArmed,
-  sortProjectStatuses,
+  PROJECT_STATUS_QUESTION_MAX,
   type ProjectStatus,
-  type ProjectStatusState,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -17,8 +16,8 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
-import { ClockIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { CheckIcon, ChevronRightIcon, CircleCheckIcon } from "lucide-react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { useRightPanelStore } from "../../rightPanelStore";
@@ -26,13 +25,12 @@ import { useServerConfigs, useThreadShellsForProjectRefs } from "../../state/ent
 import { projectEnvironment } from "../../state/projects";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import {
-  STATUS_STATE_LABEL,
+  STATUS_GROUP_LABEL,
   canToggleAutoAccept,
   decisionKey,
   describeDecisionDeadline,
@@ -40,26 +38,15 @@ import {
   formatDeadlineShort,
   formatStatusAge,
   isRecommendationPending,
+  groupProjectStatuses,
   isStatusStale,
-  statusCountLine,
+  recommendationButtonLabel,
+  showsFullRecommendation,
+  type StatusGroup,
 } from "./projectStatus.logic";
 import { useQueuedMessages } from "../../queuedMessageStore";
 
 const MINUTE_MS = 60_000;
-
-// The sidebar's status hues, so a row reads like the threads it summarizes.
-const STATE_DOT: Record<ProjectStatusState, string> = {
-  "needs-you": "bg-amber-500",
-  working: "bg-sky-500",
-  done: "bg-emerald-500",
-  queued: "bg-muted-foreground/40",
-};
-const STATE_TEXT: Record<ProjectStatusState, string> = {
-  "needs-you": "text-warning-foreground",
-  working: "text-info-foreground",
-  done: "text-success-foreground",
-  queued: "text-muted-foreground",
-};
 
 export interface ProjectStatusActions {
   /** Puts a "Re: <title>" tag on the coordinator's composer, keeping its draft. */
@@ -114,8 +101,12 @@ function ProjectStatusPanelContent(
   const { project, threadRef } = props;
   const navigate = useNavigate();
   const now = useMinuteNow();
-  const statuses = useMemo(
-    () => sortProjectStatuses(project.assistant?.statuses ?? []),
+  const groupIdPrefix = useId();
+  const hiddenCount = (project.assistant?.statuses ?? []).filter(
+    (status) => status.dismissedAt !== undefined,
+  ).length;
+  const groups = useMemo(
+    () => groupProjectStatuses(project.assistant?.statuses ?? []),
     [project.assistant?.statuses],
   );
   const projectRefs = useMemo(
@@ -164,66 +155,155 @@ function ProjectStatusPanelContent(
           : "The decision changed since you saw it. Review it and try again.",
     });
   };
+  const dismissStatusCommand = useAtomCommand(projectEnvironment.dismissStatus, {
+    reportFailure: false,
+  });
+  // Rows being checked off or restored, by workstream id.
+  const [dismissing, setDismissing] = useState<ReadonlySet<string>>(() => new Set());
+  const setDismissed = async (status: ProjectStatus, dismissed: boolean): Promise<boolean> => {
+    setDismissing((current) => new Set(current).add(status.id));
+    const result = await dismissStatusCommand({
+      environmentId: project.environmentId,
+      input: {
+        projectId: project.id,
+        statusId: status.id,
+        updatedAt: status.updatedAt,
+        dismissed,
+      },
+    });
+    setDismissing((current) => {
+      const next = new Set(current);
+      next.delete(status.id);
+      return next;
+    });
+    if (result._tag === "Success") return true;
+    if (isAtomCommandInterrupted(result)) return false;
+    const error = squashAtomCommandFailure(result);
+    toastManager.add({
+      type: "error",
+      title: dismissed
+        ? `Could not check off ${status.title}`
+        : `Could not restore ${status.title}`,
+      description:
+        error instanceof Error
+          ? error.message
+          : "The workstream changed since you saw it. Review it and try again.",
+    });
+    return false;
+  };
+  const checkOff = async (status: ProjectStatus) => {
+    if (!(await setDismissed(status, true))) return;
+    const toastId = toastManager.add({
+      type: "success",
+      title: `Checked off ${status.title}`,
+      actionProps: {
+        children: "Undo",
+        onClick: () => {
+          toastManager.close(toastId);
+          void setDismissed(status, false);
+        },
+      },
+    });
+  };
   const openThread = (threadId: ThreadId) =>
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(scopeThreadRef(project.environmentId, threadId)),
     });
 
+  // Expanded rows, by workstream id. Session only: a reopened panel starts collapsed.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleRow = (id: string) =>
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
   return (
     <section aria-label="Status" className="flex h-full min-h-0 flex-col text-sm">
-      <div className="flex items-center gap-2 border-border/70 border-b px-3 py-2">
-        <h2 className="shrink-0 font-medium">Status</h2>
-        {statuses.length > 0 ? (
-          <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
-            {statusCountLine(statuses)}
-          </span>
-        ) : null}
-      </div>
       <ScrollArea className="min-h-0 flex-1">
-        {statuses.length === 0 ? (
+        {groups.length === 0 ? (
           <div className="flex flex-col gap-1 px-3 py-4 text-muted-foreground">
-            <p>No workstreams yet.</p>
-            <p className="text-xs">
-              The coordinator keeps one line per workstream here as agents report in, and flags
-              anything that needs your call.
-            </p>
+            {hiddenCount > 0 ? (
+              <p>Nothing open. You checked off every finished workstream.</p>
+            ) : (
+              <>
+                <p>No workstreams yet.</p>
+                <p className="text-xs">
+                  The coordinator keeps one line per workstream here as agents report in, and flags
+                  anything that needs your call.
+                </p>
+              </>
+            )}
           </div>
         ) : (
-          <ul className="flex flex-col">
-            {statuses.map((status) => (
-              <StatusRow
-                key={status.id}
-                status={status}
-                now={now}
-                sending={isRecommendationPending({
-                  status,
-                  queue: queuedMessages,
-                  sentKeys: props.sentRecommendations,
-                })}
-                automating={
-                  status.decision !== undefined &&
-                  automating.has(decisionKey(status, status.decision))
-                }
-                onSetAutoAccept={(enabled) => void setAutoAccept(status, enabled)}
-                liveAgents={(status.agents ?? []).flatMap((threadId) => {
-                  const live = describeLiveAgent(threadsById.get(threadId) ?? null, now);
-                  return live === null ? [] : [{ threadId, ...live }];
-                })}
-                onOpenThread={openThread}
-                actions={props}
-              />
+          <div className="flex flex-col pb-2">
+            {groups.map(({ group, statuses: members }) => (
+              <section key={group} aria-labelledby={`${groupIdPrefix}-${group}`}>
+                <h3
+                  id={`${groupIdPrefix}-${group}`}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 pt-3 pb-1.5 font-medium text-xs",
+                    group === "needs-you" ? "text-warning-foreground" : "text-muted-foreground",
+                  )}
+                >
+                  {STATUS_GROUP_LABEL[group]}
+                  <span className="font-normal tabular-nums opacity-80">{members.length}</span>
+                </h3>
+                <ul className="flex flex-col">
+                  {members.map((status) => (
+                    <StatusRow
+                      key={status.id}
+                      status={status}
+                      group={group}
+                      now={now}
+                      expanded={expanded.has(status.id)}
+                      onToggle={() => toggleRow(status.id)}
+                      sending={isRecommendationPending({
+                        status,
+                        queue: queuedMessages,
+                        sentKeys: props.sentRecommendations,
+                      })}
+                      automating={
+                        status.decision !== undefined &&
+                        automating.has(decisionKey(status, status.decision))
+                      }
+                      onSetAutoAccept={(enabled) => void setAutoAccept(status, enabled)}
+                      liveAgents={(status.agents ?? []).flatMap((threadId) => {
+                        const live = describeLiveAgent(threadsById.get(threadId) ?? null, now);
+                        return live === null ? [] : [{ threadId, ...live }];
+                      })}
+                      onOpenThread={openThread}
+                      dismissing={dismissing.has(status.id)}
+                      onCheckOff={() => void checkOff(status)}
+                      actions={props}
+                    />
+                  ))}
+                </ul>
+              </section>
             ))}
-          </ul>
+          </div>
         )}
       </ScrollArea>
     </section>
   );
 }
 
+const GROUP_DOT: Record<StatusGroup, string> = {
+  "needs-you": "bg-amber-500",
+  "in-progress": "bg-sky-500",
+  queued: "bg-muted-foreground/40",
+  done: "bg-emerald-500",
+};
+
 function StatusRow(props: {
   readonly status: ProjectStatus;
+  readonly group: StatusGroup;
   readonly now: number;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
   readonly sending: boolean;
   readonly automating: boolean;
   readonly onSetAutoAccept: (enabled: boolean) => void;
@@ -233,101 +313,136 @@ function StatusRow(props: {
     readonly tone: "working" | "attention" | "idle";
   }>;
   readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly dismissing: boolean;
+  readonly onCheckOff: () => void;
   readonly actions: ProjectStatusActions;
 }) {
-  const { status, now, actions } = props;
-  const stale = isStatusStale(status.updatedAt, now);
+  const { status, group, now, expanded, actions } = props;
+  const detailsId = useId();
+  // Stale only means something for work still expected to move.
+  const stale =
+    (group === "needs-you" || group === "in-progress") && isStatusStale(status.updatedAt, now);
   const decision = status.decision;
   const deadline = decision === undefined ? null : describeDecisionDeadline(decision, now);
+  const asking =
+    decision !== undefined && decision.answeredAt === undefined && group === "needs-you";
+  const answered = decision?.answeredAt !== undefined ? decision : undefined;
   return (
-    <li className="flex flex-col gap-1.5 border-border/50 border-b px-3 py-3.5 last:border-b-0">
-      <div className="flex min-w-0 items-center gap-2">
-        <span
-          aria-hidden
-          className={cn("size-1.5 shrink-0 rounded-full", STATE_DOT[status.state])}
-        />
-        <h3 className="min-w-0 flex-1 truncate font-medium">{status.title}</h3>
-        <span className={cn("shrink-0 text-xs", STATE_TEXT[status.state])}>
-          {STATUS_STATE_LABEL[status.state]}
-        </span>
-      </div>
-      <div className="ms-3.5 flex flex-col gap-0.5 text-[13px] text-muted-foreground">
-        <p className="text-foreground/80">{status.summary}</p>
-        {status.detail !== undefined ? <p>{status.detail}</p> : null}
-      </div>
-      <div className="ms-3.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-muted-foreground text-xs">
-        {props.liveAgents.map((agent) => (
-          <span key={agent.threadId} className="inline-flex min-w-0 items-center gap-1.5">
-            <button
-              type="button"
+    <li className="border-border/50 border-t">
+      <div className="flex min-w-0 items-start">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={expanded ? detailsId : undefined}
+          className="flex min-w-0 flex-1 cursor-pointer flex-col gap-0.5 px-3 py-2.5 text-start hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+          onClick={props.onToggle}
+        >
+          <span className="flex w-full min-w-0 items-center gap-2">
+            <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", GROUP_DOT[group])} />
+            <span
               className={cn(
-                "inline-flex min-w-0 cursor-pointer items-center gap-1.5 underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none",
-                agent.tone === "working"
-                  ? "text-info-foreground"
-                  : agent.tone === "attention"
-                    ? "text-warning-foreground"
-                    : "text-muted-foreground",
+                "min-w-0 flex-1 font-medium text-sm",
+                expanded ? "break-words" : "truncate",
               )}
-              onClick={() => props.onOpenThread(agent.threadId)}
             >
-              <span
-                aria-hidden
-                className={cn(
-                  "size-1.5 shrink-0 rounded-full",
-                  agent.tone === "working"
-                    ? "bg-sky-500"
-                    : agent.tone === "attention"
-                      ? "bg-amber-500"
-                      : "bg-muted-foreground/40",
-                )}
-              />
-              <span className="truncate">{agent.label}</span>
-            </button>
-            <span aria-hidden>·</span>
+              {status.title}
+            </span>
+            {stale ? <span className="shrink-0 text-warning-foreground text-xs">Stale</span> : null}
+            <ChevronRightIcon
+              aria-hidden
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground transition-transform duration-150",
+                expanded && "rotate-90",
+              )}
+            />
           </span>
-        ))}
-        <span>Updated {formatStatusAge(status.updatedAt, now)}</span>
-        {stale ? (
-          <>
-            <Badge variant="warning" size="sm">
-              Stale
-            </Badge>
-            <Button
-              type="button"
-              variant="link"
-              size="xs"
-              className="h-auto px-1 py-0 text-xs"
-              onClick={() => actions.onAskForUpdate(status)}
-            >
-              Ask for update
-            </Button>
-          </>
+          <span
+            className={cn(
+              "block w-full ps-3.5 pe-5.5 text-[13px] text-muted-foreground",
+              // Collapsed rows truncate visually; the full line shows once expanded.
+              expanded ? "break-words" : "truncate",
+            )}
+          >
+            {status.summary}
+          </span>
+        </button>
+        {group === "done" ? (
+          // Checked-off rows leave the panel; Undo in the toast brings them back.
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="me-1.5 mt-1.5 shrink-0 text-muted-foreground hover:text-foreground"
+            aria-label={`Check off ${status.title}`}
+            title="Check off"
+            disabled={props.dismissing}
+            onClick={props.onCheckOff}
+          >
+            <CircleCheckIcon />
+          </Button>
         ) : null}
       </div>
-      {decision !== undefined ? (
-        <div className="ms-3.5 flex flex-col gap-1.5 rounded-lg border border-warning/20 bg-warning/8 px-2.5 py-2 dark:bg-warning/16">
-          <p className="text-[13px] text-foreground">
-            <span className="font-medium text-warning-foreground">Your call: </span>
-            {decision.question}
-          </p>
-          <p className="text-muted-foreground text-xs">Recommends: {decision.recommendation}</p>
-          {deadline !== null ? (
-            <p
-              className={cn(
-                "flex items-start gap-1.5 text-xs",
-                deadline.tone === "overdue"
-                  ? "font-medium text-destructive-foreground"
-                  : deadline.tone === "handled"
-                    ? "text-muted-foreground"
-                    : "text-warning-foreground",
-              )}
-            >
-              <ClockIcon aria-hidden className="mt-px size-3 shrink-0" />
-              <span>{deadline.text}</span>
-            </p>
+      {expanded ? (
+        <div
+          id={detailsId}
+          className="flex flex-col gap-1.5 ps-6.5 pe-3 pb-3 text-[13px] text-muted-foreground"
+        >
+          {status.detail !== undefined ? <p>{status.detail}</p> : null}
+          {decision?.why !== undefined ? <p>Why: {decision.why}</p> : null}
+          {decision !== undefined && showsFullRecommendation(decision) ? (
+            <p>Recommended: {decision.recommendation}</p>
           ) : null}
-          {decision.deadline !== undefined && canToggleAutoAccept(decision, now) ? (
-            <label className="flex cursor-pointer items-center gap-2 text-muted-foreground text-xs">
+          <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
+            {props.liveAgents.map((agent) => (
+              <span key={agent.threadId} className="inline-flex min-w-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex min-w-0 cursor-pointer items-center gap-1.5 underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none",
+                    agent.tone === "working"
+                      ? "text-info-foreground"
+                      : agent.tone === "attention"
+                        ? "text-warning-foreground"
+                        : "text-muted-foreground",
+                  )}
+                  onClick={() => props.onOpenThread(agent.threadId)}
+                >
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      agent.tone === "working"
+                        ? "bg-sky-500"
+                        : agent.tone === "attention"
+                          ? "bg-amber-500"
+                          : "bg-muted-foreground/40",
+                    )}
+                  />
+                  <span className="truncate">{agent.label}</span>
+                </button>
+                <span aria-hidden>·</span>
+              </span>
+            ))}
+            <span>updated {formatStatusAge(status.updatedAt, now)}</span>
+            {deadline !== null ? (
+              <>
+                <span aria-hidden>·</span>
+                <span
+                  className={cn(
+                    deadline.tone === "overdue"
+                      ? "font-medium text-destructive-foreground"
+                      : deadline.tone === "pending"
+                        ? "text-warning-foreground"
+                        : undefined,
+                  )}
+                >
+                  {deadline.text}
+                </span>
+              </>
+            ) : null}
+          </p>
+          {decision?.deadline !== undefined && canToggleAutoAccept(decision, now) ? (
+            <label className="flex cursor-pointer items-center gap-2 text-xs">
               <Switch
                 size="sm"
                 checked={isAutoAcceptArmed(decision)}
@@ -340,22 +455,62 @@ function StatusRow(props: {
               </span>
             </label>
           ) : null}
-          {decision.answeredAt !== undefined ? (
-            <p className="text-muted-foreground text-xs">
-              You replied {formatStatusAge(decision.answeredAt, now)}. Waiting on the coordinator.
-            </p>
-          ) : null}
-          <div className="mt-0.5 flex flex-wrap gap-1.5">
-            {decision.answeredAt === undefined ? (
+          {stale ? (
+            <div>
               <Button
                 type="button"
+                variant="outline"
                 size="xs"
-                disabled={props.sending}
-                onClick={() => actions.onGoWithRecommendation(status)}
+                onClick={() => actions.onAskForUpdate(status)}
               >
-                {props.sending ? "Sending..." : "Go with recommendation"}
+                Ask for update
               </Button>
-            ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {asking ? (
+        <div className="flex flex-col gap-2 ps-6.5 pe-3 pb-3">
+          <p
+            className={cn(
+              "text-foreground text-sm",
+              // Older, longer questions clamp until the row is expanded.
+              !expanded && decision.question.length > PROJECT_STATUS_QUESTION_MAX && "line-clamp-2",
+            )}
+          >
+            {decision.question}
+          </p>
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <Button
+              type="button"
+              size="xs"
+              className="max-w-full"
+              disabled={props.sending}
+              onClick={() => actions.onGoWithRecommendation(status)}
+            >
+              <CheckIcon />
+              <span className="truncate">
+                {props.sending ? "Sending..." : recommendationButtonLabel(decision)}
+              </span>
+            </Button>
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              onClick={() => actions.onReply(status)}
+            >
+              Reply
+            </Button>
+            <span className="text-muted-foreground text-xs">Recommended</span>
+          </div>
+        </div>
+      ) : answered !== undefined ? (
+        <div className="flex flex-col gap-2 ps-6.5 pe-3 pb-3">
+          <p className="text-muted-foreground text-sm">{answered.question}</p>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-muted-foreground text-xs">
+              You replied {formatStatusAge(answered.answeredAt!, now)}. Waiting on the coordinator.
+            </span>
             <Button
               type="button"
               size="xs"

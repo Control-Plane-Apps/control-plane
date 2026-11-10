@@ -61,6 +61,7 @@ import { projectEvent } from "./projector.ts";
 import { decideAgentScheduleChange, decideScheduleRecord } from "./scheduleDecider.ts";
 import {
   decideStatusAutomate,
+  decideStatusDismiss,
   decideStatusDeadline,
   decideStatusSet,
   statusReplyEvents,
@@ -462,6 +463,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "project.status.automate":
       return yield* decideStatusAutomate(readModel, command);
+
+    case "project.status.dismiss":
+      return yield* decideStatusDismiss(readModel, command);
 
     case "thread.create": {
       yield* requireProject({

@@ -1561,12 +1561,30 @@ export const ProjectStatusAutomateCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * The user checks a finished workstream off the Status panel (`dismissed`),
+ * or undoes that. Clients only. `updatedAt` is the version the user saw:
+ * dismissing is refused once the coordinator has written the record since,
+ * so a row that moved back to active work can never be hidden by a stale
+ * click. Undo only clears the mark and never rewrites the record.
+ */
+export const ProjectStatusDismissCommand = Schema.Struct({
+  type: Schema.Literal("project.status.dismiss"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  statusId: ProjectStatusId,
+  updatedAt: IsoDateTime,
+  dismissed: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectReorderCommand,
   ProjectDeleteCommand,
   ProjectStatusAutomateCommand,
+  ProjectStatusDismissCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1602,6 +1620,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ProjectReorderCommand,
   ProjectDeleteCommand,
   ProjectStatusAutomateCommand,
+  ProjectStatusDismissCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,

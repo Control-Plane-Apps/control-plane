@@ -19,8 +19,11 @@ import {
   formatStatusAge,
   isStatusStale,
   recommendationReplyText,
+  groupProjectStatuses,
+  recommendationButtonLabel,
   sentRecommendationKeys,
-  statusCountLine,
+  showsFullRecommendation,
+  statusGroupOf,
 } from "./projectStatus.logic";
 
 // A Wednesday at noon, local time, so day arithmetic does not depend on the runner's zone.
@@ -28,16 +31,74 @@ const NOW = new Date(2026, 10, 11, 12, 0, 0).getTime();
 const at = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
 const HOUR = 60 * 60 * 1000;
 
-describe("statusCountLine", () => {
-  it("counts workstreams and the ones waiting on the user", () => {
-    expect(statusCountLine([])).toBe("0 workstreams");
-    expect(statusCountLine([{ state: "working" }])).toBe("1 workstream");
+describe("status groups", () => {
+  const question = {
+    question: "Pilot?",
+    recommendation: "pilot with 5 inspectors",
+    openedAt: "2026-11-11T11:00:00.000Z",
+  };
+
+  it("files each row where it reads truthfully", () => {
+    expect(statusGroupOf({ state: "needs-you", decision: question })).toBe("needs-you");
+    expect(statusGroupOf({ state: "needs-you" })).toBe("needs-you");
+    // Answered: waiting on the coordinator, not on the user.
     expect(
-      statusCountLine([{ state: "needs-you" }, { state: "done" }, { state: "needs-you" }]),
-    ).toBe("3 workstreams · 2 need you");
-    expect(statusCountLine([{ state: "needs-you" }, { state: "queued" }])).toBe(
-      "2 workstreams · 1 needs you",
-    );
+      statusGroupOf({
+        state: "needs-you",
+        decision: { ...question, answeredAt: question.openedAt },
+      }),
+    ).toBe("in-progress");
+    expect(statusGroupOf({ state: "working" })).toBe("in-progress");
+    expect(statusGroupOf({ state: "queued" })).toBe("queued");
+    expect(statusGroupOf({ state: "done" })).toBe("done");
+  });
+
+  it("orders groups, hides empty ones and keeps the coordinator's order inside", () => {
+    const groups = groupProjectStatuses([
+      { id: "a", state: "done" },
+      { id: "b", state: "working" },
+      { id: "c", state: "needs-you", decision: { ...question, answeredAt: question.openedAt } },
+      { id: "d", state: "needs-you", decision: question },
+      { id: "e", state: "done" },
+    ] as const);
+    expect(
+      groups.map(({ group, statuses }) => [group, statuses.map((status) => status.id)]),
+    ).toEqual([
+      ["needs-you", ["d"]],
+      ["in-progress", ["c", "b"]],
+      ["done", ["a", "e"]],
+    ]);
+    expect(groupProjectStatuses([])).toEqual([]);
+  });
+
+  it("leaves out finished rows the user checked off, and the group when none remain", () => {
+    const groups = groupProjectStatuses([
+      { id: "a", state: "done", dismissedAt: "2026-11-10T12:00:00.000Z" },
+      { id: "b", state: "done" },
+      { id: "c", state: "working" },
+    ]);
+    expect(groups.map(({ group, statuses }) => [group, statuses.map((s) => s.id)])).toEqual([
+      ["in-progress", ["c"]],
+      ["done", ["b"]],
+    ]);
+    expect(
+      groupProjectStatuses([{ id: "a", state: "done", dismissedAt: "2026-11-10T12:00:00.000Z" }]),
+    ).toEqual([]);
+  });
+});
+
+describe("decision labels", () => {
+  it("uses the short answer, and the old wording for records without one", () => {
+    expect(recommendationButtonLabel({ answer: "Pilot 5" })).toBe("Pilot 5");
+    expect(recommendationButtonLabel({})).toBe("Go with recommendation");
+  });
+
+  it("shows the full recommendation only when the button does not already say it", () => {
+    expect(showsFullRecommendation({ recommendation: "pilot with 5 inspectors" })).toBe(true);
+    expect(
+      showsFullRecommendation({ answer: "Pilot 5", recommendation: "pilot with 5 inspectors" }),
+    ).toBe(true);
+    expect(showsFullRecommendation({ answer: "Keep it", recommendation: "Keep it" })).toBe(false);
   });
 });
 
@@ -89,21 +150,19 @@ describe("decision deadlines", () => {
   it("reminds by default, and goes with the recommendation only on the user's opt-in", () => {
     expect(describeDecisionDeadline(decision({ deadline: undefined }), NOW)).toBeNull();
     expect(describeDecisionDeadline(decision(), NOW, "en-US")).toEqual({
-      text: "No reply by Fri: I'll remind you and keep waiting.",
+      text: "reminds you Fri if no reply",
       tone: "pending",
     });
     const armed = decision({ autoAccept: { openedAt: at(-HOUR), enabledAt: at(-60_000) } });
     expect(describeDecisionDeadline(armed, NOW, "en-US")).toEqual({
-      text: "No reply by Fri: I'll go with the recommendation.",
+      text: "goes ahead Fri if no reply",
       tone: "pending",
     });
   });
 
   it("drops an opt-in made for an earlier version of the decision", () => {
     const stale = decision({ autoAccept: { openedAt: at(-2 * HOUR), enabledAt: at(-2 * HOUR) } });
-    expect(describeDecisionDeadline(stale, NOW, "en-US")?.text).toBe(
-      "No reply by Fri: I'll remind you and keep waiting.",
-    );
+    expect(describeDecisionDeadline(stale, NOW, "en-US")?.text).toBe("reminds you Fri if no reply");
   });
 
   it("says how a passed deadline was handled, and nothing once the user replied", () => {
@@ -112,7 +171,7 @@ describe("decision deadlines", () => {
         decision({ deadline: at(-HOUR), deadlineHandled: { at: at(-HOUR), outcome: "reminded" } }),
         NOW,
       ),
-    ).toEqual({ text: "Deadline passed, still waiting on you.", tone: "overdue" });
+    ).toEqual({ text: "deadline passed, still waiting on you", tone: "overdue" });
     expect(describeDecisionDeadline(decision({ deadline: at(-60_000) }), NOW)?.tone).toBe(
       "overdue",
     );
@@ -121,7 +180,7 @@ describe("decision deadlines", () => {
         decision({ deadline: at(-HOUR), deadlineHandled: { at: at(-HOUR), outcome: "accepted" } }),
         NOW,
       ),
-    ).toEqual({ text: "Recommendation sent at the deadline.", tone: "handled" });
+    ).toEqual({ text: "recommendation sent at the deadline", tone: "handled" });
     expect(describeDecisionDeadline(decision({ answeredAt: at(-60_000) }), NOW)).toBeNull();
   });
 
@@ -131,7 +190,7 @@ describe("decision deadlines", () => {
       autoAccept: { openedAt: at(-HOUR), enabledAt: at(-HOUR) },
     });
     expect(describeDecisionDeadline(armedPast, NOW)).toEqual({
-      text: "Sending the recommendation now.",
+      text: "sending the recommendation now",
       tone: "handled",
     });
   });

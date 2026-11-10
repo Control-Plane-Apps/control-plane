@@ -8,7 +8,21 @@ import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const PROJECT_STATUS_LIMIT = 30;
 export const PROJECT_STATUS_TITLE_MAX = 60;
+/** Longest stored text for older records and expanded-only fields. */
 export const PROJECT_STATUS_LINE_MAX = 240;
+/**
+ * Hard limits on new writes for what the collapsed row shows. Older records
+ * written before these limits keep their longer text; the panel truncates it
+ * visually on the collapsed row and shows it in full when expanded.
+ */
+export const PROJECT_STATUS_SUMMARY_MAX = 60;
+export const PROJECT_STATUS_QUESTION_MAX = 80;
+/** The recommended answer as a button label. */
+export const PROJECT_STATUS_ANSWER_MAX = 24;
+/** Expanded-only detail. */
+export const PROJECT_STATUS_DETAIL_MAX = 600;
+/** Expanded-only, one or two sentences on why the recommendation. */
+export const PROJECT_STATUS_WHY_MAX = 240;
 export const PROJECT_STATUS_AGENTS_MAX = 8;
 /** A record the coordinator has not touched for this long reads as stale. */
 export const PROJECT_STATUS_STALE_MS = 24 * 60 * 60 * 1000;
@@ -33,12 +47,22 @@ export type ProjectStatusDeadlineOutcome = typeof ProjectStatusDeadlineOutcome.T
 
 /**
  * A question for the user on the workstream it blocks. `openedAt` names this
- * version: any change to the question, recommendation or deadline restamps
- * it, which drops the user's opt-in and owes a fresh deadline handling.
+ * version: any change to the question, recommendation, answer label or
+ * deadline restamps it, which drops the user's opt-in and owes a fresh
+ * deadline handling.
  */
 export const ProjectStatusDecision = Schema.Struct({
   question: TrimmedNonEmptyString,
+  /** The full recommended action; what "go with the recommendation" sends. */
   recommendation: TrimmedNonEmptyString,
+  /**
+   * The recommendation as a short button label, such as "Amend first". Absent
+   * on records written before labels existed; the panel then shows a generic
+   * label and the full recommendation in the expanded detail.
+   */
+  answer: Schema.optional(TrimmedNonEmptyString),
+  /** One or two sentences on why, shown when the row is expanded. */
+  why: Schema.optional(TrimmedNonEmptyString),
   deadline: Schema.optional(IsoDateTime),
   openedAt: IsoDateTime,
   /**
@@ -69,6 +93,12 @@ export const ProjectStatus = Schema.Struct({
   agents: Schema.optional(Schema.Array(ThreadId)),
   decision: Schema.optional(ProjectStatusDecision),
   updatedAt: IsoDateTime,
+  /**
+   * The user checked this finished workstream off; the panel hides it. Only
+   * the user's `project.status.dismiss` sets it, only on a `done` record, and
+   * any coordinator write that moves the record off `done` clears it.
+   */
+  dismissedAt: Schema.optional(IsoDateTime),
 });
 export type ProjectStatus = typeof ProjectStatus.Type;
 
@@ -88,6 +118,9 @@ export const ProjectStatusChange = Schema.Union([
     agents: Schema.optional(Schema.Array(ThreadId)),
     question: Schema.optional(TrimmedNonEmptyString),
     recommendation: Schema.optional(TrimmedNonEmptyString),
+    answer: Schema.optional(TrimmedNonEmptyString),
+    /** Empty string removes it. */
+    why: Schema.optional(Schema.String),
     deadline: Schema.optional(Schema.NullOr(IsoDateTime)),
     clearDecision: Schema.optional(Schema.Boolean),
   }),
@@ -127,6 +160,13 @@ export function sortProjectStatuses<T extends { readonly state: ProjectStatusSta
     .map((status, index) => ({ status, index }))
     .sort((a, b) => rank(a.status.state) - rank(b.status.state) || a.index - b.index)
     .map(({ status }) => status);
+}
+
+/** Records the panel shows: everything except finished work the user checked off. */
+export function visibleProjectStatuses<T extends { readonly dismissedAt?: string | undefined }>(
+  statuses: ReadonlyArray<T>,
+): T[] {
+  return statuses.filter((status) => status.dismissedAt === undefined);
 }
 
 /** Workstreams waiting on the user. A question they already answered waits on the coordinator. */

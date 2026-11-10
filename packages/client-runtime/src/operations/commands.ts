@@ -33,6 +33,7 @@ export type UpdateProjectInput = CommandInput<"project.meta.update">;
 export type ReorderProjectInput = CommandInput<"project.reorder">;
 export type DeleteProjectInput = CommandInput<"project.delete">;
 export type AutomateProjectStatusInput = CommandInput<"project.status.automate">;
+export type DismissProjectStatusInput = CommandInput<"project.status.dismiss">;
 export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
@@ -137,6 +138,19 @@ export const automateProjectStatus: (input: AutomateProjectStatusInput) => Comma
       createdAt: metadata.createdAt,
     });
   });
+
+/** The user checks a finished Status row off, or undoes it. */
+export const dismissProjectStatus: (input: DismissProjectStatusInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.dismissProjectStatus",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "project.status.dismiss",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
 
 export const deleteProject: (input: DeleteProjectInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.deleteProject",

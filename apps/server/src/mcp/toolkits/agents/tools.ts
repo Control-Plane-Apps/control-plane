@@ -1,8 +1,13 @@
 import {
   IsoDateTime,
   McpCapabilityUnavailableError,
+  PROJECT_STATUS_ANSWER_MAX,
+  PROJECT_STATUS_DETAIL_MAX,
   PROJECT_STATUS_LINE_MAX,
+  PROJECT_STATUS_QUESTION_MAX,
+  PROJECT_STATUS_SUMMARY_MAX,
   PROJECT_STATUS_TITLE_MAX,
+  PROJECT_STATUS_WHY_MAX,
   ProjectStatus,
   ProjectStatusId,
   ProjectStatusState,
@@ -432,10 +437,6 @@ export const ScheduleDeleteResult = Schema.Struct({
 });
 export type ScheduleDeleteResult = typeof ScheduleDeleteResult.Type;
 
-const StatusLine = Schema.String.annotate({
-  description: `At most ${PROJECT_STATUS_LINE_MAX} characters.`,
-});
-
 export const StatusSetInput = Schema.Struct({
   id: ProjectStatusId.annotate({
     description:
@@ -454,12 +455,12 @@ export const StatusSetInput = Schema.Struct({
   ),
   summary: Schema.optional(
     TrimmedNonEmptyString.annotate({
-      description: `First line: where it stands. Required for a new workstream. At most ${PROJECT_STATUS_LINE_MAX} characters.`,
+      description: `One line on where it stands, always visible. Required for a new workstream. At most ${PROJECT_STATUS_SUMMARY_MAX} characters: compress, and put the rest in detail.`,
     }),
   ),
   detail: Schema.optional(
-    StatusLine.annotate({
-      description: "Optional second line: what is still moving or what is not. Empty removes it.",
+    Schema.String.annotate({
+      description: `Shown only when the user expands the row: what is moving, what is not. At most ${PROJECT_STATUS_DETAIL_MAX} characters. Empty removes it.`,
     }),
   ),
   agents: Schema.optional(
@@ -470,17 +471,28 @@ export const StatusSetInput = Schema.Struct({
   ),
   question: Schema.optional(
     TrimmedNonEmptyString.annotate({
-      description:
-        "A decision only the user can make, phrased as a question. Needs a recommendation.",
+      description: `A decision only the user can make, as one plain question. At most ${PROJECT_STATUS_QUESTION_MAX} characters. Needs a recommendation and an answer label.`,
     }),
   ),
   recommendation: Schema.optional(
-    TrimmedNonEmptyString.annotate({ description: "What you recommend, in a short phrase." }),
+    TrimmedNonEmptyString.annotate({
+      description: `The full action you recommend, which is what you receive if the user goes with it. At most ${PROJECT_STATUS_LINE_MAX} characters.`,
+    }),
+  ),
+  answer: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description: `Your recommended answer written as its button label, such as "Amend first". At most ${PROJECT_STATUS_ANSWER_MAX} characters. Required whenever you ask or change a question.`,
+    }),
+  ),
+  why: Schema.optional(
+    Schema.String.annotate({
+      description: `One or two sentences on why you recommend it, shown when the row is expanded. At most ${PROJECT_STATUS_WHY_MAX} characters. Empty removes it.`,
+    }),
   ),
   deadline: Schema.optional(
     Schema.String.annotate({
       description:
-        "ISO date-time by which you need the answer, in the future. Empty removes it. When it passes without a reply you get one reminder and the question stays open, unless the user opted in to your recommendation for this decision, in which case it is sent to you as their answer. Changing the question, recommendation or deadline cancels that opt-in.",
+        "ISO date-time by which you need the answer, in the future. Empty removes it. When it passes without a reply you get one reminder and the question stays open, unless the user opted in to your recommendation for this decision, in which case it is sent to you as their answer. Changing the question, recommendation, answer or deadline cancels that opt-in.",
     }),
   ),
   clearDecision: Schema.optional(
