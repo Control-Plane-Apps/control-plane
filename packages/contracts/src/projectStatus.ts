@@ -93,6 +93,12 @@ export const ProjectStatus = Schema.Struct({
   agents: Schema.optional(Schema.Array(ThreadId)),
   decision: Schema.optional(ProjectStatusDecision),
   updatedAt: IsoDateTime,
+  /**
+   * The user checked this finished workstream off; the panel hides it. Only
+   * the user's `project.status.dismiss` sets it, only on a `done` record, and
+   * any coordinator write that moves the record off `done` clears it.
+   */
+  dismissedAt: Schema.optional(IsoDateTime),
 });
 export type ProjectStatus = typeof ProjectStatus.Type;
 
@@ -154,6 +160,13 @@ export function sortProjectStatuses<T extends { readonly state: ProjectStatusSta
     .map((status, index) => ({ status, index }))
     .sort((a, b) => rank(a.status.state) - rank(b.status.state) || a.index - b.index)
     .map(({ status }) => status);
+}
+
+/** Records the panel shows: everything except finished work the user checked off. */
+export function visibleProjectStatuses<T extends { readonly dismissedAt?: string | undefined }>(
+  statuses: ReadonlyArray<T>,
+): T[] {
+  return statuses.filter((status) => status.dismissedAt === undefined);
 }
 
 /** Workstreams waiting on the user. A question they already answered waits on the coordinator. */

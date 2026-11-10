@@ -126,6 +126,9 @@ shows how many workstreams need you, and the same rows appear above the coordina
   recommendation, its button label or the deadline turns it back off.
 - A row the coordinator has not updated for a day is marked **Stale**. Expand it and choose **Ask
   for update** to start a reply asking for one.
+- Check off a **Done** row with the check button beside it to hide it. **Undo** in the
+  confirmation brings it back. The thread and its history stay as they are, and the row shows
+  again if the coordinator moves that workstream back into progress.
 
 Status is not shown on phone and iPad yet.
 

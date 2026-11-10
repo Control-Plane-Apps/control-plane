@@ -5,6 +5,7 @@ import {
   parseStatusReply,
   sortProjectStatuses,
   statusReplyText,
+  visibleProjectStatuses,
   type OrchestrationThreadShell,
   type ProjectStatus,
   type ProjectStatusDecision,
@@ -47,11 +48,16 @@ export function statusGroupOf(status: Pick<ProjectStatus, "state" | "decision">)
   }
 }
 
-/** Non-empty groups in panel order, each keeping the coordinator's order. */
-export function groupProjectStatuses<T extends Pick<ProjectStatus, "state" | "decision">>(
+/**
+ * Non-empty groups in panel order, each keeping the coordinator's order.
+ * Finished rows the user checked off are left out.
+ */
+export function groupProjectStatuses<
+  T extends Pick<ProjectStatus, "state" | "decision" | "dismissedAt">,
+>(
   statuses: ReadonlyArray<T>,
 ): ReadonlyArray<{ readonly group: StatusGroup; readonly statuses: ReadonlyArray<T> }> {
-  const sorted = sortProjectStatuses(statuses);
+  const sorted = sortProjectStatuses(visibleProjectStatuses(statuses));
   return STATUS_GROUP_ORDER.flatMap((group) => {
     const members = sorted.filter((status) => statusGroupOf(status) === group);
     return members.length === 0 ? [] : [{ group, statuses: members }];

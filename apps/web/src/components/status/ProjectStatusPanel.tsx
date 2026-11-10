@@ -16,7 +16,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
-import { CheckIcon, ChevronRightIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon, CircleCheckIcon } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 
 import { cn } from "../../lib/utils";
@@ -151,6 +151,56 @@ function ProjectStatusPanelContent(
           : "The decision changed since you saw it. Review it and try again.",
     });
   };
+  const dismissStatusCommand = useAtomCommand(projectEnvironment.dismissStatus, {
+    reportFailure: false,
+  });
+  // Rows being checked off or restored, by workstream id.
+  const [dismissing, setDismissing] = useState<ReadonlySet<string>>(() => new Set());
+  const setDismissed = async (status: ProjectStatus, dismissed: boolean): Promise<boolean> => {
+    setDismissing((current) => new Set(current).add(status.id));
+    const result = await dismissStatusCommand({
+      environmentId: project.environmentId,
+      input: {
+        projectId: project.id,
+        statusId: status.id,
+        updatedAt: status.updatedAt,
+        dismissed,
+      },
+    });
+    setDismissing((current) => {
+      const next = new Set(current);
+      next.delete(status.id);
+      return next;
+    });
+    if (result._tag === "Success") return true;
+    if (isAtomCommandInterrupted(result)) return false;
+    const error = squashAtomCommandFailure(result);
+    toastManager.add({
+      type: "error",
+      title: dismissed
+        ? `Could not check off ${status.title}`
+        : `Could not restore ${status.title}`,
+      description:
+        error instanceof Error
+          ? error.message
+          : "The workstream changed since you saw it. Review it and try again.",
+    });
+    return false;
+  };
+  const checkOff = async (status: ProjectStatus) => {
+    if (!(await setDismissed(status, true))) return;
+    const toastId = toastManager.add({
+      type: "success",
+      title: `Checked off ${status.title}`,
+      actionProps: {
+        children: "Undo",
+        onClick: () => {
+          toastManager.close(toastId);
+          void setDismissed(status, false);
+        },
+      },
+    });
+  };
   const openThread = (threadId: ThreadId) =>
     void navigate({
       to: "/$environmentId/$threadId",
@@ -216,6 +266,8 @@ function ProjectStatusPanelContent(
                         return live === null ? [] : [{ threadId, ...live }];
                       })}
                       onOpenThread={openThread}
+                      dismissing={dismissing.has(status.id)}
+                      onCheckOff={() => void checkOff(status)}
                       actions={props}
                     />
                   ))}
@@ -251,6 +303,8 @@ function StatusRow(props: {
     readonly tone: "working" | "attention" | "idle";
   }>;
   readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly dismissing: boolean;
+  readonly onCheckOff: () => void;
   readonly actions: ProjectStatusActions;
 }) {
   const { status, group, now, expanded, actions } = props;
@@ -265,42 +319,59 @@ function StatusRow(props: {
   const answered = decision?.answeredAt !== undefined ? decision : undefined;
   return (
     <li className="border-border/50 border-t">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={expanded ? detailsId : undefined}
-        className="flex w-full min-w-0 cursor-pointer flex-col gap-0.5 px-3 py-2.5 text-start hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-        onClick={props.onToggle}
-      >
-        <span className="flex w-full min-w-0 items-center gap-2">
-          <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", GROUP_DOT[group])} />
+      <div className="flex min-w-0 items-start">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={expanded ? detailsId : undefined}
+          className="flex min-w-0 flex-1 cursor-pointer flex-col gap-0.5 px-3 py-2.5 text-start hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+          onClick={props.onToggle}
+        >
+          <span className="flex w-full min-w-0 items-center gap-2">
+            <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", GROUP_DOT[group])} />
+            <span
+              className={cn(
+                "min-w-0 flex-1 font-medium text-sm",
+                expanded ? "break-words" : "truncate",
+              )}
+            >
+              {status.title}
+            </span>
+            {stale ? <span className="shrink-0 text-warning-foreground text-xs">Stale</span> : null}
+            <ChevronRightIcon
+              aria-hidden
+              className={cn(
+                "size-3.5 shrink-0 text-muted-foreground transition-transform duration-150",
+                expanded && "rotate-90",
+              )}
+            />
+          </span>
           <span
             className={cn(
-              "min-w-0 flex-1 font-medium text-sm",
+              "block w-full ps-3.5 pe-5.5 text-[13px] text-muted-foreground",
+              // Collapsed rows truncate visually; the full line shows once expanded.
               expanded ? "break-words" : "truncate",
             )}
           >
-            {status.title}
+            {status.summary}
           </span>
-          {stale ? <span className="shrink-0 text-warning-foreground text-xs">Stale</span> : null}
-          <ChevronRightIcon
-            aria-hidden
-            className={cn(
-              "size-3.5 shrink-0 text-muted-foreground transition-transform duration-150",
-              expanded && "rotate-90",
-            )}
-          />
-        </span>
-        <span
-          className={cn(
-            "block w-full ps-3.5 pe-5.5 text-[13px] text-muted-foreground",
-            // Collapsed rows truncate visually; the full line shows once expanded.
-            expanded ? "break-words" : "truncate",
-          )}
-        >
-          {status.summary}
-        </span>
-      </button>
+        </button>
+        {group === "done" ? (
+          // Checked-off rows leave the panel; Undo in the toast brings them back.
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="me-1.5 mt-1.5 shrink-0 text-muted-foreground hover:text-foreground"
+            aria-label={`Check off ${status.title}`}
+            title="Check off"
+            disabled={props.dismissing}
+            onClick={props.onCheckOff}
+          >
+            <CircleCheckIcon />
+          </Button>
+        ) : null}
+      </div>
       {expanded ? (
         <div
           id={detailsId}

@@ -39,6 +39,7 @@ import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 type StatusSetCommand = Extract<OrchestrationCommand, { type: "project.status.set" }>;
 type StatusDeadlineCommand = Extract<OrchestrationCommand, { type: "project.status.deadline" }>;
 type StatusAutomateCommand = Extract<OrchestrationCommand, { type: "project.status.automate" }>;
+type StatusDismissCommand = Extract<OrchestrationCommand, { type: "project.status.dismiss" }>;
 type UpsertChange = Extract<StatusSetCommand["change"], { kind: "upsert" }>;
 
 function invariant(commandType: string, detail: string) {
@@ -204,6 +205,9 @@ export function applyStatusUpsert(input: {
         ? "working"
         : requested;
   const detail = optionalText(change.detail, stored?.detail);
+  // A checked-off row stays hidden while it stays done; any move back to
+  // active work shows it again, so new work or a new question is never hidden.
+  const dismissedAt = state === "done" ? stored?.dismissedAt : undefined;
   return {
     id: change.id,
     title,
@@ -213,11 +217,12 @@ export function applyStatusUpsert(input: {
     ...(agents !== undefined ? { agents } : {}),
     ...(decision !== undefined ? { decision } : {}),
     updatedAt: now,
+    ...(dismissedAt !== undefined ? { dismissedAt } : {}),
   };
 }
 
 function statusEvent(
-  command: StatusSetCommand | StatusDeadlineCommand | StatusAutomateCommand,
+  command: StatusSetCommand | StatusDeadlineCommand | StatusAutomateCommand | StatusDismissCommand,
   statusId: string,
   status: ProjectStatus | null,
 ) {
@@ -259,7 +264,7 @@ export const decideStatusSet = Effect.fn("decideStatusSet")(function* (
   readModel: OrchestrationReadModel,
   command: StatusSetCommand,
 ): Effect.fn.Return<
-  PlannedOrchestrationEvent,
+  PlannedOrchestrationEvent | ReadonlyArray<PlannedOrchestrationEvent>,
   OrchestrationCommandInvariantError | PlatformError.PlatformError,
   Crypto.Crypto
 > {
@@ -285,15 +290,76 @@ export const decideStatusSet = Effect.fn("decideStatusSet")(function* (
     }
     return yield* statusEvent(command, change.id, null);
   }
+  // A full board makes room by dropping the longest checked-off row: the user
+  // already hid it, and its history stays in the coordinator's thread.
+  const evicted =
+    statuses.length >= PROJECT_STATUS_LIMIT && !statuses.some((status) => status.id === change.id)
+      ? oldestDismissed(statuses)
+      : undefined;
   const next = applyStatusUpsert({
     readModel,
     projectId: command.projectId,
-    statuses,
+    statuses:
+      evicted === undefined ? statuses : statuses.filter((status) => status.id !== evicted.id),
     change,
     now: command.createdAt,
   });
   if (typeof next === "string") return yield* invariant(command.type, next);
-  return yield* statusEvent(command, change.id, next);
+  const written = yield* statusEvent(command, change.id, next);
+  if (evicted === undefined) return written;
+  return [yield* statusEvent(command, evicted.id, null), written];
+});
+
+function oldestDismissed(statuses: ReadonlyArray<ProjectStatus>): ProjectStatus | undefined {
+  let oldest: ProjectStatus | undefined;
+  for (const status of statuses) {
+    if (status.dismissedAt === undefined) continue;
+    if (oldest === undefined || Date.parse(status.dismissedAt) < Date.parse(oldest.dismissedAt!)) {
+      oldest = status;
+    }
+  }
+  return oldest;
+}
+
+/**
+ * `project.status.dismiss`: the user checks a finished row off, or undoes it.
+ * Dismissing needs the record to still be done at the version the user saw.
+ * Undo only clears the mark, keeping every coordinator edit made since.
+ */
+export const decideStatusDismiss = Effect.fn("decideStatusDismiss")(function* (
+  readModel: OrchestrationReadModel,
+  command: StatusDismissCommand,
+): Effect.fn.Return<
+  PlannedOrchestrationEvent,
+  OrchestrationCommandInvariantError | PlatformError.PlatformError,
+  Crypto.Crypto
+> {
+  const project = readModel.projects.find((entry) => entry.id === command.projectId);
+  const status =
+    project?.deletedAt === null && project.assistant?.archivedAt == null
+      ? project.assistant?.statuses?.find((entry) => entry.id === command.statusId)
+      : undefined;
+  if (status === undefined) {
+    return yield* invariant(command.type, "That workstream is no longer on the board.");
+  }
+  if (command.dismissed) {
+    if (status.dismissedAt !== undefined) {
+      return yield* invariant(command.type, "That workstream is already checked off.");
+    }
+    if (status.state !== "done" || status.updatedAt !== command.updatedAt) {
+      return yield* invariant(
+        command.type,
+        "The coordinator updated this workstream since you saw it. Review it again.",
+      );
+    }
+    // Keeps updatedAt: checking a row off is not the coordinator checking in.
+    return yield* statusEvent(command, status.id, { ...status, dismissedAt: command.createdAt });
+  }
+  if (status.dismissedAt === undefined) {
+    return yield* invariant(command.type, "That workstream is already showing.");
+  }
+  const { dismissedAt: _undone, ...shown } = status;
+  return yield* statusEvent(command, status.id, shown);
 });
 
 /**

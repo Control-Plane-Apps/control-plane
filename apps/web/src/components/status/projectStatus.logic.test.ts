@@ -70,6 +70,21 @@ describe("status groups", () => {
     ]);
     expect(groupProjectStatuses([])).toEqual([]);
   });
+
+  it("leaves out finished rows the user checked off, and the group when none remain", () => {
+    const groups = groupProjectStatuses([
+      { id: "a", state: "done", dismissedAt: "2026-11-10T12:00:00.000Z" },
+      { id: "b", state: "done" },
+      { id: "c", state: "working" },
+    ]);
+    expect(groups.map(({ group, statuses }) => [group, statuses.map((s) => s.id)])).toEqual([
+      ["in-progress", ["c"]],
+      ["done", ["b"]],
+    ]);
+    expect(
+      groupProjectStatuses([{ id: "a", state: "done", dismissedAt: "2026-11-10T12:00:00.000Z" }]),
+    ).toEqual([]);
+  });
 });
 
 describe("decision labels", () => {

@@ -7,19 +7,13 @@ import {
   TurnId,
   type ComposerContextRecord,
 } from "@t3tools/contracts";
-import {
-  act,
-  createRef,
-  useLayoutEffect,
-  type ComponentProps,
-  type ReactNode,
-  type Ref,
-} from "react";
+import { act, createRef, useLayoutEffect, type ReactNode, type Ref } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { LegendListRef, MaintainScrollAtEndOptions } from "@legendapp/list/react";
 import { shouldUseRestingComposerLayout } from "../composerFooterLayout";
+import type { AssistantTimeline } from "./assistantThreadView.logic";
 import { useComposerFocusState } from "./useComposerFocusState";
 
 vi.mock("@legendapp/list/react", async () => {
@@ -742,7 +736,7 @@ describe("MessagesTimeline", () => {
             role: "coordinator",
             projectThreadTitle: () => null,
             onOpenThread: () => {},
-          } as unknown as ComponentProps<typeof MessagesTimeline>["assistantTimeline"]
+          } as unknown as AssistantTimeline
         }
         timelineEntries={[
           buildUserTimelineEntry(

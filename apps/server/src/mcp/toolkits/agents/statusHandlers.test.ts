@@ -1,6 +1,9 @@
 import { RemoteAgentsLocalOnly } from "../../../agentMachines/testFixtures.ts";
 import {
   CommandId,
+  PROJECT_STATUS_LIMIT,
+  countStatusesNeedingUser,
+  visibleProjectStatuses,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -792,6 +795,141 @@ describe("StatusDeadlineReactor", () => {
         yield* reactor.sweep;
         const [sent] = yield* reminders;
         expect(sent?.text).toContain("This is a reminder, not an answer.");
+      }),
+    ),
+  );
+});
+
+describe("checking off finished workstreams", () => {
+  const DONE = {
+    id: "payouts",
+    title: "Payouts",
+    summary: "Shipped to every inspector.",
+    state: "done",
+  } as const;
+
+  const dismiss = (dismissed: boolean, updatedAt: string, statusId = "payouts") =>
+    Effect.flatMap(DateTime.now, (now) =>
+      dispatch({
+        type: "project.status.dismiss",
+        commandId: nextCommandId(),
+        projectId: PROJECT_ID,
+        statusId,
+        updatedAt,
+        dismissed,
+        createdAt: DateTime.formatIso(now),
+      }),
+    );
+
+  it.effect("hides a done row for the user and brings it back on undo, keeping the record", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, DONE);
+        yield* TestClock.adjust("1 minute");
+        yield* dismiss(true, NOW);
+        const hidden = statusOf(yield* readMarker(PROJECT_ID), "payouts");
+        expect(hidden.dismissedAt).toBe("2026-10-28T12:01:00.000Z");
+        // A user action, not the coordinator checking in.
+        expect(hidden.updatedAt).toBe(NOW);
+        expect(visibleProjectStatuses((yield* readMarker(PROJECT_ID)).statuses ?? [])).toEqual([]);
+
+        yield* dismiss(false, NOW);
+        const shown = statusOf(yield* readMarker(PROJECT_ID), "payouts");
+        expect(shown).toEqual({ ...hidden, dismissedAt: undefined });
+        expect(shown.dismissedAt).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("refuses a stale check-off once the row is active again", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, DONE);
+        yield* TestClock.adjust("1 minute");
+        // The coordinator reopens it with a question after the user saw it done.
+        yield* tools.set(COORDINATOR, { ...PAYOUTS, deadline: "" });
+        const stale = yield* dismiss(true, NOW).pipe(Effect.flip);
+        expect(stale.message).toContain("updated this workstream since you saw it");
+        // Even at the current version, only a done row can be checked off.
+        const current = statusOf(yield* readMarker(PROJECT_ID), "payouts").updatedAt;
+        const active = yield* dismiss(true, current).pipe(Effect.flip);
+        expect(active.message).toContain("updated this workstream since you saw it");
+        const marker = yield* readMarker(PROJECT_ID);
+        expect(statusOf(marker, "payouts").dismissedAt).toBeUndefined();
+        expect(countStatusesNeedingUser(marker.statuses)).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect("shows a checked-off row again when the coordinator moves it off done", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, DONE);
+        yield* dismiss(true, NOW);
+        // Staying done keeps it hidden.
+        yield* tools.set(COORDINATOR, { id: "payouts", summary: "Shipped; 1099s filed." });
+        expect(statusOf(yield* readMarker(PROJECT_ID), "payouts").dismissedAt).toBeDefined();
+        // A new question on it is never hidden.
+        yield* tools.set(COORDINATOR, { ...PAYOUTS, deadline: "" });
+        const marker = yield* readMarker(PROJECT_ID);
+        expect(statusOf(marker, "payouts").dismissedAt).toBeUndefined();
+        expect(countStatusesNeedingUser(marker.statuses)).toBe(1);
+        // Undo after that is refused rather than rewriting anything.
+        const undo = yield* dismiss(false, NOW).pipe(Effect.flip);
+        expect(undo.message).toContain("already showing");
+        expect(statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.question).toBe(
+          PAYOUTS.question,
+        );
+      }),
+    ),
+  );
+
+  it.effect("keeps the coordinator's newer edits when the user undoes", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, DONE);
+        yield* dismiss(true, NOW);
+        yield* TestClock.adjust("1 minute");
+        yield* tools.set(COORDINATOR, { id: "payouts", summary: "Shipped; 1099s filed." });
+        yield* dismiss(false, NOW);
+        const shown = statusOf(yield* readMarker(PROJECT_ID), "payouts");
+        expect(shown.summary).toBe("Shipped; 1099s filed.");
+        expect(shown.updatedAt).toBe("2026-10-28T12:01:00.000Z");
+        expect(shown.dismissedAt).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("makes room on a full board by dropping the oldest checked-off row", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        for (let index = 0; index < PROJECT_STATUS_LIMIT; index += 1) {
+          yield* tools.set(COORDINATOR, {
+            id: `w${index}`,
+            title: `Workstream ${index}`,
+            summary: "Done.",
+            state: "done",
+          });
+        }
+        const full = yield* tools
+          .set(COORDINATOR, { id: "next", title: "Next", summary: "Starting." })
+          .pipe(Effect.flip);
+        expect(String(full)).toContain(`at most ${PROJECT_STATUS_LIMIT} workstreams`);
+
+        yield* dismiss(true, NOW, "w3");
+        yield* TestClock.adjust("1 minute");
+        yield* dismiss(true, NOW, "w1");
+        yield* tools.set(COORDINATOR, { id: "next", title: "Next", summary: "Starting." });
+        const ids = ((yield* readMarker(PROJECT_ID)).statuses ?? []).map((status) => status.id);
+        expect(ids).toHaveLength(PROJECT_STATUS_LIMIT);
+        expect(ids).not.toContain("w3");
+        expect(ids).toContain("w1");
+        expect(ids).toContain("next");
       }),
     ),
   );
