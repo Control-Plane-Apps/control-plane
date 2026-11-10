@@ -104,7 +104,8 @@ function nextDecision(
     (change.question !== undefined && change.question !== stored?.question) ||
     (change.recommendation !== undefined && change.recommendation !== stored?.recommendation);
   const answer = change.answer ?? (reworded ? undefined : stored?.answer);
-  const why = optionalText(change.why, stored?.why);
+  // The why explains one recommendation; a reworded decision needs its own.
+  const why = optionalText(change.why, reworded ? undefined : stored?.why);
   // The user opted in to a specific recommendation by a specific time; any
   // change to what they saw makes it a new decision. The "why" explains the
   // recommendation without changing it, so it keeps the version.

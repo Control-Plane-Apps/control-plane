@@ -114,6 +114,20 @@ describe("compact row limits", () => {
     );
   });
 
+  it("drops the old why when the recommendation is reworded", () => {
+    const withWhy = upsert({ why: "CI is green." }) as ProjectStatus;
+    const next = upsert({ recommendation: "Hold until QA on Monday", answer: "Hold" }, [
+      withWhy,
+    ]) as ProjectStatus;
+    expect(next.decision?.recommendation).toBe("Hold until QA on Monday");
+    expect(next.decision?.why).toBeUndefined();
+    const explained = upsert(
+      { recommendation: "Hold until QA on Monday", answer: "Hold", why: "QA finds more." },
+      [withWhy],
+    ) as ProjectStatus;
+    expect(explained.decision?.why).toBe("QA finds more.");
+  });
+
   it("clears a why without needing a decision", () => {
     const plain: ProjectStatus = {
       id: "release",

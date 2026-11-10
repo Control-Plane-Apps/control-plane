@@ -101,6 +101,10 @@ function ProjectStatusPanelContent(
   const { project, threadRef } = props;
   const navigate = useNavigate();
   const now = useMinuteNow();
+  const groupIdPrefix = useId();
+  const hiddenCount = (project.assistant?.statuses ?? []).filter(
+    (status) => status.dismissedAt !== undefined,
+  ).length;
   const groups = useMemo(
     () => groupProjectStatuses(project.assistant?.statuses ?? []),
     [project.assistant?.statuses],
@@ -222,18 +226,24 @@ function ProjectStatusPanelContent(
       <ScrollArea className="min-h-0 flex-1">
         {groups.length === 0 ? (
           <div className="flex flex-col gap-1 px-3 py-4 text-muted-foreground">
-            <p>No workstreams yet.</p>
-            <p className="text-xs">
-              The coordinator keeps one line per workstream here as agents report in, and flags
-              anything that needs your call.
-            </p>
+            {hiddenCount > 0 ? (
+              <p>Nothing open. You checked off every finished workstream.</p>
+            ) : (
+              <>
+                <p>No workstreams yet.</p>
+                <p className="text-xs">
+                  The coordinator keeps one line per workstream here as agents report in, and flags
+                  anything that needs your call.
+                </p>
+              </>
+            )}
           </div>
         ) : (
           <div className="flex flex-col pb-2">
             {groups.map(({ group, statuses: members }) => (
-              <section key={group} aria-labelledby={`status-group-${group}`}>
+              <section key={group} aria-labelledby={`${groupIdPrefix}-${group}`}>
                 <h3
-                  id={`status-group-${group}`}
+                  id={`${groupIdPrefix}-${group}`}
                   className={cn(
                     "flex items-center gap-1.5 px-3 pt-3 pb-1.5 font-medium text-xs",
                     group === "needs-you" ? "text-warning-foreground" : "text-muted-foreground",
