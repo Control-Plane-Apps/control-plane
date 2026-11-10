@@ -63,18 +63,24 @@ function nextDecision(
   stored: ProjectStatusDecision | undefined,
   now: string,
 ): { readonly decision: ProjectStatusDecision | undefined } | string {
+  // An empty "why" only clears; it never opens or reshapes a decision.
+  const setsWhy = change.why !== undefined && change.why.trim().length > 0;
   const touchesDecision =
     change.question !== undefined ||
     change.recommendation !== undefined ||
     change.answer !== undefined ||
-    change.why !== undefined ||
+    setsWhy ||
     change.deadline !== undefined;
   if (change.clearDecision === true) {
     return touchesDecision
       ? "Pass clearDecision alone, or a new question without clearDecision."
       : { decision: undefined };
   }
-  if (!touchesDecision) return { decision: stored };
+  if (!touchesDecision) {
+    if (stored === undefined || change.why === undefined) return { decision: stored };
+    const { why: _cleared, ...rest } = stored;
+    return { decision: rest };
+  }
 
   const question = change.question ?? stored?.question;
   const recommendation = change.recommendation ?? stored?.recommendation;
@@ -90,7 +96,13 @@ function nextDecision(
       return "The deadline must be in the future.";
     }
   }
-  const answer = change.answer ?? stored?.answer;
+  // A label belongs to the recommendation it names: a new question or
+  // recommendation needs its own, so the button never says one thing and
+  // sends another.
+  const reworded =
+    (change.question !== undefined && change.question !== stored?.question) ||
+    (change.recommendation !== undefined && change.recommendation !== stored?.recommendation);
+  const answer = change.answer ?? (reworded ? undefined : stored?.answer);
   const why = optionalText(change.why, stored?.why);
   // The user opted in to a specific recommendation by a specific time; any
   // change to what they saw makes it a new decision. The "why" explains the

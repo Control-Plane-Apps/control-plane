@@ -93,4 +93,37 @@ describe("compact row limits", () => {
     expect(labelled.decision?.openedAt).toBe(LATER);
     expect(labelled.decision?.autoAccept).toBeUndefined();
   });
+
+  it("needs a fresh label for a new question or recommendation, not the old one", () => {
+    const labelled = upsert({ question: "Ship now?", answer: "Ship now" }) as ProjectStatus;
+    const statuses = [labelled];
+    expect(upsert({ recommendation: "Hold until QA signs off Monday" }, statuses)).toBe(
+      "A decision needs your recommended answer as a short button label (answer).",
+    );
+    expect(upsert({ question: "Wait for QA?" }, statuses)).toBe(
+      "A decision needs your recommended answer as a short button label (answer).",
+    );
+    // A deadline-only change keeps the label it already had.
+    const moved = upsert({ deadline: "2026-11-13T17:00:00.000Z" }, statuses) as ProjectStatus;
+    expect(moved.decision?.answer).toBe("Ship now");
+  });
+
+  it("asks an older decision for a label when its deadline moves", () => {
+    expect(upsert({ deadline: "2026-11-13T17:00:00.000Z" })).toBe(
+      "A decision needs your recommended answer as a short button label (answer).",
+    );
+  });
+
+  it("clears a why without needing a decision", () => {
+    const plain: ProjectStatus = {
+      id: "release",
+      title: "R",
+      state: "working",
+      summary: "S",
+      updatedAt: NOW,
+    };
+    expect(upsert({ why: "" }, [plain])).toMatchObject({ summary: "S" });
+    const withWhy = upsert({ why: "Because." }) as ProjectStatus;
+    expect((upsert({ why: "" }, [withWhy]) as ProjectStatus).decision?.why).toBeUndefined();
+  });
 });

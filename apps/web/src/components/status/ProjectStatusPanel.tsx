@@ -42,7 +42,6 @@ import {
   isStatusStale,
   recommendationButtonLabel,
   showsFullRecommendation,
-  summaryNeedsExpansion,
   type StatusGroup,
 } from "./projectStatus.logic";
 import { useQueuedMessages } from "../../queuedMessageStore";
@@ -269,13 +268,20 @@ function StatusRow(props: {
       <button
         type="button"
         aria-expanded={expanded}
-        aria-controls={detailsId}
+        aria-controls={expanded ? detailsId : undefined}
         className="flex w-full min-w-0 cursor-pointer flex-col gap-0.5 px-3 py-2.5 text-start hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         onClick={props.onToggle}
       >
         <span className="flex w-full min-w-0 items-center gap-2">
           <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", GROUP_DOT[group])} />
-          <span className="min-w-0 flex-1 truncate font-medium text-sm">{status.title}</span>
+          <span
+            className={cn(
+              "min-w-0 flex-1 font-medium text-sm",
+              expanded ? "break-words" : "truncate",
+            )}
+          >
+            {status.title}
+          </span>
           {stale ? <span className="shrink-0 text-warning-foreground text-xs">Stale</span> : null}
           <ChevronRightIcon
             aria-hidden
@@ -285,7 +291,13 @@ function StatusRow(props: {
             )}
           />
         </span>
-        <span className="block w-full truncate ps-3.5 pe-5.5 text-[13px] text-muted-foreground">
+        <span
+          className={cn(
+            "block w-full ps-3.5 pe-5.5 text-[13px] text-muted-foreground",
+            // Collapsed rows truncate visually; the full line shows once expanded.
+            expanded ? "break-words" : "truncate",
+          )}
+        >
           {status.summary}
         </span>
       </button>
@@ -294,9 +306,6 @@ function StatusRow(props: {
           id={detailsId}
           className="flex flex-col gap-1.5 ps-6.5 pe-3 pb-3 text-[13px] text-muted-foreground"
         >
-          {summaryNeedsExpansion(status.summary) ? (
-            <p className="text-foreground/80">{status.summary}</p>
-          ) : null}
           {status.detail !== undefined ? <p>{status.detail}</p> : null}
           {decision?.why !== undefined ? <p>Why: {decision.why}</p> : null}
           {decision !== undefined && showsFullRecommendation(decision) ? (

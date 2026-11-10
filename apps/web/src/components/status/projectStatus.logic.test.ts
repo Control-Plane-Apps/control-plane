@@ -1,6 +1,5 @@
 import {
   PROJECT_STATUS_STALE_MS,
-  PROJECT_STATUS_SUMMARY_MAX,
   parseStatusReply,
   sortProjectStatuses,
   type OrchestrationThreadShell,
@@ -25,7 +24,6 @@ import {
   sentRecommendationKeys,
   showsFullRecommendation,
   statusGroupOf,
-  summaryNeedsExpansion,
 } from "./projectStatus.logic";
 
 // A Wednesday at noon, local time, so day arithmetic does not depend on the runner's zone.
@@ -86,11 +84,6 @@ describe("decision labels", () => {
       showsFullRecommendation({ answer: "Pilot 5", recommendation: "pilot with 5 inspectors" }),
     ).toBe(true);
     expect(showsFullRecommendation({ answer: "Keep it", recommendation: "Keep it" })).toBe(false);
-  });
-
-  it("expands a summary only past the one-line limit, never cutting the data", () => {
-    expect(summaryNeedsExpansion("x".repeat(PROJECT_STATUS_SUMMARY_MAX))).toBe(false);
-    expect(summaryNeedsExpansion("x".repeat(PROJECT_STATUS_SUMMARY_MAX + 1))).toBe(true);
   });
 });
 

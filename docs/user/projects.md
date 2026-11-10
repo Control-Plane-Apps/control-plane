@@ -123,7 +123,7 @@ shows how many workstreams need you, and the same rows appear above the coordina
 - A question can have a deadline. When it passes, the coordinator is reminded and keeps waiting:
   no reply never counts as yes. To let it go ahead anyway, expand the row and turn on **Go with
   the recommendation if I don't reply** for that question. Any change to the question,
-  recommendation or deadline turns it back off.
+  recommendation, its button label or the deadline turns it back off.
 - A row the coordinator has not updated for a day is marked **Stale**. Expand it and choose **Ask
   for update** to start a reply asking for one.
 

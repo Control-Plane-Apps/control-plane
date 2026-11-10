@@ -1,7 +1,6 @@
 import { resolveSidebarThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import {
   PROJECT_STATUS_STALE_MS,
-  PROJECT_STATUS_SUMMARY_MAX,
   isAutoAcceptArmed,
   parseStatusReply,
   sortProjectStatuses,
@@ -72,11 +71,6 @@ export function showsFullRecommendation(
   decision: Pick<ProjectStatusDecision, "answer" | "recommendation">,
 ): boolean {
   return decision.answer === undefined || decision.answer.trim() !== decision.recommendation.trim();
-}
-
-/** Older records can carry a long summary; the expanded row shows it whole. */
-export function summaryNeedsExpansion(summary: string): boolean {
-  return summary.length > PROJECT_STATUS_SUMMARY_MAX;
 }
 
 /** "just now", "12m ago", "3h ago", "2d ago". */

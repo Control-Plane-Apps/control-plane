@@ -288,6 +288,7 @@ describe("cp_status_set", () => {
         const tweaked = yield* tools.set(COORDINATOR, {
           id: "payouts",
           recommendation: "Pilot with 3 inspectors",
+          answer: "Pilot with 3",
         });
         expect(tweaked.status?.decision?.openedAt).toBe(tweaked.status?.updatedAt);
         expect(tweaked.status?.decision?.question).toBe(PAYOUTS.question);
@@ -538,7 +539,11 @@ describe("StatusDeadlineReactor", () => {
         yield* tools.set(COORDINATOR, PAYOUTS);
         yield* automate(true);
         yield* TestClock.adjust("1 hour");
-        yield* tools.set(COORDINATOR, { id: "payouts", recommendation: "Release to everyone" });
+        yield* tools.set(COORDINATOR, {
+          id: "payouts",
+          recommendation: "Release to everyone",
+          answer: "Release",
+        });
         // The opt-in named the old version; re-arming it from a stale read is refused.
         const stale = yield* automate(true).pipe(Effect.flip);
         expect(stale.message).toContain("changed this decision");
@@ -614,6 +619,7 @@ describe("StatusDeadlineReactor", () => {
         yield* tools.set(COORDINATOR, {
           id: "payouts",
           question: "Which three?",
+          answer: "These three",
           deadline: "2026-11-02T17:00:00.000Z",
         });
         yield* dispatch({
@@ -631,7 +637,11 @@ describe("StatusDeadlineReactor", () => {
         expect(yield* answeredAt).toBeUndefined();
 
         // A tagged user append replays idempotently.
-        yield* tools.set(COORDINATOR, { id: "payouts", question: "Which four?" });
+        yield* tools.set(COORDINATOR, {
+          id: "payouts",
+          question: "Which four?",
+          answer: "These four",
+        });
         const append = dispatch({
           type: "thread.message.user.append",
           commandId: CommandId.make("tagged-append"),
@@ -663,7 +673,11 @@ describe("StatusDeadlineReactor", () => {
         yield* tools.set(COORDINATOR, { id: "payouts", title: "Payouts rollout" });
         // A reply to an older version of the question does not answer the new one.
         yield* TestClock.adjust("1 hour");
-        yield* tools.set(COORDINATOR, { id: "payouts", recommendation: "Pilot with 3" });
+        yield* tools.set(COORDINATOR, {
+          id: "payouts",
+          recommendation: "Pilot with 3",
+          answer: "Pilot with 3",
+        });
         yield* userMessage(
           statusReplyText("Payouts", "Yes, pilot.", { statusId: "payouts", openedAt: NOW }),
         );
@@ -749,6 +763,7 @@ describe("StatusDeadlineReactor", () => {
         const asked = yield* tools.set(COORDINATOR, {
           id: "payouts",
           question: "Pilot with three?",
+          answer: "Pilot with 3",
         });
         expect(asked.status?.decision?.deadline).toBeUndefined();
         yield* reactor.sweep;
