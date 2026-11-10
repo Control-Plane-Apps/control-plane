@@ -6,6 +6,7 @@ import {
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   isAutoAcceptArmed,
+  PROJECT_STATUS_QUESTION_MAX,
   type ProjectStatus,
   type ScopedThreadRef,
   type ThreadId,
@@ -15,7 +16,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
-import { CheckIcon, ChevronRightIcon, XIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 
 import { cn } from "../../lib/utils";
@@ -157,7 +158,6 @@ function ProjectStatusPanelContent(
       params: buildThreadRouteParams(scopeThreadRef(project.environmentId, threadId)),
     });
 
-  const closePanel = () => useRightPanelStore.getState().closeSurface(threadRef, "status");
   // Expanded rows, by workstream id. Session only: a reopened panel starts collapsed.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const toggleRow = (id: string) =>
@@ -170,19 +170,6 @@ function ProjectStatusPanelContent(
 
   return (
     <section aria-label="Status" className="flex h-full min-h-0 flex-col text-sm">
-      <div className="flex items-center gap-2 border-border/70 border-b px-3 py-2">
-        <h2 className="min-w-0 flex-1 truncate font-medium">Status</h2>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          className="text-muted-foreground"
-          aria-label="Close status"
-          onClick={closePanel}
-        >
-          <XIcon />
-        </Button>
-      </div>
       <ScrollArea className="min-h-0 flex-1">
         {groups.length === 0 ? (
           <div className="flex flex-col gap-1 px-3 py-4 text-muted-foreground">
@@ -269,7 +256,9 @@ function StatusRow(props: {
 }) {
   const { status, group, now, expanded, actions } = props;
   const detailsId = useId();
-  const stale = isStatusStale(status.updatedAt, now);
+  // Stale only means something for work still expected to move.
+  const stale =
+    (group === "needs-you" || group === "in-progress") && isStatusStale(status.updatedAt, now);
   const decision = status.decision;
   const deadline = decision === undefined ? null : describeDecisionDeadline(decision, now);
   const asking =
@@ -300,51 +289,6 @@ function StatusRow(props: {
           {status.summary}
         </span>
       </button>
-      {asking ? (
-        <div className="flex flex-col gap-2 ps-6.5 pe-3 pb-3">
-          <p className="text-foreground text-sm">{decision.question}</p>
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <Button
-              type="button"
-              size="xs"
-              className="max-w-full"
-              disabled={props.sending}
-              onClick={() => actions.onGoWithRecommendation(status)}
-            >
-              <CheckIcon />
-              <span className="truncate">
-                {props.sending ? "Sending..." : recommendationButtonLabel(decision)}
-              </span>
-            </Button>
-            <Button
-              type="button"
-              size="xs"
-              variant="outline"
-              onClick={() => actions.onReply(status)}
-            >
-              Reply
-            </Button>
-            <span className="text-muted-foreground text-xs">Recommended</span>
-          </div>
-        </div>
-      ) : answered !== undefined ? (
-        <div className="flex flex-col gap-2 ps-6.5 pe-3 pb-3">
-          <p className="text-muted-foreground text-sm">{answered.question}</p>
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="text-muted-foreground text-xs">
-              You replied {formatStatusAge(answered.answeredAt!, now)}. Waiting on the coordinator.
-            </span>
-            <Button
-              type="button"
-              size="xs"
-              variant="outline"
-              onClick={() => actions.onReply(status)}
-            >
-              Reply
-            </Button>
-          </div>
-        </div>
-      ) : null}
       {expanded ? (
         <div
           id={detailsId}
@@ -433,6 +377,59 @@ function StatusRow(props: {
               </Button>
             </div>
           ) : null}
+        </div>
+      ) : null}
+      {asking ? (
+        <div className="flex flex-col gap-2 ps-6.5 pe-3 pb-3">
+          <p
+            className={cn(
+              "text-foreground text-sm",
+              // Older, longer questions clamp until the row is expanded.
+              !expanded && decision.question.length > PROJECT_STATUS_QUESTION_MAX && "line-clamp-2",
+            )}
+          >
+            {decision.question}
+          </p>
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <Button
+              type="button"
+              size="xs"
+              className="max-w-full"
+              disabled={props.sending}
+              onClick={() => actions.onGoWithRecommendation(status)}
+            >
+              <CheckIcon />
+              <span className="truncate">
+                {props.sending ? "Sending..." : recommendationButtonLabel(decision)}
+              </span>
+            </Button>
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              onClick={() => actions.onReply(status)}
+            >
+              Reply
+            </Button>
+            <span className="text-muted-foreground text-xs">Recommended</span>
+          </div>
+        </div>
+      ) : answered !== undefined ? (
+        <div className="flex flex-col gap-2 ps-6.5 pe-3 pb-3">
+          <p className="text-muted-foreground text-sm">{answered.question}</p>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-muted-foreground text-xs">
+              You replied {formatStatusAge(answered.answeredAt!, now)}. Waiting on the coordinator.
+            </span>
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              onClick={() => actions.onReply(status)}
+            >
+              Reply
+            </Button>
+          </div>
         </div>
       ) : null}
     </li>
