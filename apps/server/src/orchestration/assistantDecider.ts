@@ -22,6 +22,7 @@ import type * as PlatformError from "effect/PlatformError";
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 import { mergeSchedules } from "./scheduleDecider.ts";
+import { withoutLapsedOptIns } from "./statusDecider.ts";
 
 type ThreadCreateCommand = Extract<OrchestrationCommand, { type: "thread.create" }>;
 type ProjectMetaUpdateCommand = Extract<OrchestrationCommand, { type: "project.meta.update" }>;
@@ -274,6 +275,15 @@ export const decideAssistantMetaUpdate = Effect.fn("decideAssistantMetaUpdate")(
       coordinatorThreadId,
       ...(formerTitle !== undefined ? { formerTitle } : {}),
       ...(archivedAt !== undefined ? { archivedAt } : {}),
+      // Users never write Status; the coordinator's board survives meta updates.
+      ...(current?.statuses !== undefined
+        ? {
+            statuses:
+              current.archivedAt != null && archivedAt === null
+                ? withoutLapsedOptIns(current.statuses, occurredAt)
+                : current.statuses,
+          }
+        : {}),
       ...(yield* mergeSchedules({
         readModel,
         projectId: command.projectId,

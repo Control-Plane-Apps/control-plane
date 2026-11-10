@@ -19,7 +19,9 @@ import {
 import { useAttachmentUploadStore } from "../lib/attachmentUploadQueue";
 import {
   assistantThreadRole,
+  countStatusesNeedingUser,
   isStandingAgent,
+  type ProjectStatus,
   type AssistantCitation,
   type ApprovalRequestId,
   type ChatFileAttachment,
@@ -221,6 +223,23 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
 import { SchedulesPanel } from "./schedules/SchedulesPanel";
+import { ProjectStatusPanel } from "./status/ProjectStatusPanel";
+import { StatusReplyChip, useStatusComposerBanner } from "./status/StatusComposerStrip";
+import {
+  ASK_FOR_UPDATE_PROMPT,
+  isRecommendationPending,
+  recommendationKey,
+  recommendationReplyText,
+  sentRecommendationKeys,
+} from "./status/projectStatus.logic";
+import {
+  applyStatusReplyTag,
+  restoreStatusReplyPrompts,
+  statusReplyTagDrift,
+  statusReplyTagFor,
+  useStatusReplyStore,
+  useStatusReplyTag,
+} from "./status/statusReplyStore";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
@@ -545,6 +564,8 @@ import {
 } from "./chat/composerPromptHistory";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_PROJECT_STATUSES: ReadonlyArray<ProjectStatus> = [];
+const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
@@ -4732,6 +4753,95 @@ export default function ChatView(props: ChatViewProps) {
   const openSchedulesSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "schedules");
   }, [activeThreadRef]);
+  // The coordinator's Status board: one record per workstream, written by the
+  // coordinator. Replies and recommendations go out as ordinary messages.
+  const statusBoardEnabled =
+    assistantRole === "coordinator" &&
+    activeThreadRef !== null &&
+    serverConfig?.environment.capabilities.projectStatus === true;
+  const projectStatuses = statusBoardEnabled
+    ? (activeProject?.assistant?.statuses ?? EMPTY_PROJECT_STATUSES)
+    : EMPTY_PROJECT_STATUSES;
+  const statusNeedsCount = countStatusesNeedingUser(projectStatuses);
+  const statusPanelOpen = rightPanelOpen && activeRightPanelSurface?.kind === "status";
+  const toggleStatusSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().toggle(activeThreadRef, "status");
+  }, [activeThreadRef]);
+  const openStatusSurface = useCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "status");
+  }, [activeThreadRef]);
+  const statusReplyTag = useStatusReplyTag(statusBoardEnabled ? activeThreadKey : null);
+  // "Go with recommendation" messages already in the thread, by question version.
+  const sentStatusRecommendations = useMemo(
+    () => (statusBoardEnabled ? sentRecommendationKeys(timelineMessages) : EMPTY_KEY_SET),
+    [statusBoardEnabled, timelineMessages],
+  );
+  const recommendationsInFlightRef = useRef(new Set<string>());
+  const startStatusReply = useCallback(
+    (status: ProjectStatus, prefillWhenEmpty?: string) => {
+      if (!activeThreadKey) return;
+      useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTagFor(status));
+      if (prefillWhenEmpty !== undefined && promptRef.current.trim().length === 0) {
+        composerRef.current?.insertTextAtEnd(prefillWhenEmpty);
+      }
+      composerRef.current?.focusAtEnd();
+    },
+    [activeThreadKey],
+  );
+  const askStatusUpdate = useCallback(
+    (status: ProjectStatus) => startStatusReply(status, ASK_FOR_UPDATE_PROMPT),
+    [startStatusReply],
+  );
+  const clearStatusReply = useCallback(() => {
+    if (activeThreadKey) useStatusReplyStore.getState().clearTag(activeThreadKey);
+  }, [activeThreadKey]);
+  // "Go with recommendation" queues an ordinary message, so it leaves through
+  // the same send path, now when the coordinator is idle or at its next
+  // boundary when it is busy. The live draft and its Re: tag stay as they are.
+  const goWithStatusRecommendation = useCallback(
+    (status: ProjectStatus) => {
+      const decision = status.decision;
+      if (!activeThreadKey || decision === undefined || decision.answeredAt !== undefined) return;
+      const queue = useQueuedMessageStore.getState().queuesByThreadKey[activeThreadKey] ?? [];
+      if (isRecommendationPending({ status, queue, sentKeys: sentStatusRecommendations })) return;
+      // The queue hands the message to the send before it shows in the thread;
+      // a click in that gap must not queue a second one.
+      const key = recommendationKey(status, decision);
+      if (recommendationsInFlightRef.current.has(key) && sendInFlightRef.current) return;
+      recommendationsInFlightRef.current.add(key);
+      useQueuedMessageStore.getState().enqueue(activeThreadKey, {
+        prompt: recommendationReplyText(status, decision),
+        images: [],
+        files: [],
+        terminalContexts: [],
+        previewAnnotations: [],
+        reviewComments: [],
+        submissionIntent: "foreground",
+        queuedAfterToolActivityId: latestCompletedToolActivityId(threadActivities),
+        createdAt: new Date().toISOString(),
+      });
+    },
+    [activeThreadKey, sentStatusRecommendations, threadActivities],
+  );
+  const statusComposerBannerItem = useStatusComposerBanner({
+    enabled: statusBoardEnabled,
+    threadKey: activeThreadKey,
+    statuses: projectStatuses,
+    panelOpen: statusPanelOpen,
+    onReply: startStatusReply,
+    onOpenStatus: openStatusSurface,
+  });
+  const statusReplyChip = useMemo(
+    () =>
+      statusReplyTag === null ? null : (
+        <StatusReplyChip
+          title={statusReplyTag.title}
+          drift={statusReplyTagDrift(statusReplyTag, projectStatuses)}
+          onRemove={clearStatusReply}
+        />
+      ),
+    [clearStatusReply, projectStatuses, statusReplyTag],
+  );
   // Handoff links can outlive their thread, since rows re-read the shell only
   // when they render.
   const openLinkedThread = useCallback(
@@ -6616,11 +6726,13 @@ export default function ChatView(props: ChatViewProps) {
     // The user asked for this one, so it leads the notice tier instead of trailing it.
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
+    const statusItems = statusComposerBannerItem === null ? [] : [statusComposerBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
       return [
         ...feedbackBannerItems,
         ...usageLimitsItems,
         ...projectCloneItems,
+        ...statusItems,
         ...systemComposerBannerItems,
         ...backgroundLivenessItems,
         ...resumeCompactionItems,
@@ -6632,6 +6744,7 @@ export default function ChatView(props: ChatViewProps) {
       ...feedbackBannerItems,
       ...usageLimitsItems,
       ...projectCloneItems,
+      ...statusItems,
       ...systemComposerBannerItems,
       ...backgroundLivenessItems,
       ...resumeCompactionItems,
@@ -6685,6 +6798,7 @@ export default function ChatView(props: ChatViewProps) {
     localCheckoutBranchMismatch,
     parkedThreadBannerItem,
     projectCloneBannerItem,
+    statusComposerBannerItem,
     resumeCompactionBannerItem,
     showBranchMismatchBanner,
     systemComposerBannerItems,
@@ -7349,7 +7463,22 @@ export default function ChatView(props: ChatViewProps) {
   // send. Prompts join with blank lines; attachments and contexts are added.
   const restoreQueuedMessagesToComposer = (messages: ReadonlyArray<QueuedComposerMessage>) => {
     if (messages.length === 0) return;
-    const prompts = [promptRef.current, ...messages.map((message) => message.prompt)]
+    // A queued reply carries its Re: header in the text; it goes back to being a tag.
+    const liveTag =
+      statusBoardEnabled && activeThreadKey
+        ? (useStatusReplyStore.getState().tagsByThreadKey[activeThreadKey] ?? null)
+        : null;
+    const restoredReplies = statusBoardEnabled
+      ? restoreStatusReplyPrompts(
+          messages.map((message) => message.prompt),
+          liveTag,
+          promptRef.current.trim().length === 0,
+        )
+      : { prompts: messages.map((message) => message.prompt), tag: null };
+    if (restoredReplies.tag !== null && activeThreadKey) {
+      useStatusReplyStore.getState().setTag(activeThreadKey, restoredReplies.tag);
+    }
+    const prompts = [promptRef.current, ...restoredReplies.prompts]
       .map((prompt) => prompt.trim())
       .filter((prompt) => prompt.length > 0);
     const nextPrompt = prompts.join("\n\n");
@@ -7663,6 +7792,11 @@ export default function ChatView(props: ChatViewProps) {
 
       return;
     }
+    // The composer's "Re: <workstream>" tag rides on the live draft only.
+    const statusReplyTagForSend =
+      !queuedMessage && !directAnnotation && statusBoardEnabled && activeThreadKey
+        ? (useStatusReplyStore.getState().tagsByThreadKey[activeThreadKey] ?? null)
+        : null;
     if (
       !directAnnotation &&
       !queuedMessage &&
@@ -7672,10 +7806,14 @@ export default function ChatView(props: ChatViewProps) {
       composerImages.length === 0 &&
       composerFiles.length === 0
     ) {
-      const followUp = resolvePlanFollowUpSubmission({
+      const resolvedFollowUp = resolvePlanFollowUpSubmission({
         draftText: promptForSend,
         planMarkdown: activeProposedPlan.planMarkdown,
       });
+      const followUp = {
+        ...resolvedFollowUp,
+        text: applyStatusReplyTag(resolvedFollowUp.text.trim(), statusReplyTagForSend),
+      };
       const outgoingFollowUpText = formatOutgoingPrompt({
         provider: ctxSelectedProvider,
         model: ctxSelectedModel,
@@ -7696,6 +7834,7 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
+      if (statusReplyTagForSend !== null) clearStatusReply();
       const followUpSent = await onSubmitPlanFollowUp({
         text: followUp.text,
         context: buildMessageContext({
@@ -7707,6 +7846,9 @@ export default function ChatView(props: ChatViewProps) {
       });
       if (!followUpSent) {
         promptRef.current = followUpPromptSnapshot;
+        if (statusReplyTagForSend !== null && activeThreadKey) {
+          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTagForSend);
+        }
         composerTerminalContextsRef.current = [...followUpTerminalContexts];
         restorePlanFollowUpComposer({
           snapshot: {
@@ -7783,11 +7925,13 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadKey &&
       (settings.followUpBehavior === "queue") !== (submissionIntent === "alternate")
     ) {
-      if (composerRef.current?.validateProviderInput(promptForSend) === false) {
+      const queuedPrompt = applyStatusReplyTag(promptForSend, statusReplyTagForSend);
+      if (composerRef.current?.validateProviderInput(queuedPrompt) === false) {
         return;
       }
+      if (statusReplyTagForSend !== null) clearStatusReply();
       useQueuedMessageStore.getState().enqueue(activeThreadKey, {
-        prompt: promptForSend,
+        prompt: queuedPrompt,
         images: [...composerImages],
         files: [...composerFiles],
         terminalContexts: [...composerTerminalContexts],
@@ -7860,7 +8004,10 @@ export default function ChatView(props: ChatViewProps) {
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+      text: applyStatusReplyTag(
+        messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+        statusReplyTagForSend,
+      ),
     });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       // A queued message that no longer fits is held at the head for the
@@ -8415,6 +8562,7 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
+      if (statusReplyTagForSend !== null) clearStatusReply();
     }
 
     let firstComposerImageName: string | null = null;
@@ -8691,6 +8839,9 @@ export default function ChatView(props: ChatViewProps) {
           return next.length === existing.length ? existing : next;
         });
         promptRef.current = messageTextForSend;
+        if (statusReplyTagForSend !== null && activeThreadKey) {
+          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTagForSend);
+        }
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
         composerFilesRef.current = composerFilesSnapshot;
@@ -9826,6 +9977,15 @@ export default function ChatView(props: ChatViewProps) {
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
     ) : renderedRightPanelSurface?.kind === "schedules" && activeThreadRef ? (
       <SchedulesPanel threadRef={activeThreadRef} project={activeProject} />
+    ) : renderedRightPanelSurface?.kind === "status" && activeThreadRef ? (
+      <ProjectStatusPanel
+        threadRef={activeThreadRef}
+        project={activeProject}
+        onReply={startStatusReply}
+        onAskForUpdate={askStatusUpdate}
+        onGoWithRecommendation={goWithStatusRecommendation}
+        sentRecommendations={sentStatusRecommendations}
+      />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         model={agentPanelModel}
@@ -9955,6 +10115,13 @@ export default function ChatView(props: ChatViewProps) {
               : { onOpenPullRequest: openProjectPullRequest })}
             assistantRole={assistantRole}
             showGitActions={assistantChrome.showPullRequestControls}
+            {...(statusBoardEnabled
+              ? {
+                  onToggleStatus: toggleStatusSurface,
+                  statusNeedsCount,
+                  statusOpen: statusPanelOpen,
+                }
+              : {})}
             {...(assistantRole === "coordinator" ? { onOpenMemory: openMemorySurface } : {})}
             {...(assistantRole === "coordinator" && supportsProjectSchedules
               ? { onOpenSchedules: openSchedulesSurface }
@@ -10238,6 +10405,7 @@ export default function ChatView(props: ChatViewProps) {
                             }
                             isPreparingWorktree={isPreparingWorktree}
                             bannerItems={composerBannerItems}
+                            leadingContent={statusReplyChip}
                             // With attachments or contexts aboard the pick just inserts the
                             // text, so it sends as a prompt like the typed path would.
                             onUsageLimitsCommand={

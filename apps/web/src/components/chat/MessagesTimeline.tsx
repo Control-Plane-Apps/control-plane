@@ -15,6 +15,7 @@ import {
   COMPOSER_CONTEXT_KINDS,
   agentMessageToolLabel,
   isAgentOriginatedUserMessage,
+  parseStatusReply,
   type AssistantCitation,
   type EnvironmentId,
   type MessageId,
@@ -2028,6 +2029,15 @@ function UserTimelineRow({
     (attachment) => !isImageAttachment(attachment) && !isFileAttachment(attachment),
   );
   const resolvedContext = useMemo(() => resolveUserMessageContext(row.message), [row.message]);
+  // A reply to a coordinator's workstream: the composer's Re: tag, shown as a label.
+  const inCoordinator = ctx.assistantTimeline?.role === "coordinator";
+  const statusReply = useMemo(
+    () =>
+      inCoordinator && attribution === null && scheduledLabel === null
+        ? parseStatusReply(resolvedContext.text)
+        : null,
+    [attribution, inCoordinator, resolvedContext.text, scheduledLabel],
+  );
   const previewImages = useMemo(
     () => userImages.filter((image) => image.name.startsWith("preview-annotation-")),
     [userImages],
@@ -2317,8 +2327,11 @@ function UserTimelineRow({
             </div>
           ) : null}
           <div onCopyCapture={onBodyCopyCapture}>
+            {statusReply !== null ? (
+              <p className="mb-1 truncate text-muted-foreground text-xs">Re: {statusReply.title}</p>
+            ) : null}
             <CollapsibleUserMessageBody
-              text={resolvedContext.text}
+              text={statusReply?.body ?? resolvedContext.text}
               renderContextReference={renderContextReference}
               skills={ctx.skills}
               markdownCwd={ctx.markdownCwd}

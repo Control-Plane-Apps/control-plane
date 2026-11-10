@@ -20,6 +20,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ClockIcon,
+  ListChecksIcon,
   FileDiff,
   Files,
   Globe2,
@@ -632,6 +633,8 @@ function surfaceTitle(
       return "Subagents";
     case "schedules":
       return "Schedules";
+    case "status":
+      return "Status";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -719,6 +722,8 @@ function SurfaceIcon({
       return <Bot className="size-3 shrink-0" />;
     case "schedules":
       return <ClockIcon className="size-3 shrink-0" />;
+    case "status":
+      return <ListChecksIcon className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />

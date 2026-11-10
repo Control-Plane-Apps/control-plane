@@ -92,6 +92,7 @@ import * as VcsProcess from "../src/vcs/VcsProcess.ts";
 import * as AgentAwarenessRelay from "../src/relay/AgentAwarenessRelay.ts";
 import { ScheduleHost } from "../src/schedules/ScheduleHost.ts";
 import { ScheduleRunner } from "../src/schedules/ScheduleRunner.ts";
+import { StatusDeadlineReactor } from "../src/orchestration/StatusDeadlineReactor.ts";
 import * as PullRequestService from "../src/pullRequest/PullRequestService.ts";
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
@@ -423,6 +424,7 @@ export const makeOrchestrationIntegrationHarness = (
         }),
       ),
       Layer.provideMerge(Layer.mock(ScheduleRunner)({ start: () => Effect.void })),
+      Layer.provideMerge(Layer.mock(StatusDeadlineReactor)({ start: () => Effect.void })),
       Layer.provideMerge(Layer.mock(ScheduleHost)({ start: () => Effect.void })),
       Layer.provideMerge(
         Layer.succeed(PullRequestSyncReactor.PullRequestSyncReactor, {

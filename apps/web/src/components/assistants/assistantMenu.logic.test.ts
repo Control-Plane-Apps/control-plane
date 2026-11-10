@@ -32,4 +32,20 @@ describe("buildAssistantProjectMenuItems", () => {
     expect(ids).not.toContain("schedules");
     expect(ids).toHaveLength(6);
   });
+
+  it("offers Status only when the Project's server keeps a Status board", () => {
+    const without = buildAssistantProjectMenuItems({ canOpenFolder: true, canSchedule: true });
+    expect(without.map((item) => item.id)).not.toContain("status");
+    const withStatus = buildAssistantProjectMenuItems({
+      canOpenFolder: true,
+      canSchedule: true,
+      canShowStatus: true,
+    });
+    expect(withStatus.map((item) => item.label).slice(0, 4)).toEqual([
+      "Rename",
+      "Settings",
+      "Status",
+      "Schedules",
+    ]);
+  });
 });

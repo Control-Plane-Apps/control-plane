@@ -244,6 +244,7 @@ export const make = Effect.gen(function* () {
       projectReorder: true,
       assistants: true,
       projectSchedules: { scheduler: scheduleBackend.scheduler, timeZone: hostTimeZone.zone },
+      projectStatus: true,
       threadTitleRegeneration: true,
       threadPullRequests: true,
       pullRequestStackActions: true,

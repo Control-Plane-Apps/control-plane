@@ -108,6 +108,25 @@ in the coordinator's header, the Project's menu, **Project settings** or the com
 - Ask the coordinator to create or change a schedule and it will. Schedules it creates or edits
   stay paused, labeled "Created by" or "Edited by", until you turn them on.
 
+## Status
+
+The coordinator keeps a Status board: one row per workstream with where it stands, the agents on
+it and how long ago it was updated. Choose **Status** in the coordinator's header, the Project's
+menu or the command palette. A count on the button and on the Project in the sidebar shows how
+many workstreams need you, and the same rows appear above the coordinator's composer.
+
+- When only you can decide something, the row asks the question with the coordinator's
+  recommendation. **Go with recommendation** sends that as your answer. **Reply** adds a "Re:"
+  tag to the composer so you can answer in your own words; your draft stays.
+- A question can have a deadline. When it passes, the coordinator is reminded and keeps waiting:
+  no reply never counts as yes. To let it go ahead anyway, turn on **Go with the recommendation if
+  I don't reply** for that question. Any change to the question, recommendation or deadline turns
+  it back off.
+- A row the coordinator has not updated for a day is marked **Stale**. **Ask for update** starts a
+  reply asking for one.
+
+Status is not shown on phone and iPad yet.
+
 ## Memory
 
 The coordinator keeps its notes in `MEMORY.md` in the Project folder: your preferences, how work
@@ -132,7 +151,7 @@ composer, like any thread.
   schedules stop running. Archived Projects are listed at the top of **Settings → Archived**,
   where **Unarchive** brings them back, with their schedules counting from that moment.
 - **Move to Tasks** turns the Project back into a plain workspace. Its coordinator and agents
-  stay as ordinary threads, and its schedules are deleted.
+  stay as ordinary threads, and its schedules and Status board are deleted.
 - **Delete** removes the Project, its coordinator and its agent threads after you type the
   Project name. The folder and its files stay on disk.
 

@@ -16,6 +16,7 @@ import {
   ProviderInteractionMode,
   RuntimeMode,
   SCHEDULE_MESSAGE_PREFIX,
+  STATUS_MESSAGE_PREFIX,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -119,6 +120,8 @@ const pushPattern = `${AGENT_PUSH_MESSAGE_PREFIX}*`;
 const sendPattern = `${AGENT_SEND_MESSAGE_PREFIX}*`;
 /** A Project schedule's prompt, appended by `ScheduleRunner`. */
 const schedulePattern = `${SCHEDULE_MESSAGE_PREFIX}*`;
+/** A Status deadline reminder, appended by `StatusDeadlineReactor`; delivered like a schedule run. */
+const statusPattern = `${STATUS_MESSAGE_PREFIX}*`;
 /** A push that answers a scheduled request: `cp-push:<agent>:cp-schedule:<key>`. */
 const scheduleAnswerPattern = `${AGENT_PUSH_MESSAGE_PREFIX}*:${SCHEDULE_MESSAGE_PREFIX}*`;
 
@@ -194,7 +197,11 @@ export function makeAgentPushQueries(sql: SqlClient.SqlClient) {
               WHERE later.thread_id = m.thread_id AND lm.rowid > m.rowid
             )
             AND (
-              (m.message_id NOT GLOB ${sendPattern} AND m.message_id NOT GLOB ${schedulePattern})
+              (
+                m.message_id NOT GLOB ${sendPattern}
+                AND m.message_id NOT GLOB ${schedulePattern}
+                AND m.message_id NOT GLOB ${statusPattern}
+              )
               OR EXISTS (
                 SELECT 1 FROM orchestration_command_receipts c
                 WHERE c.command_id = ${AGENT_DELIVERY_START_PREFIX} || m.message_id
@@ -382,6 +389,7 @@ export function makeAgentPushQueries(sql: SqlClient.SqlClient) {
       m.message_id GLOB ${pushPattern}
       OR m.message_id GLOB ${sendPattern}
       OR m.message_id GLOB ${schedulePattern}
+      OR m.message_id GLOB ${statusPattern}
     )
     AND EXISTS (
       SELECT 1 FROM orchestration_command_receipts own
@@ -479,6 +487,7 @@ export function makeAgentPushQueries(sql: SqlClient.SqlClient) {
         SELECT row_id, message_id FROM started
         WHERE source_json IS NULL OR json_extract(source_json, '$.replyTo') IS NOT NULL
           OR message_id GLOB ${schedulePattern}
+          OR message_id GLOB ${statusPattern}
         ORDER BY row_id DESC
         LIMIT 1
       )

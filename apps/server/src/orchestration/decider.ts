@@ -8,6 +8,7 @@ import {
   isAgentPushMessageId,
   isImportedAgentSessionMessageId,
   isScheduleMessageId,
+  isStatusMessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -58,6 +59,12 @@ import {
 import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 import { projectEvent } from "./projector.ts";
 import { decideAgentScheduleChange, decideScheduleRecord } from "./scheduleDecider.ts";
+import {
+  decideStatusAutomate,
+  decideStatusDeadline,
+  decideStatusSet,
+  statusReplyEvents,
+} from "./statusDecider.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 
 const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -446,6 +453,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "project.schedule.agent-change":
       return yield* decideAgentScheduleChange(readModel, command);
+
+    case "project.status.set":
+      return yield* decideStatusSet(readModel, command);
+
+    case "project.status.deadline":
+      return yield* decideStatusDeadline(readModel, command);
+
+    case "project.status.automate":
+      return yield* decideStatusAutomate(readModel, command);
 
     case "thread.create": {
       yield* requireProject({
@@ -1571,7 +1587,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         targetThread.snoozedUntil != null &&
         !isAgentPushMessageId(command.message.messageId) &&
-        !isScheduleMessageId(command.message.messageId)
+        !isScheduleMessageId(command.message.messageId) &&
+        !isStatusMessageId(command.message.messageId)
       ) {
         lifecycleResetEvents.push({
           ...(yield* withEventBase({
@@ -1588,9 +1605,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
+      const statusReplies = userMessageEvent
+        ? yield* statusReplyEvents(readModel, {
+            threadId: command.threadId,
+            text: command.message.text,
+            hasSource: command.message.source !== undefined,
+            commandId: command.commandId,
+            createdAt: command.createdAt,
+          })
+        : [];
       return [
         ...lifecycleResetEvents,
         ...(userMessageEvent ? [userMessageEvent] : []),
+        ...statusReplies,
         turnStartRequestedEvent,
       ];
     }
@@ -1614,7 +1641,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Message '${command.message.messageId}' already exists on thread '${command.threadId}'.`,
         });
       }
-      return {
+      const appended: PlannedOrchestrationEvent = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1637,6 +1664,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      const statusReplies = yield* statusReplyEvents(readModel, {
+        threadId: command.threadId,
+        text: command.message.text,
+        hasSource: command.message.source !== undefined,
+        commandId: command.commandId,
+        createdAt: command.createdAt,
+      });
+      // The command's own event goes last: its receipt records the last event's aggregate.
+      return statusReplies.length === 0 ? appended : [...statusReplies, appended];
     }
 
     case "thread.turn.interrupt": {

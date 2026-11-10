@@ -16,6 +16,7 @@ import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 import { ScheduleHost } from "../../schedules/ScheduleHost.ts";
 import { ScheduleRunner } from "../../schedules/ScheduleRunner.ts";
+import * as StatusDeadlineReactor from "../StatusDeadlineReactor.ts";
 import * as StorageCleanup from "../../storageCleanup.ts";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
@@ -27,6 +28,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const agentCompletionReactor = yield* AgentCompletionReactor.AgentCompletionReactor;
   const scheduleRunner = yield* ScheduleRunner;
   const scheduleHost = yield* ScheduleHost;
+  const statusDeadlineReactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
   const pullRequestSyncReactor = yield* PullRequestSyncReactor.PullRequestSyncReactor;
   const threadPullRequestReactor = yield* ThreadPullRequestReactor.ThreadPullRequestReactor;
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
@@ -42,6 +44,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* agentCompletionReactor.start();
     yield* scheduleRunner.start();
     yield* scheduleHost.start();
+    yield* statusDeadlineReactor.start();
     yield* pullRequestSyncReactor.start();
     yield* agentAwarenessRelay.start();
     yield* storageCleanup.start();

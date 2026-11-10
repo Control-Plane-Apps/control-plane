@@ -1323,6 +1323,8 @@ export interface ChatComposerProps {
   sendDisabledReason: string | null;
   isPreparingWorktree: boolean;
   bannerItems: readonly ComposerBannerStackItem[];
+  /** Shown above the attachments and the prompt, e.g. the coordinator's Re: tag. */
+  leadingContent?: React.ReactNode;
   /** Picking /usage-limits from the menu is the action itself; the draft keeps nothing of it. */
   onUsageLimitsCommand?: (() => void) | undefined;
   environmentUnavailable: {
@@ -6446,6 +6448,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   />
                 </ComposerCommandMenuLayer>
               )}
+
+              {!isComposerCollapsedMobile && !isComposerApprovalState && props.leadingContent
+                ? props.leadingContent
+                : null}
 
               {!isComposerCollapsedMobile &&
                 !isComposerApprovalState &&

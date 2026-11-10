@@ -14,6 +14,7 @@ import {
   OrchestrationSession,
   OrchestrationThread,
   ProjectScheduleRunRecordedPayload,
+  ProjectStatusUpdatedPayload,
   WORKTREE_SETUP_ACTIVITY_KIND,
 } from "@t3tools/contracts";
 import {
@@ -55,6 +56,7 @@ import {
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
 } from "./Schemas.ts";
+import { withStatus } from "./statusDecider.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 const MAX_THREAD_MESSAGES = 2_000;
@@ -436,6 +438,22 @@ export function projectEvent(
                       [payload.scheduleId]: payload.run,
                     },
                   },
+                }
+              : project,
+          ),
+        })),
+      );
+
+    case "project.status-updated":
+      return decodeForEvent(ProjectStatusUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          // The Project's updatedAt stays, so a status write never reorders the sidebar.
+          projects: nextBase.projects.map((project) =>
+            project.id === payload.projectId && project.assistant != null
+              ? {
+                  ...project,
+                  assistant: withStatus(project.assistant, payload.statusId, payload.status),
                 }
               : project,
           ),

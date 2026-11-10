@@ -30,6 +30,12 @@ import {
   ProjectScheduleId,
   ProjectScheduleRun,
 } from "./assistants.ts";
+import {
+  ProjectStatus,
+  ProjectStatusChange,
+  ProjectStatusDeadlineOutcome,
+  ProjectStatusId,
+} from "./projectStatus.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   PullRequestActor,
@@ -1539,11 +1545,28 @@ const ThreadSessionStopCommand = Schema.Struct({
   onlyIfSettled: Schema.optional(Schema.Boolean),
 });
 
+/**
+ * The user's opt-in (or opt-out) to go with a decision's recommendation if
+ * its deadline passes without a reply. Clients only: no agent tool sends it,
+ * so an agent can never authorize itself. `openedAt` binds it to the version
+ * the user saw; a changed decision refuses it.
+ */
+export const ProjectStatusAutomateCommand = Schema.Struct({
+  type: Schema.Literal("project.status.automate"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  statusId: ProjectStatusId,
+  openedAt: IsoDateTime,
+  enabled: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectReorderCommand,
   ProjectDeleteCommand,
+  ProjectStatusAutomateCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1578,6 +1601,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ProjectMetaUpdateCommand,
   ProjectReorderCommand,
   ProjectDeleteCommand,
+  ProjectStatusAutomateCommand,
   ThreadCreateCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
@@ -1794,7 +1818,31 @@ const ProjectScheduleAgentChangeCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** One coordinator write to the Status board, from `cp_status_set`. Server only. */
+const ProjectStatusSetCommand = Schema.Struct({
+  type: Schema.Literal("project.status.set"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  actorThreadId: ThreadId,
+  change: ProjectStatusChange,
+  createdAt: IsoDateTime,
+});
+
+/** Records how a decision's passed deadline was handled. Server only. */
+const ProjectStatusDeadlineCommand = Schema.Struct({
+  type: Schema.Literal("project.status.deadline"),
+  commandId: CommandId,
+  projectId: ProjectId,
+  statusId: ProjectStatusId,
+  /** The decision version handled; a newer version refuses it. */
+  openedAt: IsoDateTime,
+  outcome: ProjectStatusDeadlineOutcome,
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  ProjectStatusSetCommand,
+  ProjectStatusDeadlineCommand,
   ProjectScheduleRecordCommand,
   ProjectScheduleAgentChangeCommand,
   ThreadAutoSettleCommand,
@@ -1830,6 +1878,7 @@ export const OrchestrationEventType = Schema.Literals([
   "project.meta-updated",
   "project.deleted",
   "project.schedule-run-recorded",
+  "project.status-updated",
   "thread.created",
   "thread.deleted",
   "thread.archived",
@@ -1908,6 +1957,13 @@ export const ProjectScheduleRunRecordedPayload = Schema.Struct({
   projectId: ProjectId,
   scheduleId: ProjectScheduleId,
   run: ProjectScheduleRun,
+});
+
+/** One Status record written or removed (`status: null`). Leaves the Project's `updatedAt` alone. */
+export const ProjectStatusUpdatedPayload = Schema.Struct({
+  projectId: ProjectId,
+  statusId: ProjectStatusId,
+  status: Schema.NullOr(ProjectStatus),
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
@@ -2204,6 +2260,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("project.schedule-run-recorded"),
     payload: ProjectScheduleRunRecordedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("project.status-updated"),
+    payload: ProjectStatusUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

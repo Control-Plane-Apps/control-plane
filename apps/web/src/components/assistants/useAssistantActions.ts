@@ -126,6 +126,20 @@ export function useAssistantActions() {
         });
         useRightPanelStore.getState().open(threadRef, "schedules");
       },
+      /** The Project's server keeps a Status board; absent on older and upstream servers. */
+      canShowStatus: (environmentId: EnvironmentId): boolean =>
+        serverConfigs.get(environmentId)?.environment.capabilities.projectStatus === true,
+      /** Opens the Status panel beside the coordinator. */
+      openStatus: async (project: AssistantActionProject): Promise<void> => {
+        const coordinatorThreadId = project.assistant?.coordinatorThreadId;
+        if (coordinatorThreadId === undefined) return;
+        const threadRef = scopeThreadRef(project.environmentId, coordinatorThreadId);
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(threadRef),
+        });
+        useRightPanelStore.getState().open(threadRef, "status");
+      },
       canOpenFolder: (environmentId: EnvironmentId): boolean =>
         serverConfigs.get(environmentId)?.availableEditors.includes("file-manager") === true,
       openFolder: async (project: AssistantActionProject): Promise<void> => {
@@ -234,6 +248,7 @@ export function useAssistantProjectMenu() {
         buildAssistantProjectMenuItems({
           canOpenFolder: actions.canOpenFolder(project.environmentId),
           canSchedule: actions.canSchedule(project.environmentId),
+          canShowStatus: actions.canShowStatus(project.environmentId),
         }),
         input.position,
       );
@@ -248,6 +263,9 @@ export function useAssistantProjectMenu() {
           return;
         case "schedules":
           await actions.openSchedules(project);
+          return;
+        case "status":
+          await actions.openStatus(project);
           return;
         case "open-folder":
           await actions.openFolder(project);

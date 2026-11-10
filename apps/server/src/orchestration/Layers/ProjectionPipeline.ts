@@ -25,6 +25,7 @@ import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../per
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
+import { withStatus } from "../statusDecider.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { type ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
@@ -587,6 +588,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 [event.payload.scheduleId]: event.payload.run,
               },
             },
+          });
+          return;
+        }
+
+        case "project.status-updated": {
+          const existingRow = yield* projectionProjectRepository.getById({
+            projectId: event.payload.projectId,
+          });
+          const assistant = Option.isSome(existingRow) ? existingRow.value.assistant : null;
+          if (Option.isNone(existingRow) || assistant == null) {
+            return;
+          }
+          // Keeps updated_at, so a status write never reorders the sidebar.
+          yield* projectionProjectRepository.upsert({
+            ...existingRow.value,
+            assistant: withStatus(assistant, event.payload.statusId, event.payload.status),
           });
           return;
         }

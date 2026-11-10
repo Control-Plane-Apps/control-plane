@@ -13,7 +13,12 @@ import {
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { hasScheduleAttention } from "@t3tools/client-runtime/state/schedules";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import type { EnvironmentId, ScopedProjectRef, ServerConfig } from "@t3tools/contracts";
+import {
+  countStatusesNeedingUser,
+  type EnvironmentId,
+  type ScopedProjectRef,
+  type ServerConfig,
+} from "@t3tools/contracts";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { ChevronRightIcon, PlusIcon } from "lucide-react";
@@ -36,6 +41,7 @@ import {
   useUiStateStore,
 } from "../../uiStateStore";
 import { AssistantStatusDot } from "../assistants/AssistantStatusDot";
+import { Badge } from "../ui/badge";
 import { useAssistantProjectMenu } from "../assistants/useAssistantActions";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { animateSidebarLayoutChanges, type SidebarSection } from "../Sidebar.logic";
@@ -340,6 +346,7 @@ function SidebarAssistantRow(props: {
     rollupAssistantsStatus([model], state.threadLastVisitedAtById),
   );
   const running = useMemo(() => countRunningAgents(model.entry.agents), [model.entry.agents]);
+  const needsYou = countStatusesNeedingUser(project.assistant?.statuses);
   // Each Project's agents sort in their own context, so a drag never shifts
   // another Project's rows. The sidebar's collision detection keeps the drop
   // inside the dragged agent's block.
@@ -430,6 +437,16 @@ function SidebarAssistantRow(props: {
           <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
             {running} running
           </span>
+        ) : null}
+        {needsYou > 0 ? (
+          <Badge
+            variant="warning"
+            size="sm"
+            className="tabular-nums"
+            aria-label={`${needsYou} ${needsYou === 1 ? "workstream needs" : "workstreams need"} you`}
+          >
+            {needsYou}
+          </Badge>
         ) : null}
         <AssistantStatusDot status={status} />
         <button
