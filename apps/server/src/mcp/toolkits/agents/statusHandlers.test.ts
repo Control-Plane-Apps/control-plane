@@ -197,6 +197,7 @@ const PAYOUTS = {
   detail: "The 1099 step has not run against a live account yet.",
   question: "Pilot or release to every inspector?",
   recommendation: "Pilot with 5 inspectors behind a flag",
+  answer: "Pilot with 5",
   deadline: THURSDAY,
 } as const;
 
@@ -330,7 +331,7 @@ describe("cp_status_set", () => {
             { id: "payouts", deadline: "next thursday" },
             { id: "payouts", clearDecision: true, question: "Both at once?" },
             { id: "nav", title: "Nav", summary: "Copy.", question: "Rename it?" },
-            { id: "nav", title: "Nav", summary: "x".repeat(241) },
+            { id: "nav", title: "Nav", summary: "x".repeat(61) },
             { id: "missing", remove: true },
           ],
           (params) =>
@@ -346,7 +347,7 @@ describe("cp_status_set", () => {
           "Deadline 'next thursday' is not an ISO date-time.",
           "Pass clearDecision alone, or a new question without clearDecision.",
           "A decision needs both a question and your recommendation.",
-          "The summary is at most 240 characters.",
+          "The summary is at most 60 characters.",
           "There is no workstream 'missing'.",
         ]);
         expect((yield* readMarker(PROJECT_ID)).statuses).toHaveLength(1);
@@ -684,6 +685,7 @@ describe("StatusDeadlineReactor", () => {
         yield* tools.set(COORDINATOR, {
           id: "pdf",
           question: "Ship without grids?",
+          answer: "Ship it",
           recommendation: "yes",
         });
         // "Ask for update" was clicked while the row had no question: id, no version.

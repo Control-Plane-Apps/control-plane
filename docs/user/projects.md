@@ -110,20 +110,22 @@ in the coordinator's header, the Project's menu, **Project settings** or the com
 
 ## Status
 
-The coordinator keeps a Status board: one row per workstream with where it stands, the agents on
-it and how long ago it was updated. Choose **Status** in the coordinator's header, the Project's
-menu or the command palette. A count on the button and on the Project in the sidebar shows how
-many workstreams need you, and the same rows appear above the coordinator's composer.
+The coordinator keeps a Status board: one row per workstream, grouped under **Needs you**, **In
+progress**, **Queued** and **Done**. Each row shows the workstream and one line on where it stands.
+Click a row for the detail, why the coordinator recommends what it does, the agents on it, when it
+was last updated and what happens at its deadline. Choose **Status** in the coordinator's header,
+the Project's menu or the command palette. A count on the button and on the Project in the sidebar
+shows how many workstreams need you, and the same rows appear above the coordinator's composer.
 
-- When only you can decide something, the row asks the question with the coordinator's
-  recommendation. **Go with recommendation** sends that as your answer. **Reply** adds a "Re:"
-  tag to the composer so you can answer in your own words; your draft stays.
+- When only you can decide something, the row asks the question and offers the recommended
+  answer as a button. It sends the coordinator's full recommendation as your answer. **Reply** adds
+  a "Re:" tag to the composer so you can answer in your own words; your draft stays.
 - A question can have a deadline. When it passes, the coordinator is reminded and keeps waiting:
-  no reply never counts as yes. To let it go ahead anyway, turn on **Go with the recommendation if
-  I don't reply** for that question. Any change to the question, recommendation or deadline turns
-  it back off.
-- A row the coordinator has not updated for a day is marked **Stale**. **Ask for update** starts a
-  reply asking for one.
+  no reply never counts as yes. To let it go ahead anyway, expand the row and turn on **Go with
+  the recommendation if I don't reply** for that question. Any change to the question,
+  recommendation or deadline turns it back off.
+- A row the coordinator has not updated for a day is marked **Stale**. Expand it and choose **Ask
+  for update** to start a reply asking for one.
 
 Status is not shown on phone and iPad yet.
 

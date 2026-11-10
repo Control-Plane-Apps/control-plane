@@ -1,33 +1,82 @@
 import { resolveSidebarThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import {
   PROJECT_STATUS_STALE_MS,
-  countStatusesNeedingUser,
+  PROJECT_STATUS_SUMMARY_MAX,
   isAutoAcceptArmed,
   parseStatusReply,
+  sortProjectStatuses,
   statusReplyText,
   type OrchestrationThreadShell,
   type ProjectStatus,
   type ProjectStatusDecision,
-  type ProjectStatusState,
 } from "@t3tools/contracts";
 
 import { formatElapsedDurationLabel } from "../../timestampFormat";
 
 // Pure presentation for the coordinator's Status panel and composer strip.
 
-export const STATUS_STATE_LABEL: Record<ProjectStatusState, string> = {
+export type StatusGroup = "needs-you" | "in-progress" | "queued" | "done";
+
+export const STATUS_GROUP_LABEL: Record<StatusGroup, string> = {
   "needs-you": "Needs you",
-  working: "Working",
-  done: "Done",
+  "in-progress": "In progress",
   queued: "Queued",
+  done: "Done",
 };
 
-/** "5 workstreams · 2 need you". */
-export function statusCountLine(statuses: ReadonlyArray<Pick<ProjectStatus, "state">>): string {
-  const total = statuses.length;
-  const needs = countStatusesNeedingUser(statuses);
-  const base = `${total} ${total === 1 ? "workstream" : "workstreams"}`;
-  return needs > 0 ? `${base} · ${needs} need${needs === 1 ? "s" : ""} you` : base;
+const STATUS_GROUP_ORDER: ReadonlyArray<StatusGroup> = [
+  "needs-you",
+  "in-progress",
+  "queued",
+  "done",
+];
+
+/**
+ * Where a row reads truthfully: a question the user already answered waits on
+ * the coordinator, so it sits with the work in progress until it is cleared.
+ */
+export function statusGroupOf(status: Pick<ProjectStatus, "state" | "decision">): StatusGroup {
+  switch (status.state) {
+    case "needs-you":
+      return status.decision?.answeredAt !== undefined ? "in-progress" : "needs-you";
+    case "working":
+      return "in-progress";
+    case "queued":
+      return "queued";
+    case "done":
+      return "done";
+  }
+}
+
+/** Non-empty groups in panel order, each keeping the coordinator's order. */
+export function groupProjectStatuses<T extends Pick<ProjectStatus, "state" | "decision">>(
+  statuses: ReadonlyArray<T>,
+): ReadonlyArray<{ readonly group: StatusGroup; readonly statuses: ReadonlyArray<T> }> {
+  const sorted = sortProjectStatuses(statuses);
+  return STATUS_GROUP_ORDER.flatMap((group) => {
+    const members = sorted.filter((status) => statusGroupOf(status) === group);
+    return members.length === 0 ? [] : [{ group, statuses: members }];
+  });
+}
+
+/** The primary button: the coordinator's short answer, or the old wording for records without one. */
+export function recommendationButtonLabel(decision: Pick<ProjectStatusDecision, "answer">): string {
+  return decision.answer ?? "Go with recommendation";
+}
+
+/**
+ * The full recommendation belongs in the expanded row only when the button
+ * does not already say it: no short answer, or one that differs from it.
+ */
+export function showsFullRecommendation(
+  decision: Pick<ProjectStatusDecision, "answer" | "recommendation">,
+): boolean {
+  return decision.answer === undefined || decision.answer.trim() !== decision.recommendation.trim();
+}
+
+/** Older records can carry a long summary; the expanded row shows it whole. */
+export function summaryNeedsExpansion(summary: string): boolean {
+  return summary.length > PROJECT_STATUS_SUMMARY_MAX;
 }
 
 /** "just now", "12m ago", "3h ago", "2d ago". */
@@ -73,9 +122,9 @@ export function isDeadlineOverdue(deadline: string | undefined, nowMs: number): 
 export type DecisionDeadlineTone = "pending" | "overdue" | "handled";
 
 /**
- * The line under a decision about its deadline, or null when it has none or
- * the user already replied. Silence only ever reminds, unless the user opted
- * in to the recommendation for this exact version of the decision.
+ * What a decision's deadline will do, for the expanded row's meta line, or
+ * null when it has none or the user already replied. Silence only ever
+ * reminds, unless the user opted in for this exact version of the decision.
  */
 export function describeDecisionDeadline(
   decision: ProjectStatusDecision,
@@ -85,7 +134,7 @@ export function describeDecisionDeadline(
   const { deadline } = decision;
   if (deadline === undefined || decision.answeredAt !== undefined) return null;
   if (decision.deadlineHandled?.outcome === "accepted") {
-    return { text: "Recommendation sent at the deadline.", tone: "handled" };
+    return { text: "recommendation sent at the deadline", tone: "handled" };
   }
   // Armed and past due: the server's sweep is about to send it.
   if (
@@ -93,16 +142,16 @@ export function describeDecisionDeadline(
     isDeadlineOverdue(deadline, nowMs) &&
     isAutoAcceptArmed(decision)
   ) {
-    return { text: "Sending the recommendation now.", tone: "handled" };
+    return { text: "sending the recommendation now", tone: "handled" };
   }
   if (decision.deadlineHandled?.outcome === "reminded" || isDeadlineOverdue(deadline, nowMs)) {
-    return { text: "Deadline passed, still waiting on you.", tone: "overdue" };
+    return { text: "deadline passed, still waiting on you", tone: "overdue" };
   }
   const when = formatDeadlineShort(deadline, nowMs, locale);
   return {
     text: isAutoAcceptArmed(decision)
-      ? `No reply by ${when}: I'll go with the recommendation.`
-      : `No reply by ${when}: I'll remind you and keep waiting.`,
+      ? `goes ahead ${when} if no reply`
+      : `reminds you ${when} if no reply`,
     tone: "pending",
   };
 }

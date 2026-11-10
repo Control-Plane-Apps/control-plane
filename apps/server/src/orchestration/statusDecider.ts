@@ -12,8 +12,13 @@
 import {
   PROJECT_STATUS_AGENTS_MAX,
   PROJECT_STATUS_LIMIT,
+  PROJECT_STATUS_ANSWER_MAX,
+  PROJECT_STATUS_DETAIL_MAX,
   PROJECT_STATUS_LINE_MAX,
+  PROJECT_STATUS_QUESTION_MAX,
+  PROJECT_STATUS_SUMMARY_MAX,
   PROJECT_STATUS_TITLE_MAX,
+  PROJECT_STATUS_WHY_MAX,
   agentManagerRole,
   type OrchestrationCommand,
   type OrchestrationReadModel,
@@ -61,6 +66,8 @@ function nextDecision(
   const touchesDecision =
     change.question !== undefined ||
     change.recommendation !== undefined ||
+    change.answer !== undefined ||
+    change.why !== undefined ||
     change.deadline !== undefined;
   if (change.clearDecision === true) {
     return touchesDecision
@@ -83,15 +90,25 @@ function nextDecision(
       return "The deadline must be in the future.";
     }
   }
+  const answer = change.answer ?? stored?.answer;
+  const why = optionalText(change.why, stored?.why);
   // The user opted in to a specific recommendation by a specific time; any
-  // change makes it a new decision they have not seen.
+  // change to what they saw makes it a new decision. The "why" explains the
+  // recommendation without changing it, so it keeps the version.
   if (
     stored !== undefined &&
     stored.question === question &&
     stored.recommendation === recommendation &&
+    stored.answer === answer &&
     stored.deadline === deadline
   ) {
-    return { decision: stored };
+    const { why: _why, ...rest } = stored;
+    return { decision: why !== undefined ? { ...rest, why } : rest };
+  }
+  // Every new version carries a short answer label for its button; records
+  // from before labels existed keep working until the question is re-asked.
+  if (answer === undefined) {
+    return "A decision needs your recommended answer as a short button label (answer).";
   }
   // A new version never inherits a deadline that already passed: that one
   // was handled, and the next needs a deadline of its own.
@@ -101,6 +118,8 @@ function nextDecision(
     decision: {
       question,
       recommendation,
+      answer,
+      ...(why !== undefined ? { why } : {}),
       ...(liveDeadline !== undefined ? { deadline: liveDeadline } : {}),
       openedAt: now,
     },
@@ -127,10 +146,13 @@ export function applyStatusUpsert(input: {
   }
   const lengthError =
     tooLong("A title", title, PROJECT_STATUS_TITLE_MAX) ??
-    tooLong("The summary", summary, PROJECT_STATUS_LINE_MAX) ??
-    tooLong("The detail", change.detail?.trim(), PROJECT_STATUS_LINE_MAX) ??
-    tooLong("The question", change.question, PROJECT_STATUS_LINE_MAX) ??
-    tooLong("The recommendation", change.recommendation, PROJECT_STATUS_LINE_MAX);
+    // Limits apply to what this write sends. Older stored text stays as it was.
+    tooLong("The summary", change.summary, PROJECT_STATUS_SUMMARY_MAX) ??
+    tooLong("The detail", change.detail?.trim(), PROJECT_STATUS_DETAIL_MAX) ??
+    tooLong("The question", change.question, PROJECT_STATUS_QUESTION_MAX) ??
+    tooLong("The answer label", change.answer, PROJECT_STATUS_ANSWER_MAX) ??
+    tooLong("The recommendation", change.recommendation, PROJECT_STATUS_LINE_MAX) ??
+    tooLong("The why", change.why?.trim(), PROJECT_STATUS_WHY_MAX);
   if (lengthError !== null) return lengthError;
   if (title.includes("\n")) return "A title is one line.";
   if (title.includes("[status:")) return 'A title cannot contain "[status:".';
