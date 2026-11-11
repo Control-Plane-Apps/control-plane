@@ -306,3 +306,17 @@ export function isRecommendationPending(input: {
     input.sentKeys.has(recommendationKey(input.status, decision))
   );
 }
+
+/**
+ * Whether a row needs its own header Reply: every row can be replied to, and
+ * only rows already showing a question carry Reply beside it instead.
+ */
+export function showsHeaderReply(
+  status: Pick<ProjectStatus, "state" | "decision">,
+  group: StatusGroup = statusGroupOf(status),
+): boolean {
+  const decision = status.decision;
+  const asking =
+    decision !== undefined && decision.answeredAt === undefined && group === "needs-you";
+  return !asking && decision?.answeredAt === undefined;
+}

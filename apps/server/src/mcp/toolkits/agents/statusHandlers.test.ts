@@ -694,6 +694,28 @@ describe("StatusDeadlineReactor", () => {
     ),
   );
 
+  it.effect("records nothing for a reply to a row without an open question", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const rows = [
+          { id: "pdf", title: "PDF export", summary: "Grids break.", state: "working" },
+          { id: "pricing", title: "Pricing page", summary: "After payouts.", state: "queued" },
+          { id: "isn", title: "ISN integration", summary: "Merged.", state: "done" },
+        ] as const;
+        for (const row of rows) yield* tools.set(COORDINATOR, row);
+        const before = (yield* readMarker(PROJECT_ID)).statuses;
+        for (const row of rows) {
+          yield* userMessage(statusReplyText(row.title, "Quick note.", { statusId: row.id }));
+        }
+        // The workstream is named in the message, and no record is touched.
+        expect((yield* readMarker(PROJECT_ID)).statuses).toEqual(before);
+        const texts = (yield* messagesOf(COORDINATOR)).map((message) => message.text);
+        expect(texts).toContain("Re: Pricing page [status:pricing]\n\nQuick note.");
+      }),
+    ),
+  );
+
   it.effect("never lets a reply started before the question answer it", () =>
     withSeededEngine(
       Effect.gen(function* () {

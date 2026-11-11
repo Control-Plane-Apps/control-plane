@@ -20,6 +20,7 @@ import {
   isStatusStale,
   recommendationReplyText,
   groupProjectStatuses,
+  showsHeaderReply,
   recommendationButtonLabel,
   sentRecommendationKeys,
   showsFullRecommendation,
@@ -322,5 +323,23 @@ describe("replies", () => {
     expect(decisionKey({ id: "payouts" }, { openedAt: "2026-11-09T10:00:00.000Z" })).toBe(
       "payouts@2026-11-09T10:00:00.000Z",
     );
+  });
+});
+
+describe("showsHeaderReply", () => {
+  const openedAt = "2026-11-11T11:00:00.000Z";
+  const question = { question: "Pilot?", recommendation: "Pilot with 5", openedAt };
+  it("gives every row without a visible question its own Reply", () => {
+    for (const state of ["working", "queued", "done"] as const) {
+      expect(showsHeaderReply({ state })).toBe(true);
+    }
+    // A needs-you row whose question was cleared still gets one.
+    expect(showsHeaderReply({ state: "needs-you" })).toBe(true);
+  });
+  it("leaves Reply beside the question on rows that show one", () => {
+    expect(showsHeaderReply({ state: "needs-you", decision: question })).toBe(false);
+    expect(
+      showsHeaderReply({ state: "needs-you", decision: { ...question, answeredAt: openedAt } }),
+    ).toBe(false);
   });
 });
