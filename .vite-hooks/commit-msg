@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# Strip AI authorship attribution (see AGENTS.md "This fork"). Human trailers are untouched.
+msg_file="$1"
+[ -f "$msg_file" ] || exit 0
+tmp="$msg_file.no-ai-attribution"
+grep -v -i -E \
+  -e '^[[:space:]]*co-authored-by:.*(claude|anthropic|noreply@anthropic\.com)' \
+  -e '^[[:space:]]*(🤖[[:space:]]*)?generated with \[?claude( code)?\]?' \
+  "$msg_file" >"$tmp"
+status=$?
+# grep exits 1 when every line was removed; keep the original message empty-safe.
+if [ "$status" -le 1 ]; then
+  mv "$tmp" "$msg_file"
+else
+  rm -f "$tmp"
+fi
+exit 0
