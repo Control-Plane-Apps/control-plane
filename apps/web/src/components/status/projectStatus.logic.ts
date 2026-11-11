@@ -308,15 +308,30 @@ export function isRecommendationPending(input: {
 }
 
 /**
- * Whether a row needs its own header Reply: every row can be replied to, and
- * only rows already showing a question carry Reply beside it instead.
+ * Where a row offers Reply. Every row can be replied to: beside its open
+ * question (`question`), beside the answered question it waits on
+ * (`answered`), or as a compact button in its header (`header`) when no
+ * question shows.
  */
-export function showsHeaderReply(
+export type StatusReplyPlacement = "question" | "answered" | "header";
+
+export function statusReplyPlacement(
   status: Pick<ProjectStatus, "state" | "decision">,
   group: StatusGroup = statusGroupOf(status),
-): boolean {
+): StatusReplyPlacement {
   const decision = status.decision;
-  const asking =
-    decision !== undefined && decision.answeredAt === undefined && group === "needs-you";
-  return !asking && decision?.answeredAt === undefined;
+  if (decision?.answeredAt !== undefined) return "answered";
+  if (decision !== undefined && group === "needs-you") return "question";
+  return "header";
+}
+
+/**
+ * The row a header Reply tags: the workstream alone, never a question
+ * version, so it can only name the workstream and never answer a decision.
+ */
+export function headerReplyTarget<T extends { readonly decision?: unknown }>(
+  status: T,
+): Omit<T, "decision"> {
+  const { decision: _hidden, ...rest } = status;
+  return rest;
 }

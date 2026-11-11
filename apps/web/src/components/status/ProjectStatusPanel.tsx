@@ -42,7 +42,8 @@ import {
   isStatusStale,
   recommendationButtonLabel,
   showsFullRecommendation,
-  showsHeaderReply,
+  headerReplyTarget,
+  statusReplyPlacement,
   type StatusGroup,
 } from "./projectStatus.logic";
 import { useQueuedMessages } from "../../queuedMessageStore";
@@ -325,13 +326,12 @@ function StatusRow(props: {
     (group === "needs-you" || group === "in-progress") && isStatusStale(status.updatedAt, now);
   const decision = status.decision;
   const deadline = decision === undefined ? null : describeDecisionDeadline(decision, now);
-  const asking =
-    decision !== undefined && decision.answeredAt === undefined && group === "needs-you";
-  const answered = decision?.answeredAt !== undefined ? decision : undefined;
-  // Rows showing a question already offer Reply beside it; every other row
-  // gets a compact one in its header. A reply to a row without an open
-  // question names the workstream only, so it never answers a decision.
-  const headerReply = showsHeaderReply(status, group);
+  // Rows showing a question offer Reply beside it; every other row gets a
+  // compact one in its header, which names the workstream only.
+  const placement = statusReplyPlacement(status, group);
+  const asking = placement === "question" && decision !== undefined;
+  const answered = placement === "answered" ? decision : undefined;
+  const headerReply = placement === "header";
   return (
     <li className="border-border/50 border-t">
       <div className="flex min-w-0 items-start">
@@ -381,7 +381,7 @@ function StatusRow(props: {
                 className="text-muted-foreground hover:text-foreground"
                 aria-label={`Reply to ${status.title}`}
                 title="Reply"
-                onClick={() => actions.onReply(status)}
+                onClick={() => actions.onReply(headerReplyTarget(status))}
               >
                 <ReplyIcon />
               </Button>
@@ -519,6 +519,7 @@ function StatusRow(props: {
               type="button"
               size="xs"
               variant="outline"
+              aria-label={`Reply to ${status.title}`}
               onClick={() => actions.onReply(status)}
             >
               Reply
@@ -537,6 +538,7 @@ function StatusRow(props: {
               type="button"
               size="xs"
               variant="outline"
+              aria-label={`Reply to ${status.title}`}
               onClick={() => actions.onReply(status)}
             >
               Reply
