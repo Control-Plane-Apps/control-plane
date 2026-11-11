@@ -1,3 +1,4 @@
+import { statusReplyTagFor } from "./statusReplyStore";
 import {
   PROJECT_STATUS_STALE_MS,
   parseStatusReply,
@@ -20,6 +21,8 @@ import {
   isStatusStale,
   recommendationReplyText,
   groupProjectStatuses,
+  headerReplyTarget,
+  statusReplyPlacement,
   recommendationButtonLabel,
   sentRecommendationKeys,
   showsFullRecommendation,
@@ -322,5 +325,30 @@ describe("replies", () => {
     expect(decisionKey({ id: "payouts" }, { openedAt: "2026-11-09T10:00:00.000Z" })).toBe(
       "payouts@2026-11-09T10:00:00.000Z",
     );
+  });
+});
+
+describe("statusReplyPlacement", () => {
+  const openedAt = "2026-11-11T11:00:00.000Z";
+  const question = { question: "Pilot?", recommendation: "Pilot with 5", openedAt };
+  it("gives every row exactly one Reply, in its header when no question shows", () => {
+    for (const state of ["working", "queued", "done"] as const) {
+      expect(statusReplyPlacement({ state })).toBe("header");
+    }
+    // A needs-you row whose question was cleared still gets one.
+    expect(statusReplyPlacement({ state: "needs-you" })).toBe("header");
+    expect(statusReplyPlacement({ state: "needs-you", decision: question })).toBe("question");
+    expect(
+      statusReplyPlacement({ state: "needs-you", decision: { ...question, answeredAt: openedAt } }),
+    ).toBe("answered");
+    // A decision outside needs-you shows no question, so Reply goes in the header.
+    expect(statusReplyPlacement({ state: "working", decision: question })).toBe("header");
+  });
+
+  it("tags a header Reply with the workstream only, never a question version", () => {
+    const row = { id: "pdf", title: "PDF export", state: "working" as const, decision: question };
+    const target = headerReplyTarget(row);
+    expect(target).toEqual({ id: "pdf", title: "PDF export", state: "working" });
+    expect(statusReplyTagFor(target)).toEqual({ title: "PDF export", statusId: "pdf" });
   });
 });

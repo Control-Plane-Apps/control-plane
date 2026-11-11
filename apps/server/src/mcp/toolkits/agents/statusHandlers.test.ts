@@ -12,6 +12,7 @@ import {
   statusReminderMessageId,
   statusReplyText,
   type OrchestrationCommand,
+  type OrchestrationReadModel,
   type ProjectAssistant,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -32,6 +33,7 @@ import { OrchestrationProjectionSnapshotQueryLive } from "../../../orchestration
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as StatusDeadlineReactor from "../../../orchestration/StatusDeadlineReactor.ts";
+import { statusReplyEvents } from "../../../orchestration/statusDecider.ts";
 import * as ThreadBackgroundLiveness from "../../../orchestration/ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../../../orchestration/ThreadPlanProgress.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -692,6 +694,64 @@ describe("StatusDeadlineReactor", () => {
         expect(yield* answeredAt).toBeDefined();
       }),
     ),
+  );
+
+  it.effect("records nothing for a reply to a row without an open question", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const rows = [
+          { id: "pdf", title: "PDF export", summary: "Grids break.", state: "working" },
+          { id: "pricing", title: "Pricing page", summary: "After payouts.", state: "queued" },
+          { id: "isn", title: "ISN integration", summary: "Merged.", state: "done" },
+        ] as const;
+        for (const row of rows) yield* tools.set(COORDINATOR, row);
+        const before = (yield* readMarker(PROJECT_ID)).statuses;
+        for (const row of rows) {
+          yield* userMessage(statusReplyText(row.title, "Quick note.", { statusId: row.id }));
+        }
+        // The workstream is named in the message, and no record is touched.
+        expect((yield* readMarker(PROJECT_ID)).statuses).toEqual(before);
+        const texts = (yield* messagesOf(COORDINATOR)).map((message) => message.text);
+        expect(texts).toContain("Re: Pricing page [status:pricing]\n\nQuick note.");
+      }),
+    ),
+  );
+
+  it.effect("answers only a question that is waiting on the user", () =>
+    Effect.gen(function* () {
+      const openedAt = "2026-11-11T11:00:00.000Z";
+      const row = {
+        id: "pdf",
+        title: "PDF export",
+        summary: "Grids break.",
+        state: "working" as const,
+        decision: { question: "Ship?", recommendation: "Ship", answer: "Ship", openedAt },
+        updatedAt: openedAt,
+      };
+      const readModel = (state: "working" | "needs-you") =>
+        ({
+          projects: [
+            {
+              id: PROJECT_ID,
+              deletedAt: null,
+              assistant: { coordinatorThreadId: COORDINATOR, statuses: [{ ...row, state }] },
+            },
+          ],
+          threads: [],
+        }) as unknown as OrchestrationReadModel;
+      const reply = (state: "working" | "needs-you") =>
+        statusReplyEvents(readModel(state), {
+          threadId: COORDINATOR,
+          text: statusReplyText("PDF export", "Ship it.", { statusId: "pdf", openedAt }),
+          hasSource: false,
+          commandId: nextCommandId(),
+          createdAt: openedAt,
+        });
+      // A decision held outside needs-you shows no question, so nothing is answered.
+      expect(yield* reply("working")).toEqual([]);
+      expect(yield* reply("needs-you")).toHaveLength(1);
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("never lets a reply started before the question answer it", () =>

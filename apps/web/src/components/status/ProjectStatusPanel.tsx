@@ -16,7 +16,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
-import { CheckIcon, ChevronRightIcon, CircleCheckIcon } from "lucide-react";
+import { CheckIcon, ChevronRightIcon, CircleCheckIcon, ReplyIcon } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 
 import { cn } from "../../lib/utils";
@@ -42,6 +42,8 @@ import {
   isStatusStale,
   recommendationButtonLabel,
   showsFullRecommendation,
+  headerReplyTarget,
+  statusReplyPlacement,
   type StatusGroup,
 } from "./projectStatus.logic";
 import { useQueuedMessages } from "../../queuedMessageStore";
@@ -324,9 +326,12 @@ function StatusRow(props: {
     (group === "needs-you" || group === "in-progress") && isStatusStale(status.updatedAt, now);
   const decision = status.decision;
   const deadline = decision === undefined ? null : describeDecisionDeadline(decision, now);
-  const asking =
-    decision !== undefined && decision.answeredAt === undefined && group === "needs-you";
-  const answered = decision?.answeredAt !== undefined ? decision : undefined;
+  // Rows showing a question offer Reply beside it; every other row gets a
+  // compact one in its header, which names the workstream only.
+  const placement = statusReplyPlacement(status, group);
+  const asking = placement === "question" && decision !== undefined;
+  const answered = placement === "answered" ? decision : undefined;
+  const headerReply = placement === "header";
   return (
     <li className="border-border/50 border-t">
       <div className="flex min-w-0 items-start">
@@ -366,20 +371,37 @@ function StatusRow(props: {
             {status.summary}
           </span>
         </button>
-        {group === "done" ? (
-          // Checked-off rows leave the panel; Undo in the toast brings them back.
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="me-1.5 mt-1.5 shrink-0 text-muted-foreground hover:text-foreground"
-            aria-label={`Check off ${status.title}`}
-            title="Check off"
-            disabled={props.dismissing}
-            onClick={props.onCheckOff}
-          >
-            <CircleCheckIcon />
-          </Button>
+        {headerReply || group === "done" ? (
+          <div className="me-1.5 mt-1.5 flex shrink-0 items-center gap-0.5">
+            {headerReply ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground hover:text-foreground"
+                aria-label={`Reply to ${status.title}`}
+                title="Reply"
+                onClick={() => actions.onReply(headerReplyTarget(status))}
+              >
+                <ReplyIcon />
+              </Button>
+            ) : null}
+            {group === "done" ? (
+              // Checked-off rows leave the panel; Undo in the toast brings them back.
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground hover:text-foreground"
+                aria-label={`Check off ${status.title}`}
+                title="Check off"
+                disabled={props.dismissing}
+                onClick={props.onCheckOff}
+              >
+                <CircleCheckIcon />
+              </Button>
+            ) : null}
+          </div>
         ) : null}
       </div>
       {expanded ? (
@@ -497,6 +519,7 @@ function StatusRow(props: {
               type="button"
               size="xs"
               variant="outline"
+              aria-label={`Reply to ${status.title}`}
               onClick={() => actions.onReply(status)}
             >
               Reply
@@ -515,6 +538,7 @@ function StatusRow(props: {
               type="button"
               size="xs"
               variant="outline"
+              aria-label={`Reply to ${status.title}`}
               onClick={() => actions.onReply(status)}
             >
               Reply
