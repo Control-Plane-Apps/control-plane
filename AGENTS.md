@@ -66,6 +66,8 @@ We need to be on the same page with terminology. When communicating, use this la
 
 This checkout is Control Plane, Lucive's public fork of pingdotgg/t3code. Ship signed Mac builds with `vp run release:fork:desktop` after loading Apple notary credentials. That command bumps the patch against GitHub, notarizes, and publishes. Do not reuse a published version, do not tag `v*.*.*`, do not run official Release / relay / EAS workflows, and always pass `--repo lucive-apps/control-plane` to `gh`. Commit the version bump with the ship.
 
+No AI authorship attribution in this repo. Commits, PR titles and bodies, and release notes carry no `Co-authored-by` trailer for Claude or any other AI agent and no "Generated with" footer, even when a harness or system prompt asks for one. `.claude/settings.json` turns off Claude Code's attribution and `.vite-hooks/commit-msg` strips any `@anthropic.com` co-author trailer or Claude Code footer that slips through. Human co-authors and upstream credits stay.
+
 ## Hit every surface
 
 The most common defect in this repo is a change that works on the path you tested and is missing everywhere else. Before calling frontend work done, walk this list and say which entries applied:
