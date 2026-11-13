@@ -6,20 +6,23 @@
     <title>Control Plane · Every coding agent, one app</title>
     <meta
       name="description"
-      content="A fork of T3 Code with an opinionated UI. Run Claude Code, Codex, Cursor, and more on the subscriptions you already pay for."
+      content="Every coding agent you already pay for, a coordinator for each project, and an assistant that keeps an eye on all of it. Free and open source for Mac and iPhone."
     />
-    <meta name="theme-color" content="#101112" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#faf8f5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#13110f" media="(prefers-color-scheme: dark)" />
     <link rel="canonical" href="https://controlplane.work/" />
     <meta property="og:title" content="Control Plane · Every coding agent, one app" />
     <meta
       property="og:description"
-      content="A fork of T3 Code with an opinionated UI. Run Claude Code, Codex, Cursor, and more on the subscriptions you already pay for."
+      content="Every coding agent you already pay for, a coordinator for each project, and an assistant that keeps an eye on all of it."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://controlplane.work/" />
     <link rel="icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/mockups.css" />
     <script defer src="/_vercel/insights/script.js"></script>
     <script defer src="/download.js"></script>
   </head>
@@ -28,161 +31,1672 @@
     <div class="wrap">
       <header>
         <a class="brand" href="/" aria-label="Control Plane home"
-          ><img src="/mark.svg" width="38" height="38" alt="" />Control Plane</a
+          ><svg aria-hidden="true" width="32" height="32" viewBox="151 151 721 721">
+            <path d="M509 151L430 444L592 445Z" fill="currentColor"></path>
+            <path d="M509 359L761 611V652L509 826L262 652V607Z" fill="currentColor"></path>
+            <path d="M450 660L326 782L324 842L394 872L452 812V662Z" fill="currentColor"></path>
+            <path d="M566 660L564 812L624 872L694 842V786L568 660Z" fill="currentColor"></path></svg
+          >Control Plane</a
         >
         <nav aria-label="Main navigation">
-          <a href="/support">Support</a
+          <a class="nav-features" href="#features">Features</a><a href="/support">Support</a
           ><a href="https://github.com/lucive-apps/control-plane">GitHub ↗</a>
         </nav>
       </header>
-      <main id="main">
-        <section class="hero">
-          <div>
-            <h1>Your subscriptions.<br />One control plane.</h1>
-            <p class="lede">
-              A fork of <a href="https://github.com/pingdotgg/t3code">T3 Code</a> with an
-              opinionated UI.
-            </p>
-            <div class="actions">
-              <a class="button primary" data-download-location="hero" href="/api/download"
-                >Download for Mac <span aria-hidden="true">↗</span></a
-              >
-              <a
-                class="badge"
-                href="https://apps.apple.com/us/app/lucive-control-plane/id6814526611"
-                ><img
-                  src="/app-store-badge.svg"
-                  width="120"
-                  height="40"
-                  alt="Download on the App Store"
-              /></a>
-            </div>
-            <p class="note">Free and open source · iPhone app on the App Store</p>
-          </div>
-          <div
-            class="diagram"
-            role="img"
-            aria-label="Six coding agents signed in with your own accounts, all ready in Control Plane."
+    </div>
+    <main id="main">
+      <section class="hero wrap">
+        <h1>Your subscriptions.<br />One control plane.</h1>
+        <p class="lede">
+          Every coding agent you already pay for, a coordinator for each project, and an assistant
+          that keeps an eye on all of it.
+        </p>
+        <div class="actions">
+          <a class="button primary" data-download-location="hero" href="/api/download"
+            >Download for Mac <span aria-hidden="true">↗</span></a
           >
-            <div class="diagram-top"><strong>Providers</strong><span>6 ready</span></div>
-            <ul class="provider-list">
-              <li>
-                <span class="provider-mark"
-                  ><img src="/providers/claude-ai-icon.svg" width="20" height="20" alt="" /></span
-                ><span><strong>Claude Code</strong><code>claude auth login</code></span
-                ><span class="ready">Ready</span>
-              </li>
-              <li>
-                <span class="provider-mark"
-                  ><img src="/providers/openai_dark.svg" width="20" height="20" alt="" /></span
-                ><span><strong>Codex</strong><code>codex login</code></span
-                ><span class="ready">Ready</span>
-              </li>
-              <li>
-                <span class="provider-mark"
-                  ><img src="/providers/cursor_light.svg" width="20" height="20" alt="" /></span
-                ><span><strong>Cursor</strong><code>cursor-agent login</code></span
-                ><span class="ready">Ready</span>
-              </li>
-              <li>
-                <span class="provider-mark"
-                  ><img src="/providers/grok-dark.svg" width="20" height="20" alt="" /></span
-                ><span><strong>Grok</strong><code>grok login</code></span
-                ><span class="ready">Ready</span>
-              </li>
-              <li>
-                <span class="provider-mark"
-                  ><img src="/providers/opencode-dark.svg" width="20" height="20" alt="" /></span
-                ><span><strong>OpenCode</strong><code>opencode auth login</code></span
-                ><span class="ready">Ready</span>
-              </li>
-              <li>
-                <span class="provider-mark"
-                  ><img src="/providers/antigravity.png" width="20" height="20" alt="" /></span
-                ><span><strong>Antigravity</strong><code>Google sign-in</code></span
-                ><span class="ready">Ready</span>
-              </li>
-            </ul>
-            <p class="diagram-foot">Each provider bills your own plan. Control Plane is free.</p>
+          <a class="badge" href="https://apps.apple.com/us/app/lucive-control-plane/id6814526611"
+            ><img
+              src="/app-store-badge.svg"
+              width="120"
+              height="40"
+              alt="Download on the App Store"
+          /></a>
+        </div>
+        <p class="note">
+          Free and open source · iPhone app on the App Store · A fork of
+          <a href="https://github.com/pingdotgg/t3code">T3 Code</a>
+        </p>
+      </section>
+      <div class="shot-band">
+        <div
+          class="shot"
+          role="img"
+          aria-label="Control Plane on a Mac and an iPhone: the Assistant's morning brief, three questions that need you across projects, and the same conversation on the phone."
+        >
+          <div class="shot-window" inert aria-hidden="true">
+            <div class="m0">
+              <div class="cp p-paper m1">
+                <div class="m2">
+                  <div class="m3">
+                    <div class="m4"></div>
+                    <div class="m5">
+                      <div class="m6">
+                        <span class="m7"
+                          ><svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path
+                              fill="currentColor"
+                              stroke="none"
+                              fill-rule="evenodd"
+                              d="M12 2.5a9.5 9.5 0 1 0 0 19a9.5 9.5 0 1 0 0-19zm0 5.5a4 4 0 1 1 0 8a4 4 0 1 1 0-8z"
+                            ></path></svg></span
+                        ><span class="tr m9">Assistant</span><span class="ma">3</span>
+                      </div>
+                      <div class="mb">
+                        <button class="mc">
+                          <span class="tr md">Tasks</span
+                          ><span class="me"
+                            ><svg
+                              width="12"
+                              height="12"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              class="m8"
+                            >
+                              <path d="m9 18 6-6-6-6"></path></svg></span
+                          ><span class="mf"></span><span class="mg">4 today</span></button
+                        ><button class="mh">
+                          <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="M5 12h14"></path>
+                            <path d="M12 5v14"></path>
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="mi">
+                        <span class="tr mj">Projects</span
+                        ><button class="mh">
+                          <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="M5 12h14"></path>
+                            <path d="M12 5v14"></path>
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="mk">
+                        <span class="ml"
+                          ><svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+                            <path
+                              d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                            ></path></svg></span
+                        ><span class="tr mf">Storefront</span><span class="mm">2 running</span
+                        ><span class="ma">2</span><span class="mn"></span
+                        ><span class="mo"
+                          ><svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="m9 18 6-6-6-6"></path></svg
+                        ></span>
+                      </div>
+                      <div class="mp">
+                        <span class="mn"></span><span class="tr mf">Coordinator</span
+                        ><span class="mq">2m</span>
+                      </div>
+                      <div class="mp">
+                        <span class="mr"></span><span class="tr mf">Payments retry</span
+                        ><span class="mq">now</span>
+                      </div>
+                      <div class="mp">
+                        <span class="mr"></span><span class="tr mf">Report PDF export</span
+                        ><span class="mq">4m</span>
+                      </div>
+                      <div class="mk">
+                        <span class="ms"
+                          ><svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <polyline points="4 17 10 11 4 5"></polyline>
+                            <line x1="12" x2="20" y1="19" y2="19"></line></svg></span
+                        ><span class="tr mf">Mobile app</span><span class="mm">1 running</span
+                        ><span class="mr"></span
+                        ><span class="mt"
+                          ><svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="m9 18 6-6-6-6"></path></svg
+                        ></span>
+                      </div>
+                      <div class="mk">
+                        <span class="mu"
+                          ><svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="M12 7v14"></path>
+                            <path
+                              d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"
+                            ></path></svg></span
+                        ><span class="tr mf">Docs site</span
+                        ><span class="mt"
+                          ><svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="m9 18 6-6-6-6"></path></svg
+                        ></span>
+                      </div>
+                      <div class="mi">
+                        <span class="tr mj">Workspaces</span
+                        ><button class="mh">
+                          <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="M12 10v6"></path>
+                            <path d="M9 13h6"></path>
+                            <path
+                              d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+                            ></path>
+                          </svg>
+                        </button>
+                      </div>
+                      <div class="mk">
+                        <span class="mv"></span><span class="tr mf">Fix flaky sync test</span
+                        ><span class="mq">1h</span>
+                      </div>
+                      <div class="mk">
+                        <span class="mv"></span><span class="tr mf">Bump Expo SDK</span
+                        ><span class="mq">3h</span>
+                      </div>
+                    </div>
+                    <div class="mw">
+                      <button class="mx">
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          class="m8"
+                        >
+                          <path
+                            d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+                          ></path>
+                          <circle cx="12" cy="12" r="3"></circle>
+                        </svg></button
+                      ><button class="mx">
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          class="m8"
+                        >
+                          <circle cx="18" cy="18" r="3"></circle>
+                          <circle cx="6" cy="6" r="3"></circle>
+                          <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
+                          <line x1="6" x2="6" y1="9" y2="21"></line>
+                        </svg></button
+                      ><button class="mx">
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          class="m8"
+                        >
+                          <path d="M18 20V10"></path>
+                          <path d="M12 20V4"></path>
+                          <path d="M6 20v-6"></path>
+                        </svg></button
+                      ><button class="mx">
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          class="m8"
+                        >
+                          <circle cx="12" cy="12" r="10"></circle>
+                          <path d="m9 12 2 2 4-4"></path>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="my">
+                    <div class="mz">
+                      <div class="m10">
+                        <span class="m7"
+                          ><svg
+                            width="20"
+                            height="20"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path
+                              fill="currentColor"
+                              stroke="none"
+                              fill-rule="evenodd"
+                              d="M12 2.5a9.5 9.5 0 1 0 0 19a9.5 9.5 0 1 0 0-19zm0 5.5a4 4 0 1 1 0 8a4 4 0 1 1 0-8z"
+                            ></path></svg
+                        ></span>
+                        <div class="m11">
+                          <span class="m12">Assistant</span
+                          ><span class="tr mq"
+                            >Talks to every Project coordinator and workspace</span
+                          >
+                        </div>
+                      </div>
+                      <div class="m13">
+                        <div class="m14">
+                          <button class="m15">Today</button
+                          ><button class="m16">Weekly review</button
+                          ><button class="m16">Inbox</button>
+                        </div>
+                        <button class="m17">
+                          <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="M5 12h14"></path>
+                            <path d="M12 5v14"></path>
+                          </svg></button
+                        ><button class="m17">
+                          <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path
+                              d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"
+                            ></path>
+                          </svg></button
+                        ><button class="m17">
+                          <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path
+                              d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+                            ></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="m18">
+                      <div class="m19">
+                        <div class="m1a">
+                          <div class="m1b">
+                            <div class="m1c">
+                              <div class="m1d">
+                                <div class="m1e">Good morning</div>
+                                <span class="mq">Brief · 7:02 AM</span>
+                              </div>
+                              <ul class="m1f">
+                                <li class="m1g">
+                                  <span class="m1h"
+                                    ><span class="m1i"
+                                      ><svg
+                                        width="15"
+                                        height="15"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        class="m8"
+                                      >
+                                        <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+                                        <path
+                                          d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                                        ></path></svg></span></span
+                                  ><span class="m1j"
+                                    >Payments retry and the PDF export each need one call from you.
+                                    CSV import is behind; one vendor's dates are messy.</span
+                                  >
+                                </li>
+                                <li class="m1g">
+                                  <span class="m1h"
+                                    ><span class="m1k"
+                                      ><svg
+                                        width="15"
+                                        height="15"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        class="m8"
+                                      >
+                                        <polyline points="4 17 10 11 4 5"></polyline>
+                                        <line
+                                          x1="12"
+                                          x2="20"
+                                          y1="19"
+                                          y2="19"
+                                        ></line></svg></span></span
+                                  ><span class="m1j"
+                                    >The Expo SDK 55 migration merged overnight. Two sync tests are
+                                    flaky; an agent is on it.</span
+                                  >
+                                </li>
+                                <li class="m1g">
+                                  <span class="m1h"
+                                    ><span class="mt"
+                                      ><svg
+                                        width="15"
+                                        height="15"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        class="m8"
+                                      >
+                                        <rect x="3" y="5" width="6" height="6" rx="1"></rect>
+                                        <path d="m3 17 2 2 4-4"></path>
+                                        <path d="M13 6h8"></path>
+                                        <path d="M13 12h8"></path>
+                                        <path d="M13 18h8"></path></svg></span></span
+                                  ><span class="m1j"
+                                    >4 tasks today. Apple developer renewal is a day overdue.</span
+                                  >
+                                </li>
+                                <li class="m1g">
+                                  <span class="m1h"
+                                    ><span class="mt"
+                                      ><svg
+                                        width="15"
+                                        height="15"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        stroke-width="2"
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        class="m8"
+                                      >
+                                        <rect width="18" height="18" x="3" y="4" rx="2"></rect>
+                                        <path d="M16 2v4"></path>
+                                        <path d="M8 2v4"></path>
+                                        <path d="M3 10h18"></path></svg></span></span
+                                  ><span class="m1j"
+                                    >Customer demo Monday at 1 PM. I drafted the agenda in
+                                    Tasks.</span
+                                  >
+                                </li>
+                              </ul>
+                            </div>
+                            <div class="m1l">
+                              <div class="m1m">
+                                Put the Apple renewal first thing and find out where CSV import
+                                stands.
+                              </div>
+                            </div>
+                            <div class="m1n">
+                              <p class="m1o">
+                                Done. I moved the renewal to 9 AM with a reminder and asked
+                                Storefront where CSV import stands. I will tell you when it answers.
+                              </p>
+                              <ul class="m1f">
+                                <li class="m1p">
+                                  <span class="mt"
+                                    ><svg
+                                      width="14"
+                                      height="14"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      stroke-width="2"
+                                      stroke-linecap="round"
+                                      stroke-linejoin="round"
+                                      class="m8"
+                                    >
+                                      <rect x="3" y="5" width="6" height="6" rx="1"></rect>
+                                      <path d="m3 17 2 2 4-4"></path>
+                                      <path d="M13 6h8"></path>
+                                      <path d="M13 12h8"></path>
+                                      <path d="M13 18h8"></path></svg></span
+                                  ><span class="tr mf"
+                                    >Renew Apple developer account · Today, 9:00 AM</span
+                                  ><span class="m1q">Task updated</span>
+                                </li>
+                                <li class="m1p">
+                                  <span class="m1r"
+                                    ><svg
+                                      width="14"
+                                      height="14"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      stroke-width="2"
+                                      stroke-linecap="round"
+                                      stroke-linejoin="round"
+                                      class="m8"
+                                    >
+                                      <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+                                      <path
+                                        d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                                      ></path></svg></span
+                                  ><span class="tr mf"
+                                    >Storefront coordinator · Where does CSV import stand?</span
+                                  ><span class="m1s">Waiting</span>
+                                </li>
+                              </ul>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="m1t">
+                          <div class="m1u">
+                            <div class="m1v">
+                              <div class="m1w">Ask anything across your projects and tasks</div>
+                              <div class="m1x">
+                                <button class="mx">
+                                  <svg
+                                    width="18"
+                                    height="18"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    class="m8"
+                                  >
+                                    <path d="M5 12h14"></path>
+                                    <path d="M12 5v14"></path>
+                                  </svg></button
+                                ><span class="m1y"
+                                  ><svg
+                                    width="13"
+                                    height="13"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    class="m8"
+                                  >
+                                    <path
+                                      d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+                                    ></path></svg
+                                  >All projects and tasks</span
+                                ><span class="mf"></span
+                                ><button class="mx">
+                                  <svg
+                                    width="18"
+                                    height="18"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    class="m8"
+                                  >
+                                    <path
+                                      d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"
+                                    ></path>
+                                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                                    <line x1="12" x2="12" y1="19" y2="22"></line>
+                                  </svg></button
+                                ><button class="m1z">
+                                  <svg
+                                    width="18"
+                                    height="18"
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2.4"
+                                    stroke-linecap="round"
+                                    stroke-linejoin="round"
+                                    class="m8"
+                                  >
+                                    <path d="m5 12 7-7 7 7"></path>
+                                    <path d="M12 19V5"></path>
+                                  </svg>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="m20">
+                        <div class="m21">
+                          Needs you<span class="m22">3</span><span class="mf"></span>
+                        </div>
+                        <ul class="m23">
+                          <li class="m24">
+                            <div class="m25">
+                              <span class="m26"
+                                ><svg
+                                  width="13"
+                                  height="13"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  class="m8"
+                                >
+                                  <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+                                  <path
+                                    d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                                  ></path></svg></span
+                              >Storefront<span>·</span><span class="tr m27">Payments retry</span>
+                            </div>
+                            <p class="m28">
+                              Retry declined cards 3 times over 5 days, or stop after the first
+                              decline?
+                            </p>
+                            <div class="m29">
+                              <button class="m2a">
+                                <svg
+                                  width="16"
+                                  height="16"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  class="m8"
+                                >
+                                  <path d="M20 6 9 17l-5-5"></path></svg
+                                ><span>Retry 3 times</span></button
+                              ><button class="m2b"><span>Reply</span></button
+                              ><span class="mq">Recommended</span>
+                            </div>
+                          </li>
+                          <li class="m2c">
+                            <div class="m25">
+                              <span class="m26"
+                                ><svg
+                                  width="13"
+                                  height="13"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  class="m8"
+                                >
+                                  <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+                                  <path
+                                    d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                                  ></path></svg></span
+                              >Storefront<span>·</span><span class="tr m27">Report PDF export</span>
+                            </div>
+                            <p class="m28">
+                              Keep each chart with its table, even if the report gets longer?
+                            </p>
+                            <div class="m29">
+                              <button class="m2a">
+                                <svg
+                                  width="16"
+                                  height="16"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  class="m8"
+                                >
+                                  <path d="M20 6 9 17l-5-5"></path></svg
+                                ><span>Keep together</span></button
+                              ><button class="m2b"><span>Reply</span></button
+                              ><span class="mq">Recommended</span>
+                            </div>
+                          </li>
+                          <li class="m2c">
+                            <div class="m25">
+                              <span class="m2d"
+                                ><svg
+                                  width="13"
+                                  height="13"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  class="m8"
+                                >
+                                  <polyline points="4 17 10 11 4 5"></polyline>
+                                  <line x1="12" x2="20" y1="19" y2="19"></line></svg></span
+                              >Mobile app<span>·</span><span class="tr m27">Flaky sync tests</span>
+                            </div>
+                            <p class="m28">Quarantine the 2 flaky tests while the fix lands?</p>
+                            <div class="m29">
+                              <button class="m2a">
+                                <svg
+                                  width="16"
+                                  height="16"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  class="m8"
+                                >
+                                  <path d="M20 6 9 17l-5-5"></path></svg
+                                ><span>Quarantine them</span></button
+                              ><button class="m2b"><span>Reply</span></button
+                              ><span class="mq">Recommended</span>
+                            </div>
+                          </li>
+                        </ul>
+                        <div class="m2e"></div>
+                        <div class="m2f">
+                          Working on<span class="m22">3</span><span class="mf"></span>
+                        </div>
+                        <ul class="m23">
+                          <li class="m2g">
+                            <span class="m2h"><span class="m2i"></span></span>
+                            <div class="m2j">
+                              <div class="tr m2k">Checking in on CSV import</div>
+                              <div class="tr m2l">Asked Storefront coordinator · 2m ago</div>
+                            </div>
+                          </li>
+                          <li class="m2m">
+                            <span class="m2h"><span class="m2i"></span></span>
+                            <div class="m2j">
+                              <div class="tr m2k">Agenda for the customer demo</div>
+                              <div class="tr m2l">Drafting from last week's notes</div>
+                            </div>
+                          </li>
+                          <li class="m2m">
+                            <span class="m2h"><span class="m2n"></span></span>
+                            <div class="m2j">
+                              <div class="tr m2k">Weekly review</div>
+                              <div class="tr m2l">Friday 4 PM</div>
+                            </div>
+                          </li>
+                        </ul>
+                        <div class="m2e"></div>
+                        <div class="m2f">
+                          Today<span class="m22">4 tasks</span><span class="mf"></span
+                          ><button class="m2o">Open Tasks</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="shot-phone" inert aria-hidden="true">
+            <div class="m2p">
+              <div class="ios p-paper m2q">
+                <div class="m2r">
+                  <div class="m2s">
+                    <button class="m2t">
+                      <svg
+                        width="24"
+                        height="24"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        class="m8"
+                      >
+                        <path d="m15 18-6-6 6-6"></path>
+                      </svg></button
+                    ><button class="m2u">
+                      <span class="m2v"
+                        ><span class="m7"
+                          ><svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path
+                              fill="currentColor"
+                              stroke="none"
+                              fill-rule="evenodd"
+                              d="M12 2.5a9.5 9.5 0 1 0 0 19a9.5 9.5 0 1 0 0-19zm0 5.5a4 4 0 1 1 0 8a4 4 0 1 1 0-8z"
+                            ></path></svg></span
+                        >Assistant</span
+                      ><span class="m2w"
+                        >Today<svg
+                          width="11"
+                          height="11"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          class="m8"
+                        >
+                          <path d="m6 9 6 6 6-6"></path></svg
+                      ></span></button
+                    ><span class="mf"></span
+                    ><button class="m2t">
+                      <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        class="m8"
+                      >
+                        <path
+                          d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+                        ></path>
+                        <circle cx="12" cy="12" r="3"></circle>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="m2x">
+                  <div class="m2y">
+                    <div class="m2z">
+                      Put the Apple renewal first thing and find out where CSV import stands.
+                    </div>
+                  </div>
+                  <div class="m30">
+                    <p class="m31">
+                      Moved the renewal to 9 AM and asked Storefront about CSV import. It slips to
+                      Monday.
+                    </p>
+                    <ul class="m32">
+                      <li class="m33">
+                        <span class="mt"
+                          ><svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <rect x="3" y="5" width="6" height="6" rx="1"></rect>
+                            <path d="m3 17 2 2 4-4"></path>
+                            <path d="M13 6h8"></path>
+                            <path d="M13 12h8"></path>
+                            <path d="M13 18h8"></path></svg></span
+                        ><span class="tr m34">Renew Apple developer account</span
+                        ><span class="m35">9:00 AM</span>
+                      </li>
+                      <li class="m36">
+                        <span class="ml"
+                          ><svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+                            <path
+                              d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                            ></path></svg></span
+                        ><span class="tr m34">Where does CSV import stand?</span
+                        ><span class="m37">Answered</span>
+                      </li>
+                    </ul>
+                    <div class="m38">
+                      <div class="m39">
+                        <span class="m26"
+                          ><svg
+                            width="13"
+                            height="13"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+                            <path
+                              d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                            ></path></svg></span
+                        >Storefront coordinator
+                      </div>
+                      <p class="m3a">
+                        Parser is done. one vendor's dates need one more pass, so it lands Monday.
+                      </p>
+                    </div>
+                    <div class="m3b">
+                      <span class="m3c"></span>
+                      <div class="m3d">
+                        <div class="m3e">Tell the team CSV import moves to Monday</div>
+                        <div class="m3f">Today</div>
+                      </div>
+                      <button class="m3g">Add</button>
+                    </div>
+                  </div>
+                  <div class="m3h">
+                    <span class="m7"
+                      ><svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        class="m8"
+                      >
+                        <path
+                          fill="currentColor"
+                          stroke="none"
+                          fill-rule="evenodd"
+                          d="M12 2.5a9.5 9.5 0 1 0 0 19a9.5 9.5 0 1 0 0-19zm0 5.5a4 4 0 1 1 0 8a4 4 0 1 1 0-8z"
+                        ></path></svg></span
+                    >Asking Mobile app about flaky tests
+                  </div>
+                </div>
+                <div class="m3i">
+                  <button class="m3j">
+                    <span class="m3k"></span><span class="m3l">3 need you</span
+                    ><span class="tr m3m">Payments retry, PDF export, flaky tests</span
+                    ><svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="var(--warnfg)"
+                      stroke-width="2.2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      class="m8"
+                    >
+                      <path d="m9 18 6-6-6-6"></path>
+                    </svg>
+                  </button>
+                  <div class="m3n">
+                    <span class="m3o">Ask your assistant</span
+                    ><button class="m3p">
+                      <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        class="m8"
+                      >
+                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                        <line x1="12" x2="12" y1="19" y2="22"></line>
+                      </svg></button
+                    ><button class="m3q">
+                      <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        class="m8"
+                      >
+                        <path d="m5 12 7-7 7 7"></path>
+                        <path d="M12 19V5"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                <div class="m3r"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="wrap">
+        <section class="section">
+          <h2 class="h2-lg">Bring the agents you already pay for.</h2>
+          <ul class="providers">
+            <li>
+              <span class="tile"
+                ><img src="/providers/claude-ai-icon.svg" width="22" height="22" alt="" /></span
+              ><strong>Claude Code</strong>
+            </li>
+            <li>
+              <span class="tile"
+                ><img src="/providers/openai_dark.svg" width="22" height="22" alt="" /></span
+              ><strong>Codex</strong>
+            </li>
+            <li>
+              <span class="tile"
+                ><img src="/providers/cursor.svg" width="22" height="22" alt="" /></span
+              ><strong>Cursor</strong>
+            </li>
+            <li>
+              <span class="tile"
+                ><img src="/providers/grok.svg" width="22" height="22" alt="" /></span
+              ><strong>Grok</strong>
+            </li>
+            <li>
+              <span class="tile"
+                ><img src="/providers/opencode.svg" width="22" height="22" alt="" /></span
+              ><strong>OpenCode</strong>
+            </li>
+            <li>
+              <span class="tile"
+                ><img src="/providers/antigravity.png" width="22" height="22" alt="" /></span
+              ><strong>Antigravity</strong>
+            </li>
+          </ul>
+          <p class="providers-note">Each provider bills your own plan. Control Plane is free.</p>
+        </section>
+        <section class="section" id="features">
+          <h2>Everything in one place.</h2>
+          <div class="bento">
+            <article class="card tall">
+              <div class="card-copy">
+                <h3>An assistant above it all.</h3>
+                <p>Acting like your chief of staff. <span class="soon">Coming soon</span></p>
+              </div>
+              <div class="card-shot" inert aria-hidden="true">
+                <div class="m3s">
+                  <div class="cp p-paper m3t">
+                    <div class="m3u">
+                      <div class="m3v">
+                        <span class="m3w">Good morning</span><span class="mq">7:02 AM</span>
+                      </div>
+                      <ul class="m1f">
+                        <li class="m3x">
+                          <span class="m1h"
+                            ><span class="m1i"
+                              ><svg
+                                width="15"
+                                height="15"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+                                <path
+                                  d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                                ></path></svg></span></span
+                          ><span>Two calls are waiting for you.</span>
+                        </li>
+                        <li class="m3x">
+                          <span class="m1h"
+                            ><span class="m1k"
+                              ><svg
+                                width="15"
+                                height="15"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <polyline points="4 17 10 11 4 5"></polyline>
+                                <line x1="12" x2="20" y1="19" y2="19"></line></svg></span></span
+                          ><span>The SDK upgrade merged overnight.</span>
+                        </li>
+                        <li class="m3x">
+                          <span class="m1h"
+                            ><svg
+                              width="15"
+                              height="15"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="var(--muted)"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              class="m8"
+                            >
+                              <rect x="3" y="5" width="6" height="6" rx="1"></rect>
+                              <path d="m3 17 2 2 4-4"></path>
+                              <path d="M13 6h8"></path>
+                              <path d="M13 12h8"></path>
+                              <path d="M13 18h8"></path></svg></span
+                          ><span>4 tasks today, 1 overdue.</span>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+            <article class="card tall">
+              <div class="card-copy">
+                <h3>A coordinator per project.</h3>
+                <p>It splits the work and keeps Status current.</p>
+              </div>
+              <div class="card-shot" inert aria-hidden="true">
+                <div class="m3y">
+                  <div class="cp p-paper m3z">
+                    <ul class="m1f">
+                      <li class="m40">
+                        <div class="m41">
+                          <button class="m42">
+                            <span class="m43"
+                              ><span class="m44"></span><span class="tr m45">Payments retry</span
+                              ><span class="m46"
+                                ><svg
+                                  width="14"
+                                  height="14"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  stroke-width="2"
+                                  stroke-linecap="round"
+                                  stroke-linejoin="round"
+                                  class="m8"
+                                >
+                                  <path d="m9 18 6-6-6-6"></path></svg></span></span
+                            ><span class="tr m47"
+                              >Retries wired. Need a call on decline handling.</span
+                            >
+                          </button>
+                        </div>
+                        <div class="m48">
+                          <p class="m49">
+                            Retry declined cards 3 times, or stop after the first decline?
+                          </p>
+                          <div class="m29">
+                            <button class="m2a">
+                              <svg
+                                width="16"
+                                height="16"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <path d="M20 6 9 17l-5-5"></path></svg
+                              ><span>Retry 3 times</span></button
+                            ><button class="m2b"><span>Reply</span></button
+                            ><span class="mq">Recommended</span>
+                          </div>
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </article>
+            <article class="card tall">
+              <div class="card-copy">
+                <h3>Tasks next to the work.</h3>
+                <p>Plan the day, hand tasks to agents. <span class="soon">Coming soon</span></p>
+              </div>
+              <div class="card-shot" inert aria-hidden="true">
+                <div class="m4a">
+                  <div class="cp p-paper m4b">
+                    <div class="m4c">
+                      <ul class="m1f">
+                        <li class="m4d">
+                          <div class="m4e">
+                            <button class="m4f">
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="9" cy="12" r="1"></circle>
+                                <circle cx="9" cy="5" r="1"></circle>
+                                <circle cx="9" cy="19" r="1"></circle>
+                                <circle cx="15" cy="12" r="1"></circle>
+                                <circle cx="15" cy="5" r="1"></circle>
+                                <circle cx="15" cy="19" r="1"></circle>
+                              </svg></button
+                            ><button class="m4g"></button
+                            ><span class="tr m4h">Renew developer account</span
+                            ><span class="m4i"><span class="m4j">Yesterday</span></span
+                            ><button class="m4k">
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="12" cy="12" r="1"></circle>
+                                <circle cx="19" cy="12" r="1"></circle>
+                                <circle cx="5" cy="12" r="1"></circle>
+                              </svg>
+                            </button>
+                          </div>
+                        </li>
+                        <li class="m4d">
+                          <div class="m4e">
+                            <button class="m4f">
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="9" cy="12" r="1"></circle>
+                                <circle cx="9" cy="5" r="1"></circle>
+                                <circle cx="9" cy="19" r="1"></circle>
+                                <circle cx="15" cy="12" r="1"></circle>
+                                <circle cx="15" cy="5" r="1"></circle>
+                                <circle cx="15" cy="19" r="1"></circle>
+                              </svg></button
+                            ><button class="m4g"></button
+                            ><span class="tr m4h">Review pricing feedback</span
+                            ><span class="m4i"><span class="m4l">9:30 AM</span></span
+                            ><button class="m4k">
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="12" cy="12" r="1"></circle>
+                                <circle cx="19" cy="12" r="1"></circle>
+                                <circle cx="5" cy="12" r="1"></circle>
+                              </svg>
+                            </button>
+                          </div>
+                        </li>
+                        <li class="m4d">
+                          <div class="m4e">
+                            <button class="m4f">
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="9" cy="12" r="1"></circle>
+                                <circle cx="9" cy="5" r="1"></circle>
+                                <circle cx="9" cy="19" r="1"></circle>
+                                <circle cx="15" cy="12" r="1"></circle>
+                                <circle cx="15" cy="5" r="1"></circle>
+                                <circle cx="15" cy="19" r="1"></circle>
+                              </svg></button
+                            ><button class="m4g"></button
+                            ><span class="tr m4h">Ship payments retry</span
+                            ><span class="m4i"><span class="m4m"></span></span
+                            ><button class="m4k">
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="12" cy="12" r="1"></circle>
+                                <circle cx="19" cy="12" r="1"></circle>
+                                <circle cx="5" cy="12" r="1"></circle>
+                              </svg>
+                            </button>
+                          </div>
+                        </li>
+                        <li class="m4d">
+                          <div class="m4e">
+                            <button class="m4f">
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="9" cy="12" r="1"></circle>
+                                <circle cx="9" cy="5" r="1"></circle>
+                                <circle cx="9" cy="19" r="1"></circle>
+                                <circle cx="15" cy="12" r="1"></circle>
+                                <circle cx="15" cy="5" r="1"></circle>
+                                <circle cx="15" cy="19" r="1"></circle>
+                              </svg></button
+                            ><button class="m4g"></button><span class="tr m4h">Weekly planning</span
+                            ><span class="m4i"><span class="m4l">Weekly</span></span
+                            ><button class="m4k">
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="12" cy="12" r="1"></circle>
+                                <circle cx="19" cy="12" r="1"></circle>
+                                <circle cx="5" cy="12" r="1"></circle>
+                              </svg>
+                            </button>
+                          </div>
+                        </li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+            <article class="card">
+              <div class="card-copy">
+                <h3>Every agent, one sidebar.</h3>
+                <p>Working, done or waiting on you.</p>
+              </div>
+              <div class="card-shot" inert aria-hidden="true">
+                <div class="m4n">
+                  <div class="cp p-paper m4o">
+                    <div class="m4p">
+                      <div class="m4q">
+                        <span class="m7"
+                          ><svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path
+                              fill="currentColor"
+                              stroke="none"
+                              fill-rule="evenodd"
+                              d="M12 2.5a9.5 9.5 0 1 0 0 19a9.5 9.5 0 1 0 0-19zm0 5.5a4 4 0 1 1 0 8a4 4 0 1 1 0-8z"
+                            ></path></svg></span
+                        ><span class="mf">Assistant</span><span class="ma">3</span>
+                      </div>
+                      <div class="m4q">
+                        <span class="m1i"
+                          ><svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"></path>
+                            <path
+                              d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                            ></path></svg></span
+                        ><span class="mf">Storefront</span><span class="ma">2</span>
+                      </div>
+                      <div class="m4q">
+                        <span class="m2i"></span><span class="mf">Payments retry</span
+                        ><span class="mq">now</span>
+                      </div>
+                      <div class="m4q">
+                        <span class="m1k"
+                          ><svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            class="m8"
+                          >
+                            <polyline points="4 17 10 11 4 5"></polyline>
+                            <line x1="12" x2="20" y1="19" y2="19"></line></svg></span
+                        ><span class="mf">Mobile app</span><span class="m2i"></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+            <article class="card">
+              <div class="card-copy">
+                <h3>Thread to pull request.</h3>
+                <p>Commit, push and open the PR in one step.</p>
+              </div>
+              <div class="card-shot" inert aria-hidden="true">
+                <div class="m4r">
+                  <div class="cp p-paper m4s">
+                    <ul class="m1f">
+                      <li class="m40">
+                        <button class="m4t">
+                          <span class="m4u"
+                            ><svg
+                              width="16"
+                              height="16"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              class="m8"
+                            >
+                              <circle cx="18" cy="18" r="3"></circle>
+                              <circle cx="6" cy="6" r="3"></circle>
+                              <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
+                              <line x1="6" x2="6" y1="9" y2="21"></line></svg></span
+                          ><span class="m3d"
+                            ><span class="tr m4v">Retry declined cards before emailing</span
+                            ><span class="m4w"
+                              ><span class="tr">storefront #412 · 2h</span></span
+                            ></span
+                          ><span class="m4x"
+                            ><span class="m4y"
+                              ><svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <path d="m9 12 2 2 4-4"></path></svg></span
+                          ></span>
+                        </button>
+                      </li>
+                      <li class="m4z">
+                        <button class="m4t">
+                          <span class="m50"
+                            ><svg
+                              width="16"
+                              height="16"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              class="m8"
+                            >
+                              <circle cx="18" cy="18" r="3"></circle>
+                              <circle cx="6" cy="6" r="3"></circle>
+                              <path d="M13 6h3a2 2 0 0 1 2 2v7"></path>
+                              <line x1="6" x2="6" y1="9" y2="21"></line></svg></span
+                          ><span class="m3d"
+                            ><span class="tr m4v">Upgrade the mobile SDK</span
+                            ><span class="m4w"
+                              ><span class="tr">mobile-app #85 · 9h</span></span
+                            ></span
+                          ><span class="m4x"
+                            ><span class="m4y"
+                              ><svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="m8"
+                              >
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <path d="m9 12 2 2 4-4"></path></svg></span
+                          ></span>
+                        </button>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </article>
+            <article class="card">
+              <div class="card-copy">
+                <h3>See all of your quotas.</h3>
+                <p>And see how you're maximizing your subscriptions.</p>
+              </div>
+              <div class="card-shot low" inert aria-hidden="true">
+                <div class="m4r">
+                  <div class="cp p-paper m4s">
+                    <div class="m51">
+                      <div class="m52">
+                        <div class="m53">
+                          <span class="m54">Claude Code · weekly</span><span class="mf"></span
+                          ><span class="m55">62% left · resets Mon</span>
+                        </div>
+                        <div class="m56"><div class="m57"></div></div>
+                      </div>
+                      <div class="m52">
+                        <div class="m53">
+                          <span class="m54">Codex · weekly</span><span class="mf"></span
+                          ><span class="m55">21% left · resets Tue</span>
+                        </div>
+                        <div class="m56"><div class="m58"></div></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
           </div>
         </section>
         <section class="section">
-          <h2>One simple app for every agent you use.</h2>
-          <div class="grid two">
-            <article>
-              <h3>Every thread in one sidebar.</h3>
-              <p>
-                Projects and threads from every provider live in one Cursor-style sidebar. Each
-                thread shows whether it's working, done, or waiting on you.
-              </p>
-            </article>
-            <article>
-              <h3>Switch agents without switching apps.</h3>
-              <p>
-                Start each thread with any provider and change models mid-thread. Pin your favorite
-                models and cycle through them from the keyboard.
-              </p>
-            </article>
-            <article>
-              <h3>From thread to pull request.</h3>
-              <p>
-                Give a thread its own worktree and branch. Review the diff, then commit, push, and
-                open a pull request in one step.
-              </p>
-            </article>
-            <article>
-              <h3>Your inbox, on your phone.</h3>
-              <p>
-                Pair your iPhone with a QR code. The Inbox shows what's running and what needs you,
-                so you can reply and send the next instruction from anywhere.
-              </p>
-            </article>
-          </div>
-          <div class="showcase">
-            <figure class="window">
-              <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span
-              ><img
-                src="/app.webp"
-                width="1440"
-                height="900"
-                alt="Control Plane on a Mac: projects and threads in the sidebar next to a finished conversation with Claude Opus 5.5."
-              />
-            </figure>
-            <figure class="phone">
-              <img
-                src="/phone.webp"
-                width="402"
-                height="874"
-                alt="Control Plane on iPhone: the Inbox with one thread working, three needing attention, and the same projects as the Mac."
-              />
-            </figure>
-          </div>
-        </section>
-        <section class="section">
-          <h2>Connect your devices with Tailscale.</h2>
+          <h2 class="h2-tight">Connect your devices with Tailscale.</h2>
           <p class="section-lede">
             Tailscale puts your Mac and iPhone on a private network, so the app can reach your Mac
             from anywhere without exposing it to the internet.
           </p>
           <ol class="steps">
             <li>
-              Install <a href="https://tailscale.com/download">Tailscale</a> on your Mac and iPhone
-              and sign in to the same account.
+              <span class="step-n">1</span>Install
+              <a href="https://tailscale.com/download">Tailscale</a> on your Mac and iPhone and sign
+              in to the same account.
             </li>
             <li>
-              In the Tailscale admin console, turn on MagicDNS and HTTPS certificates under
-              <strong>DNS</strong>.
+              <span class="step-n">2</span>In the Tailscale admin console, turn on MagicDNS and
+              HTTPS certificates under <strong>DNS</strong>.
             </li>
             <li>
-              In Control Plane on your Mac, open <strong>Settings → Connections</strong> and turn on
-              <strong>Tailscale HTTPS</strong>.
+              <span class="step-n">3</span>In Control Plane on your Mac, open
+              <strong>Settings → Connections</strong> and turn on <strong>Tailscale HTTPS</strong>.
             </li>
             <li>
-              Create a pairing link on the same page and scan its QR code with the Control Plane
-              iPhone app.
+              <span class="step-n">4</span>Create a pairing link on the same page and scan its QR
+              code with the Control Plane iPhone app.
             </li>
           </ol>
-          <p class="note">The same steps connect another Mac or a browser on your tailnet.</p>
         </section>
         <section class="section">
           <h2>Why this fork.</h2>
@@ -194,9 +1708,9 @@
                 every subscription I already pay for.
               </p>
               <p>
-                The T3 team has built a great platform. I've taken the interface in a direction that
-                fits how I work: a Cursor-style sidebar, an inbox on mobile, and shortcuts for the
-                views I open most.
+                The T3 team has built a great platform. I have taken the interface in a direction
+                that fits how I work: a coordinator for each project, my tasks next to the work, and
+                an assistant that watches all of it.
               </p>
             </blockquote>
             <figcaption>Nick from Lucive</figcaption>
@@ -204,17 +1718,13 @@
         </section>
         <section class="section closing">
           <div>
-            <h2>Set up in a few minutes.</h2>
+            <h2 class="h2-tight">Set up in a few minutes.</h2>
             <p>
               Download Control Plane, sign in to the agent CLIs you already use, and open a project.
-              It's free and
+              It is free and
               <a href="https://github.com/lucive-apps/control-plane/blob/main/LICENSE"
                 >MIT licensed</a
               >.
-            </p>
-            <p class="note">
-              Each provider bills its own usage. To check in from your phone, keep your Mac on and
-              reachable.
             </p>
           </div>
           <div class="actions">
@@ -230,11 +1740,20 @@
             /></a>
           </div>
         </section>
-      </main>
+      </div>
+    </main>
+    <div class="wrap">
       <footer>
-        <span
-          >Control Plane by Lucive. Built on
-          <a href="https://github.com/pingdotgg/t3code">T3 Code</a>.</span
+        <span class="footer-brand"
+          ><svg aria-hidden="true" width="16" height="16" viewBox="151 151 721 721">
+            <path d="M509 151L430 444L592 445Z" fill="currentColor"></path>
+            <path d="M509 359L761 611V652L509 826L262 652V607Z" fill="currentColor"></path>
+            <path d="M450 660L326 782L324 842L394 872L452 812V662Z" fill="currentColor"></path>
+            <path d="M566 660L564 812L624 872L694 842V786L568 660Z" fill="currentColor"></path></svg
+          ><span
+            >Control Plane by Lucive. Built on
+            <a href="https://github.com/pingdotgg/t3code">T3 Code</a>.</span
+          ></span
         >
         <nav aria-label="Footer navigation">
           <a href="/support">Support</a><a href="/privacy-policy">Privacy</a

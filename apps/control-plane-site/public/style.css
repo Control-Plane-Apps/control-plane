@@ -2,13 +2,33 @@
   box-sizing: border-box;
 }
 :root {
-  color-scheme: dark;
-  --bg: #101112;
-  --panel: #18191a;
-  --ink: #f5f3ee;
-  --muted: #a8a7a3;
-  --line: #303132;
-  --accent: #d1a272;
+  color-scheme: light dark;
+  --bg: #faf8f5;
+  --panel: #fffdfa;
+  --sunk: #f3efe9;
+  --ink: #1f1a16;
+  --ink2: #3d352e;
+  --muted: #6b6156;
+  --line: #e8e1d8;
+  --accent: #b04f26;
+  --accent-hover: #9a431f;
+  --tile: #1f1a16;
+  --shadow: 0 24px 70px rgba(61, 42, 26, 0.1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #13110f;
+    --panel: #1c1916;
+    --sunk: #181512;
+    --ink: #f2ece4;
+    --ink2: #d8cfc4;
+    --muted: #a69a8c;
+    --line: #2e2823;
+    --accent: #b4552a;
+    --accent-hover: #c46236;
+    --tile: #2a241f;
+    --shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+  }
 }
 html {
   scroll-behavior: smooth;
@@ -17,13 +37,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family:
-    Inter,
-    ui-sans-serif,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
@@ -36,11 +50,12 @@ a:hover {
 }
 a:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 6px;
+  outline-offset: 4px;
+  border-radius: 2px;
 }
 .wrap {
   width: min(1120px, calc(100% - 48px));
-  margin: auto;
+  margin: 0 auto;
 }
 .skip {
   position: absolute;
@@ -54,25 +69,33 @@ a:focus-visible {
 .skip:focus {
   top: 12px;
 }
+
+/* Header */
 header {
-  height: 96px;
+  height: 89px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   border-bottom: 1px solid var(--line);
 }
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 18px;
   font-weight: 650;
   letter-spacing: -0.5px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
   text-decoration: none;
+  white-space: nowrap;
 }
+.brand svg,
 .brand img {
-  width: 38px;
-  height: 38px;
+  display: block;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  color: var(--accent);
 }
 nav {
   display: flex;
@@ -82,26 +105,28 @@ nav {
 nav a {
   text-decoration: none;
   color: var(--muted);
+  white-space: nowrap;
 }
+
+/* Hero */
 .hero {
-  padding: 100px 0 80px;
-  display: grid;
-  grid-template-columns: 1.15fr 1fr;
-  align-items: center;
-  gap: 70px;
+  padding: 88px 0 48px;
+  text-align: center;
 }
 h1 {
-  font-size: clamp(44px, 6vw, 76px);
-  letter-spacing: -3.5px;
-  line-height: 1.04;
-  margin: 22px 0 28px;
-  font-weight: 550;
+  font-size: clamp(40px, 6vw, 80px);
+  letter-spacing: -3.4px;
+  line-height: 1.03;
+  margin: 0 auto 24px;
+  font-weight: 600;
+  max-width: 900px;
 }
 .lede {
-  font-size: 19px;
-  line-height: 1.65;
+  font-size: 20px;
+  line-height: 1.55;
   color: var(--muted);
-  max-width: 590px;
+  max-width: 640px;
+  margin: 0 auto;
 }
 .actions {
   display: flex;
@@ -109,31 +134,31 @@ h1 {
   flex-wrap: wrap;
   margin-top: 32px;
 }
+.hero .actions {
+  justify-content: center;
+}
 .button {
-  padding: 12px 20px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  font-size: 14px;
-  font-weight: 600;
-  text-decoration: none;
   display: inline-flex;
   align-items: center;
   gap: 14px;
+  padding: 12px 20px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
 }
 .button.primary {
   background: var(--accent);
-  color: var(--bg);
   border-color: var(--accent);
+  color: #fff;
 }
 .button.primary:hover {
-  background: #ddb68c;
-  border-color: #ddb68c;
-  color: var(--bg);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: #fff;
 }
-.button:hover {
-  border-color: var(--accent);
-}
-/* Apple's badge stays unaltered; .actions gap keeps its clear space (at least a quarter of its height). */
+/* Apple's badge stays unaltered; the .actions gap keeps its clear space. */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -146,214 +171,187 @@ h1 {
 .note {
   font-size: 12px;
   color: var(--muted);
-  margin-top: 18px;
+  margin: 18px 0 12px;
 }
-.diagram {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 28px;
-  box-shadow: 0 24px 70px #0004;
-}
-.diagram-top {
-  font-size: 13px;
-  color: var(--muted);
-  display: flex;
-  justify-content: space-between;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 18px;
-}
-.diagram-top strong {
-  color: var(--ink);
-  font-weight: 500;
-}
-.provider-list {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
-}
-.provider-list li {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 13px 0;
-  border-bottom: 1px solid var(--line);
-}
-.provider-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  background: #232425;
-  display: grid;
-  place-items: center;
-  flex: none;
-}
-.provider-list strong {
-  display: block;
-  font-size: 15px;
-  font-weight: 500;
-}
-.provider-list code {
-  font-family: ui-monospace, monospace;
-  font-size: 11px;
-  color: var(--muted);
-}
-.ready {
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.ready::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #7fbf86;
-}
-.diagram-foot {
-  margin: 20px 0 0;
-  font-size: 12px;
-  color: var(--muted);
-}
-/* The Mac window, with the iPhone Inbox overlapping its lower right corner. */
-.showcase {
-  position: relative;
-  margin: 64px 0 0;
-  padding-bottom: 6%;
-}
-.window {
-  position: relative;
-  width: 84%;
-  margin: 0;
-  border: 1px solid var(--line);
-  border-radius: 14px;
+
+/* Product shot: fixed-size mockups, scaled down with zoom on narrow screens */
+.shot-band {
+  padding: 0 24px 56px;
   overflow: hidden;
-  box-shadow: 0 30px 90px #0007;
 }
-.window img {
-  display: block;
-  width: 100%;
-  height: auto;
+.shot {
+  position: relative;
+  width: 1080px;
+  height: 640px;
+  margin: 0 auto;
 }
-/* macOS window buttons, placed where the desktop app's trafficLightPosition puts them. */
-.lights {
+.shot-window {
   position: absolute;
-  left: 1.111%;
-  top: 2.222%;
-  width: 3.611%;
-  aspect-ratio: 52 / 12;
-  display: flex;
-  justify-content: space-between;
+  left: 0;
+  top: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
 }
-.lights i {
-  width: 23.08%;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: #ff5f57;
-}
-.lights i:nth-child(2) {
-  background: #febc2e;
-}
-.lights i:nth-child(3) {
-  background: #28c840;
-}
-/* iPhone 17 Pro screen: 402 x 874 pt with 55 pt corners. */
-.phone {
+.shot-phone {
   position: absolute;
   right: 0;
-  bottom: 0;
-  width: 22%;
-  aspect-ratio: 402 / 874;
-  margin: 0;
-  border-radius: 13.7% / 6.3%;
-  overflow: hidden;
-  box-shadow:
-    0 0 0 5px #1d1e1f,
-    0 0 0 6px #3a3b3c,
-    0 30px 90px #000a;
+  bottom: 20px;
 }
-.phone img {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-/* Dynamic Island, which simulator screenshots leave out. */
-.phone::after {
-  content: "";
-  position: absolute;
-  top: 1.26%;
-  left: 34.33%;
-  width: 31.34%;
-  height: 4.23%;
-  border-radius: 999px;
-  background: #000;
-}
+
+/* Sections */
 .section {
-  padding: 72px 0;
+  padding: 80px 0;
   border-top: 1px solid var(--line);
 }
 h2 {
   font-size: 34px;
-  line-height: 1.2;
+  line-height: 1.6;
   letter-spacing: -1px;
-  font-weight: 500;
-  margin: 12px 0 28px;
+  font-weight: 600;
+  margin: 0 0 24px;
 }
-.grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 42px;
+.h2-lg {
+  font-size: 38px;
+  line-height: 1.15;
+  letter-spacing: -1.2px;
+  margin-bottom: 28px;
 }
-.grid h3 {
-  font-size: 19px;
-  font-weight: 500;
-  margin: 18px 0 10px;
-}
-.grid p {
-  color: var(--muted);
-  font-size: 15px;
-  margin: 0;
-}
-.grid.two {
-  grid-template-columns: repeat(2, 1fr);
-  gap: 48px 64px;
+.h2-tight {
+  margin-bottom: 12px;
 }
 .section-lede {
   color: var(--muted);
   font-size: 17px;
   max-width: 640px;
-  margin: -12px 0 32px;
+  margin: 0 0 32px;
 }
+
+/* Providers */
+.providers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.providers li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.providers .tile {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--tile);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.providers img {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+.providers strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+.providers-note {
+  margin: 16px 0 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* Feature bento */
+.bento {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.card {
+  position: relative;
+  height: 272px;
+  overflow: hidden;
+  border-radius: 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.card.tall {
+  height: 332px;
+}
+.card-copy {
+  position: relative;
+  z-index: 1;
+  padding: 24px 24px 0;
+}
+.card-copy h3 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
+  letter-spacing: -0.5px;
+  font-weight: 600;
+}
+.card-copy p {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.soon {
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.card-shot {
+  position: absolute;
+  left: 24px;
+  top: 106px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.card.tall .card-shot {
+  top: 118px;
+}
+.card-shot.low {
+  top: 126px;
+}
+
+/* Tailscale steps */
 .steps {
   list-style: none;
-  counter-reset: step;
   padding: 0;
   margin: 0;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 32px;
 }
 .steps li {
-  counter-increment: step;
   color: var(--muted);
   font-size: 15px;
   border-top: 1px solid var(--line);
   padding-top: 18px;
 }
-.steps li::before {
-  content: counter(step);
+.steps strong {
+  color: var(--ink2);
+}
+.step-n {
   display: block;
   color: var(--accent);
   font-size: 22px;
   margin-bottom: 8px;
 }
-.steps strong {
-  color: var(--ink);
-  font-weight: 500;
-}
+
+/* Letter */
 .letter {
   margin: 0;
   max-width: 720px;
@@ -363,27 +361,31 @@ h2 {
   font-size: 20px;
   line-height: 1.65;
 }
-.letter blockquote p {
+.letter p {
   margin: 0 0 20px;
 }
 .letter figcaption {
   color: var(--muted);
   font-size: 14px;
 }
+
+/* Closing */
 .closing {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 30px;
-  padding-bottom: 85px;
 }
 .closing p {
   color: var(--muted);
   max-width: 560px;
+  margin: 0;
 }
-.closing h2 {
-  margin-bottom: 12px;
+.closing .actions {
+  margin-top: 0;
 }
+
+/* Footer */
 footer {
   border-top: 1px solid var(--line);
   padding: 30px 0 42px;
@@ -399,6 +401,21 @@ footer nav {
   gap: 20px;
   flex-wrap: wrap;
 }
+footer nav a {
+  color: inherit;
+}
+.footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.footer-brand svg {
+  display: block;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+/* Document pages (support, legal, policies) */
 .document {
   max-width: 740px;
   padding: 72px 0 90px;
@@ -406,6 +423,7 @@ footer nav {
 .document h1 {
   font-size: 52px;
   letter-spacing: -2px;
+  margin: 0 0 24px;
 }
 .document h2 {
   font-size: 24px;
@@ -417,7 +435,7 @@ footer nav {
 }
 .document p,
 .document li {
-  color: #c3c2bd;
+  color: var(--ink2);
 }
 .document li {
   padding-left: 6px;
@@ -425,6 +443,8 @@ footer nav {
 }
 .document .lede {
   font-size: 19px;
+  margin: 0;
+  color: var(--muted);
 }
 .document .meta {
   font-size: 12px;
@@ -433,80 +453,113 @@ footer nav {
 .callout {
   background: var(--panel);
   padding: 22px 24px;
+  border: 1px solid var(--line);
   border-left: 2px solid var(--accent);
   margin: 28px 0;
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 8px 8px 0;
 }
 .callout p {
   margin: 0;
 }
-@media (max-width: 1000px) {
-  .steps {
-    grid-template-columns: repeat(2, 1fr);
+
+/* Responsive */
+@media (max-width: 1127px) {
+  .shot {
+    zoom: 0.85;
   }
 }
-@media (max-width: 760px) {
+@media (max-width: 1000px) {
+  .shot {
+    zoom: 0.66;
+  }
+  .bento {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 860px) {
+  .closing {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+@media (max-width: 767px) {
+  .shot {
+    zoom: 0.5;
+  }
+  .document h1 {
+    font-size: 42px;
+  }
+}
+@media (max-width: 640px) {
   .wrap {
-    width: calc(100% - 36px);
+    width: calc(100% - 40px);
   }
   header {
-    height: 78px;
+    height: 72px;
   }
   nav {
     gap: 18px;
   }
   .hero {
-    padding: 60px 0;
-    grid-template-columns: 1fr;
-    gap: 40px;
+    padding: 56px 0 40px;
   }
   h1 {
-    letter-spacing: -2px;
-    max-width: 520px;
-  }
-  .diagram {
-    max-width: 520px;
-    width: 100%;
-  }
-  .grid,
-  .grid.two,
-  .steps {
-    grid-template-columns: 1fr;
-    gap: 32px;
-  }
-  .section {
-    padding: 48px 0;
-  }
-  .showcase {
-    margin-top: 40px;
-    padding-bottom: 50%;
-  }
-  .window {
-    width: 100%;
-    border-radius: 10px;
-  }
-  .phone {
-    right: 6%;
-    width: 38%;
-    box-shadow:
-      0 0 0 3px #1d1e1f,
-      0 0 0 4px #3a3b3c,
-      0 20px 60px #000a;
-  }
-  .closing {
-    display: block;
-  }
-  .document {
-    padding-top: 45px;
-  }
-  .document h1 {
-    font-size: 42px;
+    letter-spacing: -1.6px;
   }
   .lede {
     font-size: 18px;
   }
+  /* The window would be unreadable this small; lead with the phone instead. */
+  .shot-band {
+    padding-bottom: 48px;
+  }
+  .shot {
+    zoom: 1.1;
+    width: 234px;
+    height: 506px;
+  }
+  .shot-window {
+    display: none;
+  }
+  .shot-phone {
+    position: static;
+  }
+  .section {
+    padding: 56px 0;
+  }
+  h2,
+  .h2-lg {
+    font-size: 30px;
+    letter-spacing: -0.9px;
+  }
+  .providers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .providers li {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+  .bento,
+  .steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .steps {
+    gap: 24px;
+  }
+  .card.tall {
+    height: 300px;
+  }
   .letter blockquote {
     font-size: 18px;
+  }
+}
+@media (max-width: 400px) {
+  .nav-features {
+    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
