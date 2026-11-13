@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - the engine under test takes a plain clock.
 import type { Task, TaskIntent, TaskSyncSubscription } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 

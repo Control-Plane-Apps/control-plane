@@ -137,6 +137,7 @@ import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import { readWorkflowScript } from "./orchestration/workflowScriptQuery.ts";
 import { ScheduleService } from "./schedules/ScheduleService.ts";
+import { TaskSyncService } from "./taskSync/TaskSyncService.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -635,6 +636,7 @@ const makeWsRpcLayer = (
       >();
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const scheduleService = yield* ScheduleService;
+      const taskSync = yield* TaskSyncService;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -3153,6 +3155,34 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.taskSyncStatus]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncStatus, taskSync.status, {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncRequestCode]: (input) =>
+          observeRpcEffect(WS_METHODS.taskSyncRequestCode, taskSync.requestCode(input.email), {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncVerify]: (input) =>
+          observeRpcEffect(WS_METHODS.taskSyncVerify, taskSync.verify(input.email, input.code), {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncSignOut]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncSignOut, taskSync.signOut, {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncCheckout]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncCheckout, taskSync.checkoutUrl, {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncPortal]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncPortal, taskSync.portalUrl, {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncNow]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncNow, taskSync.syncNow, {
+            "rpc.aggregate": "orchestration",
+          }),
         [WS_METHODS.schedulesStatus]: (input) =>
           observeRpcEffect(WS_METHODS.schedulesStatus, scheduleService.status(input.projectId), {
             "rpc.aggregate": "orchestration",
