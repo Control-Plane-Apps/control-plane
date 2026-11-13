@@ -943,7 +943,7 @@ export function scheduleUnsupportedText(problems: readonly ScheduleHostProblem[]
 
 /** "How to fix" for a host that runs no schedules: the user guide's Schedules section. */
 export const SCHEDULES_HELP_URL =
-  "https://github.com/lucive-apps/control-plane/blob/main/docs/user/projects.md#schedules";
+  "https://github.com/Control-Plane-Apps/control-plane/blob/main/docs/user/projects.md#schedules";
 
 export interface ScheduleHostView {
   /** Times read in the live host zone once status loads, else the zone at startup. */

@@ -27,10 +27,10 @@ it("routes issues, source, and playbook updates to the fork, never upstream", ()
   // Upstream syncs can rewrite the playbook; this keeps Control Plane users
   // from filing issues against, or cloning source from, pingdotgg/t3code.
   assert.notInclude(TRIAGE_PLAYBOOK, "pingdotgg");
-  assert.include(TRIAGE_PLAYBOOK, "https://github.com/lucive-apps/control-plane/issues/new");
+  assert.include(TRIAGE_PLAYBOOK, "https://github.com/Control-Plane-Apps/control-plane/issues/new");
   assert.include(
     TRIAGE_PLAYBOOK,
-    "https://raw.githubusercontent.com/lucive-apps/control-plane/main/.github/triage/PLAYBOOK.md",
+    "https://raw.githubusercontent.com/Control-Plane-Apps/control-plane/main/.github/triage/PLAYBOOK.md",
   );
 });
 
@@ -79,6 +79,6 @@ it("context file carries every path the playbook depends on", () => {
   assert.include(context, "/home/u/.t3/source");
   assert.include(context, "npx t3 triage");
   assert.include(context, "v0.0.33");
-  assert.include(context, "Repo: https://github.com/lucive-apps/control-plane");
+  assert.include(context, "Repo: https://github.com/Control-Plane-Apps/control-plane");
   assert.notInclude(context, "pingdotgg");
 });

@@ -1,5 +1,5 @@
 export const FORK_APP_BASE_NAME = "Control Plane";
-export const FORK_GITHUB_REPOSITORY = "lucive-apps/control-plane";
+export const FORK_GITHUB_REPOSITORY = "Control-Plane-Apps/control-plane";
 export const FORK_DESKTOP_APP_ID = "com.lucive.controlplane";
 export const FORK_DESKTOP_DEV_APP_ID = "com.lucive.controlplane.dev";
 export const FORK_ARTIFACT_NAME = "Control-Plane-${version}-${arch}.${ext}";
