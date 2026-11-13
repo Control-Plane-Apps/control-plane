@@ -22,6 +22,8 @@ export interface TaskSyncConfig {
 export interface TaskSyncClientInfo {
   readonly platform: "macos" | "ios";
   readonly returnTo: "desktop" | "mobile";
+  /** 16 random bytes; defaults to Web Crypto, which React Native may lack. */
+  readonly randomBytes?: (length: number) => Uint8Array;
 }
 
 const DESKTOP_CLIENT: TaskSyncClientInfo = { platform: "macos", returnTo: "desktop" };
@@ -144,7 +146,7 @@ export function makeTaskSyncCloudClient(
     if (clientToken !== null && clientToken.expiresAtMs - 30_000 > nowMs())
       return clientToken.value;
     const ts = Math.floor(nowMs() / 1000);
-    const nonce = bytesToHex(randomBytes(16));
+    const nonce = bytesToHex((client.randomBytes ?? randomBytes)(16));
     const body = await call("/api/client/handshake", {
       method: "POST",
       body: JSON.stringify({
