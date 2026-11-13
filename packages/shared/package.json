@@ -123,6 +123,14 @@
       "types": "./src/taskSyncRecords.ts",
       "import": "./src/taskSyncRecords.ts"
     },
+    "./taskSync/cloudClient": {
+      "types": "./src/taskSync/cloudClient.ts",
+      "import": "./src/taskSync/cloudClient.ts"
+    },
+    "./taskSync/engine": {
+      "types": "./src/taskSync/engine.ts",
+      "import": "./src/taskSync/engine.ts"
+    },
     "./String": {
       "types": "./src/String.ts",
       "import": "./src/String.ts"

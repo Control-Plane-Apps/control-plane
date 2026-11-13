@@ -5,18 +5,16 @@
  * server reads the same names from its environment. Without both, Task Sync
  * reports `unavailable` and tasks stay local.
  */
+import type { TaskSyncConfig } from "@t3tools/shared/taskSync/cloudClient";
+
+export type { TaskSyncConfig };
+
 declare const __CPLANE_TASK_SYNC_URL__: string | undefined;
 declare const __CPLANE_TASK_SYNC_CLIENT_KEY_ID__: string | undefined;
 declare const __CPLANE_TASK_SYNC_CLIENT_SECRET__: string | undefined;
 
 /** The production task store. Internal: never shown to users. */
 const DEFAULT_BASE_URL = "https://mcp.lucive.app";
-
-export interface TaskSyncConfig {
-  readonly baseUrl: string;
-  readonly keyId: string;
-  readonly secret: string;
-}
 
 function pick(built: string | undefined, envName: string): string {
   const fromBuild = typeof built === "string" ? built.trim() : "";

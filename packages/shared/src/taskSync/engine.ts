@@ -27,7 +27,7 @@ import {
   controlPlaneIntentsFromLucive,
   controlPlaneTasksFromLucive,
   lucivePlacementOf,
-} from "@t3tools/shared/taskSyncRecords";
+} from "../taskSyncRecords.ts";
 
 import {
   TaskSyncCloudError,
@@ -555,7 +555,7 @@ export class TaskSyncEngine {
     }
 
     const wire: WireTaskWithSeq = {
-      ...(stored ?? {}),
+      ...stored,
       id: task.id,
       title: task.title,
       notes: task.notes ?? null,

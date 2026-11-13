@@ -4,16 +4,27 @@
  * fetch so tests run against an in-memory fake. Errors surface as
  * TaskSyncCloudError reasons; their user copy lives in TaskSyncError.
  */
-import { createHmac, randomBytes } from "node:crypto";
+import { hmac } from "@noble/hashes/hmac";
+import { sha256 } from "@noble/hashes/sha2";
+import { bytesToHex, hexToBytes, randomBytes, utf8ToBytes } from "@noble/hashes/utils";
 
 import type { TaskSyncErrorReason, TaskSyncSubscription } from "@t3tools/contracts";
 
-import type { TaskSyncConfig } from "./config.ts";
-import type {
-  LuciveWireMembership,
-  LuciveWirePeriod,
-  LuciveWireTask,
-} from "@t3tools/shared/taskSyncRecords";
+import type { LuciveWireMembership, LuciveWirePeriod, LuciveWireTask } from "../taskSyncRecords.ts";
+
+export interface TaskSyncConfig {
+  readonly baseUrl: string;
+  readonly keyId: string;
+  readonly secret: string;
+}
+
+/** Which app is calling: the device platform sent at sign-in and the checkout return. */
+export interface TaskSyncClientInfo {
+  readonly platform: "macos" | "ios";
+  readonly returnTo: "desktop" | "mobile";
+}
+
+const DESKTOP_CLIENT: TaskSyncClientInfo = { platform: "macos", returnTo: "desktop" };
 
 export class TaskSyncCloudError extends Error {
   readonly reason: TaskSyncErrorReason;
@@ -99,15 +110,14 @@ function reasonForStatus(status: number, body: { error?: unknown }): TaskSyncErr
 }
 
 export function signHandshake(secret: string, keyId: string, ts: number, nonce: string): string {
-  return createHmac("sha256", Buffer.from(secret, "hex"))
-    .update(`${keyId}.${ts}.${nonce}`)
-    .digest("hex");
+  return bytesToHex(hmac(sha256, hexToBytes(secret), utf8ToBytes(`${keyId}.${ts}.${nonce}`)));
 }
 
 export function makeTaskSyncCloudClient(
   config: TaskSyncConfig,
   fetchImpl: Fetch = (input, init) => fetch(input, init),
   nowMs: () => number = Date.now,
+  client: TaskSyncClientInfo = DESKTOP_CLIENT,
 ): TaskSyncCloudClient {
   let clientToken: { value: string; expiresAtMs: number } | null = null;
 
@@ -134,7 +144,7 @@ export function makeTaskSyncCloudClient(
     if (clientToken !== null && clientToken.expiresAtMs - 30_000 > nowMs())
       return clientToken.value;
     const ts = Math.floor(nowMs() / 1000);
-    const nonce = randomBytes(16).toString("hex");
+    const nonce = bytesToHex(randomBytes(16));
     const body = await call("/api/client/handshake", {
       method: "POST",
       body: JSON.stringify({
@@ -170,7 +180,11 @@ export function makeTaskSyncCloudClient(
       const body = await call("/api/auth/verify", {
         method: "POST",
         appClient: true,
-        body: JSON.stringify({ email, code, device: { name: deviceName, platform: "macos" } }),
+        body: JSON.stringify({
+          email,
+          code,
+          device: { name: deviceName, platform: client.platform },
+        }),
       });
       const token = typeof body.token === "string" ? body.token : "";
       const user = body.user as { email?: unknown } | undefined;
@@ -210,7 +224,9 @@ export function makeTaskSyncCloudClient(
     },
     checkout: async (token) => {
       try {
-        return await url("/api/entitlements/task-sync/checkout", token, { returnTo: "desktop" });
+        return await url("/api/entitlements/task-sync/checkout", token, {
+          returnTo: client.returnTo,
+        });
       } catch (error) {
         // Already subscribed: managing the subscription is the useful next step.
         if (error instanceof TaskSyncCloudError && error.status === 409) {
