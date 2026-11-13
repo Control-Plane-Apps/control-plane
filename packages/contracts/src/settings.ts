@@ -1,5 +1,6 @@
 import { AgentPlacementSettings, AgentPlacementSettingsPatch } from "./agentPlacement.ts";
 import { GlobalInstructionsScopes, GlobalInstructionsScopesPatch } from "./globalInstructions.ts";
+import { AssistantSettings, AssistantSettingsPatch } from "./assistantSettings.ts";
 import { SshDeviceHostConfigs } from "./device.ts";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
@@ -1279,6 +1280,8 @@ export const ServerSettings = Schema.Struct({
   agentPlacement: AgentPlacementSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   /** Which sessions receive `<stateDir>/GLOBAL_AGENTS.md`. Fork-owned. */
   globalInstructions: GlobalInstructionsScopes.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /** The cross-Project Assistant: what it reaches and may do. Fork-owned. */
+  assistant: AssistantSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -1559,6 +1562,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   agentPlacement: Schema.optionalKey(AgentPlacementSettingsPatch),
   globalInstructions: Schema.optionalKey(GlobalInstructionsScopesPatch),
+  assistant: Schema.optionalKey(AssistantSettingsPatch),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

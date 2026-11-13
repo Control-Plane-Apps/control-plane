@@ -35,6 +35,7 @@ import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import { ThreadsToolkitHandlersLive } from "./toolkits/threads/handlers.ts";
 import { ThreadsToolkit } from "./toolkits/threads/tools.ts";
 import { AgentsToolkitRegistrationLive } from "./toolkits/agents/handlers.ts";
+import { AssistantToolkitRegistrationLive } from "./toolkits/assistant/handlers.ts";
 import {
   DeviceScreenshotToolkitHandlersLive,
   DeviceStandardToolkitHandlersLive,
@@ -673,5 +674,6 @@ export const layer = Layer.mergeAll(
   PullRequestsToolkitRegistrationLive,
   ThreadsToolkitRegistrationLive,
   AgentsToolkitRegistrationLive,
+  AssistantToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

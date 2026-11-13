@@ -271,8 +271,11 @@ export const decideAssistantMetaUpdate = Effect.fn("decideAssistantMetaUpdate")(
         : patch.archived
           ? (current?.archivedAt ?? occurredAt)
           : null;
+    // The global marker is set when the Assistant's Project is created and never moves.
+    const scope = current?.scope ?? (current === null ? patch.scope : undefined);
     next = {
       coordinatorThreadId,
+      ...(scope !== undefined ? { scope } : {}),
       ...(formerTitle !== undefined ? { formerTitle } : {}),
       ...(archivedAt !== undefined ? { archivedAt } : {}),
       // Users never write Status; the coordinator's board survives meta updates.

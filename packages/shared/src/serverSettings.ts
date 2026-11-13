@@ -276,6 +276,8 @@ export function applyServerSettingsPatch(
     usagePriceOverrides: usagePriceOverridesPatch,
     // `machines` is merged per entry below, with the same `null` removals.
     agentPlacement: agentPlacementPatch,
+    // Shallow: `projects` is a whole list or null, which deepMerge would not clear.
+    assistant: assistantPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
     // Already translated into `projectSettingsOverrides` above; the legacy
@@ -395,6 +397,9 @@ export function applyServerSettingsPatch(
             };
           })(),
         }
+      : {}),
+    ...(assistantPatch !== undefined
+      ? { assistant: { ...current.assistant, ...assistantPatch } }
       : {}),
     ...(usagePriceOverridesPatch !== undefined
       ? {

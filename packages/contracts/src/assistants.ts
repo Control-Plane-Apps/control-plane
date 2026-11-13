@@ -82,8 +82,17 @@ export type ProjectScheduleRun = typeof ProjectScheduleRun.Type;
  * thread plus every other thread in the folder as its agents. Absent or null
  * means a plain workspace.
  */
+/**
+ * `"global"` marks the one cross-Project Assistant: its coordinator thread is
+ * the Assistant conversation, and clients show it above every Project rather
+ * than in the Projects list. Absent is an ordinary Project.
+ */
+export const ProjectAssistantScope = Schema.Literal("global");
+export type ProjectAssistantScope = typeof ProjectAssistantScope.Type;
+
 export const ProjectAssistant = Schema.Struct({
   coordinatorThreadId: ThreadId,
+  scope: Schema.optional(ProjectAssistantScope),
   /** The current coordinator's title from before it was promoted, restored if it is replaced. */
   formerTitle: Schema.optional(TrimmedNonEmptyString),
   archivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
@@ -119,6 +128,8 @@ export type ProjectScheduleInput = typeof ProjectScheduleInput.Type;
 /** `project.meta.update` input. The server resolves it into a full `ProjectAssistant`. */
 export const ProjectAssistantPatch = Schema.Struct({
   coordinatorThreadId: Schema.optional(ThreadId),
+  /** Set once, when the Assistant's Project is created; it never changes after. */
+  scope: Schema.optional(ProjectAssistantScope),
   /** The server stamps `archivedAt`. */
   archived: Schema.optional(Schema.Boolean),
   /** The whole list, like `scripts`. */
@@ -174,6 +185,20 @@ export function assistantThreadRole(
   const assistant = project?.assistant;
   if (assistant == null || threadId == null) return null;
   return assistant.coordinatorThreadId === threadId ? "coordinator" : "agent";
+}
+
+/** The cross-Project Assistant's Project, which clients list above every other Project. */
+export function isGlobalAssistant(project: AssistantProjectLike | null | undefined): boolean {
+  return project?.assistant?.scope === "global";
+}
+
+/** The live Assistant Project among `projects`, if there is one. */
+export function findGlobalAssistantProject<P extends AssistantProjectLike>(
+  projects: ReadonlyArray<P>,
+): P | undefined {
+  return projects.find(
+    (project) => isGlobalAssistant(project) && project.assistant?.archivedAt == null,
+  );
 }
 
 export function isArchivedAssistant(project: AssistantProjectLike | null | undefined): boolean {
