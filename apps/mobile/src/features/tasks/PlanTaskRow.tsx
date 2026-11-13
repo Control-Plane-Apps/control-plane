@@ -84,9 +84,13 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
   const project = context.projects.find((p) => p.id === task.links?.projectId) ?? null;
   const completed = task.status === "completed";
   const overdue = isTaskOverdue(task, context.today);
-  const meta = taskRowMeta(task, context.today, props.hidePeriod === true);
-  const agentActive = state.kind === "agent-working" || state.kind === "handed-off";
   const trailingMeta = props.metaPlacement === "trailing";
+  // The All tasks list names every home, Today included.
+  const meta =
+    trailingMeta && task.recurrence === undefined
+      ? formatTaskHome(task.home, context.today)
+      : taskRowMeta(task, context.today, props.hidePeriod === true);
+  const agentActive = state.kind === "agent-working" || state.kind === "handed-off";
 
   const body = (
     <View
