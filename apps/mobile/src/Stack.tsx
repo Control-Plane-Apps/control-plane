@@ -31,6 +31,7 @@ import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentCompo
 import { ReviewSheet } from "./features/review/ReviewSheet";
 import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
 import { ProjectStatusRouteScreen } from "./features/status/ProjectStatusRouteScreen";
+import { ControlPlanePushWorker } from "./features/push/ControlPlanePush";
 import { PlanTasksScreen } from "./features/tasks/PlanTasksScreen";
 import { TaskHandoffWorker } from "./features/tasks/taskHandoff";
 import { TaskMoveSheet } from "./features/tasks/TaskMoveSheet";
@@ -558,6 +559,7 @@ function RootStackLayout(props: {
   return (
     <HardwareKeyboardCommandProvider pathname={pathname}>
       <ThreadOutboxDrainWorker />
+      <ControlPlanePushWorker />
       <TaskHandoffWorker />
       <ShowcaseCaptureCoordinator pathname={pathname} />
       <ExistingThreadSettingsRouteProvider>

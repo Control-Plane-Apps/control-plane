@@ -34,6 +34,7 @@ export * from "./schedules.ts";
 export * from "./projectStatus.ts";
 export * from "./tasks.ts";
 export * from "./taskSync.ts";
+export * from "./push.ts";
 export * from "./t3ProjectFile.ts";
 export * from "./editor.ts";
 export * from "./project.ts";

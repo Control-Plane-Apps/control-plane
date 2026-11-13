@@ -9,7 +9,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Alert, AppState, Linking, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text } from "../../components/AppText";
 import {
   isAtomCommandInterrupted,
   reportAtomCommandResult,
@@ -58,21 +57,111 @@ function useDeviceRegistered(): boolean {
 
 export function SettingsNotificationsRouteScreen() {
   if (!hasCloudPublicConfig()) {
-    return (
-      <SettingsScreen title="Notifications">
-        <ScrollView
-          contentInsetAdjustmentBehavior="automatic"
-          contentContainerClassName="px-5 pt-4"
-        >
-          <Text className="text-base text-foreground-muted">
-            Notifications require T3 Connect in this app build.
-          </Text>
-        </ScrollView>
-      </SettingsScreen>
-    );
+    return <ControlPlaneNotificationsSettings />;
   }
 
   return <ConfiguredSettingsNotificationsRouteScreen />;
+}
+
+const PUSH_LEVEL_OPTIONS = [
+  {
+    level: "needs-you",
+    label: "Needs you only",
+    detail: "Questions waiting on you, task reminders, and the Assistant",
+  },
+  { level: "all", label: "Everything", detail: "Also when an agent finishes or fails" },
+  { level: "off", label: "Off", detail: "Nothing on this iPhone" },
+] as const;
+
+/**
+ * Control Plane's own iPhone notifications, sent by your Mac over your tailnet.
+ * Mirrors Settings > General > Notifications on the desktop.
+ */
+function ControlPlaneNotificationsSettings() {
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const insets = useSafeAreaInsets();
+  const [permission, setPermission] = useState<NotificationStatus>("checking");
+  const level = AsyncResult.isSuccess(preferencesResult)
+    ? (preferencesResult.value.pushNotificationLevel ?? "needs-you")
+    : "needs-you";
+  const supported = Platform.OS === "ios" && supportsAgentAwarenessPush();
+
+  const refresh = useCallback(async () => {
+    if (!supported) {
+      setPermission("unsupported");
+      return;
+    }
+    const result = await settlePromise(() => Notifications.getPermissionsAsync());
+    setPermission(result._tag === "Success" && result.value.granted ? "enabled" : "disabled");
+  }, [supported]);
+
+  useEffect(() => {
+    void refresh();
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") void refresh();
+    });
+    return () => subscription.remove();
+  }, [refresh]);
+
+  const allow = useCallback(
+    async (enabled: boolean) => {
+      if (!enabled || permission === "enabled") {
+        void Linking.openSettings();
+        return;
+      }
+      const result = await runtime
+        .runPromise(requestAgentNotificationPermission)
+        .catch(() => ({ type: "denied" as const, canAskAgain: false }));
+      if (result.type !== "granted") void Linking.openSettings();
+      await refresh();
+    },
+    [permission, refresh],
+  );
+
+  return (
+    <SettingsScreen title="Notifications">
+      <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+        className="flex-1"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+      >
+        <SettingsSection title="iPhone">
+          <SettingsSwitchRow
+            icon="bell.badge"
+            label="Allow notifications"
+            disabled={!supported || permission === "checking"}
+            subtitle={
+              supported
+                ? "Your Mac sends them over your tailnet, even when the app is closed"
+                : "Install a newer app build to enable notifications"
+            }
+            value={permission === "enabled"}
+            onValueChange={(enabled) => void allow(enabled)}
+          />
+        </SettingsSection>
+        <SettingsSection title="Send me">
+          {PUSH_LEVEL_OPTIONS.map((option) => (
+            <SettingsRow
+              key={option.level}
+              icon={
+                level === option.level
+                  ? { ios: "checkmark.circle.fill", android: "check" }
+                  : { ios: "circle", android: "remove" }
+              }
+              label={option.label}
+              value={option.detail}
+              valuePosition="below"
+              disabled={!supported}
+              onPress={() => savePreferences({ pushNotificationLevel: option.level })}
+            />
+          ))}
+        </SettingsSection>
+      </ScrollView>
+    </SettingsScreen>
+  );
 }
 
 function ConfiguredSettingsNotificationsRouteScreen() {

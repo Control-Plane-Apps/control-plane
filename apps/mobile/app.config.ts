@@ -330,6 +330,9 @@ const config: ExpoConfig = {
         mode: APP_VARIANT === "development" ? "development" : "production",
       },
     ],
+    // Per-question answer buttons on iPhone notifications. Personal Teams
+    // cannot sign extension targets, so that build keeps the plain buttons.
+    ...(isIosPersonalTeamBuild ? [] : ["./plugins/withNotificationServiceExtension.cjs"]),
     // appleSignIn must be gated here: withoutIosPersonalTeamCapabilities.cjs runs before
     // plugins earlier in this array, so it cannot strip the entitlement Clerk would add.
     ["@clerk/expo", { theme: "./clerk-theme.json", appleSignIn: !isIosPersonalTeamBuild }],

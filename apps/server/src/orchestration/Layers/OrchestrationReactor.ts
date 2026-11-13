@@ -18,6 +18,7 @@ import { ScheduleHost } from "../../schedules/ScheduleHost.ts";
 import { ScheduleRunner } from "../../schedules/ScheduleRunner.ts";
 import * as StatusDeadlineReactor from "../StatusDeadlineReactor.ts";
 import * as StorageCleanup from "../../storageCleanup.ts";
+import { PushNotifier } from "../../push/PushNotifier.ts";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
   const providerRuntimeIngestion = yield* ProviderRuntimeIngestionService;
@@ -33,6 +34,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const threadPullRequestReactor = yield* ThreadPullRequestReactor.ThreadPullRequestReactor;
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
   const storageCleanup = yield* StorageCleanup.StorageCleanup;
+  const pushNotifier = yield* PushNotifier;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* providerRuntimeIngestion.start();
@@ -45,6 +47,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* scheduleRunner.start();
     yield* scheduleHost.start();
     yield* statusDeadlineReactor.start();
+    yield* pushNotifier.start();
     yield* pullRequestSyncReactor.start();
     yield* agentAwarenessRelay.start();
     yield* storageCleanup.start();

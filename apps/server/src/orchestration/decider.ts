@@ -8,6 +8,7 @@ import {
   isAgentPushMessageId,
   isImportedAgentSessionMessageId,
   isScheduleMessageId,
+  isStatusAnswerMessageId,
   isStatusMessageId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -1709,6 +1710,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         commandId: command.commandId,
         createdAt: command.createdAt,
       });
+      // An answer from an iPhone notification counts only if it answers the
+      // exact question version it names; anything else is refused, not sent.
+      if (statusReplies.length === 0 && isStatusAnswerMessageId(command.message.messageId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Status answer '${command.message.messageId}' no longer matches an open question.`,
+        });
+      }
       // The command's own event goes last: its receipt records the last event's aggregate.
       return statusReplies.length === 0 ? appended : [...statusReplies, appended];
     }

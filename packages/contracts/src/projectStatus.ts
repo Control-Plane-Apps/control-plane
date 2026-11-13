@@ -230,3 +230,21 @@ export function parseStatusReply(text: string): ParsedStatusReply | null {
     ...(match[3] !== undefined ? { revision: Number(match[3]) } : {}),
   };
 }
+
+export const STATUS_RECOMMENDATION_BODY_PREFIX = "Go with your recommendation:";
+
+/**
+ * The message "Go with recommendation" sends, naming the workstream and the
+ * question's version. The Status panel and an iPhone notification's answer
+ * button both send exactly this.
+ */
+export function recommendationReplyText(
+  status: { readonly id: string; readonly title: string },
+  decision: { readonly recommendation: string; readonly openedAt: string },
+): string {
+  return statusReplyText(
+    status.title,
+    `${STATUS_RECOMMENDATION_BODY_PREFIX} ${decision.recommendation}`,
+    { statusId: status.id, openedAt: decision.openedAt },
+  );
+}

@@ -20,6 +20,7 @@ import { StorageCleanup } from "../../storageCleanup.ts";
 import { ScheduleHost } from "../../schedules/ScheduleHost.ts";
 import { ScheduleRunner } from "../../schedules/ScheduleRunner.ts";
 import { StatusDeadlineReactor } from "../StatusDeadlineReactor.ts";
+import { PushNotifier } from "../../push/PushNotifier.ts";
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;
@@ -126,6 +127,14 @@ describe("OrchestrationReactor", () => {
           }),
         ),
         Layer.provideMerge(
+          Layer.mock(PushNotifier)({
+            start: () => {
+              started.push("push-notifier");
+              return Effect.void;
+            },
+          }),
+        ),
+        Layer.provideMerge(
           Layer.mock(ScheduleHost)({
             start: () => {
               started.push("schedule-host");
@@ -170,6 +179,7 @@ describe("OrchestrationReactor", () => {
       "schedule-runner",
       "schedule-host",
       "status-deadline-reactor",
+      "push-notifier",
       "pull-request-sync-reactor",
       "agent-awareness-relay",
       "storage-cleanup",
