@@ -1,3 +1,8 @@
+import {
+  legacyThreadPullRequestKey,
+  threadPullRequestKeyOf,
+  visibleThreadPullRequests,
+} from "@t3tools/shared/threadPullRequests";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { Spinner } from "~/components/ui/spinner";
 import { pullRequestHostOf, resolveEnvironmentMachineKind } from "@t3tools/contracts";
@@ -134,7 +139,11 @@ import {
   type PullRequestSurface,
 } from "../rightPanelStore";
 import { useDebouncedValue } from "../state/queries";
-import { useAllEnvironmentShellsBootstrapped, useProjects } from "../state/entities";
+import {
+  useAllEnvironmentShellsBootstrapped,
+  useProjects,
+  useThreadShells,
+} from "../state/entities";
 import { useEnvironments } from "../state/environments";
 import {
   pullRequestEnvironment,
@@ -303,6 +312,25 @@ export const Route = createFileRoute("/_chat/pull-requests")({
 });
 
 function PullRequestsRouteView() {
+  const threadShells = useThreadShells();
+  const linkedThreadTitles = useMemo(() => {
+    const result = new Map<string, string[]>();
+    for (const thread of threadShells) {
+      const keys = new Set(
+        visibleThreadPullRequests(thread.pullRequests ?? []).map(threadPullRequestKeyOf),
+      );
+      if ((thread.pullRequests?.length ?? 0) === 0 && thread.linkedPullRequest)
+        keys.add(threadPullRequestKeyOf(legacyThreadPullRequestKey(thread.linkedPullRequest)));
+      for (const key of keys) {
+        const scopedKey = `${thread.environmentId}:${key}`;
+        const titles = result.get(scopedKey) ?? [];
+        titles.push(thread.title);
+        result.set(scopedKey, titles);
+      }
+    }
+    return result;
+  }, [threadShells]);
+
   const search = Route.useSearch();
   const sort = search.sort ?? "ready";
   const statsPolicy: PullRequestStatsPolicy =
@@ -1655,9 +1683,12 @@ function PullRequestsRouteView() {
       ) : (
         <div className="space-y-3">
           {displayGroups.map((group) => (
-            <div key={group.key} className="space-y-0.5">
+            <div
+              key={group.key}
+              className="overflow-hidden rounded-xl border border-border bg-card"
+            >
               {group.label ? (
-                <h2 className="px-3 pb-0.5 text-xs font-medium text-muted-foreground/70">
+                <h2 className="border-b border-border bg-muted/30 px-5 py-2 text-xs font-medium text-muted-foreground">
                   {group.label}
                 </h2>
               ) : null}
@@ -1669,6 +1700,11 @@ function PullRequestsRouteView() {
                     statsKey={entryKey}
                     statsRef={registerStatsRow}
                     entry={entry}
+                    linkedThreadTitles={
+                      linkedThreadTitles.get(
+                        `${entry.environmentId}:${threadPullRequestKeyOf(entry)}`,
+                      ) ?? []
+                    }
                     showProjectTitle
                     showProvider={showProvider}
                     {...(capableEnvironments.length > 1 &&
@@ -2329,7 +2365,7 @@ function PullRequestsColumn({
             {/* An expanded search owns the scarce horizontal space. The page title stays
                 available to readers while the live filters remain available in both states. */}
             <WorkspaceBreadcrumbItem current className={cn(searchExpanded && "sr-only")}>
-              <h1 className="truncate">Pull Requests</h1>
+              <h1 className="truncate">Pull requests</h1>
             </WorkspaceBreadcrumbItem>
             {searchExpanded ? null : <WorkspaceBreadcrumbSeparator />}
             <WorkspaceBreadcrumbItem className="shrink gap-1.5">
@@ -2359,7 +2395,7 @@ function PullRequestsColumn({
         ) : (
           <WorkspaceBreadcrumb ariaLabel="Pull requests breadcrumb">
             <WorkspaceBreadcrumbItem current>
-              <h1 className="truncate">Pull Requests</h1>
+              <h1 className="truncate">Pull requests</h1>
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
         )}
@@ -2389,7 +2425,7 @@ function PullRequestsColumn({
         {/* The top padding is the shared fade band's height, the same pairing the
             settings page makes: at rest the controls sit fully below the mask, and only
             content actually passing under the chrome fades. */}
-        <WorkspacePageContainer width="expanded" className="min-h-full gap-4">
+        <WorkspacePageContainer width="expanded" className="min-h-full gap-4 px-6 py-5">
           <div className="flex flex-col gap-3">
             <div ref={inFlowSearchRef} className="flex flex-wrap items-center gap-2">
               <div className="min-w-0 basis-full @lg/pr-list:basis-0 @lg/pr-list:flex-1">

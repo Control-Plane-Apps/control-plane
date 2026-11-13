@@ -1,4 +1,4 @@
-import { SearchIcon } from "lucide-react";
+import { MessageSquareIcon, SearchIcon } from "lucide-react";
 import { PullRequestStackPopover } from "./PullRequestStackPopover";
 import { memo, type RefCallback } from "react";
 
@@ -15,7 +15,6 @@ import {
   PullRequestConflictGlyph,
   PullRequestDiffStat,
   PullRequestMetaLine,
-  PullRequestApprovalGlyph,
   PullRequestStateGlyph,
 } from "./pullRequestPresentation";
 
@@ -78,8 +77,10 @@ function PullRequestRowImpl({
   statsKey,
   statsRef,
   onSelect,
+  linkedThreadTitles = [],
 }: {
   entry: EnvironmentPullRequestEntry;
+  linkedThreadTitles?: readonly string[];
   selected: boolean;
   showProjectTitle: boolean;
   /** Only when the list spans more than one host, where the repository alone is ambiguous. */
@@ -87,7 +88,7 @@ function PullRequestRowImpl({
   /** Names the server this row was read from, where the list spans more than one. */
   environmentLabel?: string;
   /**
-   * A search found this, but in something the row does not show — a description, a comment, a
+   * A search found this, but in something the row does not show, such as a description, a comment, a
    * commit message. Saying so is the difference between a result and an apparently random row.
    */
   matchedElsewhere?: boolean;
@@ -105,12 +106,12 @@ function PullRequestRowImpl({
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(entry)}
       className={cn(
-        "@container/pr-row grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-lg px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        "@container/pr-row grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-3 border-b border-border px-5 py-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         // Offscreen rows are skipped for style, layout and paint: a long list costs what the
         // viewport shows, not what the pages have loaded. The intrinsic size keeps the
         // scrollbar honest while a row is skipped.
         "[contain-intrinsic-block-size:66px] [content-visibility:auto]",
-        selected ? "bg-accent" : "hover:bg-accent/60",
+        selected ? "bg-accent/60 shadow-[inset_3px_0_0_var(--primary)]" : "hover:bg-accent/30",
       )}
     >
       {/* The conflict warning rides the corner of the lifecycle glyph, over the arrow's
@@ -150,15 +151,30 @@ function PullRequestRowImpl({
               }
             />
           ) : null}
-          {/* Only a verdict somebody has actually given: "review required" is the absence of
-              one, and saying so on every unreviewed row would say nothing. */}
-          {entry.reviewDecision === "approved" ? (
-            <PullRequestApprovalGlyph />
-          ) : entry.reviewDecision === "changes-requested" ? (
-            <span className="min-w-0 truncate text-amber-600/90 dark:text-amber-400/80">
-              Changes requested
-            </span>
-          ) : null}
+          <span
+            className={cn(
+              "inline-flex max-w-36 items-center truncate rounded-md border px-2 py-0.5 text-[11px] font-normal",
+              entry.reviewDecision === "changes-requested"
+                ? "border-warning/30 bg-warning/10 text-warning-foreground"
+                : entry.reviewDecision === "approved" || entry.state === "merged"
+                  ? "border-primary/20 bg-primary/10 text-primary"
+                  : "border-border bg-muted/40 text-muted-foreground",
+            )}
+          >
+            {entry.state === "merged"
+              ? "Merged"
+              : entry.state === "closed"
+                ? "Closed"
+                : entry.isDraft
+                  ? "Draft"
+                  : entry.reviewDecision === "approved"
+                    ? "Approved"
+                    : entry.reviewDecision === "changes-requested"
+                      ? "Changes requested"
+                      : entry.reviewDecision === "review-required"
+                        ? "Review required"
+                        : "No review decision"}
+          </span>
           {entry.checksState === undefined ? null : (
             <PullRequestChecksPopover
               checksState={entry.checksState}
@@ -176,7 +192,7 @@ function PullRequestRowImpl({
             className="shrink-0 whitespace-nowrap text-[11px]"
           />
         </span>
-        <PullRequestMetaLine className="@container/pr-row-meta col-start-1 row-start-2 overflow-hidden text-xs text-muted-foreground/70">
+        <PullRequestMetaLine className="@container/pr-row-meta col-start-1 row-start-2 overflow-hidden text-xs text-muted-foreground">
           {matchedElsewhere ? (
             <Tooltip>
               <TooltipTrigger
@@ -215,10 +231,11 @@ function PullRequestRowImpl({
                 });
               }}
             >
-              #{entry.number}
+              {showProjectTitle ? `${entry.repository} ` : ""}#{entry.number}
             </span>
           </span>
-          {showProjectTitle ? <span className="truncate">{entry.repository}</span> : null}
+          <span className="max-w-48 truncate">{entry.headBranch}</span>
+          <span className="shrink-0">{formatRelativeTimeLabel(entry.updatedAt)}</span>
           {environmentLabel ? (
             <span className="min-w-0 max-w-32 truncate">{environmentLabel}</span>
           ) : null}
@@ -229,11 +246,19 @@ function PullRequestRowImpl({
           />
           {entry.labels.length > 0 ? <PullRequestRowLabels labels={entry.labels} /> : null}
         </PullRequestMetaLine>
-        <span className="col-start-2 row-start-2 flex items-center justify-self-end gap-3 whitespace-nowrap text-[11px] text-muted-foreground/70 tabular-nums">
-          <span className="hidden @sm/pr-row:inline">
-            {formatRelativeTimeLabel(entry.updatedAt)}
+        {linkedThreadTitles.length > 0 ? (
+          <span className="col-start-1 row-start-3 flex min-w-0 items-center gap-1.5 pt-1">
+            <MessageSquareIcon aria-hidden className="size-3 text-muted-foreground" />
+            <span className="max-w-64 truncate rounded-md border border-border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              {linkedThreadTitles[0]}
+            </span>
+            {linkedThreadTitles.length > 1 ? (
+              <span className="text-[11px] text-muted-foreground">
+                +{linkedThreadTitles.length - 1}
+              </span>
+            ) : null}
           </span>
-        </span>
+        ) : null}
       </span>
     </button>
   );

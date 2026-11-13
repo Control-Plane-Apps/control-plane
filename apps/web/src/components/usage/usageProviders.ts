@@ -21,7 +21,7 @@ export const PROVIDER_PRESENTATION = {
   },
   claude: {
     label: "Claude Code",
-    color: "#d97757",
+    color: "var(--primary)",
     mark: ClaudeAI,
   },
   grok: {
