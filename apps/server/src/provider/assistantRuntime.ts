@@ -207,6 +207,9 @@ export function assistantRoleKey(input: AssistantRuntimeTarget): string {
     return `${kind}:${base}:${fileEpoch(project.workspaceRoot, MEMORY_FILE)}`;
   }
   if (!role.standing) return `agent:${base}:one-off`;
+  if (project.assistant?.scope === "global") {
+    return `assistant:${base}:${fileEpoch(project.workspaceRoot, MEMORY_FILE)}:channel`;
+  }
   const standing = `agent:${base}:standing:${role.coordinatorThreadId}`;
   if (role.slug === null) return `${standing}:-:-`;
   return `${standing}:${role.slug}:${fileEpoch(project.workspaceRoot, roleFileOf(role.slug))}`;
@@ -231,7 +234,8 @@ export function buildAssistantRuntimeBlock(
   const open = `<control_plane_project role="${role.kind}" name="${escapeAttribute(name)}" folder="${escapeAttribute(folder)}">`;
   const close = "</control_plane_project>";
 
-  if (role.kind === "coordinator" && project.assistant?.scope === "global") {
+  // The Assistant's channels: its coordinator ("Today") and every pinned thread.
+  if (project.assistant?.scope === "global" && (role.kind === "coordinator" || role.standing)) {
     return buildGlobalAssistantBlock({ roleKey, folder, memory: input.memory });
   }
 
@@ -380,7 +384,7 @@ export const loadAssistantRuntimeBlock = Effect.fnUntraced(function* (
   if (!role || !project) return null;
   const roleKey = assistantRoleKey(input);
   const memory =
-    role.kind === "coordinator"
+    role.kind === "coordinator" || (role.standing && project.assistant?.scope === "global")
       ? yield* input.readFile(NodePath.join(project.workspaceRoot, MEMORY_FILE))
       : "";
   const roleFile =

@@ -89,7 +89,7 @@ const make = Effect.gen(function* () {
       marker == null ||
       marker.scope !== "global" ||
       marker.archivedAt != null ||
-      marker.coordinatorThreadId !== caller.id
+      (marker.coordinatorThreadId !== caller.id && caller.pinnedAt == null)
     ) {
       return yield* new AssistantOnlyError();
     }

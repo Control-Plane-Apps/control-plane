@@ -1,4 +1,5 @@
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
+import { SidebarAssistantRow } from "./assistant/SidebarAssistantRow";
 import { planProjectThreadReorder } from "./Sidebar.projectOrder";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
@@ -5444,6 +5445,22 @@ export default function Sidebar() {
                       const items: ReactNode[] = [];
                       if (!settledViewOpen) {
                         if (showAssistantsSection) {
+                          items.push(
+                            <SidebarAssistantRow
+                              key="global-assistant"
+                              isActive={
+                                assistantPartition.globalAssistant != null &&
+                                routeThreadRef !== null &&
+                                threads.some(
+                                  (thread) =>
+                                    thread.id === routeThreadRef.threadId &&
+                                    thread.environmentId === routeThreadRef.environmentId &&
+                                    thread.projectId ===
+                                      assistantPartition.globalAssistant?.project.id,
+                                )
+                              }
+                            />,
+                          );
                           items.push(
                             <SidebarListSectionHeader
                               key="assistants-section"

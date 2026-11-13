@@ -172,7 +172,7 @@ export const make = Effect.gen(function* () {
         return (
           marker?.scope === "global" &&
           marker.archivedAt == null &&
-          marker.coordinatorThreadId === recipient.threadId
+          (marker.coordinatorThreadId === recipient.threadId || recipient.pinnedAt !== null)
         );
       }),
     );

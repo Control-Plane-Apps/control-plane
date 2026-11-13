@@ -1,6 +1,7 @@
 import {
   assistantSlug,
   isArchivedAssistant,
+  isGlobalAssistant,
   isRunningAgent,
   type EnvironmentId,
   type ProjectAssistant,
@@ -61,6 +62,11 @@ export interface AssistantPartition<P, T> {
   readonly workspaceProjects: readonly P[];
   /** Threads outside every Project, archived Projects included. */
   readonly workspaceThreads: readonly T[];
+  /**
+   * The cross-Project Assistant, listed above every Project and never among
+   * them. Its threads are its channels and appear nowhere else.
+   */
+  readonly globalAssistant?: AssistantEntry<P, T> | null;
 }
 
 const EMPTY_ENTRIES: readonly never[] = Object.freeze([]);
@@ -101,8 +107,22 @@ export function partitionAssistants<
     string,
     { project: P; coordinatorThreadId: ThreadId; coordinator: T | null; agents: T[] }
   >();
+  const globalKeys = new Set<string>();
+  let globalAssistant: AssistantEntry<P, T> | null = null;
   for (const project of projects) {
     if (project.assistant == null) continue;
+    if (isGlobalAssistant(project)) {
+      globalKeys.add(`${project.environmentId}:${project.id}`);
+      if (!isArchivedAssistant(project) && globalAssistant === null) {
+        globalAssistant = {
+          project,
+          projectKey: derivePhysicalProjectKey(project),
+          coordinator: null,
+          agents: [],
+        };
+      }
+      continue;
+    }
     draftByProject.set(`${project.environmentId}:${project.id}`, {
       project,
       coordinatorThreadId: project.assistant.coordinatorThreadId,
@@ -113,7 +133,18 @@ export function partitionAssistants<
 
   const workspaceThreads: T[] = [];
   for (const thread of threads) {
-    const draft = draftByProject.get(`${thread.environmentId}:${thread.projectId}`);
+    const key = `${thread.environmentId}:${thread.projectId}`;
+    if (globalKeys.has(key)) {
+      if (globalAssistant !== null && globalAssistant.project.id === thread.projectId) {
+        if (thread.id === globalAssistant.project.assistant?.coordinatorThreadId) {
+          globalAssistant = { ...globalAssistant, coordinator: thread };
+        } else if (thread.archivedAt === null) {
+          (globalAssistant.agents as T[]).push(thread);
+        }
+      }
+      continue;
+    }
+    const draft = draftByProject.get(key);
     if (draft === undefined) {
       workspaceThreads.push(thread);
     } else if (thread.id === draft.coordinatorThreadId) {
@@ -150,7 +181,7 @@ export function partitionAssistants<
   assistants.sort(compare);
   archivedAssistants.sort(compare);
 
-  return { assistants, archivedAssistants, workspaceProjects, workspaceThreads };
+  return { assistants, archivedAssistants, workspaceProjects, workspaceThreads, globalAssistant };
 }
 
 export type AssistantAgentSectionInput = ThreadSnoozeShell &

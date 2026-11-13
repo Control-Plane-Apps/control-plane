@@ -1,3 +1,4 @@
+import { ASSISTANT_ASK_ACTIVITY_KIND, ASSISTANT_PING_ACTIVITY_KIND } from "@t3tools/contracts";
 import {
   requestKindFromRequestType,
   type PendingApproval,
@@ -76,6 +77,8 @@ export interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
+  /** The Assistant's ask and ping activities, drawn as cards of their own. */
+  assistantCard?: "ask" | "ping";
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
   /** Grouping key for subagent lifecycle rows (one row per agent). */
@@ -590,6 +593,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
           : activity.tone,
     sourceActivityKind: activity.kind,
   };
+  if (activity.kind === ASSISTANT_ASK_ACTIVITY_KIND) entry.assistantCard = "ask";
+  if (activity.kind === ASSISTANT_PING_ACTIVITY_KIND) entry.assistantCard = "ping";
   if (activity.kind === "user-input.answer-submitted") {
     const answer = decodeQuestionAttachmentAnswer(payload);
     if (Option.isSome(answer)) entry.questionAnswer = answer.value;

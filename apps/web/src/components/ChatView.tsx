@@ -1,4 +1,5 @@
 import { prepareImageForAttachment } from "../lib/imageCompression";
+import { useAssistantChatChrome } from "./assistant/useAssistantChatChrome";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -26,7 +27,9 @@ import {
   type ApprovalRequestId,
   type ChatFileAttachment,
   DEFAULT_MODEL,
+  DEFAULT_RUNTIME_MODE,
   type EnvironmentId,
+  type OrchestrationMessage,
   type MessageId,
   type ModelSelection,
   type ProjectScript,
@@ -96,6 +99,7 @@ import { Atom } from "effect/unstable/reactivity";
 import {
   lazy,
   memo,
+  type ReactNode,
   type SetStateAction,
   Suspense,
   useCallback,
@@ -564,6 +568,8 @@ import {
 } from "./chat/composerPromptHistory";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_ASSISTANT_MESSAGES: OrchestrationMessage[] = [];
+const passThroughTimeline = (timeline: ReactNode) => timeline;
 const EMPTY_PROJECT_STATUSES: ReadonlyArray<ProjectStatus> = [];
 const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
@@ -3577,6 +3583,25 @@ export default function ChatView(props: ChatViewProps) {
     optimisticUserMessages,
     projectHandoffMessagePreviews,
   ]);
+  const openMemorySurfaceRef = useRef<() => void>(() => {});
+  // The Assistant's channels swap in their own header, rail and cards.
+  const globalAssistantChrome = useAssistantChatChrome({
+    project: activeProject,
+    environmentId: activeThreadRef?.environmentId ?? null,
+    threadId: activeThread?.id ?? null,
+    runtimeMode: activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+    activities: threadActivities,
+    messages: activeThread?.messages ?? EMPTY_ASSISTANT_MESSAGES,
+    onOpenMemory: () => openMemorySurfaceRef.current(),
+  });
+  const assistantHiddenMessageIds = globalAssistantChrome?.hiddenMessageIds ?? null;
+  const visibleTimelineMessages = useMemo(
+    () =>
+      assistantHiddenMessageIds === null || assistantHiddenMessageIds.size === 0
+        ? timelineMessages
+        : timelineMessages.filter((message) => !assistantHiddenMessageIds.has(message.id)),
+    [assistantHiddenMessageIds, timelineMessages],
+  );
   const timelineProjectionRef = useRef<{
     threadKey: string | null;
     projection: TimelineEntriesProjection;
@@ -3584,7 +3609,7 @@ export default function ChatView(props: ChatViewProps) {
   const timelineEntries = useMemo(() => {
     const previous = timelineProjectionRef.current;
     const projection = deriveTimelineEntriesWithState(
-      timelineMessages,
+      visibleTimelineMessages,
       activeThread?.proposedPlans ?? [],
       workLogEntries,
       previous?.threadKey === activeThreadKey ? previous.projection : null,
@@ -3595,7 +3620,7 @@ export default function ChatView(props: ChatViewProps) {
     timelineProjectionRef,
     activeThreadKey,
     activeThread?.proposedPlans,
-    timelineMessages,
+    visibleTimelineMessages,
     workLogEntries,
   ]);
   const displayedTimeline = resolveThreadSwitchTimeline({
@@ -4748,6 +4773,7 @@ export default function ChatView(props: ChatViewProps) {
       input: { cwd: activeWorkspaceRoot, relativePath: "MEMORY.md" },
     });
   }, [activeThreadRef, activeWorkspaceRoot, openFileSurface, rereadProjectFile]);
+  openMemorySurfaceRef.current = openMemorySurface;
   const supportsProjectSchedules =
     serverConfig?.environment.capabilities.projectSchedules !== undefined;
   const openSchedulesSurface = useCallback(() => {
@@ -10107,50 +10133,54 @@ export default function ChatView(props: ChatViewProps) {
             />
           ) : null}
           {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
-          <ChatHeader
-            {...(!supportsPullRequests ||
-            activeProjectRepository === null ||
-            !assistantChrome.showPullRequestControls
-              ? {}
-              : { onOpenPullRequest: openProjectPullRequest })}
-            assistantRole={assistantRole}
-            showGitActions={assistantChrome.showPullRequestControls}
-            {...(statusBoardEnabled
-              ? {
-                  onToggleStatus: toggleStatusSurface,
-                  statusNeedsCount,
-                  statusOpen: statusPanelOpen,
-                }
-              : {})}
-            {...(assistantRole === "coordinator" ? { onOpenMemory: openMemorySurface } : {})}
-            {...(assistantRole === "coordinator" && supportsProjectSchedules
-              ? { onOpenSchedules: openSchedulesSurface }
-              : {})}
-            {...(assistantRole === "agent" ? { onOpenCoordinator: openActiveCoordinator } : {})}
-            activeThreadEnvironmentId={activeThread.environmentId}
-            activeThreadId={activeThread.id}
-            {...(routeKind === "draft" && draftId ? { draftId } : {})}
-            activeThreadTitle={activeThread.title}
-            isServerThread={isServerThread}
-            activeProject={activeProject}
-            openInCwd={gitCwd}
-            activeProjectScripts={activeProjectScripts}
-            preferredScriptId={
-              activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
-            }
-            keybindings={keybindings}
-            availableEditors={availableEditors}
-            rightPanelOpen={rightPanelOpen}
-            gitCwd={gitCwd}
-            onNewThreadInProject={handleNewThreadInActiveProject}
-            {...(activeDraftLogicalProjectKey
-              ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
-              : {})}
-            onRunProjectScript={runProjectScript}
-            onAddProjectScript={saveProjectScript}
-            onUpdateProjectScript={updateProjectScript}
-            onDeleteProjectScript={deleteProjectScript}
-          />
+          {globalAssistantChrome ? (
+            globalAssistantChrome.header
+          ) : (
+            <ChatHeader
+              {...(!supportsPullRequests ||
+              activeProjectRepository === null ||
+              !assistantChrome.showPullRequestControls
+                ? {}
+                : { onOpenPullRequest: openProjectPullRequest })}
+              assistantRole={assistantRole}
+              showGitActions={assistantChrome.showPullRequestControls}
+              {...(statusBoardEnabled
+                ? {
+                    onToggleStatus: toggleStatusSurface,
+                    statusNeedsCount,
+                    statusOpen: statusPanelOpen,
+                  }
+                : {})}
+              {...(assistantRole === "coordinator" ? { onOpenMemory: openMemorySurface } : {})}
+              {...(assistantRole === "coordinator" && supportsProjectSchedules
+                ? { onOpenSchedules: openSchedulesSurface }
+                : {})}
+              {...(assistantRole === "agent" ? { onOpenCoordinator: openActiveCoordinator } : {})}
+              activeThreadEnvironmentId={activeThread.environmentId}
+              activeThreadId={activeThread.id}
+              {...(routeKind === "draft" && draftId ? { draftId } : {})}
+              activeThreadTitle={activeThread.title}
+              isServerThread={isServerThread}
+              activeProject={activeProject}
+              openInCwd={gitCwd}
+              activeProjectScripts={activeProjectScripts}
+              preferredScriptId={
+                activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
+              }
+              keybindings={keybindings}
+              availableEditors={availableEditors}
+              rightPanelOpen={rightPanelOpen}
+              gitCwd={gitCwd}
+              onNewThreadInProject={handleNewThreadInActiveProject}
+              {...(activeDraftLogicalProjectKey
+                ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
+                : {})}
+              onRunProjectScript={runProjectScript}
+              onAddProjectScript={saveProjectScript}
+              onUpdateProjectScript={updateProjectScript}
+              onDeleteProjectScript={deleteProjectScript}
+            />
+          )}
         </WorkspacePageHeader>
 
         {/* Main content area with optional plan sidebar */}
@@ -10194,95 +10224,105 @@ export default function ChatView(props: ChatViewProps) {
                 }}
               />
             </div>
+            {globalAssistantChrome?.inbox ?? null}
             {/* Messages Wrapper */}
-            <div className="relative flex min-h-0 flex-1 flex-col bg-background">
+            <div
+              className={cn(
+                "relative flex min-h-0 flex-1 flex-col bg-background",
+                globalAssistantChrome?.inbox ? "hidden" : null,
+              )}
+            >
               {/* Messages — LegendList handles virtualization and scrolling internally */}
-              <MessagesTimeline
-                citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
-                citationHistoryLoading={threadDetailLoading}
-                {...(!paintOnlyDisplayedTimeline
-                  ? {
-                      onCiteAssistantText: citeAssistantText,
-                      agentPanelModel,
-                      onOpenAgents: addAgentsSurface,
-                      onUseArtifactTemplate: useArtifactTemplate,
-                    }
-                  : {})}
-                isWorking={!paintOnlyDisplayedTimeline && isWorking}
-                isPreparingWorktree={!paintOnlyDisplayedTimeline && isPreparingWorktree}
-                isCompacting={!paintOnlyDisplayedTimeline && isCompacting}
-                activeTurnStartedAt={paintOnlyDisplayedTimeline ? null : activeWorkStartedAt}
-                worktreeSetup={paintOnlyDisplayedTimeline ? null : worktreeSetup}
-                onCancelWorktreeSetup={onCancelWorktreeSetup}
-                {...(draftId ? { onWorktreeSetupWorkLocally } : {})}
-                {...(onOpenWorktreeSetupTerminal ? { onOpenWorktreeSetupTerminal } : {})}
-                listRef={legendListRef}
-                timelineEntries={displayedTimeline.entries}
-                latestTurn={paintOnlyDisplayedTimeline ? null : activeLatestTurn}
-                runningTurnId={paintOnlyDisplayedTimeline ? null : activeRunningTurnId}
-                turnDiffSummaries={
-                  paintOnlyDisplayedTimeline
-                    ? EMPTY_HELD_TURN_DIFF_SUMMARIES
-                    : activeThread.checkpoints
-                }
-                activeThreadEnvironmentId={
-                  displayedThreadRef?.environmentId ?? activeThread.environmentId
-                }
-                routeThreadKey={displayedTimelineKey}
-                displayThreadKey={displayedTimelineKey}
-                onOpenTurnDiff={paintOnlyDisplayedTimeline ? noopHeldTurnDiff : onOpenTurnDiff}
-                supportsConversationRollback={
-                  !paintOnlyDisplayedTimeline && supportsConversationRollback
-                }
-                onRevertToTurnCount={
-                  paintOnlyDisplayedTimeline ? noopHeldRevert : onRevertTimelineTurn
-                }
-                isRevertingCheckpoint={!paintOnlyDisplayedTimeline && isRevertingCheckpoint}
-                onImageExpand={onExpandTimelineImage}
-                onFileOpen={paintOnlyDisplayedTimeline ? noopHeldAttachment : openFileAttachment}
-                onFileDownload={
-                  paintOnlyDisplayedTimeline ? noopHeldAttachment : downloadFileAttachment
-                }
-                markdownCwd={
-                  paintOnlyDisplayedTimeline
-                    ? (heldPaintContext?.markdownCwd ?? undefined)
-                    : (gitCwd ?? undefined)
-                }
-                resolvedTheme={resolvedTheme}
-                timestampFormat={timestampFormat}
-                workspaceRoot={
-                  paintOnlyDisplayedTimeline
-                    ? (heldPaintContext?.workspaceRoot ?? undefined)
-                    : activeWorkspaceRoot
-                }
-                skills={
-                  activeProviderStatus
-                    ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd)
-                    : EMPTY_PROVIDER_SKILLS
-                }
-                anchorMessageId={paintOnlyDisplayedTimeline ? null : timelineAnchorMessageId}
-                onAnchorReady={onTimelineAnchorReady}
-                contentInsetEndAdjustment={composerTimelineInset}
-                liveFollowEnabled={!paintOnlyDisplayedTimeline && timelineLiveFollowEnabled}
-                onIsAtEndChange={onIsAtEndChange}
-                onContentOverflowChange={setTimelineOverflows}
-                onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
-                onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
-                cancelPositionRestoreRef={cancelPositionRestoreRef}
-                hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
-                topFadeEnabled={!hasTimelineTopBanner}
-                showTurnMinimap={showsTurnMinimap(timelineAssistantRole)}
-                assistantTimeline={assistantTimeline}
-                loadEarlier={paintOnlyDisplayedTimeline ? null : loadEarlierTurns}
-                queuedMessages={paintOnlyDisplayedTimeline ? EMPTY_QUEUED_MESSAGES : queuedMessages}
-                onSteerQueuedMessage={onSteerQueuedMessage}
-                steerQueuedMessageShortcutLabel={shortcutLabelForCommand(
-                  keybindings,
-                  "thread.steerQueuedMessage",
-                  { context: { terminalFocus: false } },
-                )}
-                onRemoveQueuedMessage={onRemoveQueuedMessage}
-              />
+              {(globalAssistantChrome?.wrapTimeline ?? passThroughTimeline)(
+                <MessagesTimeline
+                  citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
+                  citationHistoryLoading={threadDetailLoading}
+                  {...(!paintOnlyDisplayedTimeline
+                    ? {
+                        onCiteAssistantText: citeAssistantText,
+                        agentPanelModel,
+                        onOpenAgents: addAgentsSurface,
+                        onUseArtifactTemplate: useArtifactTemplate,
+                      }
+                    : {})}
+                  isWorking={!paintOnlyDisplayedTimeline && isWorking}
+                  isPreparingWorktree={!paintOnlyDisplayedTimeline && isPreparingWorktree}
+                  isCompacting={!paintOnlyDisplayedTimeline && isCompacting}
+                  activeTurnStartedAt={paintOnlyDisplayedTimeline ? null : activeWorkStartedAt}
+                  worktreeSetup={paintOnlyDisplayedTimeline ? null : worktreeSetup}
+                  onCancelWorktreeSetup={onCancelWorktreeSetup}
+                  {...(draftId ? { onWorktreeSetupWorkLocally } : {})}
+                  {...(onOpenWorktreeSetupTerminal ? { onOpenWorktreeSetupTerminal } : {})}
+                  listRef={legendListRef}
+                  timelineEntries={displayedTimeline.entries}
+                  latestTurn={paintOnlyDisplayedTimeline ? null : activeLatestTurn}
+                  runningTurnId={paintOnlyDisplayedTimeline ? null : activeRunningTurnId}
+                  turnDiffSummaries={
+                    paintOnlyDisplayedTimeline
+                      ? EMPTY_HELD_TURN_DIFF_SUMMARIES
+                      : activeThread.checkpoints
+                  }
+                  activeThreadEnvironmentId={
+                    displayedThreadRef?.environmentId ?? activeThread.environmentId
+                  }
+                  routeThreadKey={displayedTimelineKey}
+                  displayThreadKey={displayedTimelineKey}
+                  onOpenTurnDiff={paintOnlyDisplayedTimeline ? noopHeldTurnDiff : onOpenTurnDiff}
+                  supportsConversationRollback={
+                    !paintOnlyDisplayedTimeline && supportsConversationRollback
+                  }
+                  onRevertToTurnCount={
+                    paintOnlyDisplayedTimeline ? noopHeldRevert : onRevertTimelineTurn
+                  }
+                  isRevertingCheckpoint={!paintOnlyDisplayedTimeline && isRevertingCheckpoint}
+                  onImageExpand={onExpandTimelineImage}
+                  onFileOpen={paintOnlyDisplayedTimeline ? noopHeldAttachment : openFileAttachment}
+                  onFileDownload={
+                    paintOnlyDisplayedTimeline ? noopHeldAttachment : downloadFileAttachment
+                  }
+                  markdownCwd={
+                    paintOnlyDisplayedTimeline
+                      ? (heldPaintContext?.markdownCwd ?? undefined)
+                      : (gitCwd ?? undefined)
+                  }
+                  resolvedTheme={resolvedTheme}
+                  timestampFormat={timestampFormat}
+                  workspaceRoot={
+                    paintOnlyDisplayedTimeline
+                      ? (heldPaintContext?.workspaceRoot ?? undefined)
+                      : activeWorkspaceRoot
+                  }
+                  skills={
+                    activeProviderStatus
+                      ? resolveProviderSkillsForCwd(activeProviderStatus, gitCwd)
+                      : EMPTY_PROVIDER_SKILLS
+                  }
+                  anchorMessageId={paintOnlyDisplayedTimeline ? null : timelineAnchorMessageId}
+                  onAnchorReady={onTimelineAnchorReady}
+                  contentInsetEndAdjustment={composerTimelineInset}
+                  liveFollowEnabled={!paintOnlyDisplayedTimeline && timelineLiveFollowEnabled}
+                  onIsAtEndChange={onIsAtEndChange}
+                  onContentOverflowChange={setTimelineOverflows}
+                  onToolOutputCollapsedAtEnd={onToolOutputCollapsedAtEnd}
+                  onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
+                  cancelPositionRestoreRef={cancelPositionRestoreRef}
+                  hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
+                  topFadeEnabled={!hasTimelineTopBanner}
+                  showTurnMinimap={showsTurnMinimap(timelineAssistantRole)}
+                  assistantTimeline={assistantTimeline}
+                  loadEarlier={paintOnlyDisplayedTimeline ? null : loadEarlierTurns}
+                  queuedMessages={
+                    paintOnlyDisplayedTimeline ? EMPTY_QUEUED_MESSAGES : queuedMessages
+                  }
+                  onSteerQueuedMessage={onSteerQueuedMessage}
+                  steerQueuedMessageShortcutLabel={shortcutLabelForCommand(
+                    keybindings,
+                    "thread.steerQueuedMessage",
+                    { context: { terminalFocus: false } },
+                  )}
+                  onRemoveQueuedMessage={onRemoveQueuedMessage}
+                />,
+              )}
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}
               {showScrollToBottom && (
@@ -10620,6 +10660,7 @@ export default function ChatView(props: ChatViewProps) {
             ) : null}
           </div>
           {/* end chat column */}
+          {globalAssistantChrome?.rail ?? null}
         </div>
         {/* end horizontal flex container */}
 
