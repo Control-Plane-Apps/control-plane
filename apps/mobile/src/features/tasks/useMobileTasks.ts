@@ -31,7 +31,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 // Fork-owned. The one place the mobile Tasks UI reads and writes personal
 // tasks. Today they live on the paired Mac's shell snapshot and are written
 // with the task.* orchestration commands; screens only see this module's
-// hooks, so the source can move (for example to Lucive Cloud) without
+// hooks, so the source can move (for example to the cloud task store) without
 // touching them.
 
 const EMPTY_TASKS: ReadonlyArray<Task> = Object.freeze([]);
