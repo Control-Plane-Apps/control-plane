@@ -8,7 +8,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SymbolView, type AppSymbolName } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { cn } from "../../lib/cn";
-import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 
 // Fork-owned. Small pieces shared by the Tasks and Status screens.
 
@@ -46,61 +45,22 @@ export interface TaskPalette {
   readonly dashed: string;
   readonly swipeSelect: string;
   readonly swipeMove: string;
+  readonly checkboxBorder: string;
+  readonly shadow: string;
   readonly swipeSchedule: string;
 }
 
-const LIGHT: TaskPalette = {
-  accent: "#a8492a",
-  accentForeground: "#ffffff",
-  needsYou: "#d97706",
-  working: "#2f6f95",
-  done: "#4d7c0f",
-  doneText: "#3f6212",
-  queued: "#a8a29e",
-  overdue: "#a8492a",
-  warningSurface: "#fdf0dc",
-  warningBorder: "#f3cf9a",
-  warningText: "#9a4a0b",
-  chip: "rgba(120, 100, 80, 0.12)",
-  dashed: "rgba(60, 50, 40, 0.45)",
-  swipeSelect: "#ece6dc",
-  swipeMove: "#6d6258",
-  swipeSchedule: "#2f7d9a",
-};
-
-const DARK: TaskPalette = {
-  accent: "#c2603d",
-  accentForeground: "#ffffff",
-  needsYou: "#f59e0b",
-  working: "#5aa3cc",
-  done: "#84cc16",
-  doneText: "#a3d977",
-  queued: "#78716c",
-  overdue: "#e08a62",
-  warningSurface: "rgba(245, 158, 11, 0.16)",
-  warningBorder: "rgba(245, 158, 11, 0.4)",
-  warningText: "#f5b86b",
-  chip: "rgba(255, 255, 255, 0.1)",
-  dashed: "rgba(255, 255, 255, 0.45)",
-  swipeSelect: "#3a3530",
-  swipeMove: "#57504a",
-  swipeSchedule: "#2b6f88",
-};
-
-function colorOf(style: unknown, key: "backgroundColor" | "color" | "borderColor"): string | null {
+function colorOf(style: unknown, key: "backgroundColor" | "color" | "borderColor"): string {
   const flat = StyleSheet.flatten(style as never) as Record<string, unknown> | undefined;
   const value = flat?.[key];
-  return typeof value === "string" ? value : null;
+  return typeof value === "string" ? value : "transparent";
 }
 
 /**
- * Status and action colors come from the theme's tokens (clay primary,
- * amber / teal-blue / olive status accents); neutral surfaces keep the
- * local values below as a fallback.
+ * Every task color is a theme token (Paper and clay): clay primary for
+ * actions, amber / teal-blue / olive for needs you / working / done.
  */
 export function useTaskPalette(): TaskPalette {
-  const { themeAppearance } = useAppearancePreferences();
-  const base = themeAppearance === "dark" ? DARK : LIGHT;
   const primary = colorOf(useResolveClassNames("bg-primary"), "backgroundColor");
   const onPrimary = colorOf(useResolveClassNames("text-primary-foreground"), "color");
   const warning = colorOf(useResolveClassNames("bg-warning-accent"), "backgroundColor");
@@ -109,19 +69,32 @@ export function useTaskPalette(): TaskPalette {
   const warningSurface = colorOf(useResolveClassNames("bg-warning"), "backgroundColor");
   const warningBorder = colorOf(useResolveClassNames("border-warning-border"), "borderColor");
   const warningText = colorOf(useResolveClassNames("text-warning-foreground"), "color");
+  const tertiary = colorOf(useResolveClassNames("text-foreground-tertiary"), "color");
+  const muted = colorOf(useResolveClassNames("text-foreground-muted"), "color");
+  const secondaryText = colorOf(useResolveClassNames("text-foreground-secondary"), "color");
+  const chip = colorOf(useResolveClassNames("bg-secondary"), "backgroundColor");
+  const iconMuted = colorOf(useResolveClassNames("text-icon-muted"), "color");
+  const shadow = colorOf(useResolveClassNames("bg-primary-shadow"), "backgroundColor");
+  const subtleStrong = colorOf(useResolveClassNames("bg-subtle-strong"), "backgroundColor");
   return {
-    ...base,
-    accent: primary ?? base.accent,
-    accentForeground: onPrimary ?? base.accentForeground,
-    overdue: primary ?? base.overdue,
-    needsYou: warning ?? base.needsYou,
-    working: info ?? base.working,
-    swipeSchedule: info ?? base.swipeSchedule,
-    done: success ?? base.done,
-    doneText: success ?? base.doneText,
-    warningSurface: warningSurface ?? base.warningSurface,
-    warningBorder: warningBorder ?? base.warningBorder,
-    warningText: warningText ?? base.warningText,
+    accent: primary,
+    accentForeground: onPrimary,
+    needsYou: warning,
+    working: info,
+    done: success,
+    doneText: success,
+    queued: tertiary,
+    overdue: primary,
+    warningSurface,
+    warningBorder,
+    warningText,
+    chip,
+    dashed: muted,
+    swipeSelect: subtleStrong,
+    swipeMove: secondaryText,
+    swipeSchedule: info,
+    checkboxBorder: iconMuted,
+    shadow,
   };
 }
 
@@ -154,7 +127,7 @@ export function TaskCheckbox(props: {
           borderRadius: round ? 11 : 7,
           borderWidth: props.checked ? 0 : 1.5,
           borderStyle: props.proposed ? "dashed" : "solid",
-          borderColor: props.proposed ? palette.dashed : "rgba(120, 110, 100, 0.7)",
+          borderColor: props.proposed ? palette.dashed : palette.checkboxBorder,
           backgroundColor: props.checked ? palette.accent : "transparent",
           alignItems: "center",
           justifyContent: "center",
@@ -319,7 +292,7 @@ export function UndoBanner(props: {
           flexDirection: "row",
           alignItems: "center",
           gap: 10,
-          shadowColor: "#000",
+          shadowColor: palette.shadow,
           shadowOpacity: 0.18,
           shadowRadius: 12,
           shadowOffset: { width: 0, height: 4 },
