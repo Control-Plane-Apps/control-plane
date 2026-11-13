@@ -166,6 +166,35 @@ export function createProjectEnvironmentAtoms<R, E>(
       tag: WS_METHODS.schedulesStatus,
       staleTimeMs: 15_000,
     }),
+    /** Task Sync: the Control Plane account the Mac server syncs tasks with. */
+    taskSyncStatus: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:task-sync:status",
+      tag: WS_METHODS.taskSyncStatus,
+    }),
+    taskSyncRequestCode: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:task-sync:request-code",
+      tag: WS_METHODS.taskSyncRequestCode,
+    }),
+    taskSyncVerify: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:task-sync:verify",
+      tag: WS_METHODS.taskSyncVerify,
+    }),
+    taskSyncSignOut: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:task-sync:sign-out",
+      tag: WS_METHODS.taskSyncSignOut,
+    }),
+    taskSyncCheckout: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:task-sync:checkout",
+      tag: WS_METHODS.taskSyncCheckout,
+    }),
+    taskSyncPortal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:task-sync:portal",
+      tag: WS_METHODS.taskSyncPortal,
+    }),
+    taskSyncNow: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:task-sync:now",
+      tag: WS_METHODS.taskSyncNow,
+    }),
     schedulesRun: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:projects:schedules-run",
       tag: WS_METHODS.schedulesRun,

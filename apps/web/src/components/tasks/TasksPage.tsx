@@ -43,6 +43,7 @@ import {
   useExpandedTask,
 } from "./TaskList";
 import type { TaskRowContext } from "./TaskRow";
+import { TaskSyncCard } from "./TaskSyncCard";
 import { useTaskActions } from "./useTaskActions";
 
 export type TasksView = "today" | "week" | "month" | "year" | "upcoming" | "all";
@@ -252,7 +253,12 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
         ) : null}
         <div className="pt-4">
           {open.length === 0 && proposals.length === 0 ? (
-            <p className="py-6 text-muted-foreground text-sm">Nothing on today's plate.</p>
+            <>
+              <p className="py-6 text-muted-foreground text-sm">Nothing on today's plate.</p>
+              <div className="mb-6 rounded-xl border border-border p-4 lg:hidden">
+                <TaskSyncCard compact />
+              </div>
+            </>
           ) : null}
           {list(open, "Today")}
           <AddTaskRow onAdd={add({ kind: "date", date: today })} />
@@ -286,6 +292,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
           <AsideLink to="upcoming">View upcoming tasks</AsideLink>
           <AsideLink to="all">View all tasks</AsideLink>
         </AsideSection>
+        <TaskSyncCard compact />
       </>
     );
   } else if (view === "week" || view === "month" || view === "year") {

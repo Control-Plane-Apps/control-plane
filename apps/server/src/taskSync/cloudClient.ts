@@ -114,12 +114,14 @@ export function makeTaskSyncCloudClient(
       throw new TaskSyncCloudError("network");
     }
     const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!response.ok) throw new TaskSyncCloudError(reasonForStatus(response.status, body), response.status);
+    if (!response.ok)
+      throw new TaskSyncCloudError(reasonForStatus(response.status, body), response.status);
     return body;
   };
 
   const appClientToken = async (): Promise<string> => {
-    if (clientToken !== null && clientToken.expiresAtMs - 30_000 > nowMs()) return clientToken.value;
+    if (clientToken !== null && clientToken.expiresAtMs - 30_000 > nowMs())
+      return clientToken.value;
     const ts = Math.floor(nowMs() / 1000);
     const nonce = randomBytes(16).toString("hex");
     const body = await call("/api/client/handshake", {
@@ -140,7 +142,8 @@ export function makeTaskSyncCloudClient(
 
   const url = async (path: string, token: string, payload: Record<string, unknown> = {}) => {
     const body = await call(path, { method: "POST", bearer: token, body: JSON.stringify(payload) });
-    if (typeof body.url !== "string" || body.url.length === 0) throw new TaskSyncCloudError("server");
+    if (typeof body.url !== "string" || body.url.length === 0)
+      throw new TaskSyncCloudError("server");
     return body.url;
   };
 

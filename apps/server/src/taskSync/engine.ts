@@ -87,7 +87,10 @@ export interface TaskSyncEngineDeps {
   /** Applies pulled records to the event store (`task.sync.apply`). */
   readonly apply: (changes: TaskSyncApply) => Promise<void>;
   /** The server's current tasks and intents. */
-  readonly readLocal: () => Promise<{ tasks: ReadonlyArray<Task>; intents: ReadonlyArray<TaskIntent> }>;
+  readonly readLocal: () => Promise<{
+    tasks: ReadonlyArray<Task>;
+    intents: ReadonlyArray<TaskIntent>;
+  }>;
   readonly onWeekStart?: (day: number) => void;
   readonly deviceName: string;
   readonly now: () => Date;
@@ -340,9 +343,7 @@ export class TaskSyncEngine {
     const today = this.localDate();
     const tasks = controlPlaneTasksFromLucive(mirror, today);
     const live = new Set(tasks.map((task) => task.id as string));
-    const removedTaskIds = mirror.tasks
-      .filter((task) => !live.has(task.id))
-      .map((task) => task.id);
+    const removedTaskIds = mirror.tasks.filter((task) => !live.has(task.id)).map((task) => task.id);
     const intents = controlPlaneIntentsFromLucive(mirror);
     const removedIntents = mirror.periods
       .filter(
@@ -473,14 +474,20 @@ export class TaskSyncEngine {
   /** A sort order between the task's neighbors in Control Plane's order. */
   private sortOrderFor(task: Task, all: ReadonlyArray<Task>): number {
     const state = this.state!;
-    const ordered = [...all].filter((t) => t.status === "todo" || t.id === task.id).sort(compareTaskOrder);
+    const ordered = [...all]
+      .filter((t) => t.status === "todo" || t.id === task.id)
+      .sort(compareTaskOrder);
     const index = ordered.findIndex((t) => t.id === task.id);
     const orderOf = (t: Task | undefined) =>
       t === undefined ? undefined : state.mirror.tasks[t.id]?.sortOrder;
     const before = orderOf(ordered[index - 1]);
     const after = orderOf(ordered[index + 1]);
     const own = state.mirror.tasks[task.id]?.sortOrder;
-    if (own !== undefined && (before === undefined || own > before) && (after === undefined || own < after)) {
+    if (
+      own !== undefined &&
+      (before === undefined || own > before) &&
+      (after === undefined || own < after)
+    ) {
       return own;
     }
     if (before !== undefined && after !== undefined) return (before + after) / 2;
@@ -505,7 +512,11 @@ export class TaskSyncEngine {
     if (task.recurrence !== undefined && task.home.kind === "date") {
       if (template !== undefined && template.deletedAt === null) {
         if (!sameRecurrence(template.recurrence, task.recurrence)) {
-          this.queueTask({ ...template, recurrence: toWireRecurrence(task.recurrence), updatedAt: at });
+          this.queueTask({
+            ...template,
+            recurrence: toWireRecurrence(task.recurrence),
+            updatedAt: at,
+          });
         }
       } else {
         const created: WireTaskWithSeq = {
@@ -529,7 +540,12 @@ export class TaskSyncEngine {
         this.queueTask(created);
         templateId = created.id;
       }
-    } else if (task.recurrence === undefined && template !== undefined && template.deletedAt === null && task.status === "todo") {
+    } else if (
+      task.recurrence === undefined &&
+      template !== undefined &&
+      template.deletedAt === null &&
+      task.status === "todo"
+    ) {
       // Repeat turned off: the series ends; this occurrence stays as a plain task.
       this.queueTask({ ...template, deletedAt: at, updatedAt: at });
       templateId = null;

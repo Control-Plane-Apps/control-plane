@@ -94,7 +94,8 @@ class FakeCloud implements TaskSyncCloudClient {
     }
     for (const raw of batch.memberships) {
       const membership = raw as unknown as WireMembershipFull;
-      const periodId = remaps.find((r) => r.from === membership.periodId)?.to ?? membership.periodId;
+      const periodId =
+        remaps.find((r) => r.from === membership.periodId)?.to ?? membership.periodId;
       this.seq += 1;
       this.memberships.set(membership.id, { ...membership, periodId, seq: this.seq });
     }
@@ -151,7 +152,11 @@ const localTask = (id: string, extra: Partial<Task> = {}): Task =>
 describe("TaskSyncEngine", () => {
   it("signs in, pulls the account's tasks, and uploads tasks that only existed here", async () => {
     const cloud = new FakeCloud();
-    cloud.seedTask({ id: "remote-1", title: "Renew Apple developer account", scheduledDate: "2026-11-12" });
+    cloud.seedTask({
+      id: "remote-1",
+      title: "Renew Apple developer account",
+      scheduledDate: "2026-11-12",
+    });
     const { engine, applied } = setup(cloud, [localTask("local-1", { title: "Call county" })]);
 
     const status = await engine.verify("Nick@Example.com", "123 456");

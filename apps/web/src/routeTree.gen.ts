@@ -16,6 +16,7 @@ import { Route as PairRouteImport } from './routes/pair'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
+import { Route as SettingsTaskSyncRouteImport } from './routes/settings.task-sync'
 import { Route as SettingsStorageRouteImport } from './routes/settings.storage'
 import { Route as SettingsSourceControlRouteImport } from './routes/settings.source-control'
 import { Route as SettingsSnapShotRouteImport } from './routes/settings.snap-shot'
@@ -68,6 +69,11 @@ const ChatIndexRoute = ChatIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => ChatRoute,
+} as any)
+const SettingsTaskSyncRoute = SettingsTaskSyncRouteImport.update({
+  id: '/task-sync',
+  path: '/task-sync',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsStorageRoute = SettingsStorageRouteImport.update({
   id: '/storage',
@@ -184,6 +190,7 @@ export interface FileRoutesByFullPath {
   '/settings/snap-shot': typeof SettingsSnapShotRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/settings/storage': typeof SettingsStorageRoute
+  '/settings/task-sync': typeof SettingsTaskSyncRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/tasks/$view': typeof ChatTasksViewRoute
@@ -209,6 +216,7 @@ export interface FileRoutesByTo {
   '/settings/snap-shot': typeof SettingsSnapShotRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/settings/storage': typeof SettingsStorageRoute
+  '/settings/task-sync': typeof SettingsTaskSyncRoute
   '/': typeof ChatIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -237,6 +245,7 @@ export interface FileRoutesById {
   '/settings/snap-shot': typeof SettingsSnapShotRoute
   '/settings/source-control': typeof SettingsSourceControlRoute
   '/settings/storage': typeof SettingsStorageRoute
+  '/settings/task-sync': typeof SettingsTaskSyncRoute
   '/_chat/': typeof ChatIndexRoute
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -266,6 +275,7 @@ export interface FileRouteTypes {
     | '/settings/snap-shot'
     | '/settings/source-control'
     | '/settings/storage'
+    | '/settings/task-sync'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
     | '/tasks/$view'
@@ -291,6 +301,7 @@ export interface FileRouteTypes {
     | '/settings/snap-shot'
     | '/settings/source-control'
     | '/settings/storage'
+    | '/settings/task-sync'
     | '/'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
@@ -318,6 +329,7 @@ export interface FileRouteTypes {
     | '/settings/snap-shot'
     | '/settings/source-control'
     | '/settings/storage'
+    | '/settings/task-sync'
     | '/_chat/'
     | '/_chat/$environmentId/$threadId'
     | '/_chat/draft/$draftId'
@@ -384,6 +396,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof ChatIndexRouteImport
       parentRoute: typeof ChatRoute
+    }
+    '/settings/task-sync': {
+      id: '/settings/task-sync'
+      path: '/task-sync'
+      fullPath: '/settings/task-sync'
+      preLoaderRoute: typeof SettingsTaskSyncRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/settings/storage': {
       id: '/settings/storage'
@@ -546,6 +565,7 @@ interface SettingsRouteChildren {
   SettingsSnapShotRoute: typeof SettingsSnapShotRoute
   SettingsSourceControlRoute: typeof SettingsSourceControlRoute
   SettingsStorageRoute: typeof SettingsStorageRoute
+  SettingsTaskSyncRoute: typeof SettingsTaskSyncRoute
 }
 
 const SettingsRouteChildren: SettingsRouteChildren = {
@@ -562,6 +582,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsSnapShotRoute: SettingsSnapShotRoute,
   SettingsSourceControlRoute: SettingsSourceControlRoute,
   SettingsStorageRoute: SettingsStorageRoute,
+  SettingsTaskSyncRoute: SettingsTaskSyncRoute,
 }
 
 const SettingsRouteWithChildren = SettingsRoute._addFileChildren(

@@ -136,11 +136,7 @@ function resolveLinks(
   return Object.keys(resolved).length === 0 ? undefined : resolved;
 }
 
-function taskEvent(
-  command: TaskCommand | TaskIntentSetCommand,
-  taskId: string,
-  task: Task | null,
-) {
+function taskEvent(command: TaskCommand | TaskIntentSetCommand, taskId: string, task: Task | null) {
   return Effect.map(
     withEventBase({
       aggregateKind: "task",
