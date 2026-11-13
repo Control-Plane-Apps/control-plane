@@ -79,7 +79,7 @@ export function AssistantPingToasts() {
           : {}),
         data: {
           hideCopyButton: true,
-          leadingIcon: <AssistantMark className="size-3.5 text-primary" />,
+          leadingIcon: <AssistantMark className="size-3.5 text-attention-foreground" />,
           actionLayout: "stacked-start",
           actionVariant: "default",
           secondaryActionProps: {

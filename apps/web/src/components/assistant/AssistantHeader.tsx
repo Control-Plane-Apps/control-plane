@@ -50,7 +50,7 @@ export function AssistantHeader(props: AssistantHeaderProps) {
   return (
     <div className="flex min-w-0 flex-1 items-center gap-3" data-testid="assistant-header">
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <AssistantMark className="size-5 text-primary" />
+        <AssistantMark className="size-5 text-attention-foreground" />
         <div className="flex min-w-0 flex-col leading-tight">
           <span className="text-sm font-semibold text-foreground">Assistant</span>
           <span className="truncate text-xs text-muted-foreground">{props.subtitle}</span>

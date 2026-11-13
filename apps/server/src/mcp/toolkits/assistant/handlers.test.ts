@@ -129,32 +129,36 @@ const seed = Effect.gen(function* () {
   });
 });
 
-const call = <S extends Schema.ConstraintDecoder<unknown>>(
-  name: "cp_assistant_overview" | "cp_assistant_ask",
-  params: unknown,
+const invocation = (caller: ThreadId) => ({
+  environmentId: EnvironmentId.make("env"),
+  threadId: caller,
+  providerSessionId: "s",
+  providerInstanceId: CODEX,
+  capabilities: new Set<McpInvocationContext.McpCapability>(["agents"]),
+  issuedAt: 1,
+});
+
+const lastResult = <S extends Schema.ConstraintDecoder<unknown>, E, R>(
+  handled: Effect.Effect<Stream.Stream<{ readonly result: unknown }, E, R>, E, R>,
   success: S,
   caller: ThreadId,
 ) =>
-  Effect.gen(function* () {
-    const toolkit = yield* AssistantToolkit;
-    return yield* (
-      toolkit.handle(name, params as never) as Effect.Effect<
-        Stream.Stream<{ readonly result: unknown }>
-      >
-    ).pipe(
-      Stream.unwrap,
-      Stream.runCollect,
-      Effect.map((chunk) => Schema.decodeUnknownSync(success)(chunk.at(-1)!.result)),
-      Effect.provideService(McpInvocationContext.McpInvocationContext, {
-        environmentId: EnvironmentId.make("env"),
-        threadId: caller,
-        providerSessionId: "s",
-        providerInstanceId: CODEX,
-        capabilities: new Set(["agents"] as const),
-        issuedAt: 1,
-      }),
-    );
-  });
+  handled.pipe(
+    Stream.unwrap,
+    Stream.runCollect,
+    Effect.map((chunk) => Schema.decodeUnknownSync(success)(chunk.at(-1)!.result)),
+    Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(caller)),
+  );
+
+const overview = (caller: ThreadId) =>
+  Effect.flatMap(AssistantToolkit, (toolkit) =>
+    lastResult(toolkit.handle("cp_assistant_overview", {}), AssistantOverviewResult, caller),
+  );
+
+const ask = (caller: ThreadId, question: string) =>
+  Effect.flatMap(AssistantToolkit, (toolkit) =>
+    lastResult(toolkit.handle("cp_assistant_ask", { question }), AssistantAskResult, caller),
+  );
 
 const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   seed.pipe(Effect.andThen(effect), Effect.provide(TestLayer));
@@ -164,7 +168,7 @@ describe("cp_assistant_*", () => {
     run(
       Effect.gen(function* () {
         settings = DEFAULT_SERVER_SETTINGS;
-        const result = yield* call("cp_assistant_overview", {}, AssistantOverviewResult, ASSISTANT);
+        const result = yield* overview(ASSISTANT);
         expect(result.projects.map((project) => project.title)).toEqual(["Acme", "Other"]);
         expect(result.projects[0]?.needsYou.map((question) => question.question)).toEqual([
           "Pay out weekly?",
@@ -180,12 +184,7 @@ describe("cp_assistant_*", () => {
           ...DEFAULT_SERVER_SETTINGS,
           assistant: { ...DEFAULT_SERVER_SETTINGS.assistant, projects: [ACME] },
         };
-        const result = yield* call(
-          "cp_assistant_ask",
-          { question: "What shipped?" },
-          AssistantAskResult,
-          ASSISTANT,
-        );
+        const result = yield* ask(ASSISTANT, "What shipped?");
         expect(result.asked.map((target) => target.projectId)).toEqual([ACME]);
         const messages = yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
           threadId: ACME_COORD,
@@ -207,9 +206,7 @@ describe("cp_assistant_*", () => {
     run(
       Effect.gen(function* () {
         settings = DEFAULT_SERVER_SETTINGS;
-        const outcome = yield* Effect.exit(
-          call("cp_assistant_overview", {}, AssistantOverviewResult, ACME_COORD),
-        );
+        const outcome = yield* Effect.exit(overview(ACME_COORD));
         expect(outcome._tag).toBe("Failure");
       }),
     ),

@@ -30,7 +30,7 @@ export function AssistantInbox(props: {
               key={ping.activityId}
               className="flex gap-2.5 rounded-xl border border-border bg-card px-4 py-3"
             >
-              <span aria-hidden className="mt-1.5 size-2 shrink-0 rounded-full bg-primary" />
+              <span aria-hidden className="mt-1.5 size-2 shrink-0 rounded-full bg-attention" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline gap-2">
                   <p className="min-w-0 flex-1 text-sm font-medium text-foreground">{ping.title}</p>

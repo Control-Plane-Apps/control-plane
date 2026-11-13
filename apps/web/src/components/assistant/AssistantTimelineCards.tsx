@@ -100,7 +100,7 @@ function PingCard({ ping, onReply }: { ping: AssistantPing; onReply: (reply: str
       className="my-1 flex gap-2.5 rounded-xl border border-border bg-card px-3.5 py-3"
       data-testid="assistant-ping-card"
     >
-      <BellIcon className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
+      <BellIcon className="mt-0.5 size-4 shrink-0 text-attention-foreground" aria-hidden />
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-foreground">{ping.title}</p>
         {ping.body ? <p className="mt-0.5 text-sm text-muted-foreground">{ping.body}</p> : null}

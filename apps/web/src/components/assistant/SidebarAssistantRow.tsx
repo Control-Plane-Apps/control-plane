@@ -27,11 +27,11 @@ export function SidebarAssistantRow({ isActive }: { readonly isActive: boolean }
         )}
         onClick={() => void open()}
       >
-        <AssistantMark className="size-4 text-primary" />
+        <AssistantMark className="size-4 text-attention-foreground" />
         <span className="min-w-0 flex-1 truncate">Assistant</span>
         {needsYou > 0 ? (
           <span
-            className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm bg-primary/12 px-1 text-[11px] font-medium text-primary tabular-nums"
+            className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm bg-attention/12 px-1 text-[11px] font-medium text-attention-foreground tabular-nums"
             aria-label={`${needsYou} ${needsYou === 1 ? "question needs" : "questions need"} you`}
           >
             {needsYou}
