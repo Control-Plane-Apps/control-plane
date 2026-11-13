@@ -21,24 +21,17 @@ export type MobileThemeAppearance = ThemeAppearance;
 export type MobileThemeMode = MobileThemeAppearance | "system";
 export type MobileThemeIds = Readonly<Record<MobileThemeAppearance, MobileThemeId>>;
 
-export const MOBILE_THEME_OPTIONS: ReadonlyArray<{
-  readonly id: MobileThemeId;
-  readonly label: string;
-}> = [
-  { id: DEFAULT_MOBILE_THEME_ID, label: "Control Plane" },
-  { id: "material-you", label: "Material You" },
-  ...BUILT_IN_THEMES.map((theme) => ({ id: theme.id as MobileThemeId, label: theme.label })),
-];
-
 // Closed set: every key `createMobileThemeVariables` writes. Reads of a
 // misspelled variable then fail to compile instead of yielding undefined.
 export type MobileThemeVariable = keyof ReturnType<typeof createMobileThemeVariables>;
 export type MobileThemeVariables = Readonly<Record<MobileThemeVariable, string>>;
 
-export function normalizeMobileThemeId(value: unknown): MobileThemeId {
-  return typeof value === "string" && (MOBILE_THEME_IDS as readonly string[]).includes(value)
-    ? (value as MobileThemeId)
-    : DEFAULT_MOBILE_THEME_ID;
+/**
+ * Paper and clay is the only palette: every saved theme id, including the
+ * retired built-in themes and Material You, resolves to it.
+ */
+export function normalizeMobileThemeId(_value: unknown): MobileThemeId {
+  return DEFAULT_MOBILE_THEME_ID;
 }
 
 export function normalizeMobileThemeMode(value: unknown): MobileThemeMode {
@@ -271,6 +264,10 @@ export function createMobileThemeVariables(colors: ThemeColors, appearance: Mobi
     "--color-warning": c.warningSurface,
     "--color-warning-border": withAlpha(c.warning, 0.32),
     "--color-warning-foreground": c.warningForeground,
+    "--color-warning-accent": c.warning,
+    // Themes keep success and info independent of their palette.
+    "--color-info-accent": appearance === "dark" ? "#5fa8c9" : "#2f7f9f",
+    "--color-success-accent": appearance === "dark" ? "#86b04a" : "#4d7c0f",
     "--color-danger": c.errorSurface,
     "--color-danger-border": withAlpha(c.error, 0.32),
     "--color-danger-foreground": c.errorForeground,

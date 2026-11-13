@@ -204,7 +204,7 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
                     <Text className="text-foreground flex-1 text-sm font-medium" numberOfLines={1}>
                       {file.path}
                     </Text>
-                    <Text className="text-xs font-t3-bold text-emerald-500">
+                    <Text className="text-xs font-t3-bold text-success-accent">
                       +{file.insertions}
                     </Text>
                     <Text className="text-xs font-t3-bold text-rose-500">-{file.deletions}</Text>
@@ -286,7 +286,7 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
                           ) : null}
                         </View>
                         <View className="items-end gap-1">
-                          <Text className="text-xs font-t3-bold text-emerald-500">
+                          <Text className="text-xs font-t3-bold text-success-accent">
                             +{file.insertions}
                           </Text>
                           <Text className="text-xs font-t3-bold text-rose-500">

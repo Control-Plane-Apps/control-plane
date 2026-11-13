@@ -48,8 +48,8 @@ describe("generate mobile Uniwind themes", () => {
     const css = NodeFS.readFileSync(NodePath.resolve(import.meta.dirname, "../global.css"), "utf8");
     const variables = readDefaultThemeVariables(css);
 
-    expect(variables.light["--color-screen"]).toBe("#f2f2f7");
-    expect(variables.dark["--color-screen"]).toBe("#0a0a0a");
+    expect(variables.light["--color-screen"]).toBe("#f3efe9");
+    expect(variables.dark["--color-screen"]).toBe("#181512");
     expect(Object.keys(variables.light)).toEqual(Object.keys(variables.dark));
   });
 
@@ -77,11 +77,11 @@ describe("generate mobile Uniwind themes", () => {
         ),
         name,
       ).toEqual({
-        "--color-clerk-page": isDark ? "#0e0e0e" : "#f2f2f7",
-        "--color-clerk-foreground": isDark ? "#f5f5f5" : "#262626",
-        "--color-clerk-foreground-muted": isDark ? "#a3a3a3" : "#737373",
-        "--color-clerk-border": isDark ? "rgba(42, 42, 42, 0.06)" : "rgba(229, 229, 234, 0.06)",
-        "--color-clerk-danger": isDark ? "#fca5a5" : "#dc2626",
+        "--color-clerk-page": isDark ? "#181512" : "#f3efe9",
+        "--color-clerk-foreground": isDark ? "#f2ece4" : "#1f1a16",
+        "--color-clerk-foreground-muted": isDark ? "#a69a8c" : "#6b6156",
+        "--color-clerk-border": isDark ? "rgba(46, 41, 36, 0.06)" : "rgba(232, 225, 216, 0.06)",
+        "--color-clerk-danger": isDark ? "#f87171" : "#b42318",
       });
     }
   });

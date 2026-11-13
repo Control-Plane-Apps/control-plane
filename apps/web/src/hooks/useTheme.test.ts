@@ -70,7 +70,7 @@ describe("theme failure handling", () => {
     }
   });
 
-  it("reads the persisted T3 Chat theme preference", async () => {
+  it("reads a saved theme id as System now that Paper and clay is the only palette", async () => {
     vi.stubGlobal("window", {
       localStorage: createStorage({
         getItem: () => "t3-chat",
@@ -79,7 +79,43 @@ describe("theme failure handling", () => {
 
     const { readThemePreference } = await import("./useTheme");
 
-    expect(readThemePreference()).toBe("t3-chat");
+    expect(readThemePreference()).toBe("system");
+  });
+
+  it("migrates a saved theme selection to its appearance mode and drops theme state", async () => {
+    const storage = createStorage();
+    storage.setItem("t3code:theme", "ocean");
+    storage.setItem("t3code:theme-appearance-mode", "dark");
+    storage.setItem("t3code:theme-halves:v1", JSON.stringify({ light: "grove" }));
+    storage.setItem("t3code:themes:v1", "[]");
+    vi.stubGlobal("window", { localStorage: storage });
+
+    const { migrateLegacyThemeSelection, readThemePreference } = await import("./useTheme");
+    migrateLegacyThemeSelection();
+
+    expect(storage.getItem("t3code:theme")).toBe("dark");
+    expect(storage.getItem("t3code:theme-appearance-mode")).toBe("dark");
+    expect(storage.getItem("t3code:theme-halves:v1")).toBeNull();
+    expect(storage.getItem("t3code:themes:v1")).toBeNull();
+    expect(readThemePreference()).toBe("dark");
+  });
+
+  it("leaves a plain appearance preference alone and survives failing storage", async () => {
+    const storage = createStorage();
+    storage.setItem("t3code:theme", "light");
+    vi.stubGlobal("window", { localStorage: storage });
+    const { migrateLegacyThemeSelection } = await import("./useTheme");
+    migrateLegacyThemeSelection();
+    expect(storage.getItem("t3code:theme")).toBe("light");
+
+    vi.stubGlobal("window", {
+      localStorage: createStorage({
+        getItem: () => {
+          throw new Error("blocked");
+        },
+      }),
+    });
+    expect(() => migrateLegacyThemeSelection()).not.toThrow();
   });
 
   it("falls back during initial theme application and logs only safe attributes", async () => {

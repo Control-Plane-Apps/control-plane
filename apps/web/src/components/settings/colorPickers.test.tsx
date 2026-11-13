@@ -17,7 +17,6 @@ vi.mock("../ui/tooltip", () => ({
 }));
 
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
-import { ThemeColorField } from "./ThemeColorPicker";
 
 let renderer: ReactTestRenderer | undefined;
 let nextFrameId = 0;
@@ -48,36 +47,10 @@ function slider(label: string) {
   );
 }
 
-function plane(label: string) {
-  return renderer!.root.findByProps({ role: "group", "aria-label": label });
-}
-
 async function key(label: string, key: string, shiftKey = false) {
   const preventDefault = vi.fn();
   await act(async () => slider(label).props.onKeyDown({ key, shiftKey, preventDefault }));
   return preventDefault;
-}
-
-function pointer(clientX: number, clientY = 0, pointerId = 1) {
-  return {
-    button: 0,
-    clientX,
-    clientY,
-    pointerId,
-    currentTarget: {
-      focus: vi.fn(),
-      setPointerCapture: vi.fn(),
-      getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
-    },
-  };
-}
-
-async function frame() {
-  await act(async () => {
-    const pending = [...frames.values()];
-    frames.clear();
-    for (const callback of pending) callback(0);
-  });
 }
 
 describe("shared color controls in settings", () => {
@@ -147,84 +120,6 @@ describe("shared color controls in settings", () => {
     await key(saturation, "ArrowLeft");
     expect(slider(saturation).props.value).toBe(98);
     expect(onCommit).toHaveBeenLastCalledWith("#ff0505");
-  });
-
-  it("persists independent native range changes through theme batching with alpha", async () => {
-    const onChange = vi.fn();
-    await act(async () => {
-      renderer = create(<ThemeColorField role="accent" value="#ff000080" onChange={onChange} />);
-    });
-    const saturation = "Accent color saturation";
-    const brightness = "Accent color brightness";
-    await act(async () =>
-      slider(saturation).props.onChange({ currentTarget: { valueAsNumber: 50 } }),
-    );
-    await act(async () =>
-      slider(brightness).props.onChange({ currentTarget: { valueAsNumber: 50 } }),
-    );
-    expect(onChange).not.toHaveBeenCalled();
-    expect(frames.size).toBe(1);
-    await frame();
-    expect(onChange).toHaveBeenCalledExactlyOnceWith("accent", "#80404080");
-    await key(brightness, "ArrowDown", true);
-    await frame();
-    expect(onChange).toHaveBeenLastCalledWith("accent", "#66333380");
-    expect(slider(saturation).props.value).toBe(50);
-  });
-
-  it("batches theme drag updates and flushes the final color with alpha on pointer release", async () => {
-    const onChange = vi.fn();
-    await act(async () => {
-      renderer = create(<ThemeColorField role="accent" value="#ff000080" onChange={onChange} />);
-    });
-    const hue = "Accent color hue";
-    await act(async () => slider(hue).props.onPointerDown(pointer(25)));
-    await act(async () => slider(hue).props.onPointerMove(pointer(50)));
-    expect(onChange).not.toHaveBeenCalled();
-    expect(frames.size).toBe(1);
-    // A second pointer cannot change or end the active drag.
-    await act(async () => slider(hue).props.onPointerMove(pointer(75, 0, 2)));
-    await act(async () => slider(hue).props.onPointerUp(pointer(75, 0, 2)));
-    expect(onChange).not.toHaveBeenCalled();
-    await act(async () => slider(hue).props.onPointerUp(pointer(50)));
-    expect(onChange).toHaveBeenCalledExactlyOnceWith("accent", "#00ffff80");
-    await act(async () => slider(hue).props.onLostPointerCapture(pointer(50)));
-    await frame();
-    expect(onChange).toHaveBeenCalledTimes(1);
-  });
-
-  it("clamps out-of-bounds drags and flushes theme changes on cancellation and unmount", async () => {
-    const onChange = vi.fn();
-    await act(async () => {
-      renderer = create(<ThemeColorField role="accent" value="#ff000080" onChange={onChange} />);
-    });
-    const planeLabel = "Accent color saturation and brightness";
-    await act(async () => plane(planeLabel).props.onPointerDown(pointer(-50, -50)));
-    await act(async () => plane(planeLabel).props.onPointerCancel(pointer(-50, -50)));
-    expect(onChange).toHaveBeenLastCalledWith("accent", "#ffffff80");
-    await act(async () => plane(planeLabel).props.onPointerDown(pointer(150, 150)));
-    await act(async () => renderer!.unmount());
-    renderer = undefined;
-    expect(onChange).toHaveBeenLastCalledWith("accent", "#00000080");
-    expect(frames.size).toBe(0);
-  });
-
-  it("preserves the selected hue when a grey color is echoed back from theme settings", async () => {
-    const onChange = vi.fn();
-    const render = (value: string) => (
-      <ThemeColorField role="accent" value={value} onChange={onChange} />
-    );
-    await act(async () => {
-      renderer = create(render("#ff0000"));
-    });
-    const hue = "Accent color hue";
-    const planeLabel = "Accent color saturation and brightness";
-    await key(hue, "ArrowRight", true);
-    await act(async () => plane(planeLabel).props.onPointerDown(pointer(0, 0)));
-    await frame();
-    expect(onChange).toHaveBeenLastCalledWith("accent", "#ffffff");
-    await act(async () => renderer!.update(render("#ffffff")));
-    expect(slider(hue).props["aria-valuenow"]).toBe(10);
   });
 
   it("keeps provider debounce at the consumer and commits pending color on unmount", async () => {

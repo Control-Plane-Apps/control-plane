@@ -32,7 +32,7 @@ export function useStatusComposerBanner(input: {
       id: `status-needs-you:${threadKey}`,
       variant: "warning",
       priority: "notice",
-      icon: <span aria-hidden className="size-1.5 rounded-full bg-amber-500" />,
+      icon: <span aria-hidden className="size-1.5 rounded-full bg-warning" />,
       title: <StatusStripTitle waiting={waiting} onReply={onReply} />,
       ...(panelOpen
         ? {}

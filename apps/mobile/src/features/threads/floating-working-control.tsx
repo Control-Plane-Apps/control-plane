@@ -284,7 +284,7 @@ function FloatingStatusLabel(props: {
         {props.status.tone === "reconnecting" ? (
           <ActivityIndicator size="small" colorClassName="accent-icon-muted" />
         ) : (
-          <View className="h-2 w-2 rounded-full bg-red-500" />
+          <View className="h-2 w-2 rounded-full bg-danger-foreground" />
         )}
         <Text
           className="max-w-[260px] shrink font-t3-medium text-xs text-foreground"

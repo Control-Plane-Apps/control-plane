@@ -216,6 +216,38 @@
           }
         };
 
+        // Paper and clay replaced the theme library: keep the saved appearance
+        // mode, drop any saved theme id, light/dark mix, or custom theme.
+        // Mirrors migrateLegacyThemeSelection in hooks/useTheme.ts.
+        try {
+          const storage = window.localStorage;
+          const savedTheme = storage.getItem("t3code:theme");
+          const isMode = (value) => value === "light" || value === "dark" || value === "system";
+          if (savedTheme !== null && !isMode(savedTheme)) {
+            const savedMode = storage.getItem(THEME_APPEARANCE_MODE_STORAGE_KEY);
+            let mode = "system";
+            if (isMode(savedMode)) {
+              mode = savedMode;
+            } else if (storage.getItem(THEME_FOLLOW_SYSTEM_STORAGE_KEY) !== "true") {
+              const legacyId =
+                savedTheme === "t3-chat-dark" ? "t3-chat" : savedTheme.replace(/^t3-/, "");
+              const builtInModes =
+                BUILT_IN_THEME_MODES[legacyId] ?? BUILT_IN_THEME_MODES[savedTheme];
+              const customTheme = builtInModes ? null : findCustomTheme(savedTheme);
+              if (savedTheme === "t3-chat-dark") mode = "dark";
+              else if (builtInModes && builtInModes.length === 1) mode = builtInModes[0];
+              else if (customTheme && customTheme.variants === undefined)
+                mode = customTheme.appearance;
+            }
+            storage.setItem(THEME_APPEARANCE_MODE_STORAGE_KEY, mode);
+            storage.setItem("t3code:theme", mode);
+          }
+          storage.removeItem(THEME_HALVES_STORAGE_KEY);
+          storage.removeItem(CUSTOM_THEMES_STORAGE_KEY);
+        } catch {
+          // Storage is unavailable; the app ignores theme ids on its own.
+        }
+
         try {
           const storedTheme = window.localStorage.getItem("t3code:theme");
           const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;

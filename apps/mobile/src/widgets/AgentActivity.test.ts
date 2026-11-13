@@ -78,8 +78,8 @@ describe("AgentActivity widget layout", () => {
       environment as never,
     );
     const banner = JSON.stringify(layout.banner);
-    expect(banner).toContain("#7dd3fc"); // sky-300: running
-    expect(banner).toContain("#fcd34d"); // amber-300: waiting_for_approval
+    expect(banner).toContain("#8cc4dd"); // info: running
+    expect(banner).toContain("#f2b35b"); // warning: waiting_for_approval
   });
 
   it("switches to the web sidebar's light palette when the scheme is light", () => {
@@ -97,10 +97,10 @@ describe("AgentActivity widget layout", () => {
       lightEnvironment as never,
     );
     const banner = JSON.stringify(layout.banner);
-    expect(banner).toContain("#0284c7"); // sky-600: running
-    expect(banner).toContain("#d97706"); // amber-600: waiting_for_approval
-    expect(banner).not.toContain("#7dd3fc");
-    expect(banner).not.toContain("#fcd34d");
+    expect(banner).toContain("#235f78"); // info: running
+    expect(banner).toContain("#9a4409"); // warning: waiting_for_approval
+    expect(banner).not.toContain("#8cc4dd");
+    expect(banner).not.toContain("#f2b35b");
   });
 
   it("orders rows attention-first in the banner", () => {
@@ -154,9 +154,9 @@ describe("AgentActivity widget layout", () => {
       },
       environment as never,
     );
-    expect(JSON.stringify(layout.compactLeading)).toContain("#a5b4fc"); // indigo-300
+    expect(JSON.stringify(layout.compactLeading)).toContain("#d9774a"); // attention (clay)
     expect(JSON.stringify(layout.compactTrailing)).toContain("Input");
-    expect(JSON.stringify(layout.minimal)).toContain("#a5b4fc");
+    expect(JSON.stringify(layout.minimal)).toContain("#d9774a");
   });
 
   it("deep links the banner to the row that needs attention", () => {
@@ -213,7 +213,7 @@ describe("AgentActivity widget layout", () => {
     const banner = JSON.stringify(layout.banner);
     expect(banner).toContain("Agent work completed");
     expect(banner).not.toContain("0 active");
-    expect(banner).toContain("#6ee7b7"); // emerald-300 header tint
+    expect(banner).toContain("#a3c76b"); // success header tint
     expect(JSON.stringify(layout.compactTrailing)).toContain("Done");
     expect(JSON.stringify(layout.compactTrailing)).not.toContain("0 active");
     expect(JSON.stringify(layout.expandedLeading)).toContain("Done");
@@ -233,7 +233,7 @@ describe("AgentActivity widget layout", () => {
     );
     const banner = JSON.stringify(layout.banner);
     expect(banner).toContain("Agent work failed");
-    expect(banner).toContain("#fca5a5"); // red-300 header tint
+    expect(banner).toContain("#f87171"); // error header tint
     expect(JSON.stringify(layout.compactTrailing)).toContain("Failed");
     expect(JSON.stringify(layout.expandedLeading)).toContain("Failed");
     expect(JSON.stringify(layout.minimal)).toContain("xmark.octagon.fill");
@@ -258,7 +258,7 @@ describe("AgentActivity widget layout", () => {
     const banner = JSON.stringify(layout.banner);
     expect(banner).toContain("Agent work failed");
     expect(banner).not.toContain("Agent work completed");
-    expect(banner).toContain("#fca5a5"); // red-300 header tint
+    expect(banner).toContain("#f87171"); // error header tint
     expect(JSON.stringify(layout.compactTrailing)).toContain("Failed");
     expect(JSON.stringify(layout.expandedLeading)).toContain("Failed");
     expect(JSON.stringify(layout.minimal)).toContain("xmark.octagon.fill");

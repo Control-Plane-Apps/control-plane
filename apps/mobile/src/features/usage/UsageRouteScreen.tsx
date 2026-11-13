@@ -213,7 +213,7 @@ export function UsageRouteScreen() {
             {hasLoadingEnvironments ? (
               <View
                 pointerEvents="none"
-                className="absolute -right-[2px] -top-[2px] size-[9px] rounded-full bg-amber-500"
+                className="absolute -right-[2px] -top-[2px] size-[9px] rounded-full bg-warning-accent"
               />
             ) : null}
           </Pressable>

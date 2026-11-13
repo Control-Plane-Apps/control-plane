@@ -206,7 +206,7 @@ const ReviewFileNavigatorRow = memo(function ReviewFileNavigatorRow(props: {
         {file.path}
       </Text>
       <View className="mt-1 flex-row gap-2">
-        <Text className="text-2xs font-t3-bold text-emerald-600">+{file.additions}</Text>
+        <Text className="text-2xs font-t3-bold text-success-accent">+{file.additions}</Text>
         <Text className="text-2xs font-t3-bold text-rose-600">-{file.deletions}</Text>
       </View>
     </Pressable>

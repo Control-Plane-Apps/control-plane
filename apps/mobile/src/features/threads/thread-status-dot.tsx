@@ -9,16 +9,17 @@ import { View } from "react-native";
 
 import { getThreadVisitMap, subscribeThreadVisits } from "../../state/thread-visits";
 
+// Paper and clay status hues, mid-tones that read on both light and dark rows.
 const STATUS_DOTS = {
-  approval: { label: "Approval", color: "#f59e0b" },
-  input: { label: "Input", color: "#6366f1" },
-  working: { label: "Working", color: "#0ea5e9" },
-  monitoring: { label: "Monitoring", color: "#0ea5e9" },
-  failed: { label: "Failed", color: "#ef4444" },
+  approval: { label: "Approval", color: "#d97706" },
+  input: { label: "Input", color: "#c2622f" },
+  working: { label: "Working", color: "#3d8fb0" },
+  monitoring: { label: "Monitoring", color: "#3d8fb0" },
+  failed: { label: "Failed", color: "#d14b3a" },
   ready: { label: "Ready", color: null },
 } as const;
 
-const UNREAD_DOT = { label: "Unread completion", color: "#10b981" } as const;
+const UNREAD_DOT = { label: "Unread completion", color: "#5f8c1f" } as const;
 
 /** The static dot of a Project row or a collapsed section or folder. Null draws none. */
 export function rollupDotColor(status: SidebarRollupStatus): string | null {
