@@ -10,14 +10,19 @@ const newId = () => TaskId.make("next");
 describe("local task edits", () => {
   it("creates a trimmed todo", () => {
     const task = createLocalTask(
-      { id: TaskId.make("a"), title: " Ship ", notes: "  ", home: { kind: "backlog" } },
+      {
+        id: TaskId.make("a"),
+        title: " Ship ",
+        notes: "  ",
+        home: { kind: "backlog", horizon: null },
+      },
       AT,
     );
     expect(task).toEqual({
       id: "a",
       title: "Ship",
       status: "todo",
-      home: { kind: "backlog" },
+      home: { kind: "backlog", horizon: null },
       createdAt: AT,
       updatedAt: AT,
     });
@@ -25,7 +30,10 @@ describe("local task edits", () => {
 
   it("completes and reopens, keeping Control Plane-only fields", () => {
     const stored: Task = {
-      ...createLocalTask({ id: TaskId.make("a"), title: "Ship", home: { kind: "backlog" } }, AT),
+      ...createLocalTask(
+        { id: TaskId.make("a"), title: "Ship", home: { kind: "backlog", horizon: null } },
+        AT,
+      ),
       links: { threadId: "t" } as never,
     };
     const [done] = patchLocalTask(stored, { status: "completed" }, LATER, newId);
@@ -68,7 +76,12 @@ describe("local task edits", () => {
       },
       AT,
     );
-    const [moved] = patchLocalTask(stored, { home: { kind: "backlog" } }, LATER, newId);
+    const [moved] = patchLocalTask(
+      stored,
+      { home: { kind: "backlog", horizon: null } },
+      LATER,
+      newId,
+    );
     expect(moved!.recurrence).toBeUndefined();
   });
 });
