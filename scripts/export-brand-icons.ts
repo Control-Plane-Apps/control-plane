@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 
-// Derives every tracked desktop and web icon from each variant's 1024px master PNG.
+// Derives every tracked desktop and web icon from the vector app tiles.
 //
-// The masters (`*-ios-1024.png`) are the Control Plane jet tiles. Everything else is a
-// resize of the master, except the macOS tile: its rounded body and shadow are kept from
-// the tracked macOS PNG, and only the body is repainted with the master scaled into the
-// classic 824px safe area.
+// macOS keeps the tracked rounded body and shadow, with the tile in its 824px safe area.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -122,7 +119,11 @@ const renderVariant = Effect.fn("iconExport.renderVariant")(function* (
       Effect.mapError((cause) => new IconExportError({ path: relativePath, cause })),
     );
 
-  const master = yield* read(variant.master);
+  const master = yield* resize(
+    variant.master,
+    yield* read("assets/app-icon-light.svg"),
+    MASTER_SIZE,
+  );
   const { outputs } = variant;
   const icoRenditions = yield* Effect.forEach(WINDOWS_ICON_SIZES, (size) =>
     resize(outputs.windowsIco, master, size).pipe(Effect.map((contents) => ({ size, contents }))),
@@ -143,6 +144,7 @@ const renderVariant = Effect.fn("iconExport.renderVariant")(function* (
   );
 
   return new Map<string, Buffer>([
+    [variant.master, master],
     [outputs.universal, master],
     [outputs.macos, macos],
     [outputs.appleTouch, yield* resize(outputs.appleTouch, master, 180)],
@@ -163,6 +165,53 @@ export const exportBrandIcons = Effect.fn("exportBrandIcons")(function* (checkOn
     for (const [relativePath, contents] of yield* renderVariant(repositoryRoot, variant)) {
       generated.set(relativePath, contents);
     }
+  }
+  for (const appearance of ["dark", "tinted"] as const) {
+    const target = `assets/app-icon-${appearance}-1024.png`;
+    const svg = yield* fs.readFile(path.join(repositoryRoot, `assets/app-icon-${appearance}.svg`));
+    generated.set(target, yield* resize(target, Buffer.from(svg), MASTER_SIZE));
+  }
+  for (const directory of ["apps/control-plane-site/public", "apps/marketing/public"]) {
+    for (const [source, name] of [
+      [BRAND_ASSET_PATHS.productionWebFaviconIco, "favicon.ico"],
+      [BRAND_ASSET_PATHS.productionWebFavicon16Png, "favicon-16x16.png"],
+      [BRAND_ASSET_PATHS.productionWebFavicon32Png, "favicon-32x32.png"],
+      [BRAND_ASSET_PATHS.productionWebAppleTouchIconPng, "apple-touch-icon.png"],
+    ] as const)
+      generated.set(`${directory}/${name}`, generated.get(source)!);
+  }
+  const marketingIcon = "apps/marketing/src/assets/icon.webp";
+  generated.set(
+    marketingIcon,
+    yield* image(marketingIcon, () =>
+      sharp(generated.get(BRAND_ASSET_PATHS.productionIosIconPng)!)
+        .webp({ lossless: true })
+        .toBuffer(),
+    ),
+  );
+  for (const mark of [
+    BRAND_ASSET_PATHS.developmentMarkSvg,
+    BRAND_ASSET_PATHS.nightlyMarkSvg,
+    BRAND_ASSET_PATHS.productionMarkSvg,
+  ]) {
+    const svg = yield* fs.readFile(path.join(repositoryRoot, mark));
+    const target = mark.replace(/\.svg$/, ".jpg");
+    generated.set(
+      target,
+      yield* image(target, () =>
+        sharp(Buffer.from(svg))
+          .flatten({ background: "#ffffff" })
+          .jpeg({ quality: 100 })
+          .toBuffer(),
+      ),
+    );
+  }
+  for (const size of [192, 512]) {
+    const target = `apps/web/public/app-icon-${size}.png`;
+    generated.set(
+      target,
+      yield* resize(target, generated.get(BRAND_ASSET_PATHS.productionIosIconPng)!, size),
+    );
   }
   for (const override of DEVELOPMENT_PUBLIC_ICON_OVERRIDES) {
     const contents = generated.get(override.sourceRelativePath);
@@ -208,7 +257,7 @@ export const exportBrandIconsCommand = Command.make(
   ({ check }) => exportBrandIcons(check),
 ).pipe(
   Command.withDescription(
-    "Export development, preview, and production icons from their 1024px master PNGs.",
+    "Export development, preview, and production icons from the vector app tiles.",
   ),
 );
 

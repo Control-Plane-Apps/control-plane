@@ -5,8 +5,8 @@
 //
 // Android masks the central 72dp of a 108dp adaptive canvas, so the iOS tiles cannot be
 // used as a foreground: their square gets framed again. Each variant instead gets a
-// transparent foreground with the jet inside the safe zone, over the white background
-// color set in apps/mobile/app.config.ts, matching the white iOS tiles.
+// transparent foreground with the jet inside the safe zone, over the clay background
+// color set in apps/mobile/app.config.ts, matching the clay iOS tiles.
 //
 // The Android 12+ splash screen masks its icon to a circle covering the central two thirds
 // of a 288dp canvas, the same proportion the launcher crops, so the splash is the
@@ -98,7 +98,7 @@ const exportAndroidIcons = Effect.gen(function* () {
         `android-icon-foreground-${variant}.png`,
         yield* rasterize(
           `${variant}-foreground`,
-          jetSvg(paths, ADAPTIVE_CANVAS, LAUNCHER_JET_FRACTION),
+          jetSvg(silhouette(paths), ADAPTIVE_CANVAS, LAUNCHER_JET_FRACTION),
         ),
       ],
       [

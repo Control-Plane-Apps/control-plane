@@ -19,8 +19,8 @@ const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
 
 const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
 // Android layers are rendered by scripts/export-android-icons.ts from the jet SVGs. The jet
-// sits inside the adaptive safe zone over a white background, matching the iOS tiles.
-const androidAdaptiveBackgroundColor = "#FFFFFF";
+// sits inside the adaptive safe zone over a clay background, matching the iOS tiles.
+const androidAdaptiveBackgroundColor = "#b04f26";
 
 if (
   isIosPersonalTeamBuild &&
@@ -225,7 +225,11 @@ const config: ExpoConfig = {
     fallbackToCacheTimeout: 0,
   },
   ios: {
-    icon: variant.assets.iosIcon,
+    icon: {
+      light: variant.assets.iosIcon,
+      dark: fromRepoRoot("assets/app-icon-dark-1024.png"),
+      tinted: fromRepoRoot("assets/app-icon-tinted-1024.png"),
+    },
     supportsTablet: true,
     // Multitasking-capable iPad apps cannot rotate programmatically, so the
     // showcase capture build requires full screen (see infoPlist below).
