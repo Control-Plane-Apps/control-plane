@@ -21,6 +21,7 @@ import { AssistantMark } from "./AssistantMark";
 import { AssistantAskCards, AssistantOverview, NeedsYouPill } from "./AssistantScreenParts";
 import {
   anchorAskCards,
+  withoutAskActivities,
   latestAssistantBrief,
   withoutAnsweredMessages,
 } from "./assistantScreen.logic";
@@ -112,7 +113,12 @@ export function useAssistantScreen<
   );
   const feed = useMemo(
     () =>
-      active ? withoutAnsweredMessages(input.feed, askAnswerMessageIds(askCards)) : input.feed,
+      active
+        ? withoutAskActivities(
+            withoutAnsweredMessages(input.feed, askAnswerMessageIds(askCards)),
+            new Set(askCards.map((card) => card.activityId)),
+          )
+        : input.feed,
     [active, askCards, input.feed],
   );
   const anchoredCards = useMemo(() => anchorAskCards(feed, askCards), [askCards, feed]);

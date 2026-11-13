@@ -12,6 +12,7 @@ import {
   recommendationReplyText,
   statusReplyDraft,
   withoutAnsweredMessages,
+  withoutAskActivities,
 } from "./assistantScreen.logic";
 
 const status = { id: "payments-retry", title: "Payments retry" };
@@ -140,9 +141,9 @@ describe("anchorAskCards", () => {
     expect(anchored.get("a1")?.map((entry) => entry.askId)).toEqual(["ask1"]);
   });
 
-  it("puts a card with no reply yet under the last entry", () => {
+  it("puts a card with no reply yet under the latest reply, never an activity row", () => {
     const anchored = anchorAskCards(feed, [card("ask2", "2026-11-13T09:04:00Z")]);
-    expect(anchored.get("w1")?.map((entry) => entry.askId)).toEqual(["ask2"]);
+    expect(anchored.get("a1")?.map((entry) => entry.askId)).toEqual(["ask2"]);
   });
 
   it("anchors nothing in an empty feed", () => {
@@ -207,5 +208,19 @@ describe("pickAssistantEnvironment", () => {
         [],
       ),
     ).toBeNull();
+  });
+});
+
+describe("withoutAskActivities", () => {
+  it("drops ask activities, alone or in a group, and empty groups", () => {
+    const feed = [
+      { id: "x", type: "activity", activity: { id: "ask-act" } },
+      { id: "g1", type: "activity-group", activities: [{ id: "ask-act" }, { id: "tool" }] },
+      { id: "g2", type: "activity-group", activities: [{ id: "ask-act" }] },
+      { id: "m", type: "message" },
+    ];
+    const kept = withoutAskActivities(feed, new Set(["ask-act"]));
+    expect(kept.map((entry) => entry.id)).toEqual(["g1", "m"]);
+    expect(kept[0]?.activities?.map((activity) => activity.id)).toEqual(["tool"]);
   });
 });

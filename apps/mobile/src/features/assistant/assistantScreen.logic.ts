@@ -120,7 +120,7 @@ interface AnchorEntry {
 /**
  * Feed entry id each ask card renders under: the first assistant message at
  * or after the ask, so the cards sit inside the reply that made them. An ask
- * whose reply has not arrived yet sits under the last entry.
+ * whose reply has not arrived yet sits under the latest reply.
  */
 export function anchorAskCards(
   feed: ReadonlyArray<AnchorEntry>,
@@ -130,13 +130,13 @@ export function anchorAskCards(
   const last = feed.at(-1);
   if (last === undefined) return anchored;
   for (const card of cards) {
+    const replies = feed.filter(
+      (entry) => entry.type === "message" && entry.message?.role === "assistant",
+    );
+    // The reply that made the ask, else the latest reply: activity rows (pings,
+    // tool groups) do not draw accessories, so a card never anchors to them.
     const anchor =
-      feed.find(
-        (entry) =>
-          entry.type === "message" &&
-          entry.message?.role === "assistant" &&
-          entry.createdAt >= card.createdAt,
-      ) ?? last;
+      replies.find((entry) => entry.createdAt >= card.createdAt) ?? replies.at(-1) ?? last;
     const list = anchored.get(anchor.id) ?? [];
     list.push(card);
     anchored.set(anchor.id, list);
@@ -154,6 +154,38 @@ export function withoutAnsweredMessages<
       entry.type !== "message" || entry.message === undefined || !hiddenIds.has(entry.message.id),
   );
   return kept.length === feed.length ? feed : kept;
+}
+
+/**
+ * Drops the ask activities that the ask cards replace, so the feed does not
+ * show them twice as generic tool rows. A group left empty goes too.
+ */
+export function withoutAskActivities<
+  E extends {
+    readonly type: string;
+    readonly activity?: { readonly id: string };
+    readonly activities?: ReadonlyArray<{ readonly id: string }>;
+  },
+>(feed: ReadonlyArray<E>, askActivityIds: ReadonlySet<string>): ReadonlyArray<E> {
+  if (askActivityIds.size === 0) return feed;
+  let changed = false;
+  const kept: E[] = [];
+  for (const entry of feed) {
+    if (entry.type === "activity" && entry.activity && askActivityIds.has(entry.activity.id)) {
+      changed = true;
+      continue;
+    }
+    if (entry.type === "activity-group" && entry.activities) {
+      const activities = entry.activities.filter((activity) => !askActivityIds.has(activity.id));
+      if (activities.length !== entry.activities.length) {
+        changed = true;
+        if (activities.length > 0) kept.push({ ...entry, activities });
+        continue;
+      }
+    }
+    kept.push(entry);
+  }
+  return changed ? kept : feed;
 }
 
 interface AssistantEnvironmentCandidate {
