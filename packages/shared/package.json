@@ -179,6 +179,10 @@
       "types": "./src/forkFeatures.ts",
       "import": "./src/forkFeatures.ts"
     },
+    "./taskReminders": {
+      "types": "./src/taskReminders.ts",
+      "import": "./src/taskReminders.ts"
+    },
     "./relayAuth": {
       "types": "./src/relayAuth.ts",
       "import": "./src/relayAuth.ts"

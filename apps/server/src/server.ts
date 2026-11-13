@@ -91,6 +91,8 @@ import { RemoteAgentsLive } from "./agentMachines/RemoteAgents.ts";
 import { RemoteAgentStoreLive } from "./agentMachines/RemoteAgentStore.ts";
 import * as AgentCompletionReactor from "./orchestration/AgentCompletionReactor.ts";
 import * as StatusDeadlineReactor from "./orchestration/StatusDeadlineReactor.ts";
+import * as PushNotifier from "./push/PushNotifier.ts";
+import { pushActionRouteLayer, pushDevicesRouteLayer } from "./push/routes.ts";
 import * as ScheduleHost from "./schedules/ScheduleHost.ts";
 import * as ScheduleRunner from "./schedules/ScheduleRunner.ts";
 import * as ScheduleService from "./schedules/ScheduleService.ts";
@@ -284,7 +286,10 @@ const BaseReactorLayerLive = Layer.empty.pipe(
 );
 
 // Pipe arity tops out at 20 steps; Task Sync rides one more.
-const ReactorLayerLive = BaseReactorLayerLive.pipe(Layer.provideMerge(TaskSync.layer));
+const ReactorLayerLive = BaseReactorLayerLive.pipe(
+  Layer.provideMerge(PushNotifier.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+  Layer.provideMerge(TaskSync.layer),
+);
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
   Layer.provide(ProviderSessionRuntime.layer),
@@ -614,6 +619,8 @@ export const makeRoutesLayer = Layer.mergeAll(
     assetRouteLayer,
     attachmentUploadRouteLayer,
     scheduleFireRouteLayer,
+    pushDevicesRouteLayer,
+    pushActionRouteLayer,
     deviceHubProxyRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,

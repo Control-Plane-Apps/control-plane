@@ -1,5 +1,6 @@
 import { formatTaskTime } from "@t3tools/client-runtime/state/projects";
-import { isProposedTask, localTaskDate, type Task } from "@t3tools/contracts";
+import { localTaskDate } from "@t3tools/contracts";
+import { dueTaskReminders } from "@t3tools/shared/taskReminders";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
@@ -28,24 +29,8 @@ function readFired(): Set<string> {
   }
 }
 
-/** Reminders due now: open tasks on today with a reminder time that has arrived. */
-export function dueTaskReminders(
-  tasks: ReadonlyArray<Task>,
-  today: string,
-  time: string,
-  fired: ReadonlySet<string>,
-): Task[] {
-  return tasks.filter(
-    (task) =>
-      task.status === "todo" &&
-      !isProposedTask(task) &&
-      task.home.kind === "date" &&
-      task.home.date === today &&
-      task.home.reminderTime !== undefined &&
-      task.home.reminderTime <= time &&
-      !fired.has(`${task.id}@${today}T${task.home.reminderTime}`),
-  );
-}
+// Shared with the Mac server, which sends the same reminders to the iPhone.
+export { dueTaskReminders };
 
 /**
  * Fires each task reminder once, at its local time on its day, as a toast

@@ -110,6 +110,9 @@ function LocalSettingsRouteScreen() {
             valuePosition="trailing"
             target="SettingsEnvironments"
           />
+          {Platform.OS === "ios" ? (
+            <SettingsRow icon="bell.badge" label="Notifications" target="SettingsNotifications" />
+          ) : null}
           <TaskSyncSettingsRow />
         </SettingsSection>
 
