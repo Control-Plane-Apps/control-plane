@@ -66,12 +66,13 @@ describe("mobile themes", () => {
     }
   });
 
-  it("preserves the existing mobile palette as the default", () => {
-    expect(readDefaultMobileThemeVariables("light")["--color-screen"]).toBe("#f2f2f7");
-    expect(readDefaultMobileThemeVariables("dark")["--color-screen"]).toBe("#0a0a0a");
-    expect(readDefaultMobileThemeVariables("light")["--color-user-bubble"]).toBe("#000000");
+  it("uses the Paper and clay palette as the default", () => {
+    expect(readDefaultMobileThemeVariables("light")["--color-screen"]).toBe("#f3efe9");
+    expect(readDefaultMobileThemeVariables("dark")["--color-screen"]).toBe("#181512");
+    expect(readDefaultMobileThemeVariables("light")["--color-primary"]).toBe("#b04f26");
+    expect(readDefaultMobileThemeVariables("light")["--color-user-bubble"]).toBe("#2b231d");
     expect(readDefaultMobileThemeVariables("light")["--color-user-bubble-foreground"]).toBe(
-      "#ffffff",
+      "#fffdfa",
     );
   });
 
@@ -86,9 +87,9 @@ describe("mobile themes", () => {
 
   it("uses the same preview roles and standard artwork as desktop", () => {
     expect(getMobileThemePreviewColors(DEFAULT_MOBILE_THEME_ID, "light")).toEqual({
-      canvas: "#fcfcfc",
-      accent: "#f4f4f5",
-      messageAction: "#4f46e5",
+      canvas: "#faf8f5",
+      accent: "#efe9e0",
+      messageAction: "#b04f26",
     });
     const desktopOcean = BUILT_IN_THEMES.find((theme) => theme.id === "ocean")!;
     expect(getMobileThemePreviewColors("ocean", "light")).toEqual({
@@ -154,7 +155,7 @@ describe("mobile themes", () => {
 
   it("maps semantic palette roles onto every mobile color variable", () => {
     const variables = createMobileThemeVariables(T3_CHAT_THEME.colors, "light");
-    expect(Object.keys(variables)).toHaveLength(75);
+    expect(Object.keys(variables)).toHaveLength(78);
     expect(variables["--color-sheet-solid"]).toBe(
       themeColorToNativeColor(T3_CHAT_THEME.colors.chrome),
     );
