@@ -56,6 +56,9 @@ export function useTaskSync() {
   });
   const portalCommand = useAtomCommand(projectEnvironment.taskSyncPortal, { reportFailure: false });
   const syncNowCommand = useAtomCommand(projectEnvironment.taskSyncNow, { reportFailure: false });
+  const setPreviewCommand = useAtomCommand(projectEnvironment.taskSyncSetPreview, {
+    reportFailure: false,
+  });
   const [busy, setBusy] = useState(false);
 
   const run = useCallback(
@@ -137,6 +140,13 @@ export function useTaskSync() {
         : withStatus(
             () => signOutCommand({ environmentId: env, input: undefined as never }),
             "Couldn't sign out.",
+          ),
+    setPreview: (enabled: boolean) =>
+      env === null
+        ? Promise.resolve<Result<TaskSyncStatus>>({ ok: false, message: "" })
+        : withStatus(
+            () => setPreviewCommand({ environmentId: env, input: { enabled } }),
+            "Couldn't change the preview.",
           ),
     syncNow: () =>
       env === null

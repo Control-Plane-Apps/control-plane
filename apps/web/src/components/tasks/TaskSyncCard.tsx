@@ -120,6 +120,39 @@ function AccountLine(props: { readonly status: TaskSyncStatus }) {
 }
 
 /**
+ * "Coming soon" until the service switches Task Sync on. Option-clicking the
+ * card reveals a hidden pre-launch preview for this install only.
+ */
+function ComingSoon(props: { readonly onPreview: () => void }) {
+  const [showPreview, setShowPreview] = useState(false);
+  return (
+    <section
+      aria-label="Task Sync"
+      className="flex flex-col gap-2"
+      onClick={(event) => {
+        if (event.altKey) setShowPreview(true);
+      }}
+    >
+      <h3 className="flex items-center gap-1.5 font-medium text-[15px]">
+        <CloudIcon aria-hidden className="size-4 text-muted-foreground" />
+        Task Sync is coming soon
+      </h3>
+      <p className="text-muted-foreground text-sm">
+        Task Sync will keep your tasks on all your devices, including your phone while this Mac
+        sleeps. Until then your tasks stay on this Mac, and your phone gets them through it.
+      </p>
+      {showPreview ? (
+        <div>
+          <Button variant="outline" onClick={props.onPreview}>
+            Preview Task Sync before launch
+          </Button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/**
  * Sign-in, subscription and sync state for Task Sync. `compact` fits the
  * Tasks page aside; the full card sits in Settings.
  */
@@ -137,22 +170,6 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
     );
   }
 
-  if (status.state === "coming-soon") {
-    // The Tasks page stays quiet; Settings explains. Both keep rechecking via the status poll.
-    return compact ? null : (
-      <section aria-label="Task Sync" className="flex flex-col gap-2">
-        <h3 className="flex items-center gap-1.5 font-medium text-[15px]">
-          <CloudIcon aria-hidden className="size-4 text-muted-foreground" />
-          Task Sync is coming soon
-        </h3>
-        <p className="text-muted-foreground text-sm">
-          Task Sync will keep your tasks on all your devices, including your phone while this Mac
-          sleeps. Until then your tasks stay on this Mac, and your phone gets them through it.
-        </p>
-      </section>
-    );
-  }
-
   const title = cn(compact ? "text-sm" : "text-[15px]", "font-medium");
   const body = cn("text-muted-foreground", compact ? "text-xs" : "text-sm");
   const act = async (run: () => Promise<{ ok: boolean; message?: string }>) => {
@@ -160,6 +177,27 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
     const result = await run();
     if (!result.ok && result.message) setError(result.message);
   };
+
+  if (status.state === "coming-soon") {
+    // The Tasks page stays quiet; Settings explains. Both keep rechecking via the status poll.
+    if (compact) return null;
+    return <ComingSoon onPreview={() => void act(() => sync.setPreview(true))} />;
+  }
+
+  const previewNote =
+    status.preview === true && !compact ? (
+      <p className="text-muted-foreground text-xs">
+        Pre-launch preview is on for this Mac.{" "}
+        <button
+          type="button"
+          className="cursor-pointer underline hover:text-foreground"
+          disabled={sync.busy}
+          onClick={() => void act(() => sync.setPreview(false))}
+        >
+          Turn off
+        </button>
+      </p>
+    ) : null;
 
   if (status.state === "signed-out") {
     return (
@@ -173,6 +211,7 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
           phone while this Mac sleeps.
         </p>
         <SignInForm compact={compact} />
+        {previewNote}
       </section>
     );
   }
@@ -213,6 +252,7 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
           ) : null}
         </div>
         <AccountLine status={status} />
+        {previewNote}
         {error !== null ? <p className="text-destructive text-xs">{error}</p> : null}
       </section>
     );
@@ -276,6 +316,7 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
         ) : null}
       </div>
       <AccountLine status={status} />
+      {previewNote}
       {error !== null ? <p className="text-destructive text-xs">{error}</p> : null}
     </section>
   );

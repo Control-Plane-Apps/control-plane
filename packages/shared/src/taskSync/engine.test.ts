@@ -317,6 +317,21 @@ describe("TaskSyncEngine", () => {
     expect((await engine.status()).state).toBe("synced");
   });
 
+  it("a local preview lets this install sign in before launch, and turns off cleanly", async () => {
+    const cloud = new FakeCloud();
+    cloud.available = false;
+    const { engine } = setup(cloud);
+    engine.setPreview(true);
+    await engine.refreshAvailability(0);
+    expect(await engine.status()).toMatchObject({ state: "signed-out", preview: true });
+    await engine.verify("n@example.com", "123456");
+    expect((await engine.status()).state).toBe("synced");
+    engine.setPreview(false);
+    await engine.refreshAvailability(0);
+    expect((await engine.status()).state).toBe("coming-soon");
+    expect((await engine.status()).preview).toBeUndefined();
+  });
+
   it("signs out to local-only, keeping tasks here", async () => {
     const cloud = new FakeCloud();
     const { engine } = setup(cloud);

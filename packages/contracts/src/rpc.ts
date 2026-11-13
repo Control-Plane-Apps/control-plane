@@ -4,6 +4,7 @@ import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import {
   TaskSyncError,
   TaskSyncRequestCodeInput,
+  TaskSyncSetPreviewInput,
   TaskSyncStatus,
   TaskSyncUrlResult,
   TaskSyncVerifyInput,
@@ -310,6 +311,7 @@ export const WS_METHODS = {
   taskSyncCheckout: "taskSync.checkout",
   taskSyncPortal: "taskSync.portal",
   taskSyncNow: "taskSync.syncNow",
+  taskSyncSetPreview: "taskSync.setPreview",
 
   // Project schedule methods
   schedulesStatus: "schedules.status",
@@ -1015,6 +1017,11 @@ const WsTaskSyncNowRpc = Rpc.make(WS_METHODS.taskSyncNow, {
   success: TaskSyncStatus,
   error: TaskSyncRpcError,
 });
+const WsTaskSyncSetPreviewRpc = Rpc.make(WS_METHODS.taskSyncSetPreview, {
+  payload: TaskSyncSetPreviewInput,
+  success: TaskSyncStatus,
+  error: TaskSyncRpcError,
+});
 
 const WsSchedulesStatusRpc = Rpc.make(WS_METHODS.schedulesStatus, {
   payload: SchedulesStatusInput,
@@ -1549,6 +1556,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsTaskSyncCheckoutRpc,
   WsTaskSyncPortalRpc,
   WsTaskSyncNowRpc,
+  WsTaskSyncSetPreviewRpc,
   WsSchedulesStatusRpc,
   WsSchedulesRunRpc,
   WsShellOpenInEditorRpc,
