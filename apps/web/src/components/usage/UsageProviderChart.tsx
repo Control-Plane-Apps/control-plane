@@ -39,11 +39,6 @@ export interface DayColumn {
   readonly total: number;
 }
 
-interface Point {
-  readonly x: number;
-  readonly y: number;
-}
-
 function valueFor(
   totals: DailyTotals | HourlyTotals | undefined,
   provider: UsageProviderKind,
@@ -67,84 +62,6 @@ export function buildPeriodColumns(
     }));
     return { bands, total: bands.reduce((sum, band) => sum + band.value, 0) };
   });
-}
-
-/** Shape-preserving cubic tangents that cannot overshoot spiky usage data. */
-function monotoneTangents(points: readonly Point[]): readonly number[] {
-  const count = points.length;
-  if (count < 2) return [0];
-
-  const slopes: number[] = [];
-  for (let index = 0; index < count - 1; index += 1) {
-    const dx = (points[index + 1]?.x ?? 0) - (points[index]?.x ?? 0);
-    const dy = (points[index + 1]?.y ?? 0) - (points[index]?.y ?? 0);
-    slopes.push(dx === 0 ? 0 : dy / dx);
-  }
-
-  const tangents: number[] = Array.from({ length: count }, () => 0);
-  tangents[0] = slopes[0] ?? 0;
-  tangents[count - 1] = slopes[count - 2] ?? 0;
-  for (let index = 1; index < count - 1; index += 1) {
-    const previous = slopes[index - 1] ?? 0;
-    const next = slopes[index] ?? 0;
-    tangents[index] = previous * next <= 0 ? 0 : (previous + next) / 2;
-  }
-
-  for (let index = 0; index < count - 1; index += 1) {
-    const slope = slopes[index] ?? 0;
-    if (slope === 0) {
-      tangents[index] = 0;
-      tangents[index + 1] = 0;
-      continue;
-    }
-    const a = (tangents[index] ?? 0) / slope;
-    const b = (tangents[index + 1] ?? 0) / slope;
-    const magnitude = a * a + b * b;
-    if (magnitude > 9) {
-      const scale = 3 / Math.sqrt(magnitude);
-      tangents[index] = scale * a * slope;
-      tangents[index + 1] = scale * b * slope;
-    }
-  }
-
-  return tangents;
-}
-
-interface CurveSegment {
-  readonly from: Point;
-  readonly c1: Point;
-  readonly c2: Point;
-  readonly to: Point;
-}
-
-function smoothCurve(points: readonly Point[]): readonly CurveSegment[] {
-  if (points.length < 2) return [];
-  const tangents = monotoneTangents(points);
-  const segments: CurveSegment[] = [];
-
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const from = points[index];
-    const to = points[index + 1];
-    if (from === undefined || to === undefined) continue;
-    const dx = to.x - from.x;
-    segments.push({
-      from,
-      c1: { x: from.x + dx / 3, y: from.y + ((tangents[index] ?? 0) * dx) / 3 },
-      c2: { x: to.x - dx / 3, y: to.y - ((tangents[index + 1] ?? 0) * dx) / 3 },
-      to,
-    });
-  }
-  return segments;
-}
-
-function curvePath(segments: readonly CurveSegment[]): string {
-  const first = segments[0];
-  if (first === undefined) return "";
-  let path = `M${first.from.x.toFixed(2)},${first.from.y.toFixed(2)}`;
-  for (const segment of segments) {
-    path += ` C${segment.c1.x.toFixed(2)},${segment.c1.y.toFixed(2)} ${segment.c2.x.toFixed(2)},${segment.c2.y.toFixed(2)} ${segment.to.x.toFixed(2)},${segment.to.y.toFixed(2)}`;
-  }
-  return path;
 }
 
 /**
@@ -193,59 +110,17 @@ export function UsageProviderChart({
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const hoverPositionRef = useRef<{ x: number; y: number } | null>(null);
 
-  const { paths, ticks, stepX, toY, series } = useMemo(() => {
-    if (periods.length === 0) {
-      return {
-        paths: [],
-        series: [] as readonly DayColumn[],
-        stepX: 0,
-        ticks: [0] as readonly number[],
-        toY: () => VIEW_HEIGHT,
-      };
-    }
-
+  const { stepX, toY, series } = useMemo(() => {
     const columns = buildPeriodColumns(periods, byPeriod, metric);
-    // The scale tops out at the largest single provider-period, not the sum:
-    // layered series each measure from zero, so a combined peak would leave
-    // the plot permanently half empty.
-    const peak = columns.reduce(
-      (max, column) => column.bands.reduce((inner, band) => Math.max(inner, band.value), max),
-      0,
-    );
-    const { max, ticks: tickValues } = niceScale(peak, TICK_COUNT);
-    const step = periods.length === 1 ? 0 : VIEW_WIDTH / (periods.length - 1);
-    // Leave room above the top gridline so the constant-width stroke is not
-    // clipped when a series reaches the peak.
-    const toY = (value: number) =>
-      max === 0 ? VIEW_HEIGHT : VIEW_HEIGHT - (value / max) * (VIEW_HEIGHT - PLOT_TOP);
-
-    const built = providers.map((provider) => {
-      const providerIndex = PROVIDER_ORDER.indexOf(provider);
-      const line = curvePath(
-        smoothCurve(
-          columns.map((column, periodIndex) => ({
-            x: periodIndex * step,
-            y: toY(column.bands[providerIndex]?.value ?? 0),
-          })),
-        ),
-      );
-      return {
-        provider,
-        total: columns.reduce((sum, column) => sum + (column.bands[providerIndex]?.value ?? 0), 0),
-        area: line === "" ? "" : `${line} L${VIEW_WIDTH},${VIEW_HEIGHT} L0,${VIEW_HEIGHT} Z`,
-        line,
-      };
-    });
-
-    // Paint the heavier series first so the lighter one is not buried.
+    const peak = columns.reduce((maximum, column) => Math.max(maximum, column.total), 0);
+    const { max } = niceScale(peak, TICK_COUNT);
     return {
-      paths: built.toSorted((a, b) => b.total - a.total),
       series: columns,
-      stepX: step,
-      ticks: tickValues,
-      toY,
+      stepX: periods.length === 0 ? 0 : VIEW_WIDTH / periods.length,
+      toY: (value: number) =>
+        max === 0 ? VIEW_HEIGHT : VIEW_HEIGHT - (value / max) * (VIEW_HEIGHT - PLOT_TOP),
     };
-  }, [byPeriod, metric, periods, providers]);
+  }, [byPeriod, metric, periods]);
 
   const format = metric === "tokens" ? formatTokens : formatUsd;
 
@@ -297,7 +172,7 @@ export function UsageProviderChart({
       const localX = Math.min(bounds.width, Math.max(0, event.clientX - bounds.left));
       const localY = Math.min(bounds.height, Math.max(0, event.clientY - bounds.top));
       const fraction = localX / bounds.width;
-      const index = Math.round(fraction * (periods.length - 1));
+      const index = Math.floor(fraction * periods.length);
       hoverPositionRef.current = { x: localX, y: localY };
       positionTooltip();
       setHoverIndex(Math.min(periods.length - 1, Math.max(0, index)));
@@ -315,24 +190,22 @@ export function UsageProviderChart({
       : formatPeriod(period);
 
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex gap-2">
-        {/* Axis labels sit outside the plot so they stay aligned to gridlines. */}
-        <div className="relative h-56 w-14 shrink-0">
-          {ticks.map((tick) => (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap justify-end gap-3 text-xs text-muted-foreground">
+        {providers.map((provider) => (
+          <span key={provider} className="inline-flex items-center gap-1.5">
             <span
-              key={tick}
-              className="absolute right-0 -translate-y-1/2 text-[10px] text-muted-foreground tabular-nums"
-              style={{ top: `${(toY(tick) / VIEW_HEIGHT) * 100}%` }}
-            >
-              {tick === 0 ? "0" : format(tick)}
-            </span>
-          ))}
-        </div>
-
+              className="size-2 rounded-sm"
+              style={{ backgroundColor: PROVIDER_PRESENTATION[provider].color }}
+            />
+            {PROVIDER_PRESENTATION[provider].label}
+          </span>
+        ))}
+      </div>
+      <div className="flex gap-2">
         <div
           ref={plotRef}
-          className="relative h-56 flex-1"
+          className="relative h-44 flex-1"
           onMouseMove={handleMove}
           onMouseLeave={() => {
             hoverPositionRef.current = null;
@@ -346,55 +219,35 @@ export function UsageProviderChart({
             role="img"
             aria-label={`${resolution === "hour" ? "Hourly" : "Daily"} ${metric === "tokens" ? "processed tokens" : "cost"} by provider`}
           >
-            {ticks.map((tick) => {
-              const y = toY(tick);
+            {series.map((column, periodIndex) => {
+              const width = Math.min(56, stepX * 0.6);
+              let cumulative = 0;
               return (
-                <line
-                  key={tick}
-                  x1={0}
-                  x2={VIEW_WIDTH}
-                  y1={y}
-                  y2={y}
-                  stroke="currentColor"
-                  strokeWidth={1}
-                  className="text-border"
-                  vectorEffect="non-scaling-stroke"
-                />
+                <g
+                  key={periods[periodIndex]}
+                  opacity={hoverIndex === null || hoverIndex === periodIndex ? 1 : 0.65}
+                >
+                  {column.bands
+                    .filter((band) => providers.includes(band.provider))
+                    .map((band) => {
+                      const bottom = toY(cumulative);
+                      cumulative += band.value;
+                      const top = toY(cumulative);
+                      return (
+                        <rect
+                          key={band.provider}
+                          x={periodIndex * stepX + (stepX - width) / 2}
+                          y={top}
+                          width={width}
+                          height={Math.max(0, bottom - top - 1)}
+                          rx={2}
+                          fill={PROVIDER_PRESENTATION[band.provider].color}
+                        />
+                      );
+                    })}
+                </g>
               );
             })}
-
-            {/* Fills first, then every stroke, so no series covers another's line. */}
-            {paths.map(({ provider, area }) => (
-              <path
-                key={provider}
-                d={area}
-                fill={PROVIDER_PRESENTATION[provider].color}
-                fillOpacity={0.12}
-              />
-            ))}
-            {paths.map(({ provider, line }) => (
-              <path
-                key={provider}
-                d={line}
-                fill="none"
-                stroke={PROVIDER_PRESENTATION[provider].color}
-                strokeWidth={2}
-                vectorEffect="non-scaling-stroke"
-              />
-            ))}
-
-            {hoverIndex === null ? null : (
-              <line
-                x1={hoverIndex * stepX}
-                x2={hoverIndex * stepX}
-                y1={PLOT_TOP}
-                y2={VIEW_HEIGHT}
-                stroke="currentColor"
-                strokeWidth={1}
-                className="text-muted-foreground"
-                vectorEffect="non-scaling-stroke"
-              />
-            )}
           </svg>
 
           {hoveredPeriod === undefined ? null : (
@@ -434,18 +287,17 @@ export function UsageProviderChart({
         </div>
       </div>
 
-      <div className="flex justify-between pl-16 text-[10px] text-muted-foreground uppercase">
-        <span>{periods[0] === undefined ? "" : formatPeriod(periods[0])}</span>
-        <span>
-          {periods[Math.floor(periods.length / 2)] === undefined
-            ? ""
-            : formatPeriod(periods[Math.floor(periods.length / 2)] ?? "")}
-        </span>
-        <span>
-          {periods[periods.length - 1] === undefined
-            ? ""
-            : formatPeriod(periods[periods.length - 1] ?? "")}
-        </span>
+      <div
+        className="grid text-center text-[10px] text-muted-foreground"
+        style={{ gridTemplateColumns: `repeat(${Math.max(1, periods.length)}, minmax(0, 1fr))` }}
+      >
+        {periods.map((period, index) => (
+          <span key={period} className="truncate">
+            {periods.length <= 7 || index % Math.ceil(periods.length / 7) === 0
+              ? formatPeriod(period)
+              : ""}
+          </span>
+        ))}
       </div>
     </div>
   );
