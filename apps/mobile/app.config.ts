@@ -8,6 +8,7 @@ type AppVariant = "development" | "preview" | "production";
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
 
+const EAS_PROJECT_ID = "5a481480-96fe-418e-9976-118de0e374f0";
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
 const runtimeVersionPolicy =
@@ -219,8 +220,12 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    // Do not pull official T3 Code OTAs into this Lucive-signed client.
-    enabled: false,
+    // OTAs come from this app's own EAS project (extra.eas.projectId below).
+    // Each build's channel comes from its eas.json profile, and the
+    // fingerprint runtime keeps an update off binaries whose native project
+    // differs. T3CODE_MOBILE_UPDATES_ENABLED=0 opts a build out.
+    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
+    url: `https://u.expo.dev/${EAS_PROJECT_ID}`,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
@@ -450,7 +455,7 @@ const config: ExpoConfig = {
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
     eas: {
-      projectId: "5a481480-96fe-418e-9976-118de0e374f0",
+      projectId: EAS_PROJECT_ID,
     },
   },
   owner: "nickrroberts",
