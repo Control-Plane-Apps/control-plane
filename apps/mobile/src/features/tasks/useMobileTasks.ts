@@ -349,6 +349,8 @@ export function useMobileTaskStore() {
 }
 
 export interface TaskSyncAccount {
+  /** The service hasn't switched Task Sync on yet. */
+  readonly comingSoon: boolean;
   /** Signed in to the Control Plane account that syncs tasks. */
   readonly signedIn: boolean;
   /** The account's email when signed in. */
@@ -359,6 +361,13 @@ export interface TaskSyncAccount {
 export function useTaskSyncAccount(): TaskSyncAccount {
   const { status } = useCloudTasks();
   const signedIn =
-    status !== null && status.state !== "signed-out" && status.state !== "unavailable";
-  return { signedIn, email: signedIn ? (status.account?.email ?? null) : null };
+    status !== null &&
+    status.state !== "signed-out" &&
+    status.state !== "unavailable" &&
+    status.state !== "coming-soon";
+  return {
+    comingSoon: status?.state === "coming-soon",
+    signedIn,
+    email: signedIn ? (status.account?.email ?? null) : null,
+  };
 }

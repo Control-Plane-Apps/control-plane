@@ -30,7 +30,7 @@ import {
   type TaskHorizon,
   type ThreadId,
 } from "@t3tools/contracts";
-import { Fragment, useCallback, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -56,6 +56,7 @@ import {
   useUndoNotice,
   BARE_INPUT_STYLE,
 } from "./taskUi";
+import { cloudTaskStore } from "./cloudTasks";
 import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 
 // Fork-owned. Personal tasks on phone and iPad: Today, Week, Month, Year and
@@ -105,6 +106,11 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [showCompleted, setShowCompleted] = useState(false);
+
+  // Opening Tasks rechecks whether Task Sync has been switched on (at most once a minute).
+  useEffect(() => {
+    void cloudTaskStore().recheck();
+  }, []);
 
   const openThread = useCallback(
     (project: EnvironmentProject, threadId: ThreadId) => {
