@@ -117,7 +117,7 @@ export function TaskCheckbox(props: {
         style={{
           width: 22,
           height: 22,
-          borderRadius: round ? 11 : 5,
+          borderRadius: round ? 11 : 7,
           borderWidth: props.checked ? 0 : 1.5,
           borderStyle: props.proposed ? "dashed" : "solid",
           borderColor: props.proposed ? palette.dashed : "rgba(120, 110, 100, 0.7)",

@@ -1,3 +1,10 @@
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from "react-native-reanimated";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -68,39 +75,60 @@ export function ProjectStatusRouteScreen({ route }: StaticScreenProps<ProjectSta
     [navigation, project],
   );
 
+  // Full screen, not a sheet: a downward swipe on the header closes it, and
+  // the screen follows the finger until it lets go.
+  const dragY = useSharedValue(0);
+  const close = useCallback(() => navigation.goBack(), [navigation]);
+  const swipeToClose = Gesture.Pan()
+    .activeOffsetY(12)
+    .failOffsetX([-20, 20])
+    .onUpdate((event) => {
+      dragY.value = Math.max(0, event.translationY);
+    })
+    .onEnd((event) => {
+      if (event.translationY > 90 || event.velocityY > 900) {
+        runOnJS(close)();
+      } else {
+        dragY.value = withSpring(0);
+      }
+    });
+  const followFinger = useAnimatedStyle(() => ({ transform: [{ translateY: dragY.value }] }));
+
   return (
-    <View className="flex-1 bg-screen" style={{ paddingTop: insets.top }}>
+    <Animated.View className="flex-1 bg-screen" style={[{ paddingTop: insets.top }, followFinger]}>
       {project === null ? null : (
         <ProjectStatusPanel
           project={project}
           header={
-            <View className="flex-row items-start px-5 pb-1 pt-4">
-              <View className="flex-1">
-                <Text
-                  className="text-[30px] font-t3-bold text-foreground"
-                  accessibilityRole="header"
+            <GestureDetector gesture={swipeToClose}>
+              <View className="flex-row items-start px-5 pb-1 pt-4">
+                <View className="flex-1">
+                  <Text
+                    className="text-[30px] font-t3-bold text-foreground"
+                    accessibilityRole="header"
+                  >
+                    Status
+                  </Text>
+                  <Text className="text-[15px] text-foreground-muted">
+                    {project.title} coordinator
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Close Status"
+                  onPress={() => navigation.goBack()}
+                  className="size-11 items-center justify-center rounded-full bg-secondary"
                 >
-                  Status
-                </Text>
-                <Text className="text-[15px] text-foreground-muted">
-                  {project.title} coordinator
-                </Text>
+                  <SymbolView
+                    name={symbol("xmark", "close")}
+                    size={15}
+                    tintColorClassName="accent-foreground"
+                    type="monochrome"
+                    weight="semibold"
+                  />
+                </Pressable>
               </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close Status"
-                onPress={() => navigation.goBack()}
-                className="size-11 items-center justify-center rounded-full bg-secondary"
-              >
-                <SymbolView
-                  name={symbol("xmark", "close")}
-                  size={15}
-                  tintColorClassName="accent-foreground"
-                  type="monochrome"
-                  weight="semibold"
-                />
-              </Pressable>
-            </View>
+            </GestureDetector>
           }
           onReply={(tag, draft) => {
             const threadId = prepareStatusReply(project, tag, draft);
@@ -117,6 +145,6 @@ export function ProjectStatusRouteScreen({ route }: StaticScreenProps<ProjectSta
           }}
         />
       )}
-    </View>
+    </Animated.View>
   );
 }
