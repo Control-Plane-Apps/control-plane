@@ -221,14 +221,6 @@ class CloudTaskStore {
     return this.refreshStatus();
   }
 
-  checkoutUrl(): Promise<string> {
-    return this.engine.checkoutUrl();
-  }
-
-  portalUrl(): Promise<string> {
-    return this.engine.portalUrl();
-  }
-
   private async write(tasks: ReadonlyArray<Task>): Promise<void> {
     const byId = new Map(this.snapshot.tasks.map((task) => [task.id as string, task]));
     for (const task of tasks) byId.set(task.id, task);
