@@ -18,8 +18,8 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
-  CircleAlertIcon,
   CircleCheckIcon,
+  CircleXIcon,
   CopyIcon,
   InfoIcon,
   TriangleAlertIcon,
@@ -39,9 +39,20 @@ import {
 } from "./toast.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./tooltip";
 
+export type ToastActionVariant =
+  | "default"
+  | "destructive"
+  | "destructive-outline"
+  | "ghost"
+  | "link"
+  | "outline"
+  | "secondary"
+  | "success-outline";
+
 export type ThreadToastData = {
   threadRef?: ScopedThreadRef | null;
   threadId?: ThreadId | null;
+  /** Replaces the type icon, e.g. a status dot or a checkbox. Centered in a 16px column. */
   leadingIcon?: ReactNode;
   tooltipStyle?: boolean;
   onClose?: (() => void) | undefined;
@@ -50,30 +61,27 @@ export type ThreadToastData = {
   additionalActions?: ReadonlyArray<{
     id: string;
     props: ComponentPropsWithoutRef<"button">;
+    /** Overrides `secondaryActionVariant` for this button. */
+    variant?: ToastActionVariant;
   }>;
   secondaryActionProps?: ComponentPropsWithoutRef<"button">;
-  secondaryActionVariant?:
-    | "default"
-    | "destructive"
-    | "destructive-outline"
-    | "ghost"
-    | "link"
-    | "outline"
-    | "secondary";
+  secondaryActionVariant?: ToastActionVariant;
   /** Optional extra body shown after toggling “Show details” (e.g. a list of pending RPCs). */
   expandableContent?: ReactNode;
   expandableLabels?: { expand?: string; collapse?: string };
   /** When set with `expandableContent`, the summary + label act as one text disclosure (no separate chevron row). */
   expandableDescriptionTrigger?: boolean;
-  actionLayout?: "inline" | "stacked-end";
-  actionVariant?:
-    | "default"
-    | "destructive"
-    | "destructive-outline"
-    | "ghost"
-    | "link"
-    | "outline"
-    | "secondary";
+  /** Always-visible body copy under the description (e.g. the question in an in-place answer toast). */
+  body?: ReactNode;
+  /** Muted text shown after the `stacked-start` action row (e.g. "Recommended"). */
+  footnote?: ReactNode;
+  /**
+   * `inline`: actions sit at the trailing edge of the title row.
+   * `stacked-end`: actions on their own row, right-aligned.
+   * `stacked-start`: actions on their own row under the text, left-aligned (answer-in-place toasts).
+   */
+  actionLayout?: "inline" | "stacked-end" | "stacked-start";
+  actionVariant?: ToastActionVariant;
 };
 
 const toastManager = Toast.createToastManager<ThreadToastData>();
@@ -82,7 +90,7 @@ type ToastId = ReturnType<typeof toastManager.add>;
 const threadToastVisibleTimeoutRemainingMs = new Map<ToastId, number>();
 
 const TOAST_ICONS = {
-  error: CircleAlertIcon,
+  error: CircleXIcon,
   info: InfoIcon,
   loading: Spinner,
   success: CircleCheckIcon,
@@ -102,6 +110,8 @@ function errorDescriptionClampClass(type: unknown, description: unknown): string
 }
 
 /** Dismiss-only: circular control overlapping the card corner (iOS notification–style). */
+/** Soft two-layer lift from the notification design; warm tint reads on paper and dark surfaces. */
+const toastShadowClass = "shadow-[0_1px_2px_rgb(61_42_26/0.06),0_14px_36px_rgb(61_42_26/0.16)]";
 const toastCornerDismissClass = "absolute z-20 -top-1.5 -right-1.5";
 const toastCornerOrbClass = cn(
   "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full border border-border/60 bg-popover/92 text-muted-foreground shadow-sm outline-none backdrop-blur-sm",
@@ -190,7 +200,7 @@ function ToastDescriptionAndExpandable({
   const labels = toastData?.expandableLabels ?? {};
   const descriptionTrigger = toastData?.expandableDescriptionTrigger ?? false;
   const descriptionClassName = cn(
-    "min-w-0 select-text wrap-break-word text-muted-foreground",
+    "min-w-0 select-text wrap-break-word text-[13px] leading-[1.45] text-muted-foreground",
     errorDescriptionClampClass(toastType, toastDescription),
   );
   const [open, setOpen] = useState(false);
@@ -242,7 +252,7 @@ function ToastDescriptionAndExpandable({
           <div className="min-w-0 flex-1">
             <Toast.Description
               className={cn(
-                "min-w-0 select-none wrap-break-word text-muted-foreground",
+                "min-w-0 select-none wrap-break-word text-[13px] leading-[1.45] text-muted-foreground",
                 errorDescriptionClampClass(toastType, toastDescription),
                 "underline-offset-2 decoration-muted-foreground/60 group-hover:underline",
               )}
@@ -275,6 +285,8 @@ type ToastIconComponent = (typeof TOAST_ICONS)[keyof typeof TOAST_ICONS];
 interface ToastBodyDescriptor {
   readonly Icon: ToastIconComponent | null | undefined;
   readonly stackedActionLayout: boolean;
+  /** Actions render under the text, left-aligned, instead of at the trailing edge. */
+  readonly startActionLayout: boolean;
   readonly actionVariant: NonNullable<ThreadToastData["actionVariant"]>;
   readonly secondaryActionVariant: NonNullable<ThreadToastData["secondaryActionVariant"]>;
   readonly copyErrorText: string | null;
@@ -289,27 +301,30 @@ function deriveToastBodyDescriptor(toast: {
   readonly data?: ThreadToastData | undefined;
 }): ToastBodyDescriptor {
   const Icon = toast.type ? TOAST_ICONS[toast.type as keyof typeof TOAST_ICONS] : null;
+  const hasAdditionalActions = (toast.data?.additionalActions?.length ?? 0) > 0;
+  const hasSecondaryAction = toast.data?.secondaryActionProps !== undefined;
+  const hasAnyAction =
+    hasVisibleToastAction(toast.actionProps) || hasAdditionalActions || hasSecondaryAction;
+  const startActionLayout = hasAnyAction && toast.data?.actionLayout === "stacked-start";
   const stackedActionLayout =
-    hasVisibleToastAction(toast.actionProps) && toast.data?.actionLayout === "stacked-end";
+    !startActionLayout &&
+    hasVisibleToastAction(toast.actionProps) &&
+    toast.data?.actionLayout === "stacked-end";
+  // Toast actions read as quiet outline buttons; a filled button is opt-in per toast.
   const actionVariant: NonNullable<ThreadToastData["actionVariant"]> =
-    toast.data?.actionVariant ?? "default";
+    toast.data?.actionVariant ?? "outline";
   const secondaryActionVariant: NonNullable<ThreadToastData["secondaryActionVariant"]> =
     toast.data?.secondaryActionVariant ?? "outline";
   const copyErrorText =
     toast.type === "error" && typeof toast.description === "string" && !toast.data?.hideCopyButton
       ? toast.description
       : null;
-  const hasAdditionalActions = (toast.data?.additionalActions?.length ?? 0) > 0;
-  const hasSecondaryAction = toast.data?.secondaryActionProps !== undefined;
-  const hasTrailingControls =
-    copyErrorText !== null ||
-    hasVisibleToastAction(toast.actionProps) ||
-    hasAdditionalActions ||
-    hasSecondaryAction;
-  const inlineContentEndPad = hasTrailingControls ? "pr-6" : "pr-10";
+  const hasTrailingControls = copyErrorText !== null || (hasAnyAction && !startActionLayout);
+  const inlineContentEndPad = "pr-3";
   return {
     Icon,
     stackedActionLayout,
+    startActionLayout,
     actionVariant,
     secondaryActionVariant,
     copyErrorText,
@@ -325,8 +340,62 @@ interface ToastBodyContentProps extends ToastBodyDescriptor {
   readonly toastType: unknown;
 }
 
+function ToastActionButtons({
+  actionProps,
+  actionVariant,
+  secondaryActionVariant,
+  toastData,
+}: {
+  actionProps: { readonly children?: ReactNode } | undefined;
+  actionVariant: NonNullable<ThreadToastData["actionVariant"]>;
+  secondaryActionVariant: NonNullable<ThreadToastData["secondaryActionVariant"]>;
+  toastData: ThreadToastData | undefined;
+}) {
+  const additionalActions = toastData?.additionalActions ?? [];
+  const secondaryActionProps = toastData?.secondaryActionProps;
+  const { className: secondaryActionClassName, ...secondaryActionRest } =
+    secondaryActionProps ?? {};
+  const startLayout = toastData?.actionLayout === "stacked-start";
+  const primaryAction = hasVisibleToastAction(actionProps) ? (
+    <Toast.Action
+      className={cn(buttonVariants({ size: "xs", variant: actionVariant }), "shrink-0")}
+      data-slot="toast-action"
+    >
+      {actionProps?.children}
+    </Toast.Action>
+  ) : null;
+
+  return (
+    <>
+      {/* Start-aligned rows read left to right, so the primary action comes first. */}
+      {startLayout ? primaryAction : null}
+      {additionalActions.map(({ id, props: { className, ...props }, variant }) => (
+        <Button
+          {...props}
+          className={className}
+          key={id}
+          size="xs"
+          type="button"
+          variant={variant ?? secondaryActionVariant}
+        />
+      ))}
+      {secondaryActionProps ? (
+        <Button
+          {...secondaryActionRest}
+          className={secondaryActionClassName}
+          size="xs"
+          type="button"
+          variant={secondaryActionVariant}
+        />
+      ) : null}
+      {startLayout ? null : primaryAction}
+    </>
+  );
+}
+
 function ToastBodyContent({
   stackedActionLayout,
+  startActionLayout,
   Icon,
   copyErrorText,
   actionProps,
@@ -337,11 +406,15 @@ function ToastBodyContent({
   toastDescription,
   toastType,
 }: ToastBodyContentProps) {
-  const additionalActions = toastData?.additionalActions ?? [];
-  const secondaryActionProps = toastData?.secondaryActionProps;
   const leadingIcon = toastData?.leadingIcon;
-  const { className: secondaryActionClassName, ...secondaryActionRest } =
-    secondaryActionProps ?? {};
+  const actionButtons = (
+    <ToastActionButtons
+      actionProps={actionProps}
+      actionVariant={actionVariant}
+      secondaryActionVariant={secondaryActionVariant}
+      toastData={toastData}
+    />
+  );
 
   return (
     <>
@@ -351,7 +424,7 @@ function ToastBodyContent({
           stackedActionLayout ? "pr-5" : "flex-1",
         )}
       >
-        <div className="flex min-w-0 gap-2">
+        <div className="flex min-w-0 gap-2.5">
           {leadingIcon ? (
             <div
               className="flex h-lh w-4 shrink-0 items-center justify-center"
@@ -367,13 +440,35 @@ function ToastBodyContent({
               <Icon className="in-data-[type=error]:text-destructive in-data-[type=info]:text-info in-data-[type=success]:text-success in-data-[type=warning]:text-warning in-data-[type=loading]:opacity-80" />
             </div>
           ) : null}
-          <Toast.Title className="min-w-0 wrap-break-word font-medium" data-slot="toast-title" />
+          {/* Description, body and actions hang under the title, not under the icon. */}
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <Toast.Title
+              className="min-w-0 wrap-break-word text-sm leading-[1.35] font-medium"
+              data-slot="toast-title"
+            />
+            <ToastDescriptionAndExpandable
+              toastData={toastData}
+              toastDescription={toastDescription}
+              toastType={toastType}
+            />
+            {toastData?.body ? (
+              <div
+                className="mt-2 min-w-0 select-text wrap-break-word text-[13px] leading-[1.45]"
+                data-slot="toast-body"
+              >
+                {toastData.body}
+              </div>
+            ) : null}
+            {startActionLayout ? (
+              <div className="mt-2 flex flex-wrap items-center gap-1.5" data-slot="toast-actions">
+                {actionButtons}
+                {toastData?.footnote ? (
+                  <span className="text-xs text-muted-foreground">{toastData.footnote}</span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
-        <ToastDescriptionAndExpandable
-          toastData={toastData}
-          toastDescription={toastDescription}
-          toastType={toastType}
-        />
       </div>
       {hasTrailingControls ? (
         <div
@@ -383,33 +478,7 @@ function ToastBodyContent({
           )}
         >
           {copyErrorText !== null ? <CopyErrorButton text={copyErrorText} /> : null}
-          {additionalActions.map(({ id, props: { className, ...props } }) => (
-            <Button
-              {...props}
-              className={className}
-              key={id}
-              size="xs"
-              type="button"
-              variant={secondaryActionVariant}
-            />
-          ))}
-          {secondaryActionProps ? (
-            <Button
-              {...secondaryActionRest}
-              className={secondaryActionClassName}
-              size="xs"
-              type="button"
-              variant={secondaryActionVariant}
-            />
-          ) : null}
-          {hasVisibleToastAction(actionProps) ? (
-            <Toast.Action
-              className={cn(buttonVariants({ size: "xs", variant: actionVariant }), "shrink-0")}
-              data-slot="toast-action"
-            >
-              {actionProps?.children}
-            </Toast.Action>
-          ) : null}
+          {startActionLayout ? null : actionButtons}
         </div>
       ) : null}
     </>
@@ -588,7 +657,8 @@ function Toasts({ position }: { position: ToastPosition }) {
           return (
             <Toast.Root
               className={cn(
-                "dropdown-glass absolute z-[calc(9999-var(--toast-index))] w-full overflow-visible select-none rounded-lg text-popover-foreground shadow-xl shadow-black/25 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s]",
+                "dropdown-glass absolute z-[calc(9999-var(--toast-index))] w-full overflow-visible select-none rounded-lg text-popover-foreground [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s]",
+                toastShadowClass,
                 // Base positioning using data-position
                 "data-[position*=right]:right-0 data-[position*=right]:left-auto",
                 "data-[position*=left]:right-auto data-[position*=left]:left-0",
@@ -681,7 +751,7 @@ function Toasts({ position }: { position: ToastPosition }) {
                   "pointer-events-auto min-h-0 overflow-y-visible pl-3.5 text-sm transition-opacity duration-250 [overflow-x:clip] data-expanded:opacity-100",
                   stackedActionLayout
                     ? "flex flex-col gap-2 py-2.5 pr-3.5"
-                    : cn("py-3", "flex items-center justify-between gap-1.5", inlineContentEndPad),
+                    : cn("py-3", "flex items-start justify-between gap-2.5", inlineContentEndPad),
                   hideCollapsedContent &&
                     "not-data-expanded:pointer-events-none not-data-expanded:opacity-0",
                 )}
@@ -740,8 +810,9 @@ function AnchoredToasts() {
               >
                 <Toast.Root
                   className={cn(
-                    "dropdown-glass relative overflow-visible text-balance text-popover-foreground text-xs shadow-xl shadow-black/25 transition-[scale,opacity] data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0",
+                    "dropdown-glass relative overflow-visible text-balance text-popover-foreground text-xs transition-[scale,opacity] data-ending-style:scale-98 data-starting-style:scale-98 data-ending-style:opacity-0 data-starting-style:opacity-0",
                     tooltipStyle ? "rounded-md" : "rounded-lg",
+                    toastShadowClass,
                   )}
                   data-slot="toast-popup"
                   toast={toast}
@@ -776,7 +847,7 @@ function AnchoredToasts() {
                             ? "flex flex-col gap-2 py-2.5 pr-3.5"
                             : cn(
                                 "py-3",
-                                "flex items-center justify-between gap-1.5",
+                                "flex items-start justify-between gap-2.5",
                                 inlineContentEndPad,
                               ),
                         )}

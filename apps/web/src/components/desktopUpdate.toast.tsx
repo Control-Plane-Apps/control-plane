@@ -1,5 +1,4 @@
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
-import { ArrowRightIcon } from "lucide-react";
 
 import {
   getDesktopUpdateDownloadedVersion,
@@ -30,18 +29,13 @@ function ReleaseNotesLink({
 }) {
   return (
     <button
-      className="ml-2 inline cursor-pointer text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground"
+      className="ml-1 inline cursor-pointer text-foreground underline underline-offset-2 transition-colors hover:text-muted-foreground"
       onClick={() => {
         void openDesktopUpdateReleaseNotes(shell, releaseUrl);
       }}
       type="button"
     >
-      Read more
-      <ArrowRightIcon
-        aria-hidden
-        className="ml-1 inline size-3 -rotate-45 align-[-0.125em]"
-        strokeWidth={2.25}
-      />
+      Release notes
     </button>
   );
 }
