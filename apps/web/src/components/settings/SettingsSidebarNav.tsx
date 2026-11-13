@@ -9,6 +9,7 @@ import {
   type ComponentType,
   type KeyboardEvent,
 } from "react";
+import { AssistantMark } from "../assistant/AssistantMark";
 import {
   ArchiveIcon,
   BlocksIcon,
@@ -79,6 +80,7 @@ const T3ConnectSidebarAvatar = lazy(() =>
 const SETTINGS_SECTION_ICONS: Readonly<
   Record<SettingsPath, ComponentType<{ className?: string }>>
 > = {
+  "/settings/assistant": AssistantMark,
   "/settings/general": Settings2Icon,
   "/settings/appearance": PaletteIcon,
   "/settings/projects": PanelsTopLeftIcon,

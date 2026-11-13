@@ -2,6 +2,7 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
+import { ensureAssistant } from "./assistant/ensureAssistant.ts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -2711,6 +2712,17 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverGlobalInstructions,
             manageGlobalInstructions(config.stateDir, input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverAssistantEnsure]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverAssistantEnsure,
+            ensureAssistant({
+              stateDir: config.stateDir,
+              request: input,
+              engine: orchestrationEngine,
+              snapshots: projectionSnapshotQuery,
+            }),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverReportClientActivity]: (input, metadata) =>

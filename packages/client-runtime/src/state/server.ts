@@ -1116,6 +1116,15 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    // Creates the cross-Project Assistant on first open; idempotent.
+    assistantEnsure: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:assistant-ensure",
+      tag: WS_METHODS.serverAssistantEnsure,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
     refreshUsageRates: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-usage-rates",
       tag: WS_METHODS.serverRefreshUsageRates,

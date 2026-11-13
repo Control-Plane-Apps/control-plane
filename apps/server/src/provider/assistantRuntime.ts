@@ -207,9 +207,13 @@ export function assistantRoleKey(input: AssistantRuntimeTarget): string {
   if (!role || !project) return "none";
   const base = `${project.id}:${project.title}`;
   if (role.kind === "coordinator") {
-    return `coordinator:${base}:${fileEpoch(project.workspaceRoot, MEMORY_FILE)}`;
+    const kind = project.assistant?.scope === "global" ? "assistant" : "coordinator";
+    return `${kind}:${base}:${fileEpoch(project.workspaceRoot, MEMORY_FILE)}`;
   }
   if (!role.standing) return `agent:${base}:one-off`;
+  if (project.assistant?.scope === "global") {
+    return `assistant:${base}:${fileEpoch(project.workspaceRoot, MEMORY_FILE)}:channel`;
+  }
   const standing = `agent:${base}:standing:${role.coordinatorThreadId}`;
   if (role.slug === null) return `${standing}:-:-`;
   return `${standing}:${role.slug}:${fileEpoch(project.workspaceRoot, roleFileOf(role.slug))}`;
@@ -233,6 +237,11 @@ export function buildAssistantRuntimeBlock(
   const folder = project.workspaceRoot;
   const open = `<control_plane_project role="${role.kind}" name="${escapeAttribute(name)}" folder="${escapeAttribute(folder)}">`;
   const close = "</control_plane_project>";
+
+  // The Assistant's channels: its coordinator ("Today") and every pinned thread.
+  if (project.assistant?.scope === "global" && (role.kind === "coordinator" || role.standing)) {
+    return buildGlobalAssistantBlock({ roleKey, folder, memory: input.memory });
+  }
 
   if (role.kind === "coordinator") {
     const memoryPath = NodePath.join(folder, MEMORY_FILE);
@@ -326,6 +335,45 @@ export function buildAssistantRuntimeBlock(
   return { roleKey, inline, pointer, agents: role.standing };
 }
 
+/** The Assistant: one conversation above every Project, talking to their coordinators. */
+const ASSISTANT_RULES = [
+  "You are the user's Assistant in Control Plane. You sit above every Project: each Project has a coordinator that runs its agents and keeps its Status board. You do not run Project work yourself.",
+  "cp_assistant_overview returns what needs the user and what is moving across the Projects in your reach: each Project's Status board (needs-you questions with their recommendation, working and queued workstreams), plus workspace threads when the user allows it. Read it before answering anything about where things stand. When the tasks tools (cp_task_list, cp_task_propose) are available, use them for the user's tasks; only propose new tasks unless the user's settings say otherwise.",
+  "To find something out from Projects, call cp_assistant_ask with the question and the Project ids, or none to ask every Project in reach. It sends the question to each coordinator at once and returns immediately; each coordinator's answer arrives here later as a message from it. Do not poll. Tell the user who you asked, then end your turn, and fold the answers in as they arrive. If some never answer, say so.",
+  "Never answer a Status question for the user and never accept a recommendation for them. When they answer one through you, pass their exact words to that Project's coordinator with cp_assistant_ask.",
+  "cp_assistant_ping raises a notification for something time-sensitive, with at most one recommended one-tap reply. Use it rarely.",
+  "Keep replies short: a sentence or two, then a few one-line bullets at most. Plain text, no headers.",
+  SCHEDULE_RULE,
+].join("\n");
+
+function buildGlobalAssistantBlock(input: {
+  readonly roleKey: string;
+  readonly folder: string;
+  readonly memory: string;
+}): AssistantRuntimeBlock {
+  const memoryPath = NodePath.join(input.folder, MEMORY_FILE);
+  const open = `<control_plane_project role="assistant" name="Assistant" folder="${escapeAttribute(input.folder)}">`;
+  const close = "</control_plane_project>";
+  const inline = [
+    open,
+    ASSISTANT_RULES,
+    `Your memory is ${memoryPath}: the user's preferences and standing facts. Keep it current and re-read it before relying on it.`,
+    AGENT_BROWSER_RULE,
+    input.memory.trim()
+      ? `<memory>\n${capInline(input.memory, memoryPath)}\n</memory>`
+      : `<memory>(${MEMORY_FILE} is empty)</memory>`,
+    close,
+  ].join("\n");
+  const pointer = [
+    open,
+    ASSISTANT_RULES,
+    `Read \`${memoryPath}\` before acting and keep it current.`,
+    AGENT_BROWSER_RULE,
+    close,
+  ].join("\n");
+  return { roleKey: input.roleKey, inline, pointer, agents: true };
+}
+
 /**
  * Builds the block for a session start. The key is read before the files, so
  * a save that lands mid-read leaves a stale key and restarts the session again
@@ -342,7 +390,7 @@ export const loadAssistantRuntimeBlock = Effect.fnUntraced(function* (
   if (!role || !project) return null;
   const roleKey = assistantRoleKey(input);
   const memory =
-    role.kind === "coordinator"
+    role.kind === "coordinator" || (role.standing && project.assistant?.scope === "global")
       ? yield* input.readFile(NodePath.join(project.workspaceRoot, MEMORY_FILE))
       : "";
   const roleFile =

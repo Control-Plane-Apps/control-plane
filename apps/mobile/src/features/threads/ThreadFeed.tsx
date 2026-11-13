@@ -281,6 +281,13 @@ export interface ThreadFeedProps {
   } | null;
   /** The Project this thread belongs to, for handoff rows. Null outside a Project. */
   readonly assistantTimeline?: AssistantFeedTimeline | null;
+  /**
+   * Content above the first entry (the Assistant's overview). While set, an
+   * empty conversation shows it at the top instead of the empty placeholder.
+   */
+  readonly listHeader?: ReactNode;
+  /** Extra content drawn under an entry (the Assistant's ask cards). */
+  readonly renderEntryAccessory?: (entry: { readonly id: string }) => ReactNode;
   /** Rendered after the last row, inside the scroll content. */
   readonly footer?: ReactElement | null;
 }
@@ -2965,6 +2972,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onUseArtifactTemplate: props.onUseArtifactTemplate,
             assistantTimeline: props.assistantTimeline ?? null,
           })}
+          {props.renderEntryAccessory?.(info.item) ?? null}
           {props.worktreeSetup && info.index === setupAnchorIndex ? (
             <WorktreeSetupCard key={props.threadId} {...props.worktreeSetup} />
           ) : props.setupWorkingStartedAt && info.index === setupAnchorIndex ? (
@@ -3010,6 +3018,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.onUseArtifactTemplate,
       props.skills,
       props.assistantTimeline,
+      props.renderEntryAccessory,
       renderMarkdownImage,
       renderViewedImage,
     ],
@@ -3143,7 +3152,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // viewport, pad above the content so messages rest just above the
             // composer instead of under the header. No effect on threads that
             // overflow the viewport (the padding clamps to zero).
-            alignItemsAtEnd
+            // An empty conversation with a list header (the Assistant's
+            // overview) reads from the top, like a home screen.
+            alignItemsAtEnd={props.listHeader == null || presentedFeed.length > 0}
             initialScrollAtEnd
             onScroll={handleScroll}
             onScrollBeginDrag={handleScrollBeginDrag}
@@ -3168,6 +3179,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
                     </Text>
                   </Pressable>
                 ) : null}
+                {props.listHeader ?? null}
               </>
             }
             ListFooterComponent={props.footer ?? null}
@@ -3178,6 +3190,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           />
         </View>
         {presentedFeed.length === 0 &&
+        props.listHeader == null &&
         !props.worktreeSetup &&
         props.activeWorkStartedAt === null &&
         props.contentPresentation.kind === "ready" ? (

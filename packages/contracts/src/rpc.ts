@@ -9,7 +9,8 @@ import {
   TaskSyncUrlResult,
   TaskSyncVerifyInput,
 } from "./taskSync.ts";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { AssistantEnsureError } from "./assistantSettings.ts";
 import { AgentMachinesError, AgentMachinesInput, AgentMachinesResult } from "./agentPlacement.ts";
 import {
   GlobalInstructionsError,
@@ -101,7 +102,9 @@ import {
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
   ClientOrchestrationCommand,
+  ModelSelection,
   ORCHESTRATION_WS_METHODS,
+  RuntimeMode,
   OrchestrationDispatchCommandError,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffInput,
@@ -413,6 +416,7 @@ export const WS_METHODS = {
   serverSignalProcess: "server.signalProcess",
   serverAgentMachines: "server.agentMachines",
   serverGlobalInstructions: "server.globalInstructions",
+  serverAssistantEnsure: "server.assistantEnsure",
   serverReportClientActivity: "server.reportClientActivity",
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
@@ -697,6 +701,26 @@ const WsServerGlobalInstructionsRpc = Rpc.make(WS_METHODS.serverGlobalInstructio
   payload: GlobalInstructionsInput,
   success: GlobalInstructionsResult,
   error: Schema.Union([EnvironmentAuthorizationError, GlobalInstructionsError]),
+});
+
+/** Creates the cross-Project Assistant on first use; returns the existing one otherwise. */
+export const AssistantEnsureInput = Schema.Struct({
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+});
+export type AssistantEnsureInput = typeof AssistantEnsureInput.Type;
+
+export const AssistantEnsureResult = Schema.Struct({
+  projectId: ProjectId,
+  threadId: ThreadId,
+  created: Schema.Boolean,
+});
+export type AssistantEnsureResult = typeof AssistantEnsureResult.Type;
+
+const WsServerAssistantEnsureRpc = Rpc.make(WS_METHODS.serverAssistantEnsure, {
+  payload: AssistantEnsureInput,
+  success: AssistantEnsureResult,
+  error: Schema.Union([EnvironmentAuthorizationError, AssistantEnsureError]),
 });
 
 const WsCloudGetRelayClientStatusRpc = Rpc.make(WS_METHODS.cloudGetRelayClientStatus, {
@@ -1505,6 +1529,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerSignalProcessRpc,
   WsServerAgentMachinesRpc,
   WsServerGlobalInstructionsRpc,
+  WsServerAssistantEnsureRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,
