@@ -10,7 +10,7 @@ import {
   type EnvironmentId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { createElement, useCallback, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { projectNeedsYouCount } from "@t3tools/client-runtime/state/projects";
 
 import type { AndroidHeaderAction } from "../../components/AndroidScreenHeader";
@@ -19,7 +19,7 @@ import { useEnvironmentServerConfig } from "../../state/entities";
 import { environmentThreadShells } from "../../state/threads";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
-import { StatusHeaderPill } from "../status/StatusHeaderPill";
+import { useTaskPalette } from "../tasks/taskUi";
 import { useAppNavigation } from "../threads/sidebar-navigation-shell";
 import { resolveAssistantHeaderActions } from "./assistantThreadHeader";
 import { buildProjectMenuItems, type ProjectMenuAction } from "./projectMenus";
@@ -100,23 +100,37 @@ export function useAssistantThreadHeader(input: {
     onOpenStatus !== undefined &&
     serverConfig?.environment.capabilities.projectStatus === true;
   const needsYou = project === null ? 0 : projectNeedsYouCount(project);
+  const statusTint = useTaskPalette().warningText;
 
   const items = useMemo(() => {
     const iosItems: NativeStackHeaderItem[] = [];
     const androidActions: AndroidHeaderAction[] = [];
     if (project === null) return { iosItems, androidActions };
 
+    // On phone the Status pill needs the bar's room: Memory and Schedules
+    // move into the Project menu instead of taking their own buttons.
+    const foldIntoMenu = statusAvailable && !usesSplitView;
+    const folded: Array<{ label: string; icon: SfSymbolName; onPress: () => void }> = [];
+
     if (statusAvailable && onOpenStatus !== undefined) {
-      iosItems.push({
-        type: "custom",
-        identifier: "thread-right-status",
-        hidesSharedBackground: true,
-        element: createElement(StatusHeaderPill, {
-          count: needsYou,
-          showLabel: usesSplitView,
+      // A text item, not a custom view: UIKit lays custom views out only
+      // when the bar has room, and the coordinator's bar is full on phone.
+      const label =
+        needsYou > 0
+          ? usesSplitView
+            ? `Status \u00b7 ${needsYou} need you`
+            : `${needsYou} need you`
+          : "Status";
+      iosItems.push(
+        withNativeGlassHeaderItem({
+          type: "button",
+          label,
+          labelStyle: needsYou > 0 ? { color: statusTint, fontWeight: "600" } : undefined,
+          accessibilityLabel: needsYou > 0 ? `Status, ${needsYou} need you` : "Status",
+          identifier: "thread-right-status",
           onPress: onOpenStatus,
         }),
-      });
+      );
       androidActions.push({
         accessibilityLabel: needsYou > 0 ? `Status, ${needsYou} need you` : "Status",
         icon: { ios: "checklist", android: "check" },
@@ -126,16 +140,18 @@ export function useAssistantThreadHeader(input: {
 
     if (memory) {
       const openMemory = () => projectActions.openProjectFile(project, "MEMORY.md");
-      iosItems.push(
-        withNativeGlassHeaderItem({
-          type: "button",
-          label: "",
-          accessibilityLabel: "Memory",
-          icon: sfSymbolIcon("book.closed"),
-          identifier: "thread-right-memory",
-          onPress: openMemory,
-        }),
-      );
+      if (foldIntoMenu) folded.push({ label: "Memory", icon: "book.closed", onPress: openMemory });
+      else
+        iosItems.push(
+          withNativeGlassHeaderItem({
+            type: "button",
+            label: "",
+            accessibilityLabel: "Memory",
+            icon: sfSymbolIcon("book.closed"),
+            identifier: "thread-right-memory",
+            onPress: openMemory,
+          }),
+        );
       androidActions.push({
         accessibilityLabel: "Memory",
         icon: "book.closed",
@@ -145,16 +161,18 @@ export function useAssistantThreadHeader(input: {
 
     if (schedules) {
       const openSchedules = () => projectActions.openSchedules(project);
-      iosItems.push(
-        withNativeGlassHeaderItem({
-          type: "button",
-          label: "",
-          accessibilityLabel: "Schedules",
-          icon: sfSymbolIcon("clock"),
-          identifier: "thread-right-schedules",
-          onPress: openSchedules,
-        }),
-      );
+      if (foldIntoMenu) folded.push({ label: "Schedules", icon: "clock", onPress: openSchedules });
+      else
+        iosItems.push(
+          withNativeGlassHeaderItem({
+            type: "button",
+            label: "",
+            accessibilityLabel: "Schedules",
+            icon: sfSymbolIcon("clock"),
+            identifier: "thread-right-schedules",
+            onPress: openSchedules,
+          }),
+        );
       androidActions.push({
         accessibilityLabel: "Schedules",
         icon: "clock",
@@ -180,13 +198,21 @@ export function useAssistantThreadHeader(input: {
           identifier: "thread-right-project",
           menu: {
             title: project.title,
-            items: menu.map((item) => ({
-              type: "action" as const,
-              label: item.title,
-              icon: sfSymbolIcon(item.icon),
-              ...(item.destructive ? { destructive: true } : {}),
-              onPress: () => run(item.id),
-            })),
+            items: [
+              ...folded.map((item) => ({
+                type: "action" as const,
+                label: item.label,
+                icon: sfSymbolIcon(item.icon),
+                onPress: item.onPress,
+              })),
+              ...menu.map((item) => ({
+                type: "action" as const,
+                label: item.title,
+                icon: sfSymbolIcon(item.icon),
+                ...(item.destructive ? { destructive: true } : {}),
+                onPress: () => run(item.id),
+              })),
+            ],
           },
         }),
       );
@@ -221,6 +247,7 @@ export function useAssistantThreadHeader(input: {
     archived,
     needsYou,
     onOpenStatus,
+    statusTint,
     statusAvailable,
     usesSplitView,
     memory,
