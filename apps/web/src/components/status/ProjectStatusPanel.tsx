@@ -253,7 +253,7 @@ function ProjectStatusPanelContent(
             )}
           </div>
         ) : (
-          <div className="flex flex-col pb-2">
+          <div className="flex flex-col pb-3">
             {groups.map(({ group, statuses: members }) => (
               <section key={group} aria-labelledby={`${groupIdPrefix}-${group}`}>
                 <h3
@@ -266,7 +266,7 @@ function ProjectStatusPanelContent(
                   {STATUS_GROUP_LABEL[group]}
                   <span className="font-normal tabular-nums opacity-80">{members.length}</span>
                 </h3>
-                <ul className="flex flex-col">
+                <ul className="mx-3 flex flex-col overflow-hidden rounded-xl border border-border bg-card">
                   {members.map((status) => (
                     <StatusRow
                       key={status.id}
@@ -349,7 +349,7 @@ function StatusRow(props: {
   const answered = placement === "answered" ? decision : undefined;
   const headerReply = placement === "header";
   return (
-    <li className="border-border/50 border-t">
+    <li className="border-border/60 border-t first:border-t-0">
       <div className="flex min-w-0 items-start">
         <button
           type="button"
