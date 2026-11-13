@@ -90,6 +90,17 @@ import {
 import { dueTaskReminders, taskReminderKey } from "./taskReminders.ts";
 
 export const MORNING_BRIEF_SCHEDULE_ID = "morning-brief";
+export const ASSISTANT_PING_ACTIVITY_KIND = "assistant.ping";
+
+/** `{ pingId, title, body? }` from an Assistant ping activity, or null. */
+export function assistantPingFromPayload(
+  payload: unknown,
+): { readonly pingId: string; readonly title: string; readonly body: string } | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { pingId, title, body } = payload as Record<string, unknown>;
+  if (typeof pingId !== "string" || typeof title !== "string" || title.trim() === "") return null;
+  return { pingId, title, body: typeof body === "string" ? body : "" };
+}
 const MORNING_BRIEF_BODY_MAX = 200;
 
 export type PushActionOutcome =
@@ -402,6 +413,14 @@ export const make = Effect.gen(function* () {
       case "thread.deleted":
         sessionStatus.delete(event.payload.threadId);
         return Effect.void;
+      case "thread.activity-appended": {
+        // The Assistant's pings (#91). Matched by its literal kind so this
+        // does not depend on that branch; the payload is read defensively.
+        if (event.payload.activity.kind !== ASSISTANT_PING_ACTIVITY_KIND) return Effect.void;
+        const ping = assistantPingFromPayload(event.payload.activity.payload);
+        if (ping === null) return Effect.void;
+        return notifyAssistantPing({ ...ping, threadId: event.payload.threadId });
+      }
       case "task.updated":
         if (event.payload.task === null) tasks.delete(event.payload.taskId);
         else tasks.set(event.payload.taskId, event.payload.task);

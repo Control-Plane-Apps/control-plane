@@ -34,6 +34,7 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
 import { issuePushActionToken, PUSH_ACTION_SIGNING_SECRET } from "./actionToken.ts";
 import {
+  assistantPingFromPayload,
   layer as pushNotifierLayer,
   PushNotifier,
   questionToSend,
@@ -275,5 +276,22 @@ describe("what gets sent", () => {
     expect(sessionOutcome("ready", "idle")).toBeNull();
     expect(sessionOutcome(undefined, "ready")).toBeNull();
     expect(sessionOutcome("running", "interrupted")).toBeNull();
+  });
+
+  it("reads an Assistant ping, ignoring malformed ones", () => {
+    expect(
+      assistantPingFromPayload({
+        pingId: "p1",
+        title: "Claude Code weekly limit runs out Thursday",
+        body: "Resets Monday.",
+        actions: [],
+      }),
+    ).toEqual({
+      pingId: "p1",
+      title: "Claude Code weekly limit runs out Thursday",
+      body: "Resets Monday.",
+    });
+    expect(assistantPingFromPayload({ pingId: "p1" })).toBeNull();
+    expect(assistantPingFromPayload(null)).toBeNull();
   });
 });
