@@ -193,7 +193,7 @@ export function makeTaskSyncCloudClient(
     },
     checkout: async (token) => {
       try {
-        return await url("/api/cplane/task-sync/checkout", token, { returnTo: "desktop" });
+        return await url("/api/cplane/task-sync/checkout", token, { channel: "desktop" });
       } catch (error) {
         // Already subscribed: managing the subscription is the useful next step.
         if (error instanceof TaskSyncCloudError && error.status === 409) {
