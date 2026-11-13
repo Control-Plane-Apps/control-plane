@@ -9,6 +9,7 @@ import { hasCloudPublicConfig } from "../cloud/publicConfig";
 import { WorkspaceSidebarToolbar } from "../layout/workspace-sidebar-toolbar";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SettingsRow } from "./components/SettingsRow";
+import { TaskSyncSettingsRow } from "../tasks/TaskSyncSettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsScreen } from "./components/SettingsScreen";
 import {
@@ -76,6 +77,7 @@ function ConfiguredSettingsRouteScreen() {
             target="SettingsEnvironments"
           />
           <SettingsRow icon="bell.badge" label="Notifications" target="SettingsNotifications" />
+          <TaskSyncSettingsRow />
         </SettingsSection>
 
         <SettingsIndexSections />

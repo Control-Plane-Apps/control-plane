@@ -223,3 +223,19 @@ export function useMobileTaskStore() {
   const actions = useTaskActions(source.environmentId);
   return { ...source, actions };
 }
+
+export interface TaskSyncAccount {
+  /** Signed in to the Control Plane account that syncs tasks. */
+  readonly signedIn: boolean;
+  /** The account's email when signed in. */
+  readonly email: string | null;
+}
+
+/**
+ * Whether tasks sync through a Control Plane account. The phone has no direct
+ * cloud access yet, so this reports signed out until that step lands; tasks
+ * still arrive through the paired Mac.
+ */
+export function useTaskSyncAccount(): TaskSyncAccount {
+  return { signedIn: false, email: null };
+}

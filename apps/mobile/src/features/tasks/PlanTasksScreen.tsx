@@ -530,9 +530,14 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
           </View>
         ) : null}
         {!available ? (
-          <Text className="px-6 pt-10 text-center text-[15px] text-foreground-muted">
-            Tasks need a paired Mac running a Control Plane version with Tasks.
-          </Text>
+          <View className="items-center gap-1 px-6 pt-24">
+            <Text className="text-center text-[17px] text-foreground-muted">
+              Sign in to sync tasks
+            </Text>
+            <Text className="text-center text-[14px] text-foreground-tertiary">
+              Control Plane account
+            </Text>
+          </View>
         ) : (
           content
         )}
