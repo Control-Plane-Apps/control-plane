@@ -427,6 +427,8 @@ const config: ExpoConfig = {
     "./plugins/withAndroidPredictiveBackCompat.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
     ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
+    // Last: repairs extension Info.plist references other plugins share.
+    "./plugins/withUniqueGroupFileRefs.cjs",
   ],
   extra: {
     appVariant: APP_VARIANT,
