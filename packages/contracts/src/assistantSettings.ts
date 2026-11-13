@@ -104,3 +104,17 @@ export function isProjectInAssistantReach(
 ): boolean {
   return settings.projects === null || settings.projects.includes(projectId);
 }
+
+// ── RPC ────────────────────────────────────────────────────────────
+
+/** Folder of the Assistant's Project, under the server's state directory. */
+export const ASSISTANT_HOME_DIR = "assistant";
+
+export class AssistantEnsureError extends Schema.TaggedError<AssistantEnsureError>()(
+  "AssistantEnsureError",
+  { detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
