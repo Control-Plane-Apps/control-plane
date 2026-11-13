@@ -326,12 +326,15 @@ export function UndoBanner(props: {
 export function NeedsYouPill(props: {
   readonly count: number;
   readonly compact?: boolean;
+  /** Narrow rows (iPad sidebar) show the count alone. */
+  readonly countOnly?: boolean;
   readonly onPress?: () => void;
   readonly accessibilityLabel?: string;
 }) {
   const palette = useTaskPalette();
   const body = (
     <View
+      accessibilityLabel={props.onPress === undefined ? `${props.count} need you` : undefined}
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -350,7 +353,7 @@ export function NeedsYouPill(props: {
         style={{ color: palette.warningText }}
         numberOfLines={1}
       >
-        {props.count} need you
+        {props.countOnly ? props.count : `${props.count} need you`}
       </Text>
     </View>
   );

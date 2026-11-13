@@ -183,7 +183,9 @@ export const ProjectListRow = memo(function ProjectListRow(props: {
             >
               {project.title}
             </Text>
-            {needsYou > 0 ? <NeedsYouPill count={needsYou} compact /> : null}
+            {needsYou > 0 ? (
+              <NeedsYouPill count={needsYou} compact countOnly={sidebarPane} />
+            ) : null}
             {running > 0 ? (
               <Text
                 className={cn(
