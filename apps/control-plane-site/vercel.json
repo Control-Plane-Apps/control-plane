@@ -6,6 +6,26 @@
   "installCommand": "echo \"No dependencies to install\"",
   "cleanUrls": true,
   "trailingSlash": false,
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "www.controlplane.work" }],
+      "destination": "https://controlplane.work/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "cplane.lucive.app" }],
+      "destination": "https://controlplane.work/:path*",
+      "permanent": true
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "cp.lucive.app" }],
+      "destination": "https://controlplane.work/:path*",
+      "permanent": true
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
