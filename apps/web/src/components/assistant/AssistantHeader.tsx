@@ -60,7 +60,6 @@ export function AssistantHeader(props: AssistantHeaderProps) {
         {naming ? (
           <form onSubmit={submit} className="flex items-center gap-1">
             <input
-              // oxlint-disable-next-line jsx-a11y/no-autofocus -- The field opens on an explicit click.
               autoFocus
               aria-label="Channel name"
               placeholder="Channel name"
