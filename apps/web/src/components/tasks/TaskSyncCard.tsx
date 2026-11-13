@@ -177,6 +177,14 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
           >
             Subscribe
           </Button>
+          <Button
+            variant="outline"
+            size={compact ? "sm" : "default"}
+            disabled={sync.busy}
+            onClick={() => void act(sync.syncNow)}
+          >
+            Check again
+          </Button>
           {status.subscription?.canManage === true ? (
             <Button
               variant="outline"
