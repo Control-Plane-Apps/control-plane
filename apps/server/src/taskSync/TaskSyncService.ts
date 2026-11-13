@@ -58,6 +58,8 @@ export class TaskSyncService extends Context.Service<
     readonly checkoutUrl: Effect.Effect<{ url: string }, TaskSyncError>;
     readonly portalUrl: Effect.Effect<{ url: string }, TaskSyncError>;
     readonly syncNow: Effect.Effect<TaskSyncStatus, TaskSyncError>;
+    /** Local pre-launch preview of Task Sync for this install (see setPreview on the engine). */
+    readonly setPreview: (enabled: boolean) => Effect.Effect<TaskSyncStatus, TaskSyncError>;
   }
 >()("t3/taskSync/TaskSyncService") {}
 
@@ -149,6 +151,19 @@ const make = Effect.gen(function* () {
       ),
   });
 
+  // Pre-launch preview, for buying the first subscription before Task Sync is
+  // switched on for everyone: CPLANE_TASK_SYNC_PREVIEW=1, or the hidden
+  // Settings toggle, which leaves a marker file next to the sync state.
+  const previewPath = NodePath.join(config.stateDir, "task-sync", "preview");
+  const previewFromEnv = process.env.CPLANE_TASK_SYNC_PREVIEW?.trim() === "1";
+  const previewFromFile = yield* Effect.promise(() =>
+    NodeFSP.access(previewPath).then(
+      () => true,
+      () => false,
+    ),
+  );
+  engine.setPreview(previewFromEnv || previewFromFile);
+
   let debounce: ReturnType<typeof setTimeout> | null = null;
   const scheduleSync = () => {
     if (debounce !== null) clearTimeout(debounce);
@@ -206,6 +221,18 @@ const make = Effect.gen(function* () {
     signOut: attempt(() => engine.signOut()),
     checkoutUrl: attempt(async () => ({ url: await engine.checkoutUrl() })),
     portalUrl: attempt(async () => ({ url: await engine.portalUrl() })),
+    setPreview: (enabled) =>
+      attempt(async () => {
+        if (enabled) {
+          await NodeFSP.mkdir(NodePath.dirname(previewPath), { recursive: true, mode: 0o700 });
+          await NodeFSP.writeFile(previewPath, "1\n", { mode: 0o600 });
+        } else {
+          await NodeFSP.rm(previewPath, { force: true });
+        }
+        engine.setPreview(enabled || previewFromEnv);
+        await engine.refreshAvailability(0);
+        return engine.status();
+      }),
     syncNow: attempt(async () => {
       if (!(await engine.refreshAvailability(0))) return engine.status();
       await engine.refreshSubscription().catch(() => undefined);
@@ -230,4 +257,5 @@ export const layerUnavailable = Layer.succeed(TaskSyncService, {
   checkoutUrl: unavailable,
   portalUrl: unavailable,
   syncNow: unavailable,
+  setPreview: () => unavailable,
 });

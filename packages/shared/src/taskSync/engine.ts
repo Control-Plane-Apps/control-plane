@@ -129,6 +129,8 @@ export class TaskSyncEngine {
   private syncing = false;
   private lastError: string | undefined;
   private availability: { available: boolean; checkedAtMs: number } | null = null;
+  /** Local pre-launch preview: this install treats Task Sync as available. */
+  private preview = false;
   private readonly deps: TaskSyncEngineDeps;
 
   constructor(deps: TaskSyncEngineDeps) {
@@ -167,6 +169,10 @@ export class TaskSyncEngine {
   async refreshAvailability(maxAgeMs = TASK_SYNC_AVAILABILITY_TTL_MS): Promise<boolean> {
     const client = this.deps.client;
     if (client === null) return false;
+    if (this.preview) {
+      this.availability = { available: true, checkedAtMs: this.now().getTime() };
+      return true;
+    }
     const nowMs = this.now().getTime();
     if (this.availability !== null && nowMs - this.availability.checkedAtMs < maxAgeMs) {
       return this.availability.available;
@@ -176,6 +182,16 @@ export class TaskSyncEngine {
     return available;
   }
 
+  /**
+   * Turns the local preview on or off. On, Task Sync skips the service's
+   * availability answer for this install only; the service still enforces
+   * sign-in and the subscription. Off, the next check asks the service again.
+   */
+  setPreview(enabled: boolean): void {
+    this.preview = enabled;
+    this.availability = null;
+  }
+
   private async requireAvailable(): Promise<void> {
     if (!(await this.refreshAvailability())) throw new TaskSyncCloudError("unavailable");
   }
@@ -183,6 +199,7 @@ export class TaskSyncEngine {
   async status(): Promise<TaskSyncStatus> {
     const state = await this.load();
     const base = {
+      ...(this.preview ? { preview: true } : {}),
       pendingChanges: this.pendingCount(state),
       weekStartsOn: state.weekStartsOn,
       ...(state.lastSyncedAt !== undefined ? { lastSyncedAt: state.lastSyncedAt } : {}),

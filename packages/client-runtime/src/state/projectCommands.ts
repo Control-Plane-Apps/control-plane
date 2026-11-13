@@ -195,6 +195,10 @@ export function createProjectEnvironmentAtoms<R, E>(
       label: "environment-data:task-sync:now",
       tag: WS_METHODS.taskSyncNow,
     }),
+    taskSyncSetPreview: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:task-sync:set-preview",
+      tag: WS_METHODS.taskSyncSetPreview,
+    }),
     schedulesRun: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:projects:schedules-run",
       tag: WS_METHODS.schedulesRun,

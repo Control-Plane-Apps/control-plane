@@ -11,6 +11,7 @@ vi.mock("../../state/taskSync", () => ({
     verify: vi.fn(),
     signOut: vi.fn(),
     syncNow: vi.fn(),
+    setPreview: vi.fn(),
     openCheckout: vi.fn(),
     openPortal: vi.fn(),
   }),
@@ -37,5 +38,18 @@ describe("TaskSyncCard", () => {
     expect(html).toContain("Sign in to sync tasks");
     expect(html).toContain('type="email"');
     expect(html).not.toContain("coming soon");
+    expect(html).not.toContain("Pre-launch preview");
+  });
+
+  it("says when the pre-launch preview is on, with a way to turn it off", () => {
+    current = { state: "signed-out", preview: true, ...base };
+    const html = renderToStaticMarkup(<TaskSyncCard />);
+    expect(html).toContain("Pre-launch preview is on for this Mac.");
+    expect(html).toContain("Turn off");
+  });
+
+  it("keeps the preview toggle hidden until the card is Option-clicked", () => {
+    current = { state: "coming-soon", ...base };
+    expect(renderToStaticMarkup(<TaskSyncCard />)).not.toContain("Preview Task Sync before launch");
   });
 });
