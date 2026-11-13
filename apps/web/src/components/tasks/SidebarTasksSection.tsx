@@ -9,8 +9,13 @@ import { useState, type DragEvent } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { useAtomValue } from "@effect/atom-react";
+
+import { shortcutLabelForCommand } from "../../keybindings";
 import { cn } from "../../lib/utils";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useTaskToday, useTasks } from "../../state/tasks";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { openTaskQuickAdd } from "./QuickAddDialog";
 import { TASK_DRAG_TYPE } from "./TaskRow";
 import type { TasksView } from "./TasksPage";
@@ -51,6 +56,10 @@ export function SidebarTasksSection() {
   const { environmentId, tasks } = useTasks();
   const today = useTaskToday();
   const actions = useTaskActions(environmentId);
+  const quickAddShortcut = shortcutLabelForCommand(
+    useAtomValue(primaryServerKeybindingsAtom),
+    "tasks.quickAdd",
+  );
   const expanded = useTasksSectionStore((state) => state.expanded);
   const toggle = useTasksSectionStore((state) => state.toggle);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -100,14 +109,23 @@ export function SidebarTasksSection() {
             </span>
           ) : null}
         </button>
-        <button
-          type="button"
-          aria-label="Add task"
-          className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={() => openTaskQuickAdd()}
-        >
-          <PlusIcon aria-hidden className="size-3.5" />
-        </button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Add task"
+                className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => openTaskQuickAdd()}
+              >
+                <PlusIcon aria-hidden className="size-3.5" />
+              </button>
+            }
+          />
+          <TooltipPopup side="top">
+            {quickAddShortcut ? `Add task (${quickAddShortcut})` : "Add task"}
+          </TooltipPopup>
+        </Tooltip>
       </div>
       {expanded ? (
         <ul className="flex flex-col px-1 pb-2">

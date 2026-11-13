@@ -10,6 +10,8 @@ import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
 export const TaskSyncState = Schema.Literals([
   /** The server has no Task Sync client key (development builds). */
   "unavailable",
+  /** The account service hasn't switched Task Sync on yet: no sign-in, no sync. */
+  "coming-soon",
   "signed-out",
   "syncing",
   "synced",

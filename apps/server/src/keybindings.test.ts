@@ -283,6 +283,56 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
+  it.effect("moves an existing settled-threads default off the new quick add key", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      // A keybindings file written by an earlier release: settled.toggle on mod+shift+t.
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [
+        { key: "mod+shift+t", command: "settled.toggle", when: "!terminalFocus" },
+        { key: "mod+shift+r", command: "script.run-tests.run" },
+      ]);
+
+      yield* Effect.gen(function* () {
+        const keybindings = yield* Keybindings.Keybindings;
+        yield* keybindings.syncDefaultKeybindingsOnStartup;
+      });
+
+      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+      const byCommand = new Map(persisted.map((entry) => [entry.command, entry]));
+      assert.equal(byCommand.get("settled.toggle")?.key, "mod+alt+t");
+      assert.equal(byCommand.get("tasks.quickAdd")?.key, "mod+shift+t");
+      assert.equal(byCommand.get("script.run-tests.run")?.key, "mod+shift+r");
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
+  it("swaps both moved defaults together and leaves rebound shortcuts alone", () => {
+    const swapped = Keybindings.migrateMovedDefaultKeybindings([
+      { key: "mod+shift+t", command: "settled.toggle", when: "!terminalFocus" },
+      { key: "mod+alt+t", command: "tasks.quickAdd", when: "!terminalFocus" },
+    ]);
+    assert.deepEqual(
+      swapped.config.map((rule) => [rule.command, rule.key]),
+      [
+        ["settled.toggle", "mod+alt+t"],
+        ["tasks.quickAdd", "mod+shift+t"],
+      ],
+    );
+
+    // The user rebound settled.toggle: nothing moves.
+    const rebound = Keybindings.migrateMovedDefaultKeybindings([
+      { key: "mod+shift+k", command: "settled.toggle", when: "!terminalFocus" },
+    ]);
+    assert.deepEqual(rebound.moved, []);
+
+    // mod+alt+t is already the user's own shortcut for something else: settled stays put.
+    const blocked = Keybindings.migrateMovedDefaultKeybindings([
+      { key: "mod+shift+t", command: "settled.toggle", when: "!terminalFocus" },
+      { key: "mod+alt+t", command: "script.deploy.run", when: "!terminalFocus" },
+    ]);
+    assert.deepEqual(blocked.moved, []);
+    assert.equal(blocked.config[0]?.key, "mod+shift+t");
+  });
+
   it.effect("skips conflicting default keybindings on startup and logs a detailed warning", () => {
     const messages: string[] = [];
     const logger = Logger.make(({ message }) => {

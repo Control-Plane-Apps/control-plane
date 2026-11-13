@@ -100,6 +100,9 @@ export interface TaskSyncEngineDeps {
 
 const PULL_PAGE_GUARD = 200;
 
+/** How long a background availability answer is trusted before asking again. */
+export const TASK_SYNC_AVAILABILITY_TTL_MS = 3 * 60 * 60 * 1000;
+
 function toWireRecurrence(recurrence: TaskRecurrence): Wire {
   return {
     frequency: recurrence.frequency,
@@ -125,6 +128,7 @@ export class TaskSyncEngine {
   private state: TaskSyncPersistedState | null = null;
   private syncing = false;
   private lastError: string | undefined;
+  private availability: { available: boolean; checkedAtMs: number } | null = null;
   private readonly deps: TaskSyncEngineDeps;
 
   constructor(deps: TaskSyncEngineDeps) {
@@ -155,6 +159,27 @@ export class TaskSyncEngine {
     );
   }
 
+  /**
+   * Asks the service whether Task Sync is switched on, unless the last
+   * answer is younger than `maxAgeMs`. Until it says yes, Task Sync shows
+   * "coming soon": no sign-in and no sync, and tasks stay local.
+   */
+  async refreshAvailability(maxAgeMs = TASK_SYNC_AVAILABILITY_TTL_MS): Promise<boolean> {
+    const client = this.deps.client;
+    if (client === null) return false;
+    const nowMs = this.now().getTime();
+    if (this.availability !== null && nowMs - this.availability.checkedAtMs < maxAgeMs) {
+      return this.availability.available;
+    }
+    const available = await client.availability().catch(() => false);
+    this.availability = { available, checkedAtMs: nowMs };
+    return available;
+  }
+
+  private async requireAvailable(): Promise<void> {
+    if (!(await this.refreshAvailability())) throw new TaskSyncCloudError("unavailable");
+  }
+
   async status(): Promise<TaskSyncStatus> {
     const state = await this.load();
     const base = {
@@ -164,6 +189,7 @@ export class TaskSyncEngine {
       ...(state.subscription !== undefined ? { subscription: state.subscription } : {}),
     };
     if (this.deps.client === null) return { state: "unavailable", ...base };
+    if (this.availability?.available !== true) return { state: "coming-soon", ...base };
     if (state.account === undefined || (await this.deps.getToken()) === null) {
       return { state: "signed-out", ...base };
     }
@@ -188,6 +214,7 @@ export class TaskSyncEngine {
   }
 
   async requestCode(email: string): Promise<void> {
+    await this.requireAvailable();
     const trimmed = email.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) throw new TaskSyncCloudError("invalid-email");
     await this.requireClient().requestCode(trimmed);
@@ -195,6 +222,7 @@ export class TaskSyncEngine {
 
   /** Signs in, then merges: cloud records win, local-only tasks upload. */
   async verify(email: string, code: string): Promise<TaskSyncStatus> {
+    await this.requireAvailable();
     const client = this.requireClient();
     const result = await client.verify({
       email: email.trim().toLowerCase(),
@@ -223,6 +251,7 @@ export class TaskSyncEngine {
   }
 
   async refreshSubscription(): Promise<TaskSyncSubscription | undefined> {
+    await this.requireAvailable();
     const client = this.requireClient();
     const token = await this.requireToken();
     const state = await this.load();
@@ -233,16 +262,19 @@ export class TaskSyncEngine {
   }
 
   async checkoutUrl(): Promise<string> {
+    await this.requireAvailable();
     return this.requireClient().checkout(await this.requireToken());
   }
 
   async portalUrl(): Promise<string> {
+    await this.requireAvailable();
     return this.requireClient().portal(await this.requireToken());
   }
 
   /** Push the outbox, then pull until caught up. Safe to call any time. */
   async sync(): Promise<void> {
     if (this.syncing || this.deps.client === null) return;
+    if (!(await this.refreshAvailability())) return;
     const token = await this.deps.getToken();
     const state = await this.load();
     if (token === null || state.account === undefined) return;

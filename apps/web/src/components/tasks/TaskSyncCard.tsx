@@ -137,6 +137,22 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
     );
   }
 
+  if (status.state === "coming-soon") {
+    // The Tasks page stays quiet; Settings explains. Both keep rechecking via the status poll.
+    return compact ? null : (
+      <section aria-label="Task Sync" className="flex flex-col gap-2">
+        <h3 className="flex items-center gap-1.5 font-medium text-[15px]">
+          <CloudIcon aria-hidden className="size-4 text-muted-foreground" />
+          Task Sync is coming soon
+        </h3>
+        <p className="text-muted-foreground text-sm">
+          Task Sync will keep your tasks on all your devices, including your phone while this Mac
+          sleeps. Until then your tasks stay on this Mac, and your phone gets them through it.
+        </p>
+      </section>
+    );
+  }
+
   const title = cn(compact ? "text-sm" : "text-[15px]", "font-medium");
   const body = cn("text-muted-foreground", compact ? "text-xs" : "text-sm");
   const act = async (run: () => Promise<{ ok: boolean; message?: string }>) => {
@@ -166,8 +182,8 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
       <section aria-label="Task Sync" className="flex flex-col gap-2">
         <h3 className={title}>Turn on Task Sync</h3>
         <p className={body}>
-          Task Sync keeps your tasks on every device for $5 a month. Your tasks stay on this Mac in
-          the meantime.
+          Task Sync keeps your tasks on every device for $5 a month plus applicable tax. Your tasks
+          stay on this Mac in the meantime.
         </p>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -206,7 +222,9 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
   if (compact && (status.state === "synced" || status.state === "syncing")) return null;
   const lastSynced = formatWhen(status.lastSyncedAt);
   const grace = status.subscription?.status === "grace";
-  const renews = formatWhen(status.subscription?.currentPeriodEnd);
+  // An ended subscription still reports its last period; only a live one has a date to show.
+  const live = status.subscription?.status === "active" || grace;
+  const renews = live ? formatWhen(status.subscription?.currentPeriodEnd) : null;
   return (
     <section aria-label="Task Sync" className="flex flex-col gap-2">
       <h3 className={cn(title, "flex items-center gap-1.5")}>
