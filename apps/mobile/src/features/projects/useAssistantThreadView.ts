@@ -10,7 +10,8 @@ import {
   type EnvironmentId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { useCallback, useMemo } from "react";
+import { createElement, useCallback, useMemo } from "react";
+import { projectNeedsYouCount } from "@t3tools/client-runtime/state/projects";
 
 import type { AndroidHeaderAction } from "../../components/AndroidScreenHeader";
 import { appAtomRegistry } from "../../state/atom-registry";
@@ -18,6 +19,7 @@ import { useEnvironmentServerConfig } from "../../state/entities";
 import { environmentThreadShells } from "../../state/threads";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
+import { StatusHeaderPill } from "../status/StatusHeaderPill";
 import { useAppNavigation } from "../threads/sidebar-navigation-shell";
 import { resolveAssistantHeaderActions } from "./assistantThreadHeader";
 import { buildProjectMenuItems, type ProjectMenuAction } from "./projectMenus";
@@ -69,13 +71,15 @@ export function useAssistantThreadHeader(input: {
   readonly isGitRepo: boolean;
   /** Leaves the coordinator once its Project is deleted from the header. */
   readonly onProjectDeleted: () => void;
+  /** Opens the coordinator's Status board (full screen on phone, beside it on iPad). */
+  readonly onOpenStatus?: () => void;
 }): {
   readonly showGitControls: boolean;
   readonly subtitle: string | null;
   readonly iosItems: ReadonlyArray<NativeStackHeaderItem>;
   readonly androidActions: ReadonlyArray<AndroidHeaderAction>;
 } {
-  const { project, thread, onProjectDeleted } = input;
+  const { project, thread, onProjectDeleted, onOpenStatus } = input;
   const projectActions = useProjectActions();
   const openProjectThread = useOpenProjectThread();
   const role = assistantThreadRole(project, thread?.id);
@@ -89,11 +93,36 @@ export function useAssistantThreadHeader(input: {
       canSchedule: serverConfig?.environment.capabilities.projectSchedules !== undefined,
     });
   const archived = isArchivedAssistant(project);
+  const { usesSplitView } = useAdaptiveWorkspaceLayout().layout;
+  // The Status pill: the coordinator only, on servers that keep a Status board.
+  const statusAvailable =
+    role === "coordinator" &&
+    onOpenStatus !== undefined &&
+    serverConfig?.environment.capabilities.projectStatus === true;
+  const needsYou = project === null ? 0 : projectNeedsYouCount(project);
 
   const items = useMemo(() => {
     const iosItems: NativeStackHeaderItem[] = [];
     const androidActions: AndroidHeaderAction[] = [];
     if (project === null) return { iosItems, androidActions };
+
+    if (statusAvailable && onOpenStatus !== undefined) {
+      iosItems.push({
+        type: "custom",
+        identifier: "thread-right-status",
+        hidesSharedBackground: true,
+        element: createElement(StatusHeaderPill, {
+          count: needsYou,
+          showLabel: usesSplitView,
+          onPress: onOpenStatus,
+        }),
+      });
+      androidActions.push({
+        accessibilityLabel: needsYou > 0 ? `Status, ${needsYou} need you` : "Status",
+        icon: { ios: "checklist", android: "check" },
+        onPress: onOpenStatus,
+      });
+    }
 
     if (memory) {
       const openMemory = () => projectActions.openProjectFile(project, "MEMORY.md");
@@ -190,6 +219,10 @@ export function useAssistantThreadHeader(input: {
     return { iosItems, androidActions };
   }, [
     archived,
+    needsYou,
+    onOpenStatus,
+    statusAvailable,
+    usesSplitView,
     memory,
     onProjectDeleted,
     openProject,

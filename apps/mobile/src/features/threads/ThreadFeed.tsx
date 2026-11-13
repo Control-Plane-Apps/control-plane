@@ -64,6 +64,7 @@ import {
   useRef,
   useState,
   useId,
+  type ReactElement,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -279,6 +280,8 @@ export interface ThreadFeedProps {
   } | null;
   /** The Project this thread belongs to, for handoff rows. Null outside a Project. */
   readonly assistantTimeline?: AssistantFeedTimeline | null;
+  /** Rendered after the last row, inside the scroll content. */
+  readonly footer?: ReactElement | null;
 }
 
 const USER_IMAGE_THUMBNAIL_SIZE = 112;
@@ -3154,6 +3157,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
                 ) : null}
               </>
             }
+            ListFooterComponent={props.footer ?? null}
             contentContainerStyle={{
               paddingTop: 12,
               paddingHorizontal: contentHorizontalPadding,

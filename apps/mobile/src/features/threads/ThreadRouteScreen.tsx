@@ -106,6 +106,8 @@ import {
   useAssistantFeedTimeline,
   useAssistantThreadHeader,
 } from "../projects/useAssistantThreadView";
+import { ThreadTasksFooter, StatusReplyChip } from "../tasks/ThreadTaskAccessories";
+import { ProjectStatusInspector } from "../status/ProjectStatusInspector";
 
 interface ThreadInspectorSelection {
   readonly routeThreadIdentity: string | null;
@@ -316,11 +318,16 @@ function ThreadRouteContent(
     if (navigation.canGoBack()) navigation.goBack();
     else navigation.dispatch(StackActions.replace("Home"));
   }, [navigation]);
+  // Status opens beside the coordinator on iPad, full screen on phone. The
+  // inspector state is declared below, so the handler is read through a ref.
+  const openStatusRef = useRef<() => void>(() => undefined);
+  const handleOpenStatus = useCallback(() => openStatusRef.current(), []);
   const assistantHeader = useAssistantThreadHeader({
     project: selectedThreadProject,
     thread: selectedThread,
     isGitRepo: gitStatus.data?.isRepo ?? true,
     onProjectDeleted: leaveDeletedThread,
+    onOpenStatus: handleOpenStatus,
   });
   const { showGitControls } = assistantHeader;
   const assistantToolbarItems = useMemo(
@@ -456,6 +463,22 @@ function ThreadRouteContent(
     setInspectorSelection({ routeThreadIdentity, mode: "git" });
     showAuxiliaryPane("inspector");
   }, [fileInspector.supported, navigation, routeThreadIdentity, selectedThread, showAuxiliaryPane]);
+  openStatusRef.current = () => {
+    if (selectedThreadProject === null) return;
+    if (!fileInspector.supported) {
+      navigation.navigate("ProjectStatus", {
+        environmentId: String(selectedThreadProject.environmentId),
+        projectId: String(selectedThreadProject.id),
+      });
+      return;
+    }
+    if (inspectorMode === "status" && panes.auxiliaryPaneVisible) {
+      toggleAuxiliaryPane();
+      return;
+    }
+    setInspectorSelection({ routeThreadIdentity, mode: "status" });
+    showAuxiliaryPane("inspector");
+  };
   const handleOpenFilesInspector = useCallback(() => {
     if (selectedThread === null || selectedThreadCwd === null) {
       return;
@@ -552,6 +575,17 @@ function ThreadRouteContent(
       selectedThreadProject?.title,
     ],
   );
+  const StatusInspector = useCallback(
+    () =>
+      selectedThreadProject !== null ? (
+        <ProjectStatusInspector
+          project={selectedThreadProject}
+          headerInset={inspectorHeaderInset}
+          onClose={toggleAuxiliaryPane}
+        />
+      ) : null,
+    [inspectorHeaderInset, selectedThreadProject, toggleAuxiliaryPane],
+  );
   const RouteInspector = useCallback(
     () => props.renderInspector?.(inspectorHeaderInset),
     [inspectorHeaderInset, props.renderInspector],
@@ -564,12 +598,14 @@ function ThreadRouteContent(
           Git={showGitControls ? GitInspector : undefined}
           mode={inspectorMode}
           Route={props.renderInspector ? RouteInspector : undefined}
+          Status={StatusInspector}
         />
       ),
     [
       FilesInspector,
       GitInspector,
       RouteInspector,
+      StatusInspector,
       inspectorMode,
       props.renderInspector,
       showGitControls,
@@ -1090,6 +1126,19 @@ function ThreadRouteContent(
           threadSyncStatus={selectedThreadDetailState.status}
           loadEarlier={loadEarlierTurns}
           assistantTimeline={assistantTimeline}
+          feedFooter={
+            <ThreadTasksFooter
+              threadId={selectedThread.id}
+              project={selectedThreadProject}
+              isCoordinator={assistantTimeline?.role === "coordinator"}
+            />
+          }
+          composerAccessory={
+            <StatusReplyChip
+              environmentId={selectedThread.environmentId}
+              threadId={selectedThread.id}
+            />
+          }
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}

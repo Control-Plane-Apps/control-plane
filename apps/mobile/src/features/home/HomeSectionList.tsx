@@ -19,6 +19,7 @@ import { cn } from "../../lib/cn";
 import type { SavedRemoteConnection } from "../../lib/connection";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { ProjectListRow } from "../projects/ProjectListRow";
+import { PlanTasksEntryRow } from "../tasks/PlanTasksEntryRow";
 import type { ProjectRowMenuAction } from "../projects/projectMenus";
 import { useOpenNewProject } from "../projects/useOpenNewProject";
 import { runProjectMenuAction, useProjectActions } from "../projects/useProjectActions";
@@ -65,7 +66,8 @@ type HomeSectionListProps = Pick<
   | "style"
 >;
 
-const SECTION_LABELS = { projects: "Projects", tasks: "Tasks" } as const;
+// "Tasks" means personal tasks only; plain threads sit under Workspaces.
+const SECTION_LABELS = { projects: "Projects", tasks: "Workspaces" } as const;
 const GROUPED_HEADER_CHEVRON_COLLAPSED = { transform: [{ rotate: "-90deg" }] } as const;
 
 const NO_ITEMS: readonly HomeSectionItem[] = [];
@@ -847,7 +849,12 @@ export function HomeSectionList(
       scrollEventThrottle={16}
       showsVerticalScrollIndicator={false}
       style={props.style}
-      ListHeaderComponent={props.ListHeaderComponent}
+      ListHeaderComponent={
+        <>
+          {props.ListHeaderComponent}
+          {searching ? null : <PlanTasksEntryRow pane={rowPane} />}
+        </>
+      }
       ListEmptyComponent={props.ListEmptyComponent}
     />
   );

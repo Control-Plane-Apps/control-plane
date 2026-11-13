@@ -1,7 +1,7 @@
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { View } from "react-native";
 
-export type ThreadInspectorMode = "route" | "git" | "files";
+export type ThreadInspectorMode = "route" | "git" | "files" | "status";
 
 const INSPECTOR_PREWARM_DELAY_MS = 350;
 
@@ -38,6 +38,8 @@ export function ThreadInspectorContentStack(props: {
   readonly Git?: ComponentType;
   readonly mode: ThreadInspectorMode;
   readonly Route?: ComponentType;
+  /** A coordinator's Status board beside its thread (iPad). */
+  readonly Status?: ComponentType;
 }) {
   const [mountedModes, setMountedModes] = useState<ReadonlySet<ThreadInspectorMode>>(
     () => new Set([props.mode]),
@@ -53,7 +55,7 @@ export function ThreadInspectorContentStack(props: {
     });
 
     // Without Git there is no other chat inspector to keep warm.
-    if (props.mode === "route" || !hasGit) {
+    if (props.mode === "route" || props.mode === "status" || !hasGit) {
       return;
     }
 
@@ -76,6 +78,7 @@ export function ThreadInspectorContentStack(props: {
   const Files = props.Files;
   const Git = props.Git;
   const Route = props.Route;
+  const Status = props.Status;
 
   return (
     <View className="flex-1">
@@ -99,6 +102,14 @@ export function ThreadInspectorContentStack(props: {
           visible={props.mode === "route"}
         >
           <Route />
+        </InspectorContentPane>
+      ) : null}
+      {Status ? (
+        <InspectorContentPane
+          mounted={mountedModes.has("status") || props.mode === "status"}
+          visible={props.mode === "status"}
+        >
+          <Status />
         </InspectorContentPane>
       ) : null}
     </View>
