@@ -119,91 +119,93 @@ export function TaskMoveSheet({ route }: StaticScreenProps<TaskMoveParams>) {
   };
 
   return (
-    <View className="flex-1 bg-sheet-solid">
-      <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
-        <View className="flex-row items-center px-5 pb-2 pt-5">
-          <Text
-            className="flex-1 text-[20px] font-t3-bold text-foreground"
-            accessibilityRole="header"
-          >
-            {moving.length > 1 ? `Move ${moving.length} tasks` : "Move task"}
-          </Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close"
-            onPress={() => navigation.goBack()}
-            className="size-11 items-center justify-center"
-          >
-            <SymbolView
-              name={symbol("xmark", "close")}
-              size={16}
-              tintColorClassName="accent-icon-muted"
-              type="monochrome"
-              weight="semibold"
-            />
-          </Pressable>
-        </View>
-        {moveSections(today).map((section, sectionIndex) => (
-          <Fragment key={section.title ?? "days"}>
-            {section.title !== null ? (
-              <Text className="px-9 pb-2 pt-5 text-[13px] font-t3-medium text-foreground-muted">
-                {section.title}
-              </Text>
-            ) : null}
-            <TaskCard>
-              {section.entries.map((entry, index) => {
-                const checked =
-                  single !== undefined && isHomeAtTarget(single.home, entry.target, today);
-                return (
-                  <View key={entry.label}>
-                    {index > 0 ? <RowSeparator /> : null}
-                    <MoveRow
-                      label={entry.label}
-                      icon={entry.icon}
-                      hint={entry.hint}
-                      checked={checked}
-                      checkColor={palette.accent}
-                      onPress={() => move(entry.target)}
+    // The ScrollView is the sheet's only child, as native form sheets expect.
+    <ScrollView
+      className="flex-1 bg-sheet-solid"
+      contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+    >
+      <View className="flex-row items-center px-5 pb-2 pt-5">
+        <Text
+          className="flex-1 text-[20px] font-t3-bold text-foreground"
+          accessibilityRole="header"
+        >
+          {moving.length > 1 ? `Move ${moving.length} tasks` : "Move task"}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+          onPress={() => navigation.goBack()}
+          className="size-11 items-center justify-center"
+        >
+          <SymbolView
+            name={symbol("xmark", "close")}
+            size={16}
+            tintColorClassName="accent-icon-muted"
+            type="monochrome"
+            weight="semibold"
+          />
+        </Pressable>
+      </View>
+      {moveSections(today).map((section, sectionIndex) => (
+        <Fragment key={section.title ?? "days"}>
+          {section.title !== null ? (
+            <Text className="px-9 pb-2 pt-5 text-[13px] font-t3-medium text-foreground-muted">
+              {section.title}
+            </Text>
+          ) : null}
+          <TaskCard>
+            {section.entries.map((entry, index) => {
+              const checked =
+                single !== undefined && isHomeAtTarget(single.home, entry.target, today);
+              return (
+                <View key={entry.label}>
+                  {index > 0 ? <RowSeparator /> : null}
+                  <MoveRow
+                    label={entry.label}
+                    icon={entry.icon}
+                    hint={entry.hint}
+                    checked={checked}
+                    checkColor={palette.accent}
+                    onPress={() => move(entry.target)}
+                  />
+                </View>
+              );
+            })}
+            {sectionIndex === 0 ? (
+              <View>
+                <RowSeparator />
+                <MoveRow
+                  label="Pick a date"
+                  icon="calendar"
+                  chevron
+                  expanded={picking}
+                  checked={false}
+                  checkColor={palette.accent}
+                  onPress={() => setPicking((open) => !open)}
+                />
+                {picking ? (
+                  <View className="items-center px-3 pb-3">
+                    <TaskDatePicker
+                      value={pickedDate}
+                      onChange={(date) => {
+                        setPickedDate(date);
+                        move({ kind: "date", date });
+                      }}
+                      onDismiss={() => setPicking(false)}
                     />
                   </View>
-                );
-              })}
-              {sectionIndex === 0 ? (
-                <View>
-                  <RowSeparator />
-                  <MoveRow
-                    label="Pick a date"
-                    icon="calendar"
-                    chevron
-                    expanded={picking}
-                    checked={false}
-                    checkColor={palette.accent}
-                    onPress={() => setPicking((open) => !open)}
-                  />
-                  {picking ? (
-                    <View className="items-center px-3 pb-3">
-                      <TaskDatePicker
-                        value={pickedDate}
-                        onChange={(date) => {
-                          setPickedDate(date);
-                          move({ kind: "date", date });
-                        }}
-                        onDismiss={() => setPicking(false)}
-                      />
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-            </TaskCard>
-          </Fragment>
-        ))}
-        {single !== undefined ? (
-          <Text className="px-9 pt-4 text-[13px] text-foreground-tertiary">
-            Now: {formatTaskHome(single.home, today)}
-          </Text>
-        ) : null}
-      </ScrollView>
-    </View>
+                ) : null}
+              </View>
+            ) : null}
+          </TaskCard>
+        </Fragment>
+      ))}
+      {single !== undefined ? (
+        <Text className="px-9 pt-4 text-[13px] text-foreground-tertiary">
+          Now: {formatTaskHome(single.home, today)}
+        </Text>
+      ) : null}
+    </ScrollView>
   );
 }
 
