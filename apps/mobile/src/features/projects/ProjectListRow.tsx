@@ -1,5 +1,6 @@
 import type { SidebarRollupStatus } from "@t3tools/client-runtime/state/assistant-lists";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import { projectNeedsYouCount } from "@t3tools/client-runtime/state/projects";
 import { memo } from "react";
 import { Platform, Pressable, View } from "react-native";
 
@@ -9,6 +10,7 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { RowPressable } from "../../components/RowPressable";
 import { cn } from "../../lib/cn";
+import { NeedsYouPill } from "../tasks/taskUi";
 import { rollupDotColor, rollupDotLabel, ThreadStatusDot } from "../threads/thread-status-dot";
 import {
   buildProjectRowMenu,
@@ -50,8 +52,11 @@ export const ProjectListRow = memo(function ProjectListRow(props: {
   const dotColor = rollupDotColor(props.rollup);
   // Selection uses the thread rows' filled surface and its paired foregrounds.
   const android = Platform.OS === "android";
+  // Workstreams on the coordinator's Status board waiting on the user.
+  const needsYou = projectNeedsYouCount(project);
   const accessibilityLabel = [
     project.title,
+    needsYou > 0 ? `${needsYou} need you` : null,
     running > 0 ? `${running} running` : null,
     rollupDotLabel(props.rollup),
   ]
@@ -89,6 +94,7 @@ export const ProjectListRow = memo(function ProjectListRow(props: {
               <Text className="flex-1 text-[17px] text-foreground" numberOfLines={1}>
                 {project.title}
               </Text>
+              {needsYou > 0 ? <NeedsYouPill count={needsYou} compact /> : null}
               {dotColor !== null ? <ThreadStatusDot color={dotColor} grouped /> : null}
               {running > 0 ? (
                 <Text className="text-[17px] tabular-nums text-foreground-muted">{running}</Text>
@@ -177,6 +183,9 @@ export const ProjectListRow = memo(function ProjectListRow(props: {
             >
               {project.title}
             </Text>
+            {needsYou > 0 ? (
+              <NeedsYouPill count={needsYou} compact countOnly={sidebarPane} />
+            ) : null}
             {running > 0 ? (
               <Text
                 className={cn(

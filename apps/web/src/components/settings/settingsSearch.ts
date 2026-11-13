@@ -12,6 +12,7 @@ import {
 } from "./settingsScope";
 
 export type SettingsPath =
+  | "/settings/assistant"
   | "/settings/projects"
   | "/settings/general"
   | "/settings/appearance"
@@ -22,6 +23,7 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/storage"
   | "/settings/connections"
+  | "/settings/task-sync"
   | "/settings/archived";
 
 /**
@@ -84,6 +86,7 @@ export interface SettingsSearchAvailability {
  * subtitles both render from this record, so each label exists once.
  */
 export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
+  "/settings/assistant": "Assistant",
   "/settings/projects": "Workspace",
   "/settings/general": "General",
   "/settings/appearance": "Appearance",
@@ -94,6 +97,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
   "/settings/connections": "Connections",
+  "/settings/task-sync": "Task Sync",
   "/settings/archived": "Archive",
 };
 
@@ -842,6 +846,7 @@ export type SettingsSearchItemId = (typeof SETTINGS_SEARCH_ITEMS)[number]["id"];
 const SEARCH_ITEMS_BY_ID = new Map(SETTINGS_SEARCH_ITEMS.map((item) => [item.id, item] as const));
 
 const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScope | null>> = {
+  "/settings/assistant": null,
   "/settings/projects": "project",
   "/settings/general": null,
   "/settings/appearance": null,
@@ -854,6 +859,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",
   "/settings/connections": "connections",
+  "/settings/task-sync": null,
   "/settings/archived": "project-defaults",
 };
 

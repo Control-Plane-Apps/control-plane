@@ -335,6 +335,9 @@ const config: ExpoConfig = {
         mode: APP_VARIANT === "development" ? "development" : "production",
       },
     ],
+    // Per-question answer buttons on iPhone notifications. Personal Teams
+    // cannot sign extension targets, so that build keeps the plain buttons.
+    ...(isIosPersonalTeamBuild ? [] : ["./plugins/withNotificationServiceExtension.cjs"]),
     // appleSignIn must be gated here: withoutIosPersonalTeamCapabilities.cjs runs before
     // plugins earlier in this array, so it cannot strip the entitlement Clerk would add.
     ["@clerk/expo", { theme: "./clerk-theme.json", appleSignIn: !isIosPersonalTeamBuild }],
@@ -429,12 +432,21 @@ const config: ExpoConfig = {
     "./plugins/withAndroidPredictiveBackCompat.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
     ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
+    // Last: repairs extension Info.plist references other plugins share.
+    "./plugins/withUniqueGroupFileRefs.cjs",
   ],
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
+    },
+    // Task Sync client key for iOS (cplane-ios-1). From the build env / EAS
+    // secrets, never committed. Unset: Tasks come only through the Mac.
+    taskSync: {
+      url: repoEnv.CPLANE_TASK_SYNC_URL ?? null,
+      keyId: repoEnv.CPLANE_IOS_TASK_SYNC_CLIENT_KEY_ID ?? null,
+      secret: repoEnv.CPLANE_IOS_TASK_SYNC_CLIENT_SECRET ?? null,
     },
     clerk: {
       publishableKey: repoEnv.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? null,

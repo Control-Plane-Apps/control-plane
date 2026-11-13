@@ -119,6 +119,22 @@
       "types": "./src/pinOrderKey.ts",
       "import": "./src/pinOrderKey.ts"
     },
+    "./taskSyncRecords": {
+      "types": "./src/taskSyncRecords.ts",
+      "import": "./src/taskSyncRecords.ts"
+    },
+    "./taskSync/cloudClient": {
+      "types": "./src/taskSync/cloudClient.ts",
+      "import": "./src/taskSync/cloudClient.ts"
+    },
+    "./taskSync/localTasks": {
+      "types": "./src/taskSync/localTasks.ts",
+      "import": "./src/taskSync/localTasks.ts"
+    },
+    "./taskSync/engine": {
+      "types": "./src/taskSync/engine.ts",
+      "import": "./src/taskSync/engine.ts"
+    },
     "./String": {
       "types": "./src/String.ts",
       "import": "./src/String.ts"
@@ -162,6 +178,10 @@
     "./forkFeatures": {
       "types": "./src/forkFeatures.ts",
       "import": "./src/forkFeatures.ts"
+    },
+    "./taskReminders": {
+      "types": "./src/taskReminders.ts",
+      "import": "./src/taskReminders.ts"
     },
     "./relayAuth": {
       "types": "./src/relayAuth.ts",

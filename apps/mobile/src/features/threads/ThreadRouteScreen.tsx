@@ -74,6 +74,7 @@ import {
 } from "../terminal/terminalLaunchContext";
 import { terminalDebugLog } from "../terminal/terminalDebugLog";
 import { ThreadDetailScreen, type ThreadDetailScreenProps } from "./ThreadDetailScreen";
+import { AssistantHeaderTitle, useAssistantScreen } from "../assistant/useAssistantScreen";
 import {
   ThreadGitControls,
   useThreadGitCenterHeaderItems,
@@ -106,6 +107,8 @@ import {
   useAssistantFeedTimeline,
   useAssistantThreadHeader,
 } from "../projects/useAssistantThreadView";
+import { ThreadTasksFooter, StatusReplyChip } from "../tasks/ThreadTaskAccessories";
+import { ProjectStatusInspector } from "../status/ProjectStatusInspector";
 
 interface ThreadInspectorSelection {
   readonly routeThreadIdentity: string | null;
@@ -316,11 +319,16 @@ function ThreadRouteContent(
     if (navigation.canGoBack()) navigation.goBack();
     else navigation.dispatch(StackActions.replace("Home"));
   }, [navigation]);
+  // Status opens beside the coordinator on iPad, full screen on phone. The
+  // inspector state is declared below, so the handler is read through a ref.
+  const openStatusRef = useRef<() => void>(() => undefined);
+  const handleOpenStatus = useCallback(() => openStatusRef.current(), []);
   const assistantHeader = useAssistantThreadHeader({
     project: selectedThreadProject,
     thread: selectedThread,
     isGitRepo: gitStatus.data?.isRepo ?? true,
     onProjectDeleted: leaveDeletedThread,
+    onOpenStatus: handleOpenStatus,
   });
   const { showGitControls } = assistantHeader;
   const assistantToolbarItems = useMemo(
@@ -331,6 +339,13 @@ function ThreadRouteContent(
     selectedThreadProject,
     selectedThread?.id ?? null,
   );
+  // The cross-Project Assistant's coordinator reads as the Assistant screen.
+  const assistantScreen = useAssistantScreen({
+    project: selectedThreadProject,
+    threadId: selectedThread?.id ?? null,
+    detail: selectedThreadDetail,
+    feed: composer.selectedThreadFeed,
+  });
   const [inspectorSelection, setInspectorSelection] = useState<ThreadInspectorSelection | null>(
     () => (props.renderInspector ? { routeThreadIdentity, mode: "route" } : null),
   );
@@ -456,6 +471,22 @@ function ThreadRouteContent(
     setInspectorSelection({ routeThreadIdentity, mode: "git" });
     showAuxiliaryPane("inspector");
   }, [fileInspector.supported, navigation, routeThreadIdentity, selectedThread, showAuxiliaryPane]);
+  openStatusRef.current = () => {
+    if (selectedThreadProject === null) return;
+    if (!fileInspector.supported) {
+      navigation.navigate("ProjectStatus", {
+        environmentId: String(selectedThreadProject.environmentId),
+        projectId: String(selectedThreadProject.id),
+      });
+      return;
+    }
+    if (inspectorMode === "status" && panes.auxiliaryPaneVisible) {
+      toggleAuxiliaryPane();
+      return;
+    }
+    setInspectorSelection({ routeThreadIdentity, mode: "status" });
+    showAuxiliaryPane("inspector");
+  };
   const handleOpenFilesInspector = useCallback(() => {
     if (selectedThread === null || selectedThreadCwd === null) {
       return;
@@ -552,6 +583,17 @@ function ThreadRouteContent(
       selectedThreadProject?.title,
     ],
   );
+  const StatusInspector = useCallback(
+    () =>
+      selectedThreadProject !== null ? (
+        <ProjectStatusInspector
+          project={selectedThreadProject}
+          headerInset={inspectorHeaderInset}
+          onClose={toggleAuxiliaryPane}
+        />
+      ) : null,
+    [inspectorHeaderInset, selectedThreadProject, toggleAuxiliaryPane],
+  );
   const RouteInspector = useCallback(
     () => props.renderInspector?.(inspectorHeaderInset),
     [inspectorHeaderInset, props.renderInspector],
@@ -564,12 +606,14 @@ function ThreadRouteContent(
           Git={showGitControls ? GitInspector : undefined}
           mode={inspectorMode}
           Route={props.renderInspector ? RouteInspector : undefined}
+          Status={StatusInspector}
         />
       ),
     [
       FilesInspector,
       GitInspector,
       RouteInspector,
+      StatusInspector,
       inspectorMode,
       props.renderInspector,
       showGitControls,
@@ -1048,7 +1092,7 @@ function ThreadRouteContent(
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           feedbackSubmissions={composer.feedbackSubmissions}
           onDismissFeedback={composer.dismissFeedback}
-          selectedThreadFeed={composer.selectedThreadFeed}
+          selectedThreadFeed={assistantScreen?.feed ?? composer.selectedThreadFeed}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           isCompacting={composer.isCompacting}
           creationState={creationState}
@@ -1090,6 +1134,25 @@ function ThreadRouteContent(
           threadSyncStatus={selectedThreadDetailState.status}
           loadEarlier={loadEarlierTurns}
           assistantTimeline={assistantTimeline}
+          feedListHeader={assistantScreen?.listHeader}
+          renderFeedEntryAccessory={assistantScreen?.renderEntryAccessory}
+          composerPlaceholder={assistantScreen?.composerPlaceholder}
+          feedFooter={
+            <ThreadTasksFooter
+              threadId={selectedThread.id}
+              project={selectedThreadProject}
+              isCoordinator={assistantTimeline?.role === "coordinator"}
+            />
+          }
+          composerAccessory={
+            <>
+              {assistantScreen?.composerAccessory ?? null}
+              <StatusReplyChip
+                environmentId={selectedThread.environmentId}
+                threadId={selectedThread.id}
+              />
+            </>
+          }
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}
@@ -1130,12 +1193,13 @@ function ThreadRouteContent(
           threadGitControlProps.projectScripts,
           showGitControls,
           assistantHeader.iosItems,
+          assistantScreen?.iosRightItems ?? null,
         ]}
         options={{
           // Android draws its own in-flow header (AndroidScreenHeader below);
           // the native stack header stays iOS-only.
           headerShown: Platform.OS !== "android",
-          headerTitle: selectedThread.title,
+          headerTitle: assistantScreen !== null ? AssistantHeaderTitle : selectedThread.title,
           headerTitleStyle: usesNativeHeaderGlass
             ? {
                 fontSize: 17,
@@ -1159,13 +1223,16 @@ function ThreadRouteContent(
           // the git controls on the RIGHT (no center items — center space is
           // reserved for future breadcrumbs/status).
           unstable_headerRightItems:
-            Platform.OS === "ios"
-              ? () => [
-                  ...assistantHeader.iosItems,
-                  ...(layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems),
-                ]
-              : undefined,
-          unstable_headerSubtitle: assistantHeader.subtitle ?? undefined,
+            Platform.OS === "ios" && assistantScreen !== null
+              ? () => [...assistantScreen.iosRightItems]
+              : Platform.OS === "ios"
+                ? () => [
+                    ...assistantHeader.iosItems,
+                    ...(layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems),
+                  ]
+                : undefined,
+          unstable_headerSubtitle:
+            assistantScreen !== null ? undefined : (assistantHeader.subtitle ?? undefined),
           contentStyle:
             Platform.OS === "android" && true ? { backgroundColor: headerColor } : undefined,
         }}
@@ -1173,8 +1240,8 @@ function ThreadRouteContent(
 
       {Platform.OS === "android" ? (
         <AndroidScreenHeader
-          title={selectedThread.title}
-          subtitle={assistantHeader.subtitle}
+          title={assistantScreen !== null ? "Assistant" : selectedThread.title}
+          subtitle={assistantScreen !== null ? "Today" : assistantHeader.subtitle}
           leading={<AndroidWorkspaceSidebarButton />}
           trailing={
             fileInspector.supported && selectedThreadCwd !== null ? (
@@ -1200,7 +1267,7 @@ function ThreadRouteContent(
                   else navigation.dispatch(StackActions.replace("Home"));
                 }
           }
-          actions={androidHeaderActions}
+          actions={assistantScreen?.androidActions ?? androidHeaderActions}
           overflowOnly
           hideBottomBorder
         />

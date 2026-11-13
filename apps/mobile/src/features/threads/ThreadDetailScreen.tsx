@@ -37,6 +37,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactElement,
+  type ReactNode,
 } from "react";
 import {
   Alert,
@@ -142,6 +144,15 @@ export interface ThreadDetailScreenProps {
   /** Non-null when older turns exist beyond the loaded window. */
   readonly loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
   readonly assistantTimeline?: ThreadFeedProps["assistantTimeline"];
+  /** The Assistant's overview above the conversation. */
+  readonly feedListHeader?: ThreadFeedProps["listHeader"];
+  /** The Assistant's ask cards under their replies. */
+  readonly renderFeedEntryAccessory?: ThreadFeedProps["renderEntryAccessory"];
+  /** Drawn right above the composer (the Assistant's Needs-you pill). */
+  readonly composerAccessory?: ReactNode;
+  readonly composerPlaceholder?: string;
+  /** After the last message: a coordinator's proposed tasks, a thread's linked task. */
+  readonly feedFooter?: ReactElement | null;
   readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
   readonly threadCwd: string | null;
@@ -906,6 +917,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             onUseArtifactTemplate={handleUseArtifactTemplate}
             loadEarlier={props.loadEarlier ?? null}
             assistantTimeline={props.assistantTimeline ?? null}
+            listHeader={props.feedListHeader}
+            renderEntryAccessory={props.renderFeedEntryAccessory}
+            footer={props.feedFooter}
           />
         </View>
       ) : (
@@ -1029,11 +1043,17 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     : undefined
                 }
               >
+                {props.composerAccessory}
                 <ThreadComposer
                   editorRef={composerEditorRef}
                   draftMessage={props.draftMessage}
                   draftAttachments={props.draftAttachments}
-                  placeholder="Ask the repo agent, or run a command…"
+                  placeholder={
+                    props.composerPlaceholder ??
+                    (props.assistantTimeline?.role === "coordinator"
+                      ? "Message the coordinator"
+                      : "Ask the repo agent, or run a command…")
+                  }
                   contentMaxWidth={contentMaxWidth}
                   connectionState={props.connectionStateLabel}
                   environmentLabel={props.environmentLabel}

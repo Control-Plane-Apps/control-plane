@@ -512,3 +512,32 @@ describe("loadAssistantRuntimeBlock", () => {
     }),
   );
 });
+
+describe("the global Assistant", () => {
+  const globalProject = () => ({
+    ...makeProject({ title: "Assistant" }),
+    assistant: { coordinatorThreadId: coordinatorId, scope: "global" as const },
+  });
+
+  it("gives the Assistant and its pinned channels the Assistant block with the agents capability", () => {
+    const project = globalProject();
+    for (const thread of [
+      makeThread("coordinator", { title: "Assistant" }),
+      makeThread("weekly", { title: "Weekly review", pinnedAt: PINNED_AT }),
+    ]) {
+      const block = buildAssistantRuntimeBlock({ project, thread, memory: "", roleFile: "" });
+      expect(block?.inline).toContain('<control_plane_project role="assistant" name="Assistant"');
+      expect(block?.inline).toContain("cp_assistant_overview");
+      expect(block?.inline).toContain("cp_assistant_ask");
+      expect(block?.inline).toContain("Never answer a Status question for the user");
+      expect(block?.agents).toBe(true);
+    }
+  });
+
+  it("keys the Assistant apart from an ordinary coordinator, so a marker change restarts it", () => {
+    const project = globalProject();
+    const thread = makeThread("coordinator", { title: "Assistant" });
+    expect(assistantRoleKey({ project, thread })).toMatch(/^assistant:/);
+    expect(assistantRoleKey({ project: makeProject(), thread })).toMatch(/^coordinator:/);
+  });
+});

@@ -3,9 +3,10 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
   ProjectId,
+  TaskId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import { OrchestrationCommand, taskIntentKey } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -61,11 +62,27 @@ interface CommandEnvelope {
   startedAtMs: number;
 }
 
+const TASK_SYNC_AGGREGATE_ID = "task-sync" as TaskId;
+
 function commandToAggregateRef(command: OrchestrationCommand): {
-  readonly aggregateKind: "project" | "thread";
-  readonly aggregateId: ProjectId | ThreadId;
+  readonly aggregateKind: "project" | "thread" | "task";
+  readonly aggregateId: ProjectId | ThreadId | TaskId;
 } {
   switch (command.type) {
+    case "task.create":
+    case "task.update":
+    case "task.delete":
+    case "task.proposal.respond":
+    case "task.handoff":
+    case "task.propose":
+      return { aggregateKind: "task", aggregateId: command.taskId };
+    case "task.sync.apply":
+      return { aggregateKind: "task", aggregateId: TASK_SYNC_AGGREGATE_ID };
+    case "task.intent.set":
+      return {
+        aggregateKind: "task",
+        aggregateId: taskIntentKey(command.horizon, command.startsOn),
+      };
     case "project.create":
     case "project.meta.update":
     case "project.reorder":

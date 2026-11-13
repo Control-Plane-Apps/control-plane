@@ -148,8 +148,13 @@ const DEFAULT_BINDINGS = compile([
   { shortcut: modShortcut("o", { shiftKey: true }), command: "chat.new" },
   { shortcut: modShortcut("n", { shiftKey: true }), command: "chat.newLocal" },
   {
-    shortcut: modShortcut("t", { shiftKey: true }),
+    shortcut: modShortcut("t", { altKey: true }),
     command: "settled.toggle",
+    whenAst: whenNot(whenIdentifier("terminalFocus")),
+  },
+  {
+    shortcut: modShortcut("t", { shiftKey: true }),
+    command: "tasks.quickAdd",
     whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
   {
@@ -242,7 +247,7 @@ describe("settle thread shortcut", () => {
 });
 
 describe("sidebar view shortcuts", () => {
-  it("resolves usage, pull requests, and settled toggles outside the terminal", () => {
+  it("resolves usage, pull requests, settled and quick add outside the terminal", () => {
     assert.equal(
       resolveShortcutCommand(event({ key: "u", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
         platform: "MacIntel",
@@ -258,11 +263,18 @@ describe("sidebar view shortcuts", () => {
       "pullRequests.toggle",
     );
     assert.equal(
-      resolveShortcutCommand(event({ key: "t", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+      resolveShortcutCommand(event({ key: "t", metaKey: true, altKey: true }), DEFAULT_BINDINGS, {
         platform: "MacIntel",
         context: { terminalFocus: false },
       }),
       "settled.toggle",
+    );
+    assert.equal(
+      resolveShortcutCommand(event({ key: "t", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: false },
+      }),
+      "tasks.quickAdd",
     );
   });
 

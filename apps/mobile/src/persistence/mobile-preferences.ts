@@ -18,6 +18,8 @@ const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
 
 export interface Preferences {
   readonly liveActivitiesEnabled?: boolean;
+  /** Which iPhone notifications the Mac sends. Absent means "needs-you". */
+  readonly pushNotificationLevel?: "all" | "needs-you" | "off";
   readonly themeId?: MobileThemeId;
   readonly lightThemeId?: MobileThemeId;
   readonly darkThemeId?: MobileThemeId;
@@ -91,6 +93,7 @@ export class MobilePreferencesStore extends Context.Service<
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
     liveActivitiesEnabled?: boolean;
+    pushNotificationLevel?: "all" | "needs-you" | "off";
     themeId?: MobileThemeId;
     lightThemeId?: MobileThemeId;
     darkThemeId?: MobileThemeId;
@@ -115,6 +118,13 @@ function sanitizePreferences(parsed: Preferences): Preferences {
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
+  }
+  if (
+    parsed.pushNotificationLevel === "all" ||
+    parsed.pushNotificationLevel === "needs-you" ||
+    parsed.pushNotificationLevel === "off"
+  ) {
+    preferences.pushNotificationLevel = parsed.pushNotificationLevel;
   }
   if (
     typeof parsed.themeId === "string" &&

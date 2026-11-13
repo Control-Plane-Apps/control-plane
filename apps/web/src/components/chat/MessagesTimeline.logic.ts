@@ -1210,6 +1210,7 @@ export function deriveMessagesTimelineRows(input: {
       if (
         timelineEntry.entry.agentSpawn !== undefined ||
         timelineEntry.entry.questionAnswer !== undefined ||
+        timelineEntry.entry.assistantCard !== undefined ||
         timelineEntry.entry.tone === "error"
       ) {
         const spawn = timelineEntry.entry.agentSpawn;
@@ -1236,6 +1237,7 @@ export function deriveMessagesTimelineRows(input: {
           nextEntry.kind !== "work" ||
           nextEntry.entry.agentSpawn !== undefined ||
           nextEntry.entry.questionAnswer !== undefined ||
+          nextEntry.entry.assistantCard !== undefined ||
           isTimelineDividerEntry(nextEntry) ||
           nextEntry.entry.tone === "error" ||
           activeWorkEntryIds.has(nextEntry.id) ||

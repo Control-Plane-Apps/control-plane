@@ -478,8 +478,10 @@ export const ChatHeader = memo(function ChatHeader({
               <ListChecksIcon />
               <span className="hidden @3xl/header-actions:inline">Status</span>
               {statusNeedsCount > 0 ? (
-                <Badge variant="warning" size="sm" className="tabular-nums">
+                <Badge variant="warning" size="sm" className="gap-1 tabular-nums">
+                  <span aria-hidden className="size-1.5 rounded-full bg-warning" />
                   {statusNeedsCount}
+                  <span className="hidden @3xl/header-actions:inline">need you</span>
                 </Badge>
               ) : null}
             </TooltipTrigger>

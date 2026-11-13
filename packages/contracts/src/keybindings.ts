@@ -58,6 +58,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "sidebar.toggle",
   "settled.toggle",
   "usage.toggle",
+  "tasks.quickAdd",
   "pullRequests.toggle",
   "terminal.toggle",
   "terminal.split",

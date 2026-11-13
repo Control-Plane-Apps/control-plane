@@ -16,6 +16,8 @@ import { cn } from "../../lib/cn";
 import { AppText as Text } from "../../components/AppText";
 import { AppTextInput } from "../../components/AppText";
 import { EmptyState } from "../../components/EmptyState";
+import { AssistantHomeRow } from "../assistant/AssistantHomeRow";
+import { useAssistantEntry } from "../assistant/useAssistantEntry";
 import { TryDemoButton } from "../demo/TryDemoButton";
 import { HomeComposerBar } from "./HomeComposerBar";
 import { MaterialFloatingActionButton } from "../../components/MaterialFloatingActionButton";
@@ -189,6 +191,12 @@ export function HomeScreen(props: HomeScreenProps) {
     settledShelf: Platform.OS !== "ios",
   });
   const { items, workspaceScope } = model.sections;
+  const assistantEntry = useAssistantEntry({ onOpenThread: props.onSelectThread });
+  // The Assistant sits above every Project; search and the Workspace filter hide it.
+  const assistantRow =
+    assistantEntry !== null && !hasSearchQuery && props.selectedProjectKey === null ? (
+      <AssistantHomeRow entry={assistantEntry} />
+    ) : null;
   useThreadJumpShortcuts(model.sections.jumpThreads, props.onSelectThread);
 
   const hasSavedEnvironment =
@@ -305,7 +313,16 @@ export function HomeScreen(props: HomeScreenProps) {
           onNewAgent={props.onNewAgent}
           onNewThreadOnBranch={props.onNewThreadOnBranch}
           onAddWorkspace={props.onAddWorkspace}
-          ListHeaderComponent={Platform.OS === "ios" ? null : <HomeTopContentSpacer />}
+          ListHeaderComponent={
+            Platform.OS === "ios" ? (
+              assistantRow
+            ) : (
+              <>
+                <HomeTopContentSpacer />
+                {assistantRow}
+              </>
+            )
+          }
           ListEmptyComponent={listEmpty}
           style={{ flex: 1 }}
           automaticallyAdjustsScrollIndicatorInsets={Platform.OS === "ios"}

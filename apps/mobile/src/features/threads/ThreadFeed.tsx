@@ -8,6 +8,7 @@ import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-native";
 import {
   agentMessageToolLabel,
+  parseStatusReply,
   isAgentOriginatedUserMessage,
   type ChatAttachment,
   type ChatFileAttachment,
@@ -64,6 +65,7 @@ import {
   useRef,
   useState,
   useId,
+  type ReactElement,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -279,6 +281,15 @@ export interface ThreadFeedProps {
   } | null;
   /** The Project this thread belongs to, for handoff rows. Null outside a Project. */
   readonly assistantTimeline?: AssistantFeedTimeline | null;
+  /**
+   * Content above the first entry (the Assistant's overview). While set, an
+   * empty conversation shows it at the top instead of the empty placeholder.
+   */
+  readonly listHeader?: ReactNode;
+  /** Extra content drawn under an entry (the Assistant's ask cards). */
+  readonly renderEntryAccessory?: (entry: { readonly id: string }) => ReactNode;
+  /** Rendered after the last row, inside the scroll content. */
+  readonly footer?: ReactElement | null;
 }
 
 const USER_IMAGE_THUMBNAIL_SIZE = 112;
@@ -1940,7 +1951,10 @@ function UserMessageContent(props: UserMessageContentProps) {
   const [selected, setSelected] = useState<{ contextId: string; label: string } | null>(null);
   const navigation = useNavigation();
   const { selectedThread } = useThreadSelection();
-  const text = replaceComposerContextReferences(props.text, (ref) => {
+  // A reply sent from Status carries a "Re: <workstream> [status:...]" line;
+  // show it as a quiet Re: label, like the composer chip, not raw text.
+  const statusReply = parseStatusReply(props.text);
+  const text = replaceComposerContextReferences(statusReply?.body ?? props.text, (ref) => {
     const record = props.context?.records.find(
       (candidate) => candidate.contextId === ref.contextId,
     );
@@ -1980,6 +1994,15 @@ function UserMessageContent(props: UserMessageContentProps) {
   };
   return (
     <>
+      {statusReply !== null ? (
+        <Text
+          className="pb-1 text-[13px] text-user-bubble-foreground-muted"
+          numberOfLines={1}
+          accessibilityLabel={`Reply to ${statusReply.title}`}
+        >
+          Re: <Text className="font-t3-bold text-user-bubble-foreground">{statusReply.title}</Text>
+        </Text>
+      ) : null}
       <LegacyUserMessageContent
         {...props}
         text={text}
@@ -2949,6 +2972,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             onUseArtifactTemplate: props.onUseArtifactTemplate,
             assistantTimeline: props.assistantTimeline ?? null,
           })}
+          {props.renderEntryAccessory?.(info.item) ?? null}
           {props.worktreeSetup && info.index === setupAnchorIndex ? (
             <WorktreeSetupCard key={props.threadId} {...props.worktreeSetup} />
           ) : props.setupWorkingStartedAt && info.index === setupAnchorIndex ? (
@@ -2994,6 +3018,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.onUseArtifactTemplate,
       props.skills,
       props.assistantTimeline,
+      props.renderEntryAccessory,
       renderMarkdownImage,
       renderViewedImage,
     ],
@@ -3127,7 +3152,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // viewport, pad above the content so messages rest just above the
             // composer instead of under the header. No effect on threads that
             // overflow the viewport (the padding clamps to zero).
-            alignItemsAtEnd
+            // An empty conversation with a list header (the Assistant's
+            // overview) reads from the top, like a home screen.
+            alignItemsAtEnd={props.listHeader == null || presentedFeed.length > 0}
             initialScrollAtEnd
             onScroll={handleScroll}
             onScrollBeginDrag={handleScrollBeginDrag}
@@ -3152,8 +3179,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
                     </Text>
                   </Pressable>
                 ) : null}
+                {props.listHeader ?? null}
               </>
             }
+            ListFooterComponent={props.footer ?? null}
             contentContainerStyle={{
               paddingTop: 12,
               paddingHorizontal: contentHorizontalPadding,
@@ -3161,6 +3190,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           />
         </View>
         {presentedFeed.length === 0 &&
+        props.listHeader == null &&
         !props.worktreeSetup &&
         props.activeWorkStartedAt === null &&
         props.contentPresentation.kind === "ready" ? (

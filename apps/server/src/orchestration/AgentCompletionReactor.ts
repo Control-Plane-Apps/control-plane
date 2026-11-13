@@ -158,6 +158,25 @@ export const make = Effect.gen(function* () {
       createdAt: input.createdAt,
     });
 
+  // Set once `enqueue` exists below; a typed indirection keeps inference acyclic.
+  let enqueueOther: (projectId: ProjectId) => Effect.Effect<void> = () => Effect.void;
+
+  /**
+   * Whether `recipient` is the cross-Project Assistant, which asks every
+   * coordinator and so takes results from outside its own Project.
+   */
+  const isLiveGlobalAssistant = (recipient: ProjectionThread) =>
+    projects.getById({ projectId: recipient.projectId }).pipe(
+      Effect.map((row) => {
+        const marker = Option.getOrNull(row)?.assistant;
+        return (
+          marker?.scope === "global" &&
+          marker.archivedAt == null &&
+          (marker.coordinatorThreadId === recipient.threadId || recipient.pinnedAt !== null)
+        );
+      }),
+    );
+
   /** The recipient if it can still take the result, else the coordinator. */
   const resolveTarget = Effect.fn("AgentCompletionReactor.resolveTarget")(function* (
     project: ActiveProject,
@@ -166,6 +185,17 @@ export const make = Effect.gen(function* () {
   ) {
     const coordinatorId = project.assistant.coordinatorThreadId;
     const recipient = yield* getThread(replyTo);
+    if (
+      recipient !== null &&
+      recipient.deletedAt === null &&
+      recipient.archivedAt === null &&
+      recipient.projectId !== project.id &&
+      (yield* isLiveGlobalAssistant(recipient))
+    ) {
+      // Its pass starts the delivery; nothing in this Project's pass would.
+      yield* enqueueOther(recipient.projectId);
+      return replyTo;
+    }
     if (
       recipient === null ||
       recipient.deletedAt !== null ||
@@ -401,6 +431,7 @@ export const make = Effect.gen(function* () {
       queued.add(projectId);
       return worker.enqueue(projectId);
     });
+  enqueueOther = enqueue;
 
   /**
    * Queues a pass for the Project of `threadId`, resolving archived and

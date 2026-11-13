@@ -1,7 +1,16 @@
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  TaskSyncError,
+  TaskSyncRequestCodeInput,
+  TaskSyncSetPreviewInput,
+  TaskSyncStatus,
+  TaskSyncUrlResult,
+  TaskSyncVerifyInput,
+} from "./taskSync.ts";
+import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { AssistantEnsureError } from "./assistantSettings.ts";
 import { AgentMachinesError, AgentMachinesInput, AgentMachinesResult } from "./agentPlacement.ts";
 import {
   GlobalInstructionsError,
@@ -93,7 +102,9 @@ import {
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
   ClientOrchestrationCommand,
+  ModelSelection,
   ORCHESTRATION_WS_METHODS,
+  RuntimeMode,
   OrchestrationDispatchCommandError,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffInput,
@@ -295,6 +306,16 @@ export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
 
+  // Task Sync methods
+  taskSyncStatus: "taskSync.status",
+  taskSyncRequestCode: "taskSync.requestCode",
+  taskSyncVerify: "taskSync.verify",
+  taskSyncSignOut: "taskSync.signOut",
+  taskSyncCheckout: "taskSync.checkout",
+  taskSyncPortal: "taskSync.portal",
+  taskSyncNow: "taskSync.syncNow",
+  taskSyncSetPreview: "taskSync.setPreview",
+
   // Project schedule methods
   schedulesStatus: "schedules.status",
   schedulesRun: "schedules.run",
@@ -395,6 +416,7 @@ export const WS_METHODS = {
   serverSignalProcess: "server.signalProcess",
   serverAgentMachines: "server.agentMachines",
   serverGlobalInstructions: "server.globalInstructions",
+  serverAssistantEnsure: "server.assistantEnsure",
   serverReportClientActivity: "server.reportClientActivity",
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
@@ -679,6 +701,26 @@ const WsServerGlobalInstructionsRpc = Rpc.make(WS_METHODS.serverGlobalInstructio
   payload: GlobalInstructionsInput,
   success: GlobalInstructionsResult,
   error: Schema.Union([EnvironmentAuthorizationError, GlobalInstructionsError]),
+});
+
+/** Creates the cross-Project Assistant on first use; returns the existing one otherwise. */
+export const AssistantEnsureInput = Schema.Struct({
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+});
+export type AssistantEnsureInput = typeof AssistantEnsureInput.Type;
+
+export const AssistantEnsureResult = Schema.Struct({
+  projectId: ProjectId,
+  threadId: ThreadId,
+  created: Schema.Boolean,
+});
+export type AssistantEnsureResult = typeof AssistantEnsureResult.Type;
+
+const WsServerAssistantEnsureRpc = Rpc.make(WS_METHODS.serverAssistantEnsure, {
+  payload: AssistantEnsureInput,
+  success: AssistantEnsureResult,
+  error: Schema.Union([EnvironmentAuthorizationError, AssistantEnsureError]),
 });
 
 const WsCloudGetRelayClientStatusRpc = Rpc.make(WS_METHODS.cloudGetRelayClientStatus, {
@@ -967,6 +1009,42 @@ const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
+});
+
+const TaskSyncRpcError = Schema.Union([TaskSyncError, EnvironmentAuthorizationError]);
+const WsTaskSyncStatusRpc = Rpc.make(WS_METHODS.taskSyncStatus, {
+  success: TaskSyncStatus,
+  error: TaskSyncRpcError,
+});
+const WsTaskSyncRequestCodeRpc = Rpc.make(WS_METHODS.taskSyncRequestCode, {
+  payload: TaskSyncRequestCodeInput,
+  error: TaskSyncRpcError,
+});
+const WsTaskSyncVerifyRpc = Rpc.make(WS_METHODS.taskSyncVerify, {
+  payload: TaskSyncVerifyInput,
+  success: TaskSyncStatus,
+  error: TaskSyncRpcError,
+});
+const WsTaskSyncSignOutRpc = Rpc.make(WS_METHODS.taskSyncSignOut, {
+  success: TaskSyncStatus,
+  error: TaskSyncRpcError,
+});
+const WsTaskSyncCheckoutRpc = Rpc.make(WS_METHODS.taskSyncCheckout, {
+  success: TaskSyncUrlResult,
+  error: TaskSyncRpcError,
+});
+const WsTaskSyncPortalRpc = Rpc.make(WS_METHODS.taskSyncPortal, {
+  success: TaskSyncUrlResult,
+  error: TaskSyncRpcError,
+});
+const WsTaskSyncNowRpc = Rpc.make(WS_METHODS.taskSyncNow, {
+  success: TaskSyncStatus,
+  error: TaskSyncRpcError,
+});
+const WsTaskSyncSetPreviewRpc = Rpc.make(WS_METHODS.taskSyncSetPreview, {
+  payload: TaskSyncSetPreviewInput,
+  success: TaskSyncStatus,
+  error: TaskSyncRpcError,
 });
 
 const WsSchedulesStatusRpc = Rpc.make(WS_METHODS.schedulesStatus, {
@@ -1451,6 +1529,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerSignalProcessRpc,
   WsServerAgentMachinesRpc,
   WsServerGlobalInstructionsRpc,
+  WsServerAssistantEnsureRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,
@@ -1495,6 +1574,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchContentsRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
+  WsTaskSyncStatusRpc,
+  WsTaskSyncRequestCodeRpc,
+  WsTaskSyncVerifyRpc,
+  WsTaskSyncSignOutRpc,
+  WsTaskSyncCheckoutRpc,
+  WsTaskSyncPortalRpc,
+  WsTaskSyncNowRpc,
+  WsTaskSyncSetPreviewRpc,
   WsSchedulesStatusRpc,
   WsSchedulesRunRpc,
   WsShellOpenInEditorRpc,

@@ -17,6 +17,7 @@ import { useResolveClassNames } from "uniwind";
 import { AppText as Text } from "./components/AppText";
 import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
 import { SettledThreadsRouteScreen } from "./features/home/SettledThreadsRouteScreen";
+import { AssistantNeedsYouRouteScreen } from "./features/assistant/AssistantNeedsYouRouteScreen";
 import { useAgentNotificationNavigation } from "./features/agent-awareness/notificationNavigation";
 import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboardingRouteScreen";
 import { useConnectOnboardingNavigation } from "./features/cloud/connectOnboardingNavigation";
@@ -30,6 +31,12 @@ import {
 import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentComposerSheet";
 import { ReviewSheet } from "./features/review/ReviewSheet";
 import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
+import { ProjectStatusRouteScreen } from "./features/status/ProjectStatusRouteScreen";
+import { ControlPlanePushWorker } from "./features/push/ControlPlanePush";
+import { PlanTasksScreen } from "./features/tasks/PlanTasksScreen";
+import { TaskHandoffWorker } from "./features/tasks/taskHandoff";
+import { TaskMoveSheet } from "./features/tasks/TaskMoveSheet";
+import { TaskQuickAddSheet } from "./features/tasks/TaskQuickAddSheet";
 import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
@@ -81,6 +88,7 @@ import { SettingsProjectOverviewRouteScreen } from "./features/settings/Settings
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
 import { SettingsAboutRouteScreen } from "./features/settings/SettingsAboutRouteScreen";
+import { TaskSyncSettingsRouteScreen } from "./features/tasks/TaskSyncSettingsRouteScreen";
 import { SettingsNotificationsRouteScreen } from "./features/settings/SettingsNotificationsRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
 import { SettingsThreadsRouteScreen } from "./features/settings/SettingsThreadsRouteScreen";
@@ -218,6 +226,11 @@ const SettingsContentStack = createNativeStackNavigator({
       screen: SettingsAboutRouteScreen,
       linking: "about",
       options: { title: "About Control Plane" },
+    }),
+    SettingsTaskSync: createNativeStackScreen({
+      screen: TaskSyncSettingsRouteScreen,
+      linking: "task-sync",
+      options: { title: "Task Sync" },
     }),
     SettingsEnvironmentNew: createNativeStackScreen({
       screen: ConnectionsNewRouteScreen,
@@ -475,7 +488,10 @@ const WORKSPACE_OVERLAY_ROUTES = new Set([
   "GitOverview",
   "NewTaskSheet",
   "ProjectSheet",
+  "ProjectStatus",
   "SettingsLegal",
+  "TaskMove",
+  "TaskQuickAdd",
   "SettingsSheet",
   "ThreadReviewComment",
   "ThreadSettingsSheet",
@@ -544,6 +560,8 @@ function RootStackLayout(props: {
   return (
     <HardwareKeyboardCommandProvider pathname={pathname}>
       <ThreadOutboxDrainWorker />
+      <ControlPlanePushWorker />
+      <TaskHandoffWorker />
       <ShowcaseCaptureCoordinator pathname={pathname} />
       <ExistingThreadSettingsRouteProvider>
         <AdaptiveWorkspaceLayout
@@ -620,10 +638,60 @@ export const RootStack = createNativeStackNavigator({
       linking: THREAD_LINKING_PREFIX,
       options: GLASS_HEADER_OPTIONS,
     }),
+    // Personal tasks (Today, Week, Month, Year, all Tasks). "Plan" in code to
+    // stay apart from the thread list's workspace folders.
+    PlanTasks: createNativeStackScreen({
+      screen: PlanTasksScreen,
+      linking: "tasks",
+      options: { headerShown: false, title: "Tasks" },
+    }),
+    TaskMove: createNativeStackScreen({
+      screen: TaskMoveSheet,
+      options: {
+        headerShown: false,
+        gestureEnabled: true,
+        ...(Platform.OS === "android"
+          ? { presentation: "card" as const }
+          : {
+              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              sheetAllowedDetents: [0.92],
+              sheetGrabberVisible: true,
+            }),
+      },
+    }),
+    TaskQuickAdd: createNativeStackScreen({
+      screen: TaskQuickAddSheet,
+      options: {
+        headerShown: false,
+        gestureEnabled: true,
+        ...(Platform.OS === "android"
+          ? { presentation: "fullScreenModal" as const }
+          : {
+              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              sheetAllowedDetents: "fitToContents" as const,
+              sheetGrabberVisible: true,
+            }),
+      },
+    }),
+    // The coordinator's Status board, full screen over its thread (phone).
+    ProjectStatus: createNativeStackScreen({
+      screen: ProjectStatusRouteScreen,
+      linking: "projects/:environmentId/:projectId/status",
+      options: {
+        headerShown: false,
+        gestureEnabled: true,
+        presentation: Platform.OS === "android" ? ("card" as const) : ("fullScreenModal" as const),
+      },
+    }),
     Settled: createNativeStackScreen({
       screen: SettledThreadsRouteScreen,
       linking: "settled",
       options: { ...GLASS_HEADER_OPTIONS, title: "Settled" },
+    }),
+    AssistantNeedsYou: createNativeStackScreen({
+      screen: AssistantNeedsYouRouteScreen,
+      linking: "assistant/needs-you/:environmentId",
+      options: { ...GLASS_HEADER_OPTIONS, title: "Needs you" },
     }),
     ThreadTerminal: createNativeStackScreen({
       screen: ThreadTerminalRouteScreen,

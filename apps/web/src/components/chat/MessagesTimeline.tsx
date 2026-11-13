@@ -1,4 +1,5 @@
 import { ArrowUpIcon, ClockIcon, ReplyIcon } from "lucide-react";
+import { AssistantTimelineCard } from "../assistant/AssistantTimelineCards";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
@@ -4914,6 +4915,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 }) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry, displayLabel } = props;
+  if (workEntry.assistantCard !== undefined) {
+    return <AssistantTimelineCard workEntry={workEntry} />;
+  }
   // Before any hooks: spawn rows render their own component.
   if (workEntry.agentSpawn) {
     return (

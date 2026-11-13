@@ -10,6 +10,7 @@ import {
   PROJECT_STATUS_WHY_MAX,
   ProjectStatus,
   ProjectStatusId,
+  Task,
   ProjectStatusState,
   PROJECT_SCHEDULE_NAME_MAX,
   PROJECT_SCHEDULE_PROMPT_MAX,
@@ -211,6 +212,13 @@ export const StatusToolError = Schema.Union([
   AgentToolFailedError,
 ]);
 export type StatusToolError = typeof StatusToolError.Type;
+
+export const TaskToolError = Schema.Union([
+  McpCapabilityUnavailableError,
+  StatusCoordinatorOnlyError,
+  AgentToolFailedError,
+]);
+export type TaskToolError = typeof TaskToolError.Type;
 
 const AgentRef = TrimmedNonEmptyString.annotate({
   description: "The agent's threadId (preferred) or its exact title.",
@@ -518,6 +526,45 @@ export type StatusSetResult = typeof StatusSetResult.Type;
 export const StatusListResult = Schema.Struct({ statuses: Schema.Array(ProjectStatus) });
 export type StatusListResult = typeof StatusListResult.Type;
 
+export const TaskProposeInput = Schema.Struct({
+  title: TrimmedNonEmptyString.annotate({
+    description:
+      "A short imperative title, such as 'Confirm Stripe retry email copy'. At most 200 characters.",
+  }),
+  when: Schema.Literals(["today", "tomorrow", "this-week", "this-month", "backlog"])
+    .annotate({
+      description: "When the user should do it. Defaults to this-week.",
+    })
+    .pipe(Schema.optional),
+  notes: Schema.optional(
+    Schema.String.annotate({
+      description: "Optional context the user sees when opening the task.",
+    }),
+  ),
+  statusId: Schema.optional(
+    ProjectStatusId.annotate({
+      description: "The Status workstream this task belongs to, if any.",
+    }),
+  ),
+});
+export type TaskProposeInput = typeof TaskProposeInput.Type;
+
+export const TaskProposeResult = Schema.Struct({
+  task: Task,
+  proposed: Schema.Int.annotate({
+    description: "Proposals from this Project now waiting on the user.",
+  }),
+});
+export type TaskProposeResult = typeof TaskProposeResult.Type;
+
+export const TaskListResult = Schema.Struct({
+  tasks: Schema.Array(Task).annotate({
+    description:
+      "Open tasks linked to this Project, plus your proposals still waiting. A task with a proposal and no acceptedAt is not on the user's list yet.",
+  }),
+});
+export type TaskListResult = typeof TaskListResult.Type;
+
 const AgentCreateTool = Tool.make("cp_agent_create", {
   description:
     "Start an agent in this Project with a first message. Its final message comes back to you, and it stays available for follow-ups. Only the coordinator settles a one-off agent with cp_agent_settle once its work is complete and no follow-ups remain. It may run on another linked machine, per the user's settings.",
@@ -665,6 +712,33 @@ const StatusSetTool = Tool.make("cp_status_set", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const TaskListTool = Tool.make("cp_task_list", {
+  description:
+    "List the user's open tasks linked to this Project, and your proposed tasks still waiting for the user.",
+  success: TaskListResult,
+  failure: TaskToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "List tasks")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const TaskProposeTool = Tool.make("cp_task_propose", {
+  description:
+    "Propose a task for the user's own list: something only they should do. It shows as a proposal until the user adds or dismisses it; you cannot add it for them.",
+  parameters: TaskProposeInput,
+  success: TaskProposeResult,
+  failure: TaskToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Propose a task")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 export const AgentsToolkit = Toolkit.make(
   AgentCreateTool,
   AgentListTool,
@@ -677,4 +751,6 @@ export const AgentsToolkit = Toolkit.make(
   ScheduleDeleteTool,
   StatusListTool,
   StatusSetTool,
+  TaskListTool,
+  TaskProposeTool,
 );

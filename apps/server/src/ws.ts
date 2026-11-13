@@ -2,6 +2,7 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
+import { ensureAssistant } from "./assistant/ensureAssistant.ts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -68,6 +69,8 @@ import {
   AssetWorkspaceContextResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  TaskHorizon,
+  TaskId,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -135,6 +138,7 @@ import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import { readWorkflowScript } from "./orchestration/workflowScriptQuery.ts";
 import { ScheduleService } from "./schedules/ScheduleService.ts";
+import { TaskSyncService } from "./taskSync/TaskSyncService.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -165,6 +169,7 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
 import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { getTask, getTaskIntent } from "./persistence/ProjectionTasks.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
@@ -632,6 +637,7 @@ const makeWsRpcLayer = (
       >();
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const scheduleService = yield* ScheduleService;
+      const taskSync = yield* TaskSyncService;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -851,6 +857,49 @@ const makeWsRpcLayer = (
       });
       type ShellEvent = ReturnType<typeof toShellEvent>;
 
+      const taskUpsertOrRemove = (
+        taskId: string,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
+        getTask(sql, taskId).pipe(
+          Effect.map((task) =>
+            Option.some(
+              task === null
+                ? { kind: "task-removed" as const, sequence, taskId: TaskId.make(taskId) }
+                : { kind: "task-upserted" as const, sequence, task },
+            ),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to read a task for the shell stream", cause).pipe(
+              Effect.as(Option.none()),
+            ),
+          ),
+        );
+
+      const taskIntentUpsertOrRemove = (
+        intentKey: string,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> => {
+        const match = /^intent-(week|month|year)-(\d{4}-\d{2}-\d{2})$/.exec(intentKey);
+        if (match === null) return Effect.succeed(Option.none());
+        const horizon = match[1] as TaskHorizon;
+        const startsOn = match[2]!;
+        return getTaskIntent(sql, horizon, startsOn).pipe(
+          Effect.map((intent) =>
+            Option.some(
+              intent === null
+                ? { kind: "task-intent-removed" as const, sequence, horizon, startsOn }
+                : { kind: "task-intent-upserted" as const, sequence, intent },
+            ),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to read a task intent for the shell stream", cause).pipe(
+              Effect.as(Option.none()),
+            ),
+          ),
+        );
+      };
+
       const toShellStreamEvent = (
         event: ShellEvent,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> => {
@@ -879,6 +928,10 @@ const makeWsRpcLayer = (
             );
           case "thread.unarchived":
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
+          case "task.updated":
+            return taskUpsertOrRemove(event.aggregateId, event.sequence);
+          case "task.intent-updated":
+            return taskIntentUpsertOrRemove(event.aggregateId, event.sequence);
           default:
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
@@ -2661,6 +2714,17 @@ const makeWsRpcLayer = (
             manageGlobalInstructions(config.stateDir, input),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverAssistantEnsure]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverAssistantEnsure,
+            ensureAssistant({
+              stateDir: config.stateDir,
+              request: input,
+              engine: orchestrationEngine,
+              snapshots: projectionSnapshotQuery,
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverReportClientActivity]: (input, metadata) =>
           Ref.update(rpcClientIds, (clientIds) => {
             const next = new Set(clientIds);
@@ -3103,6 +3167,38 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.taskSyncStatus]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncStatus, taskSync.status, {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncRequestCode]: (input) =>
+          observeRpcEffect(WS_METHODS.taskSyncRequestCode, taskSync.requestCode(input.email), {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncVerify]: (input) =>
+          observeRpcEffect(WS_METHODS.taskSyncVerify, taskSync.verify(input.email, input.code), {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncSignOut]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncSignOut, taskSync.signOut, {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncCheckout]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncCheckout, taskSync.checkoutUrl, {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncPortal]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncPortal, taskSync.portalUrl, {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncNow]: () =>
+          observeRpcEffect(WS_METHODS.taskSyncNow, taskSync.syncNow, {
+            "rpc.aggregate": "orchestration",
+          }),
+        [WS_METHODS.taskSyncSetPreview]: (input) =>
+          observeRpcEffect(WS_METHODS.taskSyncSetPreview, taskSync.setPreview(input.enabled), {
+            "rpc.aggregate": "orchestration",
+          }),
         [WS_METHODS.schedulesStatus]: (input) =>
           observeRpcEffect(WS_METHODS.schedulesStatus, scheduleService.status(input.projectId), {
             "rpc.aggregate": "orchestration",
