@@ -24,7 +24,7 @@ import {
   RepeatIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useState, type DragEvent, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -88,8 +88,10 @@ export function TaskCheckbox(props: {
   );
 }
 
-function rowMeta(task: Task, today: string): string | null {
+function rowMeta(task: Task, today: string, hidePeriod: boolean): string | null {
   if (task.recurrence !== undefined) return formatTaskRecurrence(task.recurrence);
+  // A commitment list already says which period its rows belong to.
+  if (hidePeriod && task.home.kind === "period") return null;
   if (task.home.kind === "date" && task.home.date === today) {
     return task.home.reminderTime !== undefined ? formatTaskTime(task.home.reminderTime) : null;
   }
@@ -178,6 +180,7 @@ export function TaskRow(props: {
   readonly onDrop?: (event: DragEvent<HTMLLIElement>) => void;
   readonly dropIndicator?: "before" | "after" | null;
   readonly dimmed?: boolean;
+  readonly hidePeriod?: boolean;
 }) {
   const { task, state, context, expanded } = props;
   const navigate = useNavigate();
@@ -188,7 +191,7 @@ export function TaskRow(props: {
       : project?.assistant?.statuses?.find((s) => s.id === task.links!.statusId);
   const completed = task.status === "completed";
   const overdue = isTaskOverdue(task, context.today);
-  const meta = rowMeta(task, context.today);
+  const meta = rowMeta(task, context.today, props.hidePeriod === true);
   const agentActive = state.kind === "agent-working" || state.kind === "handed-off";
 
   const openThread = (threadId: ThreadId) => {
@@ -233,7 +236,7 @@ export function TaskRow(props: {
             onToggle={() => void context.actions.setCompleted(task, !completed)}
           />
           {expanded ? (
-            <TitleInput task={task} context={context} />
+            <TitleInput key={task.title} task={task} context={context} />
           ) : (
             <button
               type="button"
@@ -300,8 +303,8 @@ export function TaskRow(props: {
 }
 
 function TitleInput(props: { readonly task: Task; readonly context: TaskRowContext }) {
+  // Keyed on the stored title by the caller, so a remote rename resets it.
   const [value, setValue] = useState(props.task.title);
-  useEffect(() => setValue(props.task.title), [props.task.title]);
   const commit = () => {
     const title = value.trim();
     if (title.length === 0 || title === props.task.title) {
@@ -330,22 +333,14 @@ function TitleInput(props: { readonly task: Task; readonly context: TaskRowConte
 }
 
 function NotesInput(props: { readonly task: Task; readonly context: TaskRowContext }) {
+  // Keyed on the stored notes by the caller, so a remote edit resets it.
   const [value, setValue] = useState(props.task.notes ?? "");
-  useEffect(() => setValue(props.task.notes ?? ""), [props.task.notes]);
-  const ref = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const element = ref.current;
-    if (element === null) return;
-    element.style.height = "0px";
-    element.style.height = `${element.scrollHeight}px`;
-  }, [value]);
   return (
     <textarea
-      ref={ref}
       aria-label="Notes"
       placeholder="Notes"
       rows={1}
-      className="w-full resize-none bg-transparent text-[13px] text-muted-foreground leading-relaxed outline-none placeholder:text-muted-foreground/60"
+      className="w-full resize-none bg-transparent text-[13px] text-muted-foreground leading-relaxed outline-none [field-sizing:content] placeholder:text-muted-foreground/60"
       value={value}
       maxLength={4000}
       onChange={(event) => setValue(event.target.value)}
@@ -374,7 +369,7 @@ function ExpandedTask(props: {
   const statuses = project?.assistant?.statuses ?? [];
   return (
     <div className="flex flex-col gap-2 ps-6.5 pt-1.5">
-      <NotesInput task={task} context={context} />
+      <NotesInput key={task.notes ?? ""} task={task} context={context} />
       <div className="flex flex-wrap items-center gap-1">
         <TaskMoveMenu
           home={task.home}

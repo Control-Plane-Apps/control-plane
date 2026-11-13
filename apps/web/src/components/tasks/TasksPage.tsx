@@ -24,7 +24,7 @@ import {
 } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { CheckIcon, ChevronDownIcon, ListFilterIcon } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
@@ -121,8 +121,8 @@ function IntentEditor(props: {
   readonly className?: string;
   readonly onSave: (text: string) => void;
 }) {
+  // Keyed on the stored text by callers, so a remote edit resets it.
   const [value, setValue] = useState(props.intent?.text ?? "");
-  useEffect(() => setValue(props.intent?.text ?? ""), [props.intent?.text]);
   return (
     <textarea
       aria-label={props.placeholder}
@@ -208,7 +208,12 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
       search: tasksSearch(search, { project: project ?? undefined }),
     });
 
-  const list = (items: ReadonlyArray<Task>, label: string, reorderable = true) => (
+  const list = (
+    items: ReadonlyArray<Task>,
+    label: string,
+    reorderable = true,
+    hidePeriod = false,
+  ) => (
     <TaskList
       tasks={items}
       context={context}
@@ -216,6 +221,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
       expandedId={expandedId}
       onToggle={toggle}
       reorderable={reorderable}
+      hidePeriod={hidePeriod}
       label={label}
     />
   );
@@ -269,6 +275,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
       <>
         <AsideSection title="This week's intent">
           <IntentEditor
+            key={weekIntent?.text ?? ""}
             intent={weekIntent}
             placeholder="Set this week's intent"
             className="text-sm"
@@ -297,13 +304,14 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
           {formatTaskRange(period.startsOn, period.endsOn)}
         </p>
         <IntentEditor
+          key={taskIntentFor(intents, horizon, today)?.text ?? ""}
           intent={taskIntentFor(intents, horizon, today)}
           placeholder={`Set this ${horizon}'s intent`}
           className="pt-4 text-[15px]"
           onSave={saveIntent(horizon)}
         />
         <TasksSectionLabel>Committed</TasksSectionLabel>
-        {list(committed, "Committed")}
+        {list(committed, "Committed", true, true)}
         <AddTaskRow label="Add a commitment" onAdd={add({ kind: "period", horizon, ...period })} />
       </>
     );
@@ -312,6 +320,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
         {parent !== null ? (
           <AsideSection title={`This ${parent}'s intent`}>
             <IntentEditor
+              key={taskIntentFor(intents, parent, today)?.text ?? ""}
               intent={taskIntentFor(intents, parent, today)}
               placeholder={`Set this ${parent}'s intent`}
               className="text-sm"
@@ -363,6 +372,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
       <>
         <AsideSection title="This week's intent">
           <IntentEditor
+            key={weekIntent?.text ?? ""}
             intent={weekIntent}
             placeholder="Set this week's intent"
             className="text-sm"

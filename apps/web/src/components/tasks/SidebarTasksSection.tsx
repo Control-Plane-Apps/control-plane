@@ -103,7 +103,6 @@ export function SidebarTasksSection() {
         <button
           type="button"
           aria-label="Add task"
-          title="Add task"
           className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => openTaskQuickAdd()}
         >

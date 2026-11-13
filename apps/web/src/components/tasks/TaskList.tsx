@@ -5,10 +5,9 @@ import {
   type TaskLifecycleProject,
   type TaskLifecycleThread,
 } from "@t3tools/client-runtime/state/projects";
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import type { Task, TaskHome } from "@t3tools/contracts";
+import type { Task } from "@t3tools/contracts";
 import { ListTodoIcon, PlusIcon, XIcon } from "lucide-react";
-import { useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useState, type DragEvent, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { TASK_DRAG_TYPE, TaskCheckbox, TaskRow, type TaskRowContext } from "./TaskRow";
@@ -31,12 +30,22 @@ export function TaskList(props: {
   /** Reordering writes order keys; off for lists not in the user's own order. */
   readonly reorderable?: boolean;
   readonly label?: string;
+  readonly hidePeriod?: boolean;
 }) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [drop, setDrop] = useState<{
     readonly id: string;
     readonly side: "before" | "after";
   } | null>(null);
+  useEffect(() => {
+    if (dragId === null) return;
+    const reset = () => {
+      setDragId(null);
+      setDrop(null);
+    };
+    window.addEventListener("dragend", reset);
+    return () => window.removeEventListener("dragend", reset);
+  }, [dragId]);
   const lifecycleProjects = props.context.projects as ReadonlyArray<TaskLifecycleProject>;
 
   const onDrop = (target: Task, side: "before" | "after") => {
@@ -71,6 +80,7 @@ export function TaskList(props: {
           context={props.context}
           draggable={task.status === "todo"}
           dimmed={dragId === task.id}
+          hidePeriod={props.hidePeriod === true}
           dropIndicator={drop?.id === task.id ? drop.side : null}
           onDragStart={(event: DragEvent<HTMLLIElement>) => {
             event.dataTransfer.setData(TASK_DRAG_TYPE, task.id);
@@ -94,11 +104,6 @@ export function TaskList(props: {
       ))}
     </ul>
   );
-}
-
-/** Clears drag state when a drag ends anywhere (dropped outside, or Escape). */
-export function onTaskDragEnd(reset: () => void) {
-  return () => reset();
 }
 
 export function AddTaskRow(props: {
@@ -260,5 +265,3 @@ function ProposedTaskRow(props: {
 export function TasksSectionLabel(props: { readonly children: ReactNode }) {
   return <h2 className="pt-5 pb-1 text-muted-foreground text-xs">{props.children}</h2>;
 }
-
-export type { EnvironmentProject, TaskHome };

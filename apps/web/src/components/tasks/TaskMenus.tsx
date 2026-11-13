@@ -65,7 +65,7 @@ export function TaskMoveMenu(props: {
       </MenuTrigger>
       <MenuPopup align="start" className="w-48">
         {groups.map((group, index) => (
-          <MenuGroup key={index}>
+          <MenuGroup key={group[0]!.label}>
             {index > 0 ? <MenuSeparator /> : null}
             {group.map((entry) => {
               const checked = isHomeAtTarget(props.home, entry.target, props.today);

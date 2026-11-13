@@ -144,8 +144,8 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
   return (
     <DialogPopup
       showCloseButton={false}
-      className="top-[12vh] max-w-xl self-start p-0"
-      viewportClassName="items-start"
+      className="max-w-xl p-0"
+      viewportClassName="grid-rows-[12vh_auto_1fr]"
       initialFocus={inputRef}
     >
       <DialogTitle className="sr-only">Add task</DialogTitle>
