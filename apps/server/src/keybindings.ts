@@ -119,6 +119,60 @@ function hasSameShortcutContext(left: KeybindingRule, right: KeybindingRule): bo
   return leftContext === rightContext;
 }
 
+/**
+ * Defaults whose keys changed. A persisted rule still on the old default key
+ * moves to the new one, so existing keybinding files pick up the change; a
+ * rule the user rebound is left alone.
+ */
+const MOVED_DEFAULT_KEYBINDINGS: ReadonlyArray<{
+  readonly command: KeybindingRule["command"];
+  readonly from: string;
+  readonly to: string;
+}> = [
+  // Quick add took mod+shift+t (as designed); Settled threads moved to mod+alt+t.
+  { command: "settled.toggle", from: "mod+shift+t", to: "mod+alt+t" },
+  { command: "tasks.quickAdd", from: "mod+alt+t", to: "mod+shift+t" },
+];
+
+export function migrateMovedDefaultKeybindings(config: ReadonlyArray<KeybindingRule>): {
+  readonly config: ReadonlyArray<KeybindingRule>;
+  readonly moved: ReadonlyArray<KeybindingRule["command"]>;
+} {
+  // Apply every move at once (two defaults may swap keys), then undo any move
+  // that lands on a key another rule still holds.
+  const targets = new Map<number, string>();
+  for (const move of MOVED_DEFAULT_KEYBINDINGS) {
+    const index = config.findIndex(
+      (rule) => rule.command === move.command && rule.key === move.from,
+    );
+    if (index !== -1) targets.set(index, move.to);
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const next = config.map((rule, index) => {
+      const key = targets.get(index);
+      return key === undefined ? rule : { ...rule, key };
+    });
+    for (const index of targets.keys()) {
+      const clash = next.some(
+        (rule, other) => other !== index && hasSameShortcutContext(rule, next[index]!),
+      );
+      if (clash) {
+        targets.delete(index);
+        changed = true;
+      }
+    }
+  }
+  return {
+    config: config.map((rule, index) => {
+      const key = targets.get(index);
+      return key === undefined ? rule : { ...rule, key };
+    }),
+    moved: [...targets.keys()].map((index) => config[index]!.command),
+  };
+}
+
 function keybindingRuleFromUpsertInput(input: ServerUpsertKeybindingInput): KeybindingRule {
   return input.when === undefined
     ? { key: input.key, command: input.command }
@@ -469,7 +523,14 @@ const make = Effect.gen(function* () {
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
-      const customConfig = runtimeConfig.keybindings;
+      const migration = migrateMovedDefaultKeybindings(runtimeConfig.keybindings);
+      if (migration.moved.length > 0) {
+        yield* Effect.logInfo("moved keybindings to their new default keys", {
+          path: keybindingsConfigPath,
+          commands: migration.moved,
+        });
+      }
+      const customConfig = migration.config;
       const existingCommands = new Set(customConfig.map((entry) => entry.command));
       const missingDefaults: KeybindingRule[] = [];
       const shortcutConflictWarnings: Array<{
@@ -507,6 +568,7 @@ const make = Effect.gen(function* () {
         });
       }
       if (missingDefaults.length === 0) {
+        if (migration.moved.length > 0) yield* writeConfigAtomically(customConfig);
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
@@ -536,6 +598,7 @@ const make = Effect.gen(function* () {
         });
       }
       if (defaultsToAppend.length === 0) {
+        if (migration.moved.length > 0) yield* writeConfigAtomically(customConfig);
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }

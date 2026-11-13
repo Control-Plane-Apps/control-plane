@@ -91,9 +91,12 @@ import { RemoteAgentsLive } from "./agentMachines/RemoteAgents.ts";
 import { RemoteAgentStoreLive } from "./agentMachines/RemoteAgentStore.ts";
 import * as AgentCompletionReactor from "./orchestration/AgentCompletionReactor.ts";
 import * as StatusDeadlineReactor from "./orchestration/StatusDeadlineReactor.ts";
+import * as PushNotifier from "./push/PushNotifier.ts";
+import { pushActionRouteLayer, pushDevicesRouteLayer } from "./push/routes.ts";
 import * as ScheduleHost from "./schedules/ScheduleHost.ts";
 import * as ScheduleRunner from "./schedules/ScheduleRunner.ts";
 import * as ScheduleService from "./schedules/ScheduleService.ts";
+import * as TaskSync from "./taskSync/TaskSyncService.ts";
 import { scheduleFireRouteLayer } from "./schedules/fireRoute.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
@@ -254,7 +257,7 @@ const HttpServerLive = Layer.unwrap(
 
 const PlatformServicesLive = NodeServices.layer;
 
-const ReactorLayerLive = Layer.empty.pipe(
+const BaseReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
@@ -280,6 +283,12 @@ const ReactorLayerLive = Layer.empty.pipe(
       : AgentAwarenessRelay.layerDisabled,
   ),
   Layer.provideMerge(RuntimeReceiptBusLive),
+);
+
+// Pipe arity tops out at 20 steps; Task Sync rides one more.
+const ReactorLayerLive = BaseReactorLayerLive.pipe(
+  Layer.provideMerge(PushNotifier.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+  Layer.provideMerge(TaskSync.layer),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
@@ -610,6 +619,8 @@ export const makeRoutesLayer = Layer.mergeAll(
     assetRouteLayer,
     attachmentUploadRouteLayer,
     scheduleFireRouteLayer,
+    pushDevicesRouteLayer,
+    pushActionRouteLayer,
     deviceHubProxyRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,

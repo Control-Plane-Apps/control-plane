@@ -229,6 +229,7 @@ import { AgentsPanel } from "./AgentsPanel";
 import { SchedulesPanel } from "./schedules/SchedulesPanel";
 import { ProjectStatusPanel } from "./status/ProjectStatusPanel";
 import { StatusReplyChip, useStatusComposerBanner } from "./status/StatusComposerStrip";
+import { ThreadTaskBar } from "./tasks/ThreadTaskBar";
 import {
   ASK_FOR_UPDATE_PROMPT,
   isRecommendationPending,
@@ -10182,6 +10183,13 @@ export default function ChatView(props: ChatViewProps) {
             />
           )}
         </WorkspacePageHeader>
+        {isServerThread ? (
+          <ThreadTaskBar
+            threadId={activeThread.id}
+            project={activeProject}
+            isCoordinator={assistantRole === "coordinator"}
+          />
+        ) : null}
 
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">

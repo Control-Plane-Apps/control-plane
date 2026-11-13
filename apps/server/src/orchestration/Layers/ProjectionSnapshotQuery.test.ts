@@ -371,7 +371,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       let sequence = 5;
       for (const projector of Object.values(ORCHESTRATION_PROJECTOR_NAMES)) {
         yield* sql`
-          INSERT INTO projection_state (
+          INSERT OR REPLACE INTO projection_state (
             projector,
             last_applied_sequence,
             updated_at
@@ -1024,7 +1024,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       `;
 
       yield* sql`
-        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        INSERT OR REPLACE INTO projection_state (projector, last_applied_sequence, updated_at)
         VALUES
           (${ORCHESTRATION_PROJECTOR_NAMES.projects}, 4, '2026-04-06T00:00:07.000Z'),
           (${ORCHESTRATION_PROJECTOR_NAMES.threads}, 4, '2026-04-06T00:00:07.000Z'),
@@ -1186,7 +1186,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       `;
 
       yield* sql`
-        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        INSERT OR REPLACE INTO projection_state (projector, last_applied_sequence, updated_at)
         VALUES
           (${ORCHESTRATION_PROJECTOR_NAMES.projects}, 4, '2026-04-06T00:00:07.000Z'),
           (${ORCHESTRATION_PROJECTOR_NAMES.threads}, 4, '2026-04-06T00:00:07.000Z'),
@@ -1981,7 +1981,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       `;
 
       yield* sql`
-        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        INSERT OR REPLACE INTO projection_state (projector, last_applied_sequence, updated_at)
         VALUES
           (${ORCHESTRATION_PROJECTOR_NAMES.projects}, 3, '2026-04-03T00:00:40.000Z'),
           (${ORCHESTRATION_PROJECTOR_NAMES.threads}, 3, '2026-04-03T00:00:40.000Z'),
@@ -2617,7 +2617,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
 
     for (const projector of Object.values(ORCHESTRATION_PROJECTOR_NAMES)) {
       yield* sql`
-        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        INSERT OR REPLACE INTO projection_state (projector, last_applied_sequence, updated_at)
         VALUES (${projector}, 42, '2026-03-01T00:00:10.000Z')
       `;
     }
@@ -3199,7 +3199,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
       `;
       for (const projector of Object.values(ORCHESTRATION_PROJECTOR_NAMES)) {
         yield* sql`
-          INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+          INSERT OR REPLACE INTO projection_state (projector, last_applied_sequence, updated_at)
           VALUES (${projector}, 7, '2026-03-02T00:00:01.000Z')
         `;
       }
@@ -3546,7 +3546,7 @@ it.effect("reads one sweep thread and its projects like the shell snapshot", () 
     yield* sql`INSERT INTO projection_thread_sessions (thread_id, status, provider_name, active_turn_id, last_error, updated_at)
       VALUES ('t-linked', 'ready', 'codex', NULL, NULL, '2026-09-02T00:00:03Z')`;
     for (const projector of Object.values(ORCHESTRATION_PROJECTOR_NAMES)) {
-      yield* sql`INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+      yield* sql`INSERT OR REPLACE INTO projection_state (projector, last_applied_sequence, updated_at)
         VALUES (${projector}, 9, '2026-09-02T00:00:03Z')`;
     }
 

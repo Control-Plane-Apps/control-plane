@@ -1,10 +1,10 @@
 import { resolveSidebarThreadStatus } from "@t3tools/client-runtime/state/thread-status";
 import {
   PROJECT_STATUS_STALE_MS,
+  STATUS_RECOMMENDATION_BODY_PREFIX,
   isAutoAcceptArmed,
   parseStatusReply,
   sortProjectStatuses,
-  statusReplyText,
   visibleProjectStatuses,
   type OrchestrationThreadShell,
   type ProjectStatus,
@@ -218,18 +218,8 @@ export function describeLiveAgent(
 
 export const ASK_FOR_UPDATE_PROMPT = "Any update?";
 
-const RECOMMENDATION_BODY_PREFIX = "Go with your recommendation:";
-
-/** The message "Go with recommendation" sends, naming the workstream and the question's version. */
-export function recommendationReplyText(
-  status: Pick<ProjectStatus, "id" | "title">,
-  decision: Pick<ProjectStatusDecision, "recommendation" | "openedAt">,
-): string {
-  return statusReplyText(status.title, `${RECOMMENDATION_BODY_PREFIX} ${decision.recommendation}`, {
-    statusId: status.id,
-    openedAt: decision.openedAt,
-  });
-}
+// Shared with the server, which sends the same answer from an iPhone notification.
+export { recommendationReplyText } from "@t3tools/contracts";
 
 /** `<statusId>@<revision>`: one version of one workstream's question. */
 export function recommendationKey(
@@ -246,7 +236,7 @@ export function recommendationKeyOfText(text: string): string | null {
     reply === null ||
     reply.statusId === undefined ||
     reply.revision === undefined ||
-    !reply.body.startsWith(RECOMMENDATION_BODY_PREFIX)
+    !reply.body.startsWith(STATUS_RECOMMENDATION_BODY_PREFIX)
   ) {
     return null;
   }

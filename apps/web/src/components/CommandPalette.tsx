@@ -47,6 +47,7 @@ import {
   ArrowLeftIcon,
   ChartNoAxesColumnIcon,
   CircleCheckIcon,
+  ListPlusIcon,
   ClockIcon,
   ListChecksIcon,
   CornerLeftUpIcon,
@@ -173,6 +174,7 @@ import { searchSettings, SETTINGS_SECTION_LABELS } from "./settings/settingsSear
 import { ThreadCommandSubtitle } from "./ThreadCommandSubtitle";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
 import { primaryServerKeybindingsAtom, primaryServerProvidersAtom } from "../state/server";
+import { openTaskQuickAdd } from "./tasks/QuickAddDialog";
 import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../providerInstances";
 import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
 import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/command";
@@ -1886,6 +1888,18 @@ function OpenCommandPaletteDialog(props: {
     shortcutCommand: "usage.toggle",
     run: async () => {
       await navigate({ to: "/usage" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:add-task",
+    searchTerms: ["task", "todo", "quick add", "add task", "new task"],
+    title: "Add a task",
+    icon: <ListPlusIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "tasks.quickAdd",
+    run: async () => {
+      openTaskQuickAdd();
     },
   });
 

@@ -8,6 +8,7 @@ import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-native";
 import {
   agentMessageToolLabel,
+  parseStatusReply,
   isAgentOriginatedUserMessage,
   type ChatAttachment,
   type ChatFileAttachment,
@@ -64,6 +65,7 @@ import {
   useRef,
   useState,
   useId,
+  type ReactElement,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -286,6 +288,8 @@ export interface ThreadFeedProps {
   readonly listHeader?: ReactNode;
   /** Extra content drawn under an entry (the Assistant's ask cards). */
   readonly renderEntryAccessory?: (entry: { readonly id: string }) => ReactNode;
+  /** Rendered after the last row, inside the scroll content. */
+  readonly footer?: ReactElement | null;
 }
 
 const USER_IMAGE_THUMBNAIL_SIZE = 112;
@@ -1947,7 +1951,10 @@ function UserMessageContent(props: UserMessageContentProps) {
   const [selected, setSelected] = useState<{ contextId: string; label: string } | null>(null);
   const navigation = useNavigation();
   const { selectedThread } = useThreadSelection();
-  const text = replaceComposerContextReferences(props.text, (ref) => {
+  // A reply sent from Status carries a "Re: <workstream> [status:...]" line;
+  // show it as a quiet Re: label, like the composer chip, not raw text.
+  const statusReply = parseStatusReply(props.text);
+  const text = replaceComposerContextReferences(statusReply?.body ?? props.text, (ref) => {
     const record = props.context?.records.find(
       (candidate) => candidate.contextId === ref.contextId,
     );
@@ -1987,6 +1994,15 @@ function UserMessageContent(props: UserMessageContentProps) {
   };
   return (
     <>
+      {statusReply !== null ? (
+        <Text
+          className="pb-1 text-[13px] text-user-bubble-foreground-muted"
+          numberOfLines={1}
+          accessibilityLabel={`Reply to ${statusReply.title}`}
+        >
+          Re: <Text className="font-t3-bold text-user-bubble-foreground">{statusReply.title}</Text>
+        </Text>
+      ) : null}
       <LegacyUserMessageContent
         {...props}
         text={text}
@@ -3166,6 +3182,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
                 {props.listHeader ?? null}
               </>
             }
+            ListFooterComponent={props.footer ?? null}
             contentContainerStyle={{
               paddingTop: 12,
               paddingHorizontal: contentHorizontalPadding,

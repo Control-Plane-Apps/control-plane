@@ -63,6 +63,7 @@ import {
 } from "./agentScope.ts";
 import { makeScheduleHandlers } from "./scheduleHandlers.ts";
 import { makeStatusHandlers } from "./statusHandlers.ts";
+import { makeTaskHandlers } from "./taskHandlers.ts";
 import {
   AgentAmbiguousError,
   AgentBusyError,
@@ -113,6 +114,7 @@ const make = Effect.gen(function* () {
   const createLock = yield* Semaphore.make(1);
   const scheduleHandlers = yield* makeScheduleHandlers;
   const statusHandlers = yield* makeStatusHandlers;
+  const taskHandlers = yield* makeTaskHandlers;
   const remote = yield* RemoteAgents;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -346,6 +348,7 @@ const make = Effect.gen(function* () {
   return AgentsToolkit.of({
     ...scheduleHandlers,
     ...statusHandlers,
+    ...taskHandlers,
     cp_agent_create: (input) =>
       Effect.gen(function* () {
         const manager = yield* requireManager();

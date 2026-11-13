@@ -111,6 +111,15 @@ export default mergeConfig(
       },
       define: {
         __T3CODE_BUILD_CHANNEL__: JSON.stringify(cliBuildChannel),
+        // Task Sync client key, injected at release time from the build
+        // environment (see apps/server/src/taskSync/config.ts). Never committed.
+        __CPLANE_TASK_SYNC_URL__: JSON.stringify(repoEnv.CPLANE_TASK_SYNC_URL?.trim() ?? ""),
+        __CPLANE_TASK_SYNC_CLIENT_KEY_ID__: JSON.stringify(
+          repoEnv.CPLANE_TASK_SYNC_CLIENT_KEY_ID?.trim() ?? "",
+        ),
+        __CPLANE_TASK_SYNC_CLIENT_SECRET__: JSON.stringify(
+          repoEnv.CPLANE_TASK_SYNC_CLIENT_SECRET?.trim() ?? "",
+        ),
         __T3CODE_BUILD_RELAY_URL__: JSON.stringify(repoEnv.T3CODE_RELAY_URL?.trim() ?? ""),
         __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
           repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
