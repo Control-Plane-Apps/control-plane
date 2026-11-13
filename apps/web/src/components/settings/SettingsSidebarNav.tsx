@@ -23,6 +23,7 @@ import {
   SearchIcon,
   Settings2Icon,
   XIcon,
+  CloudIcon,
 } from "lucide-react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 
@@ -88,6 +89,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/source-control": GitBranchIcon,
   "/settings/storage": HardDriveIcon,
   "/settings/connections": Link2Icon,
+  "/settings/task-sync": CloudIcon,
   "/settings/archived": ArchiveIcon,
 };
 

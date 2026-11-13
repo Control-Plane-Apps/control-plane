@@ -61,7 +61,6 @@ import {
   ClockIcon,
   EyeIcon,
   FolderIcon,
-  FolderOpenIcon,
   FolderPlusIcon,
   GitBranchIcon,
   MessageCircleQuestionIcon,
@@ -281,6 +280,7 @@ import {
   type ComposerThreadDraftState,
   type DraftSessionState,
 } from "../composerDraftStore";
+import { SidebarTasksSection } from "./tasks/SidebarTasksSection";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more.
@@ -1030,6 +1030,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
   /** Alt+Arrow on the focused row moves it one place. Only Project agents. */
   onMove?: ((threadRef: ScopedThreadRef, direction: -1 | 1) => void) | undefined;
+  /** Workspace runs: a finished run shows a check instead of a quiet dot. */
+  finishedMark?: boolean | undefined;
 }) {
   const {
     isRenaming,
@@ -1623,30 +1625,43 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           >
             <span
               role="img"
-              aria-label={topStatus?.label ?? "Ready"}
+              aria-label={topStatus?.label ?? (props.finishedMark ? "Done" : "Ready")}
               className={cn(
                 "flex size-4 shrink-0 items-center justify-center",
                 shouldRecede &&
                   "opacity-50 group-focus-within/sidebar-row:opacity-100 group-hover/sidebar-row:opacity-100",
               )}
             >
-              <span
-                className={cn(
-                  "size-1.5 rounded-full",
-                  status === "working" || status === "monitoring"
-                    ? "bg-info"
-                    : status === "approval" || isWoke
-                      ? "bg-warning"
-                      : status === "input"
-                        ? "bg-attention"
-                        : status === "failed"
-                          ? "bg-error"
-                          : isUnread
-                            ? "bg-success"
-                            : "bg-muted-foreground/40",
-                  status === "working" && "animate-status-pulse",
-                )}
-              />
+              {props.finishedMark === true &&
+              topStatus == null &&
+              !isWoke &&
+              !isUnread &&
+              status !== "working" &&
+              status !== "monitoring" ? (
+                <CheckIcon
+                  aria-hidden
+                  className="size-3 text-success-foreground"
+                  strokeWidth={2.6}
+                />
+              ) : (
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    status === "working" || status === "monitoring"
+                      ? "bg-info"
+                      : status === "approval" || isWoke
+                        ? "bg-warning"
+                        : status === "input"
+                          ? "bg-attention"
+                          : status === "failed"
+                            ? "bg-error"
+                            : isUnread
+                              ? "bg-success"
+                              : "bg-muted-foreground/40",
+                    status === "working" && "animate-status-pulse",
+                  )}
+                />
+              )}
             </span>
             {draftIndicator}
             {title}
@@ -2283,6 +2298,8 @@ const SidebarProjectFolderBlock = memo(function SidebarProjectFolderBlock({
   leadingIcon,
   containsActiveThread,
   rollupThreads,
+  branch,
+  runCount,
   sortable = false,
   consumeToggleSuppression,
   onNewThreadInProject,
@@ -2297,6 +2314,10 @@ const SidebarProjectFolderBlock = memo(function SidebarProjectFolderBlock({
   containsActiveThread: boolean;
   /** Threads a collapsed folder rolls up into its dot. */
   rollupThreads: readonly EnvironmentThreadShell[];
+  /** The branch the folder's latest run is on. */
+  branch?: string | null | undefined;
+  /** Runs inside, shown while collapsed. */
+  runCount?: number | undefined;
   sortable?: boolean;
   consumeToggleSuppression?: () => boolean;
   onNewThreadInProject?: ((project: SidebarProjectSnapshot) => void) | undefined;
@@ -2375,6 +2396,21 @@ const SidebarProjectFolderBlock = memo(function SidebarProjectFolderBlock({
             if (event.button === 0) event.preventDefault();
           }}
         >
+          {leadingIcon ?? (
+            <FolderIcon aria-hidden className="size-3.5 shrink-0 text-sidebar-muted-foreground" />
+          )}
+          <span className="min-w-0 flex-1 truncate">{displayName}</span>
+          {branch ? (
+            <span className="max-w-24 shrink-0 truncate font-mono text-[11px] text-sidebar-muted-foreground">
+              {branch}
+            </span>
+          ) : null}
+          {rollupStatus !== null ? <AssistantStatusDot status={rollupStatus} /> : null}
+          {!expanded && runCount !== undefined && runCount > 0 ? (
+            <span className="shrink-0 text-sidebar-muted-foreground text-xs tabular-nums">
+              {runCount}
+            </span>
+          ) : null}
           <ChevronRightIcon
             aria-hidden
             className={cn(
@@ -2382,16 +2418,6 @@ const SidebarProjectFolderBlock = memo(function SidebarProjectFolderBlock({
               expanded && "rotate-90",
             )}
           />
-          {leadingIcon ??
-            (expanded ? (
-              <FolderOpenIcon aria-hidden className="size-3.5 shrink-0 text-sidebar-foreground" />
-            ) : (
-              <FolderIcon aria-hidden className="size-3.5 shrink-0 text-sidebar-foreground" />
-            ))}
-          <span className="min-w-0 flex-1 truncate">{displayName}</span>
-          {rollupStatus !== null ? (
-            <AssistantStatusDot status={rollupStatus} className="mr-1" />
-          ) : null}
         </button>
         {showNewThread ? (
           <Tooltip>
@@ -5306,6 +5332,7 @@ export default function Sidebar() {
                         section: SidebarSection,
                         sortable?: SortableThreadRowBag,
                         agentOrder?: { readonly onMove: typeof handleAgentMove },
+                        finishedMark?: boolean,
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -5411,6 +5438,7 @@ export default function Sidebar() {
                             onAcknowledgeWoke={acknowledgeWoke}
                             onFileDropThreads={handleThreadFileDrop}
                             onMove={agentOrder?.onMove}
+                            finishedMark={finishedMark}
                           />
                         );
                       };
@@ -5436,13 +5464,16 @@ export default function Sidebar() {
                               renamingThreadKey === threadKey
                             }
                           >
-                            {(sortable) => renderThreadRowInner(thread, section, sortable)}
+                            {(sortable) =>
+                              renderThreadRowInner(thread, section, sortable, undefined, true)
+                            }
                           </SortableThreadRow>
                         );
                       };
                       const folders = settledViewOpen ? settledProjectFolders : projectFolders;
                       const items: ReactNode[] = [];
                       if (!settledViewOpen) {
+                        items.push(<SidebarTasksSection key="tasks-section" />);
                         if (showAssistantsSection) {
                           items.push(
                             <SidebarListSectionHeader
@@ -5535,7 +5566,7 @@ export default function Sidebar() {
                         items.push(
                           <SidebarListSectionHeader
                             key="projects-section"
-                            title="Tasks"
+                            title="Workspaces"
                             actionLabel="Add workspace"
                             onAction={handleNewProject}
                             collapsed={!tasksSectionExpanded}
@@ -5604,7 +5635,7 @@ export default function Sidebar() {
                           }
                           if (folders.length > 0) {
                             items.push(
-                              <SidebarSettledGroupLabel key="settled-tasks" title="Tasks" />,
+                              <SidebarSettledGroupLabel key="settled-tasks" title="Workspaces" />,
                             );
                           }
                         }
@@ -5622,6 +5653,11 @@ export default function Sidebar() {
                                 ? [entry.thread]
                                 : [],
                             )}
+                            branch={
+                              folder.entries.find((entry) => entry.thread.branch !== null)?.thread
+                                .branch ?? null
+                            }
+                            runCount={folder.entries.length}
                             containsActiveThread={
                               folder.entries.some(
                                 (entry) =>

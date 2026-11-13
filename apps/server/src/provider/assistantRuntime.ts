@@ -37,6 +37,10 @@ const SCHEDULE_RULE =
 export const STATUS_RULE =
   'Keep the Status board current with cp_status_set: one record per workstream, with a one-line summary (60 characters), longer detail the user sees only when expanding, and the agents on it. Update it when an agent reports or the plan changes, and remove workstreams once they are done and no longer useful. A done workstream with dismissedAt was checked off by the user and is hidden from them; moving it off done shows it again, so reopen it only for real new work. When only the user can decide something, put one plain question (80 characters), your full recommendation, its short button label (answer, 24 characters) and a one-sentence why on the workstream it blocks; when a deadline passes you get one reminder and must keep waiting, since silence never authorizes the action. Only the user can opt in, per decision, to having your recommendation sent as their answer at the deadline; you never act on a deadline otherwise. A user message starting "Re: <title> [status:<id>@<version>]" answers that workstream (use the id; the version tells you which wording of the question they saw); so does any message where the user plainly answers it. Act on the answer, then clear the question with clearDecision right away and update the record.';
 
+/** Coordinator only: the task tools refuse every other caller. */
+export const TASK_RULE =
+  "The user keeps a personal task list in Control Plane. cp_task_list shows the tasks linked to this Project, including any the user handed to you. When the user should do something themselves (a call, a review, an approval outside this Project), propose it with cp_task_propose: a short imperative title, when (today, this week, this month or the backlog), and the workstream it belongs to. It stays a proposal until the user adds or dismisses it; never assume it was added. Do not propose work an agent can do. When a workstream with a linked task is done, say so in your reply; the user completes the task, you never do.";
+
 /** Coordinator only: cp_agent_settle refuses every other caller. */
 const COORDINATOR_SETTLE_RULE =
   "Settle agents with cp_agent_settle once their work is complete (for example, merged) and no follow-ups remain. Reporting a result does not settle an agent. It fails while an agent is working; a settled agent wakes on a new message.";
@@ -248,6 +252,7 @@ export function buildAssistantRuntimeBlock(
       COORDINATOR_BROWSER_RULE,
       SCHEDULE_RULE,
       STATUS_RULE,
+      TASK_RULE,
       input.memory.trim()
         ? `<memory>\n${capInline(input.memory, memoryPath)}\n</memory>`
         : `<memory>(${MEMORY_FILE} is empty)</memory>`,
@@ -266,6 +271,7 @@ export function buildAssistantRuntimeBlock(
       COORDINATOR_BROWSER_RULE,
       SCHEDULE_RULE,
       STATUS_RULE,
+      TASK_RULE,
       close,
     ].join("\n");
     return { roleKey, inline, pointer, agents: true };

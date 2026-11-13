@@ -94,6 +94,7 @@ import * as StatusDeadlineReactor from "./orchestration/StatusDeadlineReactor.ts
 import * as ScheduleHost from "./schedules/ScheduleHost.ts";
 import * as ScheduleRunner from "./schedules/ScheduleRunner.ts";
 import * as ScheduleService from "./schedules/ScheduleService.ts";
+import * as TaskSync from "./taskSync/TaskSyncService.ts";
 import { scheduleFireRouteLayer } from "./schedules/fireRoute.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
@@ -254,7 +255,7 @@ const HttpServerLive = Layer.unwrap(
 
 const PlatformServicesLive = NodeServices.layer;
 
-const ReactorLayerLive = Layer.empty.pipe(
+const BaseReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
@@ -281,6 +282,9 @@ const ReactorLayerLive = Layer.empty.pipe(
   ),
   Layer.provideMerge(RuntimeReceiptBusLive),
 );
+
+// Pipe arity tops out at 20 steps; Task Sync rides one more.
+const ReactorLayerLive = BaseReactorLayerLive.pipe(Layer.provideMerge(TaskSync.layer));
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
   Layer.provide(ProviderSessionRuntime.layer),

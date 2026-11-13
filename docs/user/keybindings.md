@@ -32,9 +32,15 @@ in Settings.
 
 ## Sidebar views
 
-`mod+shift+u` opens Usage, `mod+shift+r` opens Pull Requests, and `mod+shift+t`
+`mod+shift+u` opens Usage, `mod+shift+r` opens Pull Requests, and `mod+alt+t`
 toggles the settled-threads list in the sidebar. Press the Usage or Pull Requests
 shortcut again to leave that page. All three can be changed in Settings.
+
+## Tasks
+
+`mod+shift+t` opens quick add from anywhere. Before this release it toggled the
+settled-threads list; existing keybinding files that still have that default
+move it to `mod+alt+t` on startup. A shortcut you set yourself is left as is.
 
 ## Copy pull request references
 

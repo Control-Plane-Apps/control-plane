@@ -34,6 +34,12 @@ export type ReorderProjectInput = CommandInput<"project.reorder">;
 export type DeleteProjectInput = CommandInput<"project.delete">;
 export type AutomateProjectStatusInput = CommandInput<"project.status.automate">;
 export type DismissProjectStatusInput = CommandInput<"project.status.dismiss">;
+export type CreateTaskInput = CommandInput<"task.create">;
+export type UpdateTaskInput = CommandInput<"task.update">;
+export type DeleteTaskInput = CommandInput<"task.delete">;
+export type RespondToTaskProposalInput = CommandInput<"task.proposal.respond">;
+export type HandOffTaskInput = CommandInput<"task.handoff">;
+export type SetTaskIntentInput = CommandInput<"task.intent.set">;
 export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
@@ -151,6 +157,34 @@ export const dismissProjectStatus: (input: DismissProjectStatusInput) => Command
     createdAt: metadata.createdAt,
   });
 });
+
+function taskCommand<
+  T extends
+    | "task.create"
+    | "task.update"
+    | "task.delete"
+    | "task.proposal.respond"
+    | "task.handoff"
+    | "task.intent.set",
+>(type: T) {
+  return Effect.fn(`EnvironmentCommands.${type}`)(function* (input: CommandInput<T>) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type,
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    } as unknown as ClientOrchestrationCommand);
+  }) as (input: CommandInput<T>) => CommandEffect;
+}
+
+/** The user's own task writes. Coordinators can only propose, through their MCP tool. */
+export const createTask = taskCommand("task.create");
+export const updateTask = taskCommand("task.update");
+export const deleteTask = taskCommand("task.delete");
+export const respondToTaskProposal = taskCommand("task.proposal.respond");
+export const handOffTask = taskCommand("task.handoff");
+export const setTaskIntent = taskCommand("task.intent.set");
 
 export const deleteProject: (input: DeleteProjectInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.deleteProject",
