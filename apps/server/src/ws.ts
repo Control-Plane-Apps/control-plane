@@ -68,6 +68,8 @@ import {
   AssetWorkspaceContextResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  TaskHorizon,
+  TaskId,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -165,6 +167,7 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
 import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { getTask, getTaskIntent } from "./persistence/ProjectionTasks.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
@@ -851,6 +854,49 @@ const makeWsRpcLayer = (
       });
       type ShellEvent = ReturnType<typeof toShellEvent>;
 
+      const taskUpsertOrRemove = (
+        taskId: string,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> =>
+        getTask(sql, taskId).pipe(
+          Effect.map((task) =>
+            Option.some(
+              task === null
+                ? { kind: "task-removed" as const, sequence, taskId: TaskId.make(taskId) }
+                : { kind: "task-upserted" as const, sequence, task },
+            ),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to read a task for the shell stream", cause).pipe(
+              Effect.as(Option.none()),
+            ),
+          ),
+        );
+
+      const taskIntentUpsertOrRemove = (
+        intentKey: string,
+        sequence: number,
+      ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> => {
+        const match = /^intent-(week|month|year)-(\d{4}-\d{2}-\d{2})$/.exec(intentKey);
+        if (match === null) return Effect.succeed(Option.none());
+        const horizon = match[1] as TaskHorizon;
+        const startsOn = match[2]!;
+        return getTaskIntent(sql, horizon, startsOn).pipe(
+          Effect.map((intent) =>
+            Option.some(
+              intent === null
+                ? { kind: "task-intent-removed" as const, sequence, horizon, startsOn }
+                : { kind: "task-intent-upserted" as const, sequence, intent },
+            ),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to read a task intent for the shell stream", cause).pipe(
+              Effect.as(Option.none()),
+            ),
+          ),
+        );
+      };
+
       const toShellStreamEvent = (
         event: ShellEvent,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> => {
@@ -879,6 +925,10 @@ const makeWsRpcLayer = (
             );
           case "thread.unarchived":
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
+          case "task.updated":
+            return taskUpsertOrRemove(event.aggregateId, event.sequence);
+          case "task.intent-updated":
+            return taskIntentUpsertOrRemove(event.aggregateId, event.sequence);
           default:
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());

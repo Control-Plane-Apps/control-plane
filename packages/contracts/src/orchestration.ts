@@ -38,6 +38,20 @@ import {
 } from "./projectStatus.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  Task,
+  TaskHandoff,
+  TaskHome,
+  TaskHorizon,
+  TaskId,
+  TaskImportSource,
+  TaskIntent,
+  TaskLinks,
+  TaskLocalDate,
+  TaskOrderKey,
+  TaskPatch,
+  TaskRecurrence,
+} from "./tasks.ts";
+import {
   PullRequestActor,
   PullRequestChecksState,
   PullRequestMergeability,
@@ -970,6 +984,9 @@ export const OrchestrationReadModel = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProject),
   threads: Schema.Array(OrchestrationThread),
+  // Optional so read models from older servers and test fixtures still decode.
+  tasks: Schema.optional(Schema.Array(Task)),
+  taskIntents: Schema.optional(Schema.Array(TaskIntent)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
@@ -1060,6 +1077,9 @@ export const OrchestrationShellSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   projects: Schema.Array(OrchestrationProjectShell),
   threads: Schema.Array(OrchestrationThreadShell),
+  // Optional so cached snapshots from older servers still decode.
+  tasks: Schema.optional(Schema.Array(Task)),
+  taskIntents: Schema.optional(Schema.Array(TaskIntent)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationShellSnapshot = typeof OrchestrationShellSnapshot.Type;
@@ -1084,6 +1104,27 @@ export const OrchestrationShellStreamEvent = Schema.Union([
     kind: Schema.Literal("thread-removed"),
     sequence: NonNegativeInt,
     threadId: ThreadId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("task-upserted"),
+    sequence: NonNegativeInt,
+    task: Task,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("task-removed"),
+    sequence: NonNegativeInt,
+    taskId: TaskId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("task-intent-upserted"),
+    sequence: NonNegativeInt,
+    intent: TaskIntent,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("task-intent-removed"),
+    sequence: NonNegativeInt,
+    horizon: TaskHorizon,
+    startsOn: TaskLocalDate,
   }),
 ]);
 export type OrchestrationShellStreamEvent = typeof OrchestrationShellStreamEvent.Type;
@@ -1578,7 +1619,83 @@ export const ProjectStatusDismissCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** The user adds a task. Clients only. */
+export const TaskCreateCommand = Schema.Struct({
+  type: Schema.Literal("task.create"),
+  commandId: CommandId,
+  taskId: TaskId,
+  title: TrimmedNonEmptyString,
+  notes: Schema.optional(Schema.String),
+  home: TaskHome,
+  recurrence: Schema.optional(TaskRecurrence),
+  links: Schema.optional(TaskLinks),
+  orderKey: Schema.optional(Schema.NullOr(TaskOrderKey)),
+  importSource: Schema.optional(TaskImportSource),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * The user edits a task. Completing a recurring task also adds its next
+ * occurrence. Clients only.
+ */
+export const TaskUpdateCommand = Schema.Struct({
+  type: Schema.Literal("task.update"),
+  commandId: CommandId,
+  taskId: TaskId,
+  patch: TaskPatch,
+  createdAt: IsoDateTime,
+});
+
+export const TaskDeleteCommand = Schema.Struct({
+  type: Schema.Literal("task.delete"),
+  commandId: CommandId,
+  taskId: TaskId,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * The user adds (`accept`) or dismisses a coordinator's proposed task.
+ * Clients only, so a coordinator can never accept its own proposal. `patch`
+ * lets the user adjust the task while adding it.
+ */
+export const TaskProposalRespondCommand = Schema.Struct({
+  type: Schema.Literal("task.proposal.respond"),
+  commandId: CommandId,
+  taskId: TaskId,
+  accept: Schema.Boolean,
+  patch: Schema.optional(TaskPatch),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * Records that the user handed a task to a coordinator or a new agent. The
+ * client sends the brief itself; this links the task to that thread.
+ */
+export const TaskHandoffCommand = Schema.Struct({
+  type: Schema.Literal("task.handoff"),
+  commandId: CommandId,
+  taskId: TaskId,
+  handoff: Schema.NullOr(TaskHandoff),
+  createdAt: IsoDateTime,
+});
+
+/** The user's intent line for one week, month or year. Empty text clears it. */
+export const TaskIntentSetCommand = Schema.Struct({
+  type: Schema.Literal("task.intent.set"),
+  commandId: CommandId,
+  horizon: TaskHorizon,
+  startsOn: TaskLocalDate,
+  text: Schema.String,
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
+  TaskCreateCommand,
+  TaskUpdateCommand,
+  TaskDeleteCommand,
+  TaskProposalRespondCommand,
+  TaskHandoffCommand,
+  TaskIntentSetCommand,
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectReorderCommand,
@@ -1615,6 +1732,12 @@ export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
 
 export const ClientOrchestrationCommand = Schema.Union([
+  TaskCreateCommand,
+  TaskUpdateCommand,
+  TaskDeleteCommand,
+  TaskProposalRespondCommand,
+  TaskHandoffCommand,
+  TaskIntentSetCommand,
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectReorderCommand,
@@ -1859,7 +1982,22 @@ const ProjectStatusDeadlineCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/** A coordinator proposes a task for the user, from `cp_task_propose`. Server only. */
+const TaskProposeCommand = Schema.Struct({
+  type: Schema.Literal("task.propose"),
+  commandId: CommandId,
+  taskId: TaskId,
+  projectId: ProjectId,
+  actorThreadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  notes: Schema.optional(Schema.String),
+  home: TaskHome,
+  statusId: Schema.optional(ProjectStatusId),
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
+  TaskProposeCommand,
   ProjectStatusSetCommand,
   ProjectStatusDeadlineCommand,
   ProjectScheduleRecordCommand,
@@ -1898,6 +2036,8 @@ export const OrchestrationEventType = Schema.Literals([
   "project.deleted",
   "project.schedule-run-recorded",
   "project.status-updated",
+  "task.updated",
+  "task.intent-updated",
   "thread.created",
   "thread.deleted",
   "thread.archived",
@@ -1930,7 +2070,7 @@ export const OrchestrationEventType = Schema.Literals([
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
-export const OrchestrationAggregateKind = Schema.Literals(["project", "thread"]);
+export const OrchestrationAggregateKind = Schema.Literals(["project", "thread", "task"]);
 export type OrchestrationAggregateKind = typeof OrchestrationAggregateKind.Type;
 export const OrchestrationActorKind = Schema.Literals(["client", "server", "provider"]);
 
@@ -1983,6 +2123,19 @@ export const ProjectStatusUpdatedPayload = Schema.Struct({
   projectId: ProjectId,
   statusId: ProjectStatusId,
   status: Schema.NullOr(ProjectStatus),
+});
+
+/** One task written or removed (`task: null`). */
+export const TaskRecordUpdatedPayload = Schema.Struct({
+  taskId: TaskId,
+  task: Schema.NullOr(Task),
+});
+
+/** One period's intent written or cleared (`intent: null`). */
+export const TaskIntentUpdatedPayload = Schema.Struct({
+  horizon: TaskHorizon,
+  startsOn: TaskLocalDate,
+  intent: Schema.NullOr(TaskIntent),
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
@@ -2251,7 +2404,7 @@ const EventBaseFields = {
   sequence: NonNegativeInt,
   eventId: EventId,
   aggregateKind: OrchestrationAggregateKind,
-  aggregateId: Schema.Union([ProjectId, ThreadId]),
+  aggregateId: Schema.Union([ProjectId, ThreadId, TaskId]),
   occurredAt: IsoDateTime,
   commandId: Schema.NullOr(CommandId),
   causationEventId: Schema.NullOr(EventId),
@@ -2284,6 +2437,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("project.status-updated"),
     payload: ProjectStatusUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("task.updated"),
+    payload: TaskRecordUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("task.intent-updated"),
+    payload: TaskIntentUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

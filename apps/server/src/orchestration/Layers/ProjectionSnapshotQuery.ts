@@ -82,6 +82,7 @@ import {
   type ProjectionThreadDetailQuery,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
+import { listTaskIntents, listTasks } from "../../persistence/ProjectionTasks.ts";
 
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
@@ -283,6 +284,7 @@ const REQUIRED_SNAPSHOT_PROJECTORS = [
   ORCHESTRATION_PROJECTOR_NAMES.threadActivities,
   ORCHESTRATION_PROJECTOR_NAMES.threadSessions,
   ORCHESTRATION_PROJECTOR_NAMES.checkpoints,
+  ORCHESTRATION_PROJECTOR_NAMES.tasks,
 ] as const;
 
 function maxIso(left: string | null, right: string): string {
@@ -2391,6 +2393,8 @@ pending_approval_requests AS (
 
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
+                tasks: yield* listTasks(sql),
+                taskIntents: yield* listTaskIntents(sql),
                 projects,
                 threads,
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -2639,6 +2643,8 @@ pending_approval_requests AS (
 
               return {
                 snapshotSequence: computeSnapshotSequence(stateRows),
+                tasks: yield* listTasks(sql),
+                taskIntents: yield* listTaskIntents(sql),
                 projects,
                 threads,
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
@@ -2747,6 +2753,8 @@ pending_approval_requests AS (
 
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
+                tasks: yield* listTasks(sql),
+                taskIntents: yield* listTaskIntents(sql),
                 projects: Arr.filterMap(projectRows, (row) =>
                   row.deletedAt === null
                     ? Result.succeed(

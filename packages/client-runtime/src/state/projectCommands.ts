@@ -11,6 +11,18 @@ import {
 import {
   type AutomateProjectStatusInput,
   type DismissProjectStatusInput,
+  type CreateTaskInput,
+  type UpdateTaskInput,
+  type DeleteTaskInput,
+  type RespondToTaskProposalInput,
+  type HandOffTaskInput,
+  type SetTaskIntentInput,
+  createTask,
+  updateTask,
+  deleteTask,
+  respondToTaskProposal,
+  handOffTask,
+  setTaskIntent,
   type CreateProjectInput,
   type DeleteProjectInput,
   type ReorderProjectInput,
@@ -25,6 +37,12 @@ import {
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 
 export type {
+  CreateTaskInput,
+  UpdateTaskInput,
+  DeleteTaskInput,
+  RespondToTaskProposalInput,
+  HandOffTaskInput,
+  SetTaskIntentInput,
   CreateProjectInput,
   DeleteProjectInput,
   UpdateProjectInput,
@@ -60,7 +78,31 @@ export function createProjectEnvironmentAtoms<R, E>(
     key: ({ environmentId, input }: { environmentId: string; input: { projectId: string } }) =>
       JSON.stringify([environmentId, input.projectId]),
   };
+  const taskScheduler = createAtomCommandScheduler();
+  const taskConcurrency = {
+    mode: "serial" as const,
+    key: ({ environmentId, input }: { environmentId: string; input: object }) =>
+      JSON.stringify([environmentId, (input as { readonly taskId?: string }).taskId ?? "intent"]),
+  };
+  const taskCommand = <I extends object>(
+    name: string,
+    execute: (input: I) => ReturnType<typeof createTask>,
+  ) =>
+    createEnvironmentCommand(runtime, {
+      label: `environment-data:commands:task:${name}`,
+      execute,
+      scheduler: taskScheduler,
+      concurrency: taskConcurrency,
+    });
   return {
+    createTask: taskCommand("create", (input: CreateTaskInput) => createTask(input)),
+    updateTask: taskCommand("update", (input: UpdateTaskInput) => updateTask(input)),
+    deleteTask: taskCommand("delete", (input: DeleteTaskInput) => deleteTask(input)),
+    respondToTaskProposal: taskCommand("proposal-respond", (input: RespondToTaskProposalInput) =>
+      respondToTaskProposal(input),
+    ),
+    handOffTask: taskCommand("handoff", (input: HandOffTaskInput) => handOffTask(input)),
+    setTaskIntent: taskCommand("intent", (input: SetTaskIntentInput) => setTaskIntent(input)),
     searchEntries: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:search-entries",
       tag: WS_METHODS.projectsSearchEntries,

@@ -15,6 +15,8 @@ import {
   OrchestrationThread,
   ProjectScheduleRunRecordedPayload,
   ProjectStatusUpdatedPayload,
+  TaskIntentUpdatedPayload,
+  TaskRecordUpdatedPayload,
   WORKTREE_SETUP_ACTIVITY_KIND,
 } from "@t3tools/contracts";
 import {
@@ -57,6 +59,7 @@ import {
   ThreadTurnDiffCompletedPayload,
 } from "./Schemas.ts";
 import { withStatus } from "./statusDecider.ts";
+import { withTask } from "./taskDecider.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 const MAX_THREAD_MESSAGES = 2_000;
@@ -458,6 +461,27 @@ export function projectEvent(
               : project,
           ),
         })),
+      );
+
+    case "task.updated":
+      return decodeForEvent(TaskRecordUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          tasks: withTask(nextBase.tasks, payload.taskId, payload.task),
+        })),
+      );
+
+    case "task.intent-updated":
+      return decodeForEvent(TaskIntentUpdatedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => {
+          const others = (nextBase.taskIntents ?? []).filter(
+            (intent) => intent.horizon !== payload.horizon || intent.startsOn !== payload.startsOn,
+          );
+          return {
+            ...nextBase,
+            taskIntents: payload.intent === null ? others : [...others, payload.intent],
+          };
+        }),
       );
 
     case "thread.created":

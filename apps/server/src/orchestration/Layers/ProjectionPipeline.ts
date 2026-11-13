@@ -64,6 +64,12 @@ import {
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
+import {
+  deleteTaskIntentRow,
+  deleteTaskRow,
+  upsertTaskIntentRow,
+  upsertTaskRow,
+} from "../../persistence/ProjectionTasks.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -75,6 +81,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   threadTurns: "projection.thread-turns",
   checkpoints: "projection.checkpoints",
   pendingApprovals: "projection.pending-approvals",
+  tasks: "projection.tasks",
 } as const;
 
 type ProjectorName =
@@ -1982,7 +1989,35 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
     });
 
+    // Tasks and intents: each event carries the whole record.
+    const applyTasksProjection: ProjectorDefinition["apply"] = Effect.fn("applyTasksProjection")(
+      function* (event) {
+        switch (event.type) {
+          case "task.updated":
+            if (event.payload.task === null) {
+              yield* deleteTaskRow(sql, event.payload.taskId);
+            } else {
+              yield* upsertTaskRow(sql, event.payload.task);
+            }
+            return;
+          case "task.intent-updated":
+            if (event.payload.intent === null) {
+              yield* deleteTaskIntentRow(sql, event.payload.horizon, event.payload.startsOn);
+            } else {
+              yield* upsertTaskIntentRow(sql, event.payload.intent);
+            }
+            return;
+          default:
+            return;
+        }
+      },
+    );
+
     const projectors: ReadonlyArray<ProjectorDefinition> = [
+      {
+        name: ORCHESTRATION_PROJECTOR_NAMES.tasks,
+        apply: applyTasksProjection,
+      },
       {
         name: ORCHESTRATION_PROJECTOR_NAMES.projects,
         apply: applyProjectsProjection,

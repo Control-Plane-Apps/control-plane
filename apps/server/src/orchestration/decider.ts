@@ -66,6 +66,15 @@ import {
   decideStatusSet,
   statusReplyEvents,
 } from "./statusDecider.ts";
+import {
+  decideTaskCreate,
+  decideTaskDelete,
+  decideTaskHandoff,
+  decideTaskIntentSet,
+  decideTaskPropose,
+  decideTaskProposalRespond,
+  decideTaskUpdate,
+} from "./taskDecider.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 
 const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -466,6 +475,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "project.status.dismiss":
       return yield* decideStatusDismiss(readModel, command);
+
+    case "task.create":
+      return yield* decideTaskCreate(readModel, command);
+
+    case "task.update":
+      return yield* decideTaskUpdate(readModel, command);
+
+    case "task.delete":
+      return yield* decideTaskDelete(readModel, command);
+
+    case "task.proposal.respond":
+      return yield* decideTaskProposalRespond(readModel, command);
+
+    case "task.handoff":
+      return yield* decideTaskHandoff(readModel, command);
+
+    case "task.intent.set":
+      return yield* decideTaskIntentSet(readModel, command);
+
+    case "task.propose":
+      return yield* decideTaskPropose(readModel, command);
 
     case "thread.create": {
       yield* requireProject({
