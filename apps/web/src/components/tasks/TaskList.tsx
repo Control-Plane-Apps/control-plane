@@ -229,7 +229,7 @@ function ProposedTaskRow(props: {
             <span>{formatTaskHome(task.home, context.today)}</span>
             {status !== undefined ? (
               <span className="inline-flex items-center gap-1">
-                <span aria-hidden className="size-1.5 rounded-full bg-emerald-600" />
+                <span aria-hidden className="size-1.5 rounded-full bg-success" />
                 {status.title}
               </span>
             ) : null}

@@ -210,7 +210,7 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
   return (
     <section aria-label="Task Sync" className="flex flex-col gap-2">
       <h3 className={cn(title, "flex items-center gap-1.5")}>
-        <CloudIcon aria-hidden className="size-4 text-emerald-600" />
+        <CloudIcon aria-hidden className="size-4 text-success-foreground" />
         Task Sync is on
       </h3>
       {grace ? (

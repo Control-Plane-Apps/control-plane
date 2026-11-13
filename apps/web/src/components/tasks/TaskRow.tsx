@@ -111,7 +111,7 @@ function LifecycleLine(props: {
     const coordinator = project?.assistant?.coordinatorThreadId;
     return (
       <div className="flex min-w-0 items-center gap-2 text-xs">
-        <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-amber-500" />
+        <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-warning" />
         <span className="shrink-0 text-warning-foreground">Needs you</span>
         <span className="min-w-0 flex-1 truncate text-muted-foreground">
           {state.status.decision?.question ?? state.status.summary}
@@ -140,13 +140,13 @@ function LifecycleLine(props: {
   if (state.kind === "workstream-done") {
     return (
       <div className="flex min-w-0 items-center gap-2 text-xs">
-        <CircleCheckIcon aria-hidden className="size-3.5 shrink-0 text-emerald-600" />
-        <span className="min-w-0 truncate text-emerald-700 dark:text-emerald-400">
+        <CircleCheckIcon aria-hidden className="size-3.5 shrink-0 text-success-foreground" />
+        <span className="min-w-0 truncate text-success-foreground">
           {state.status.title} is done
         </span>
         <button
           type="button"
-          className="shrink-0 cursor-pointer font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+          className="shrink-0 cursor-pointer font-medium text-success-foreground hover:underline"
           onClick={() => void context.actions.setCompleted(task, true)}
         >
           Complete task
@@ -263,13 +263,13 @@ export function TaskRow(props: {
                   }
                   className={cn(
                     "size-1.5 rounded-full",
-                    state.kind === "agent-working" ? "bg-sky-500" : "bg-sky-500/50",
+                    state.kind === "agent-working" ? "bg-info" : "bg-info/50",
                   )}
                 />
               ) : null}
               {status !== undefined && state.kind !== "workstream-done" ? (
                 <span className="inline-flex max-w-40 items-center gap-1 text-muted-foreground">
-                  <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-emerald-600" />
+                  <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-success" />
                   <span className="truncate">{status.title}</span>
                 </span>
               ) : null}
@@ -439,7 +439,7 @@ function ExpandedTask(props: {
               aria-label="Link to a workstream"
             >
               {status !== undefined ? (
-                <span aria-hidden className="size-1.5 rounded-full bg-emerald-600" />
+                <span aria-hidden className="size-1.5 rounded-full bg-success" />
               ) : (
                 <LinkIcon aria-hidden className="size-3.5" />
               )}
