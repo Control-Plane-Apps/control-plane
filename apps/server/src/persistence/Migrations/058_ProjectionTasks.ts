@@ -27,7 +27,11 @@ export default Effect.gen(function* () {
   `;
   yield* sql`
     INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
-    SELECT 'projection.tasks', COALESCE(MAX(sequence), 0), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    SELECT
+      'projection.tasks',
+      COALESCE(MAX(sequence), 0),
+      -- The head event's time, not now: snapshots report the newest cursor time.
+      COALESCE(MAX(occurred_at), '1970-01-01T00:00:00.000Z')
     FROM orchestration_events
     WHERE NOT EXISTS (SELECT 1 FROM projection_state WHERE projector = 'projection.tasks')
   `;
