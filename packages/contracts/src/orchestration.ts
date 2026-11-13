@@ -1996,8 +1996,23 @@ const TaskProposeCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * Records pulled from the synced task store. The server's Task Sync only;
+ * Control Plane-only fields (links, proposals, handoffs) stay as stored.
+ */
+const TaskSyncApplyCommand = Schema.Struct({
+  type: Schema.Literal("task.sync.apply"),
+  commandId: CommandId,
+  tasks: Schema.Array(Task),
+  removedTaskIds: Schema.Array(TaskId),
+  intents: Schema.Array(TaskIntent),
+  removedIntents: Schema.Array(Schema.Struct({ horizon: TaskHorizon, startsOn: TaskLocalDate })),
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   TaskProposeCommand,
+  TaskSyncApplyCommand,
   ProjectStatusSetCommand,
   ProjectStatusDeadlineCommand,
   ProjectScheduleRecordCommand,

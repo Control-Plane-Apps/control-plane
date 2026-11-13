@@ -12,7 +12,7 @@
  * Recurring series are a template plus generated instances that point at it
  * with templateId; templates are not shown as tasks.
  */
-import { generateSpreadPinOrderKeys } from "./threadSort.ts";
+import { generateSpreadPinOrderKeys } from "./pinOrderKey.ts";
 
 import type {
   Task,
@@ -156,6 +156,7 @@ export function controlPlaneTasksFromLucive(state: LucivePlanningState, today: s
       orderKey: keys[index] as Task["orderKey"],
       ...(status !== "todo" && t.completedAt !== null ? { completedAt: t.completedAt } : {}),
       importSource: { kind: "lucive", id: t.id },
+      ...(t.templateId !== null ? { seriesId: t.templateId } : {}),
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
     };

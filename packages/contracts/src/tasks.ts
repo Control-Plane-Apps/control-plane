@@ -135,6 +135,11 @@ export const Task = Schema.Struct({
   completionPromptDismissedAt: Schema.optional(IsoDateTime),
   completedAt: Schema.optional(IsoDateTime),
   importSource: Schema.optional(TaskImportSource),
+  /**
+   * The synced repeating series this occurrence belongs to (opaque id). The
+   * next occurrence a completion opens keeps it, so it joins the same series.
+   */
+  seriesId: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -283,16 +288,32 @@ export function nextTaskOccurrence(date: string, recurrence: TaskRecurrence): Ta
   }
 }
 
-/** The week (Monday to Sunday), month or year containing `date`. */
+let taskWeekStartsOn = 1;
+
+/**
+ * The weekday weeks start on (0-6, Sunday first), Monday until the synced
+ * account says otherwise. Clients and the server set it from Task Sync status
+ * so this machine's weeks match the account's other devices.
+ */
+export function setTaskWeekStartsOn(day: number): void {
+  if (Number.isInteger(day) && day >= 0 && day <= 6) taskWeekStartsOn = day;
+}
+
+export function getTaskWeekStartsOn(): number {
+  return taskWeekStartsOn;
+}
+
+/** The week (from the week start day), month or year containing `date`. */
 export function taskPeriodFor(
   horizon: TaskHorizon,
   date: string,
+  weekStartsOn: number = taskWeekStartsOn,
 ): { readonly startsOn: TaskLocalDate; readonly endsOn: TaskLocalDate } {
   const { y, m } = parseLocalDate(date);
   switch (horizon) {
     case "week": {
-      const sinceMonday = (taskWeekday(date) + 6) % 7;
-      const startsOn = addTaskDays(date, -sinceMonday);
+      const sinceStart = (taskWeekday(date) - weekStartsOn + 7) % 7;
+      const startsOn = addTaskDays(date, -sinceStart);
       return { startsOn, endsOn: addTaskDays(startsOn, 6) };
     }
     case "month":

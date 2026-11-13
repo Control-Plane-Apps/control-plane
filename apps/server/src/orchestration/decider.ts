@@ -72,6 +72,7 @@ import {
   decideTaskHandoff,
   decideTaskIntentSet,
   decideTaskPropose,
+  decideTaskSyncApply,
   decideTaskProposalRespond,
   decideTaskUpdate,
 } from "./taskDecider.ts";
@@ -496,6 +497,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "task.propose":
       return yield* decideTaskPropose(readModel, command);
+
+    case "task.sync.apply":
+      return yield* decideTaskSyncApply(readModel, command);
 
     case "thread.create": {
       yield* requireProject({

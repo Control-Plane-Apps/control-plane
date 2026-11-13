@@ -5,7 +5,7 @@ import {
   controlPlaneTasksFromLucive,
   lucivePlacementOf,
   type LuciveWireTask,
-} from "./luciveTasks.ts";
+} from "./taskSyncRecords.ts";
 
 const AT = "2026-11-13T12:00:00.000Z";
 const wire = (id: string, extra: Partial<LuciveWireTask> = {}): LuciveWireTask => ({
@@ -76,6 +76,7 @@ describe("Lucive mapping", () => {
     expect(tasks[1]!.home).toEqual({ kind: "date", date: "2026-11-13", reminderTime: "09:30" });
     expect(tasks[2]!.home).toEqual({ kind: "backlog", horizon: "month" });
     expect(tasks[3]!.recurrence).toEqual({ frequency: "weekly", interval: 1 });
+    expect(tasks[3]!.seriesId).toBe("template");
     expect(tasks[0]!.orderKey! < tasks[1]!.orderKey!).toBe(true);
     expect(tasks[1]!.importSource).toEqual({ kind: "lucive", id: "day" });
   });

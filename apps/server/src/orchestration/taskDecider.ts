@@ -21,6 +21,7 @@ import {
   type ProjectId,
   type Task,
   type TaskHome,
+  type TaskIntent,
   type TaskLinks,
   type TaskPatch,
   type TaskRecurrence,
@@ -39,13 +40,15 @@ type TaskProposalRespondCommand = Extract<OrchestrationCommand, { type: "task.pr
 type TaskHandoffCommand = Extract<OrchestrationCommand, { type: "task.handoff" }>;
 type TaskIntentSetCommand = Extract<OrchestrationCommand, { type: "task.intent.set" }>;
 type TaskProposeCommand = Extract<OrchestrationCommand, { type: "task.propose" }>;
+type TaskSyncApplyCommand = Extract<OrchestrationCommand, { type: "task.sync.apply" }>;
 type TaskCommand =
   | TaskCreateCommand
   | TaskUpdateCommand
   | TaskDeleteCommand
   | TaskProposalRespondCommand
   | TaskHandoffCommand
-  | TaskProposeCommand;
+  | TaskProposeCommand
+  | TaskSyncApplyCommand;
 
 type Decided = Effect.fn.Return<
   PlannedOrchestrationEvent | ReadonlyArray<PlannedOrchestrationEvent>,
@@ -133,7 +136,11 @@ function resolveLinks(
   return Object.keys(resolved).length === 0 ? undefined : resolved;
 }
 
-function taskEvent(command: TaskCommand | TaskIntentSetCommand, taskId: string, task: Task | null) {
+function taskEvent(
+  command: TaskCommand | TaskIntentSetCommand,
+  taskId: string,
+  task: Task | null,
+) {
   return Effect.map(
     withEventBase({
       aggregateKind: "task",
@@ -476,4 +483,82 @@ export function withTask(
   return list.some((entry) => entry.id === taskId)
     ? list.map((entry) => (entry.id === taskId ? task : entry))
     : [...list, task];
+}
+
+/** Fields only Control Plane knows; a pulled record never carries them. */
+function withLocalFields(remote: Task, stored: Task | undefined): Task {
+  if (stored === undefined) return remote;
+  return {
+    ...remote,
+    ...(stored.links !== undefined ? { links: stored.links } : {}),
+    ...(stored.proposal !== undefined ? { proposal: stored.proposal } : {}),
+    ...(stored.handoff !== undefined ? { handoff: stored.handoff } : {}),
+    ...(stored.completionPromptDismissedAt !== undefined
+      ? { completionPromptDismissedAt: stored.completionPromptDismissedAt }
+      : {}),
+  };
+}
+
+function sameRecord(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * `task.sync.apply`: records pulled from the synced store. Only real
+ * changes become events, so a quiet poll writes nothing.
+ */
+export const decideTaskSyncApply = Effect.fn("decideTaskSyncApply")(function* (
+  readModel: OrchestrationReadModel,
+  command: TaskSyncApplyCommand,
+): Decided {
+  const events: PlannedOrchestrationEvent[] = [];
+  for (const remote of command.tasks) {
+    const stored = findTask(readModel, remote.id);
+    const next = withLocalFields(remote, stored);
+    if (stored !== undefined && sameRecord(stored, next)) continue;
+    events.push(yield* taskEvent(command, next.id, next));
+  }
+  for (const taskId of command.removedTaskIds) {
+    if (findTask(readModel, taskId) === undefined) continue;
+    events.push(yield* taskEvent(command, taskId, null));
+  }
+  for (const intent of command.intents) {
+    const stored = readModel.taskIntents?.find(
+      (entry) => entry.horizon === intent.horizon && entry.startsOn === intent.startsOn,
+    );
+    if (stored !== undefined && stored.text === intent.text) continue;
+    events.push(yield* intentEvent(command, intent.horizon, intent.startsOn, intent));
+  }
+  for (const removed of command.removedIntents) {
+    const stored = readModel.taskIntents?.find(
+      (entry) => entry.horizon === removed.horizon && entry.startsOn === removed.startsOn,
+    );
+    if (stored === undefined) continue;
+    events.push(yield* intentEvent(command, removed.horizon, removed.startsOn, null));
+  }
+  if (events.length === 0) {
+    return yield* invariant(command.type, "Nothing changed.");
+  }
+  return events;
+});
+
+function intentEvent(
+  command: TaskSyncApplyCommand | TaskIntentSetCommand,
+  horizon: TaskIntent["horizon"],
+  startsOn: string,
+  intent: TaskIntent | null,
+) {
+  return Effect.map(
+    withEventBase({
+      aggregateKind: "task",
+      aggregateId: taskIntentKey(horizon, startsOn),
+      occurredAt: command.createdAt,
+      commandId: command.commandId,
+    }),
+    (base): PlannedOrchestrationEvent => ({
+      ...base,
+      type: "task.intent-updated" as const,
+      payload: { horizon, startsOn, intent },
+    }),
+  );
 }

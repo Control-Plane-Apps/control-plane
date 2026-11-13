@@ -119,6 +119,10 @@
       "types": "./src/pinOrderKey.ts",
       "import": "./src/pinOrderKey.ts"
     },
+    "./taskSyncRecords": {
+      "types": "./src/taskSyncRecords.ts",
+      "import": "./src/taskSyncRecords.ts"
+    },
     "./String": {
       "types": "./src/String.ts",
       "import": "./src/String.ts"

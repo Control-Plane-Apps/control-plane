@@ -62,6 +62,8 @@ interface CommandEnvelope {
   startedAtMs: number;
 }
 
+const TASK_SYNC_AGGREGATE_ID = "task-sync" as TaskId;
+
 function commandToAggregateRef(command: OrchestrationCommand): {
   readonly aggregateKind: "project" | "thread" | "task";
   readonly aggregateId: ProjectId | ThreadId | TaskId;
@@ -74,6 +76,8 @@ function commandToAggregateRef(command: OrchestrationCommand): {
     case "task.handoff":
     case "task.propose":
       return { aggregateKind: "task", aggregateId: command.taskId };
+    case "task.sync.apply":
+      return { aggregateKind: "task", aggregateId: TASK_SYNC_AGGREGATE_ID };
     case "task.intent.set":
       return {
         aggregateKind: "task",
