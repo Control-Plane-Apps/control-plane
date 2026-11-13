@@ -176,7 +176,9 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
               {meta}
             </Text>
           ) : null}
-          {!selecting && (state.kind === "needs-you" || state.kind === "workstream-done") ? (
+          {/* Open, a needs-you task shows the full Status card instead of this line. */}
+          {!selecting &&
+          (state.kind === "workstream-done" || (state.kind === "needs-you" && !expanded)) ? (
             <LifecycleLine task={task} state={state} project={project} context={context} />
           ) : null}
           {expanded && !selecting ? (

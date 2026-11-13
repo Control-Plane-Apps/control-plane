@@ -97,53 +97,53 @@ export function ProjectStatusRouteScreen({ route }: StaticScreenProps<ProjectSta
   return (
     <Animated.View className="flex-1 bg-screen" style={[{ paddingTop: insets.top }, followFinger]}>
       {project === null ? null : (
-        <ProjectStatusPanel
-          project={project}
-          header={
-            <GestureDetector gesture={swipeToClose}>
-              <View className="flex-row items-start px-5 pb-1 pt-4">
-                <View className="flex-1">
-                  <Text
-                    className="text-[30px] font-t3-bold text-foreground"
-                    accessibilityRole="header"
-                  >
-                    Status
-                  </Text>
-                  <Text className="text-[15px] text-foreground-muted">
-                    {project.title} coordinator
-                  </Text>
-                </View>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Close Status"
-                  onPress={() => navigation.goBack()}
-                  className="size-11 items-center justify-center rounded-full bg-secondary"
+        <>
+          <GestureDetector gesture={swipeToClose}>
+            <View className="flex-row items-start px-5 pb-1 pt-4">
+              <View className="flex-1">
+                <Text
+                  className="text-[30px] font-t3-bold text-foreground"
+                  accessibilityRole="header"
                 >
-                  <SymbolView
-                    name={symbol("xmark", "close")}
-                    size={15}
-                    tintColorClassName="accent-foreground"
-                    type="monochrome"
-                    weight="semibold"
-                  />
-                </Pressable>
+                  Status
+                </Text>
+                <Text className="text-[15px] text-foreground-muted">
+                  {project.title} coordinator
+                </Text>
               </View>
-            </GestureDetector>
-          }
-          onReply={(tag, draft) => {
-            const threadId = prepareStatusReply(project, tag, draft);
-            if (threadId !== null) returnToThread(threadId);
-          }}
-          onOpenThread={(threadId) => {
-            navigation.goBack();
-            navigation.dispatch(
-              StackActions.push("Thread", {
-                environmentId: String(project.environmentId),
-                threadId: String(threadId),
-              }),
-            );
-          }}
-        />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close Status"
+                onPress={() => navigation.goBack()}
+                className="size-11 items-center justify-center rounded-full bg-secondary"
+              >
+                <SymbolView
+                  name={symbol("xmark", "close")}
+                  size={15}
+                  tintColorClassName="accent-foreground"
+                  type="monochrome"
+                  weight="semibold"
+                />
+              </Pressable>
+            </View>
+          </GestureDetector>
+          <ProjectStatusPanel
+            project={project}
+            onReply={(tag, draft) => {
+              const threadId = prepareStatusReply(project, tag, draft);
+              if (threadId !== null) returnToThread(threadId);
+            }}
+            onOpenThread={(threadId) => {
+              navigation.goBack();
+              navigation.dispatch(
+                StackActions.push("Thread", {
+                  environmentId: String(project.environmentId),
+                  threadId: String(threadId),
+                }),
+              );
+            }}
+          />
+        </>
       )}
     </Animated.View>
   );
