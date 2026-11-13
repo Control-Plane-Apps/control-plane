@@ -21,11 +21,21 @@ function fakeFetch(routes: Record<string, (init: RequestInit) => [number, unknow
 }
 
 describe("task sync cloud client", () => {
+  it("signs the handshake exactly as the server checks it", () => {
+    // Server (lucive cloud/api/client/handshake.ts): createHmac('sha256', key.secret as string)
+    // .update(`${keyId}.${ts}.${nonce}`). The key is the secret string, never hex-decoded.
+    // Fixed vector computed with that expression.
+    const secret = "0".repeat(32) + "f".repeat(32);
+    expect(
+      signHandshake(secret, "cplane-test-1", 1_800_000_000, "00112233445566778899aabbccddeeff"),
+    ).toBe("54d1902f1f7413878230f82225e7bd12e5ae3206328d1a21cbc3ac73682edba0");
+  });
+
   it("proves its client key with a signed handshake before sign-in calls", async () => {
     const { fetch, calls } = fakeFetch({
       "/api/client/handshake": (init) => {
         const body = JSON.parse(String(init.body));
-        // Pinned to the server's check: HMAC keyed with the secret string, not hex-decoded.
+        // Same computation as the server's handshake check (see the fixed-vector test).
         const expected = NodeCrypto.createHmac("sha256", SECRET)
           .update(`${body.keyId}.${body.ts}.${body.nonce}`)
           .digest("hex");
