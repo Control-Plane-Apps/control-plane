@@ -88,10 +88,14 @@ export function TaskCheckbox(props: {
   );
 }
 
-function rowMeta(task: Task, today: string, hidePeriod: boolean): string | null {
+function rowMeta(task: Task, today: string, inGroup: boolean): string | null {
   if (task.recurrence !== undefined) return formatTaskRecurrence(task.recurrence);
-  // A commitment list already says which period its rows belong to.
-  if (hidePeriod && task.home.kind === "period") return null;
+  // A day card or a commitment list already says when its rows are: show the time only.
+  if (inGroup) {
+    return task.home.kind === "date" && task.home.reminderTime !== undefined
+      ? formatTaskTime(task.home.reminderTime)
+      : null;
+  }
   if (task.home.kind === "date" && task.home.date === today) {
     return task.home.reminderTime !== undefined ? formatTaskTime(task.home.reminderTime) : null;
   }

@@ -372,7 +372,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
                     : `${group.tasks.length} ${group.tasks.length === 1 ? "task" : "tasks"}`}
                 </span>
               </div>
-              {list(group.tasks, formatTaskDayTitle(group.date))}
+              {list(group.tasks, formatTaskDayTitle(group.date), true, true)}
               <AddTaskRow onAdd={add({ kind: "date", date: group.date })} />
             </section>
           ))}
