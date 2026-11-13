@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 import { issuePushActionToken, verifyPushActionToken } from "./actionToken.ts";
 import { apnsKeyIdFromFileName } from "./apnsClient.ts";
