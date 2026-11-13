@@ -36,24 +36,13 @@ function accountInitials(email: string): string {
   return `${local[0] ?? ""}${domain[0] ?? ""}`.toUpperCase() || "?";
 }
 
-/** A stable hue per email, so the same account gets the same chip on every visit. */
-function accountHue(email: string): number {
-  let hash = 0;
-  for (let index = 0; index < email.length; index += 1) {
-    hash = (hash * 31 + email.charCodeAt(index)) | 0;
-  }
-  return Math.abs(hash) % 360;
-}
-
 /** The two-letter chip for an email, coloured by a stable hue per address. */
 function AccountChip({ email }: { readonly email: string }) {
-  const hue = accountHue(email);
   return (
     <span
       role="img"
       aria-label={`Account ${accountInitials(email)}`}
-      className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-[9px] leading-none font-semibold"
-      style={{ backgroundColor: `oklch(0.85 0.08 ${hue})`, color: `oklch(0.35 0.1 ${hue})` }}
+      className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground text-[9px] leading-none font-semibold"
     >
       {accountInitials(email)}
     </span>
@@ -486,7 +475,7 @@ function PoolWindowCard({
   // The soonest reset that hands anything back; an untouched account resets to no effect.
   const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
   return (
-    <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[11rem_minmax(0,1fr)]">
+    <div className="grid items-center gap-x-6 gap-y-3 py-2">
       <div className="flex flex-col gap-1">
         <span className="text-sm font-medium text-foreground">{pool.label}</span>
         <span className="flex items-baseline gap-2">
@@ -512,7 +501,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
   const color = barColor(pool.driver);
   const label = getDriverOption(pool.driver)?.label ?? String(pool.driver);
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex min-w-0 flex-col gap-3 rounded-xl border border-border bg-card p-4">
       <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
         <ProviderInstanceIcon
           driverKind={pool.driver}
@@ -545,7 +534,7 @@ export function UsageLimitsPooled({
   const pools = collectLimitPools(collectLimitAccounts(presentations), now);
   const notices = collectLimitNotices(presentations);
   return (
-    <div className="flex flex-col gap-8">
+    <div className="grid gap-4 lg:grid-cols-2">
       {pools.length === 0 && notices.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No provider on the selected environments reports subscription limits.

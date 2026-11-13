@@ -185,7 +185,7 @@ it("uses the current time when returning to limits from tokens", async () => {
   expect(state.refreshProviders).toHaveBeenCalledTimes(2);
 });
 
-it("refreshes once on opening Limits and suppresses rapid returns and remounts", async () => {
+it("refreshes visible limits on opening Usage and suppresses rapid returns and remounts", async () => {
   state.metric = "tokens";
   await act(() => {
     renderer = create(
@@ -194,7 +194,7 @@ it("refreshes once on opening Limits and suppresses rapid returns and remounts",
       </StrictMode>,
     );
   });
-  expect(state.refreshProviders).not.toHaveBeenCalled();
+  expect(state.refreshProviders).toHaveBeenCalledTimes(1);
   const selectMetric = (metric: string) =>
     renderer.root
       .findAll((node) => node.type === "div" && node.props["aria-label"] === "Usage metric")[0]!
