@@ -51,6 +51,7 @@ import { Sidebar, SidebarProvider, SidebarRail, SidebarTrigger, useSidebar } fro
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { TaskHandoffCoordinator } from "./tasks/handToAgent";
 import { TaskQuickAddHost } from "./tasks/QuickAddDialog";
+import { TaskReminderCoordinator } from "./tasks/TaskReminderCoordinator";
 
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "var(--desktop-window-controls-inset, 90px)";
 
@@ -379,6 +380,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
         <ProjectProjectionRetention />
         <TaskQuickAddHost />
         <TaskHandoffCoordinator />
+        <TaskReminderCoordinator />
         <Sidebar
           side="left"
           collapsible="offcanvas"
