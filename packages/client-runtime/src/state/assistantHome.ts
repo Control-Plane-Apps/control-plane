@@ -65,7 +65,7 @@ export function collectNeedsYou<P extends OrchestrationProjectShell>(
       items.push({ project, status: { ...status, decision } });
     }
   }
-  return items.toSorted((a, b) => {
+  return [...items].sort((a, b) => {
     const aDeadline = a.status.decision.deadline;
     const bDeadline = b.status.decision.deadline;
     if (aDeadline !== undefined && bDeadline !== undefined) {
@@ -91,7 +91,7 @@ export function collectMoving<P extends OrchestrationProjectShell>(
       items.push({ project, status });
     }
   }
-  return items.toSorted((a, b) => b.status.updatedAt.localeCompare(a.status.updatedAt));
+  return [...items].sort((a, b) => b.status.updatedAt.localeCompare(a.status.updatedAt));
 }
 
 /** The Assistant's own workstreams: what it is doing for the user. */
@@ -200,7 +200,7 @@ export function collectPings(
     if (payload._tag === "None") continue;
     pings.push({ ...payload.value, activityId: activity.id, createdAt: activity.createdAt });
   }
-  return pings.toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return [...pings].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 /** "Good morning", "Good afternoon" or "Good evening" for a local hour. */
