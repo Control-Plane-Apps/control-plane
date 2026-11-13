@@ -437,7 +437,7 @@ function StatusRow(props: {
                   <span aria-hidden>·</span>
                   <button
                     type="button"
-                    className="shrink-0 cursor-pointer font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+                    className="shrink-0 cursor-pointer font-medium text-success-foreground hover:underline"
                     onClick={() => props.onCompleteTask(task)}
                   >
                     Complete task
