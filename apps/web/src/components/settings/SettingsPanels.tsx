@@ -3,7 +3,7 @@ import { SettingsGroup } from "./SettingsGroup";
 import { Spinner } from "~/components/ui/spinner";
 import { NotificationSettings } from "./NotificationSettings";
 import { ArchiveIcon, ArchiveX, CheckIcon, ChevronRightIcon, SettingsIcon } from "lucide-react";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import type { CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -2133,6 +2133,7 @@ function LegacyFeaturesSection() {
 }
 
 export function GeneralSettingsPanel() {
+  const settingsTargetHash = useLocation({ select: (location) => location.hash });
   const modifierLabel = isMacPlatform(navigator.platform) ? "⌘" : "Ctrl";
   const sendShortcutOptions = [
     { value: "enter", label: "Enter" },
@@ -2430,7 +2431,7 @@ export function GeneralSettingsPanel() {
           />
         )}
       </SettingsSection>
-      <details open={Boolean(window.location.hash)} className="space-y-7">
+      <details open={Boolean(settingsTargetHash)} className="space-y-7">
         <summary className="cursor-pointer text-sm text-muted-foreground">
           Advanced general settings
         </summary>
