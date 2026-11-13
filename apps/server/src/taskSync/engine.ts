@@ -255,8 +255,11 @@ export class TaskSyncEngine {
         state.initialMergeDone = true;
         await this.push(token);
       }
+      const wasInactive = state.inactive === true || state.subscription?.status === "inactive";
       state.inactive = false;
       state.lastSyncedAt = this.now().toISOString();
+      // Just subscribed: read the renewal date and manage link once.
+      if (wasInactive) await this.refreshSubscription().catch(() => undefined);
       this.lastError = undefined;
       await this.save();
     } catch (error) {
