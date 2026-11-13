@@ -231,7 +231,7 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
             label="Move"
             icon="arrow.left.arrow.right"
             background={palette.swipeMove}
-            foreground="#ffffff"
+            foreground={palette.accentForeground}
             onPress={() => {
               swipeRef.current?.close();
               context.onMove(task);
@@ -241,7 +241,7 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
             label="Schedule"
             icon="calendar"
             background={palette.swipeSchedule}
-            foreground="#ffffff"
+            foreground={palette.accentForeground}
             onPress={() => {
               swipeRef.current?.close();
               context.onMove(task, "schedule");

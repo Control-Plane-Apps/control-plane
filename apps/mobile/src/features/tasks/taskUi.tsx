@@ -1,6 +1,7 @@
+import { useResolveClassNames } from "uniwind";
 import type { SFSymbol } from "expo-symbols";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Pressable, View, type StyleProp, type ViewStyle } from "react-native";
+import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import Animated, { FadeInDown, FadeOutDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -86,9 +87,42 @@ const DARK: TaskPalette = {
   swipeSchedule: "#2b6f88",
 };
 
+function colorOf(style: unknown, key: "backgroundColor" | "color" | "borderColor"): string | null {
+  const flat = StyleSheet.flatten(style as never) as Record<string, unknown> | undefined;
+  const value = flat?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Status and action colors come from the theme's tokens (clay primary,
+ * amber / teal-blue / olive status accents); neutral surfaces keep the
+ * local values below as a fallback.
+ */
 export function useTaskPalette(): TaskPalette {
   const { themeAppearance } = useAppearancePreferences();
-  return themeAppearance === "dark" ? DARK : LIGHT;
+  const base = themeAppearance === "dark" ? DARK : LIGHT;
+  const primary = colorOf(useResolveClassNames("bg-primary"), "backgroundColor");
+  const onPrimary = colorOf(useResolveClassNames("text-primary-foreground"), "color");
+  const warning = colorOf(useResolveClassNames("bg-warning-accent"), "backgroundColor");
+  const info = colorOf(useResolveClassNames("bg-info-accent"), "backgroundColor");
+  const success = colorOf(useResolveClassNames("bg-success-accent"), "backgroundColor");
+  const warningSurface = colorOf(useResolveClassNames("bg-warning"), "backgroundColor");
+  const warningBorder = colorOf(useResolveClassNames("border-warning-border"), "borderColor");
+  const warningText = colorOf(useResolveClassNames("text-warning-foreground"), "color");
+  return {
+    ...base,
+    accent: primary ?? base.accent,
+    accentForeground: onPrimary ?? base.accentForeground,
+    overdue: primary ?? base.overdue,
+    needsYou: warning ?? base.needsYou,
+    working: info ?? base.working,
+    swipeSchedule: info ?? base.swipeSchedule,
+    done: success ?? base.done,
+    doneText: success ?? base.doneText,
+    warningSurface: warningSurface ?? base.warningSurface,
+    warningBorder: warningBorder ?? base.warningBorder,
+    warningText: warningText ?? base.warningText,
+  };
 }
 
 /** The square checkbox; dashed while the task is a coordinator's proposal. */
