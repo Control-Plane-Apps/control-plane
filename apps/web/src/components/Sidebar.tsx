@@ -281,6 +281,7 @@ import {
   type ComposerThreadDraftState,
   type DraftSessionState,
 } from "../composerDraftStore";
+import { SidebarTasksSection } from "./tasks/SidebarTasksSection";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more.
@@ -5443,6 +5444,7 @@ export default function Sidebar() {
                       const folders = settledViewOpen ? settledProjectFolders : projectFolders;
                       const items: ReactNode[] = [];
                       if (!settledViewOpen) {
+                        items.push(<SidebarTasksSection key="tasks-section" />);
                         if (showAssistantsSection) {
                           items.push(
                             <SidebarListSectionHeader
@@ -5535,7 +5537,7 @@ export default function Sidebar() {
                         items.push(
                           <SidebarListSectionHeader
                             key="projects-section"
-                            title="Tasks"
+                            title="Workspaces"
                             actionLabel="Add workspace"
                             onAction={handleNewProject}
                             collapsed={!tasksSectionExpanded}
@@ -5604,7 +5606,7 @@ export default function Sidebar() {
                           }
                           if (folders.length > 0) {
                             items.push(
-                              <SidebarSettledGroupLabel key="settled-tasks" title="Tasks" />,
+                              <SidebarSettledGroupLabel key="settled-tasks" title="Workspaces" />,
                             );
                           }
                         }

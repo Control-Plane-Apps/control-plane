@@ -132,11 +132,11 @@ export function isTaskOverdue(task: Pick<Task, "home" | "status">, today: string
   return task.status === "todo" && task.home.kind === "date" && task.home.date < today;
 }
 
-/** Proposals, newest first. */
+/** Proposals, oldest first, in the order the coordinator proposed them. */
 export function proposedTasks(tasks: ReadonlyArray<Task>): Task[] {
   return tasks
     .filter((task) => task.status === "todo" && isProposedTask(task))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 function listed(tasks: ReadonlyArray<Task>): Task[] {

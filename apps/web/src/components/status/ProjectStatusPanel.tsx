@@ -16,7 +16,15 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
-import { CheckIcon, ChevronRightIcon, CircleCheckIcon, ReplyIcon } from "lucide-react";
+import { tasksForStatus } from "@t3tools/client-runtime/state/projects";
+import type { Task } from "@t3tools/contracts";
+import {
+  CheckIcon,
+  ChevronRightIcon,
+  CircleCheckIcon,
+  ListTodoIcon,
+  ReplyIcon,
+} from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 
 import { cn } from "../../lib/utils";
@@ -47,6 +55,8 @@ import {
   type StatusGroup,
 } from "./projectStatus.logic";
 import { useQueuedMessages } from "../../queuedMessageStore";
+import { useTasks } from "../../state/tasks";
+import { useTaskActions } from "../tasks/useTaskActions";
 
 const MINUTE_MS = 60_000;
 
@@ -122,6 +132,8 @@ function ProjectStatusPanelContent(
   );
   const threadKey = scopedThreadKey(threadRef);
   const queuedMessages = useQueuedMessages(threadKey);
+  const { environmentId: taskEnvironmentId, tasks } = useTasks();
+  const taskActions = useTaskActions(taskEnvironmentId);
   const automateStatus = useAtomCommand(projectEnvironment.automateStatus, {
     reportFailure: false,
   });
@@ -280,6 +292,8 @@ function ProjectStatusPanelContent(
                       onOpenThread={openThread}
                       dismissing={dismissing.has(status.id)}
                       onCheckOff={() => void checkOff(status)}
+                      linkedTasks={tasksForStatus(tasks, project.id, status.id)}
+                      onCompleteTask={(task) => void taskActions.setCompleted(task, true)}
                       actions={props}
                     />
                   ))}
@@ -317,6 +331,8 @@ function StatusRow(props: {
   readonly onOpenThread: (threadId: ThreadId) => void;
   readonly dismissing: boolean;
   readonly onCheckOff: () => void;
+  readonly linkedTasks: ReadonlyArray<Task>;
+  readonly onCompleteTask: (task: Task) => void;
   readonly actions: ProjectStatusActions;
 }) {
   const { status, group, now, expanded, actions } = props;
@@ -404,6 +420,34 @@ function StatusRow(props: {
           </div>
         ) : null}
       </div>
+      {props.linkedTasks.length > 0 ? (
+        <ul
+          aria-label={`Tasks linked to ${status.title}`}
+          className="flex flex-col gap-0.5 ps-6.5 pe-3 pb-2 -mt-1"
+        >
+          {props.linkedTasks.map((task) => (
+            <li
+              key={task.id}
+              className="flex min-w-0 items-center gap-1.5 text-muted-foreground text-xs"
+            >
+              <ListTodoIcon aria-hidden className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate">{task.title}</span>
+              {group === "done" ? (
+                <>
+                  <span aria-hidden>·</span>
+                  <button
+                    type="button"
+                    className="shrink-0 cursor-pointer font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+                    onClick={() => props.onCompleteTask(task)}
+                  >
+                    Complete task
+                  </button>
+                </>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {expanded ? (
         <div
           id={detailsId}
