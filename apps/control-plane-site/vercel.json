@@ -8,22 +8,22 @@
   "trailingSlash": false,
   "redirects": [
     {
-      "source": "/:path*",
+      "source": "/(.*)",
       "has": [{ "type": "host", "value": "www.controlplane.work" }],
-      "destination": "https://controlplane.work/:path*",
-      "permanent": true
+      "destination": "https://controlplane.work/$1",
+      "statusCode": 301
     },
     {
-      "source": "/:path*",
+      "source": "/(.*)",
       "has": [{ "type": "host", "value": "cplane.lucive.app" }],
-      "destination": "https://controlplane.work/:path*",
-      "permanent": true
+      "destination": "https://controlplane.work/$1",
+      "statusCode": 301
     },
     {
-      "source": "/:path*",
+      "source": "/(.*)",
       "has": [{ "type": "host", "value": "cp.lucive.app" }],
-      "destination": "https://controlplane.work/:path*",
-      "permanent": true
+      "destination": "https://controlplane.work/$1",
+      "statusCode": 301
     }
   ],
   "headers": [
