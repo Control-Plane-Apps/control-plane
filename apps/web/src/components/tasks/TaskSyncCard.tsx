@@ -206,7 +206,9 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
   if (compact && (status.state === "synced" || status.state === "syncing")) return null;
   const lastSynced = formatWhen(status.lastSyncedAt);
   const grace = status.subscription?.status === "grace";
-  const renews = formatWhen(status.subscription?.currentPeriodEnd);
+  // An ended subscription still reports its last period; only a live one has a date to show.
+  const live = status.subscription?.status === "active" || grace;
+  const renews = live ? formatWhen(status.subscription?.currentPeriodEnd) : null;
   return (
     <section aria-label="Task Sync" className="flex flex-col gap-2">
       <h3 className={cn(title, "flex items-center gap-1.5")}>

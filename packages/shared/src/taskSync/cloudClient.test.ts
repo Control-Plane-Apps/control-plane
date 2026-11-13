@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+
 // @effect-diagnostics globalDate:off - the client under test takes a plain clock.
 import { describe, expect, it } from "vite-plus/test";
 
@@ -23,7 +25,13 @@ describe("task sync cloud client", () => {
     const { fetch, calls } = fakeFetch({
       "/api/client/handshake": (init) => {
         const body = JSON.parse(String(init.body));
-        const ok = body.sig === signHandshake(SECRET, body.keyId, body.ts, body.nonce);
+        // Pinned to the server's check: HMAC keyed with the secret string, not hex-decoded.
+        const expected = NodeCrypto.createHmac("sha256", SECRET)
+          .update(`${body.keyId}.${body.ts}.${body.nonce}`)
+          .digest("hex");
+        const ok =
+          body.sig === expected &&
+          signHandshake(SECRET, body.keyId, body.ts, body.nonce) === expected;
         return ok ? [200, { token: "client-token", expiresIn: 300 }] : [401, {}];
       },
       "/api/auth/request-code": (init) => [

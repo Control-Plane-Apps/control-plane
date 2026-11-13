@@ -12,6 +12,7 @@ import {
   type OrchestrationEvent,
   type TaskSyncStatus,
 } from "@t3tools/contracts";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
@@ -65,12 +66,20 @@ const make = Effect.gen(function* () {
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const orchestration = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
+  const hostPlatform = yield* HostProcessPlatform;
   const context = yield* Effect.context<never>();
   const runPromise = Effect.runPromiseWith(context);
 
   const statePath = NodePath.join(config.stateDir, "task-sync", "state.json");
   const syncConfig = readTaskSyncConfig();
-  const client = syncConfig === null ? null : makeTaskSyncCloudClient(syncConfig);
+  const client =
+    syncConfig === null
+      ? null
+      : makeTaskSyncCloudClient(syncConfig, undefined, undefined, {
+          platform:
+            hostPlatform === "win32" ? "windows" : hostPlatform === "linux" ? "linux" : "macos",
+          returnTo: "desktop",
+        });
 
   const engine = new TaskSyncEngine({
     client,
