@@ -22,7 +22,15 @@ class FakeCloud implements TaskSyncCloudClient {
   periods = new Map<string, WirePeriodFull & { seq: number }>();
   memberships = new Map<string, WireMembershipFull & { seq: number }>();
   active = true;
+  available = true;
+  availabilityChecks = 0;
+  changeCalls = 0;
   pushes: PushBatch[] = [];
+
+  availability = async () => {
+    this.availabilityChecks += 1;
+    return this.available;
+  };
 
   seedTask(task: Partial<WireTaskWithSeq> & { id: string }) {
     this.seq += 1;
@@ -56,6 +64,7 @@ class FakeCloud implements TaskSyncCloudClient {
   portal = async () => "https://portal.example/session";
 
   changes = async (_token: string, since: number): Promise<ChangesPage> => {
+    this.changeCalls += 1;
     if (!this.active) throw new TaskSyncCloudError("inactive", 402);
     const after = <T extends { seq: number }>(rows: Iterable<T>) =>
       [...rows].filter((row) => row.seq > since);
@@ -278,6 +287,34 @@ describe("TaskSyncEngine", () => {
     await engine.sync();
     expect((await engine.status()).state).toBe("synced");
     expect(cloud.tasks.get("t1")?.title).toBe("Renamed");
+  });
+
+  it("shows coming soon, with no sign-in or sync, until the service switches Task Sync on", async () => {
+    const cloud = new FakeCloud();
+    cloud.available = false;
+    const { engine } = setup(cloud);
+    expect((await engine.status()).state).toBe("coming-soon");
+    await engine.refreshAvailability(0);
+    expect((await engine.status()).state).toBe("coming-soon");
+    await expect(engine.requestCode("n@example.com")).rejects.toMatchObject({
+      reason: "unavailable",
+    });
+    await expect(engine.verify("n@example.com", "123456")).rejects.toMatchObject({
+      reason: "unavailable",
+    });
+    await engine.sync();
+    expect(cloud.changeCalls).toBe(0);
+    expect(cloud.pushes).toHaveLength(0);
+
+    // Background checks reuse the answer for a few hours; an explicit recheck asks again.
+    const checks = cloud.availabilityChecks;
+    await engine.sync();
+    expect(cloud.availabilityChecks).toBe(checks);
+    cloud.available = true;
+    await engine.refreshAvailability(0);
+    expect((await engine.status()).state).toBe("signed-out");
+    await engine.verify("n@example.com", "123456");
+    expect((await engine.status()).state).toBe("synced");
   });
 
   it("signs out to local-only, keeping tasks here", async () => {

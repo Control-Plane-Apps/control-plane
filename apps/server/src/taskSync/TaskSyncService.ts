@@ -41,6 +41,11 @@ import {
 const TOKEN_SECRET = "task-sync-device-token";
 const SYNC_COMMAND_PREFIX = "task-sync:";
 const SYNC_INTERVAL = "60 seconds";
+/**
+ * While Settings or Tasks is open the status poll rechecks a "coming soon"
+ * answer at most this often, so Task Sync switches on with no new build.
+ */
+const OPEN_AVAILABILITY_RECHECK_MS = 60_000;
 const LOCAL_EDIT_DEBOUNCE_MS = 1500;
 
 export class TaskSyncService extends Context.Service<
@@ -190,13 +195,19 @@ const make = Effect.gen(function* () {
     Effect.tryPromise({ try: run, catch: toTaskSyncError });
 
   return {
-    status: attempt(() => engine.status()),
+    status: attempt(async () => {
+      const current = await engine.status();
+      if (current.state !== "coming-soon") return current;
+      await engine.refreshAvailability(OPEN_AVAILABILITY_RECHECK_MS);
+      return engine.status();
+    }),
     requestCode: (email) => attempt(() => engine.requestCode(email)),
     verify: (email, code) => attempt(() => engine.verify(email, code)),
     signOut: attempt(() => engine.signOut()),
     checkoutUrl: attempt(async () => ({ url: await engine.checkoutUrl() })),
     portalUrl: attempt(async () => ({ url: await engine.portalUrl() })),
     syncNow: attempt(async () => {
+      if (!(await engine.refreshAvailability(0))) return engine.status();
       await engine.refreshSubscription().catch(() => undefined);
       await engine.sync();
       return engine.status();

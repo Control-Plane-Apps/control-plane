@@ -78,6 +78,12 @@ export interface PushResult {
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface TaskSyncCloudClient {
+  /**
+   * Whether the service has Task Sync switched on. Only a 200 with
+   * `{ "available": true }` counts; anything else (404, network error,
+   * `available: false`) means not yet.
+   */
+  readonly availability: () => Promise<boolean>;
   readonly requestCode: (email: string) => Promise<void>;
   readonly verify: (input: {
     email: string;
@@ -172,6 +178,19 @@ export function makeTaskSyncCloudClient(
   };
 
   return {
+    availability: async () => {
+      try {
+        const response = await fetchImpl(`${config.baseUrl}/api/task-sync/availability`, {
+          method: "GET",
+          headers: { accept: "application/json" },
+        });
+        if (response.status !== 200) return false;
+        const body = (await response.json().catch(() => null)) as { available?: unknown } | null;
+        return body?.available === true;
+      } catch {
+        return false;
+      }
+    },
     requestCode: async (email) => {
       await call("/api/auth/request-code", {
         method: "POST",

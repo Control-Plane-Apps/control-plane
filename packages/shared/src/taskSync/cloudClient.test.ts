@@ -21,6 +21,24 @@ function fakeFetch(routes: Record<string, (init: RequestInit) => [number, unknow
 }
 
 describe("task sync cloud client", () => {
+  it("treats only a 200 with available: true as Task Sync being on", async () => {
+    const answer = async (route: (init: RequestInit) => [number, unknown]) => {
+      const { fetch } = fakeFetch({ "/api/task-sync/availability": route });
+      return makeTaskSyncCloudClient(config, fetch).availability();
+    };
+    expect(await answer(() => [200, { available: true }])).toBe(true);
+    expect(await answer(() => [200, { available: false }])).toBe(false);
+    expect(await answer(() => [200, {}])).toBe(false);
+    expect(await answer(() => [503, { available: true }])).toBe(false);
+    // Production today: the route doesn't exist yet.
+    const { fetch: missing } = fakeFetch({});
+    expect(await makeTaskSyncCloudClient(config, missing).availability()).toBe(false);
+    const offline = makeTaskSyncCloudClient(config, async () => {
+      throw new TypeError("network down");
+    });
+    expect(await offline.availability()).toBe(false);
+  });
+
   it("signs the handshake exactly as the server checks it", () => {
     // Server (lucive cloud/api/client/handshake.ts): createHmac('sha256', key.secret as string)
     // .update(`${keyId}.${ts}.${nonce}`). The key is the secret string, never hex-decoded.
