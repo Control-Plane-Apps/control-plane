@@ -39,6 +39,8 @@ import { uuidv4 } from "../../lib/uuid";
 const TOKEN_KEY = "cplane-task-sync-device-token";
 const SYNC_INTERVAL_MS = 60_000;
 const EDIT_DEBOUNCE_MS = 1_000;
+/** Opening Settings or Tasks rechecks a "coming soon" answer at most this often. */
+const OPEN_RECHECK_MS = 60_000;
 
 export interface CloudTaskSnapshot {
   readonly tasks: ReadonlyArray<Task>;
@@ -152,13 +154,24 @@ class CloudTaskStore {
   private start(): void {
     if (this.started) return;
     this.started = true;
-    void this.syncNow();
+    // App start: ask whether Task Sync is switched on before anything else.
+    void this.recheck(0);
     this.interval = setInterval(() => {
       if (AppState.currentState === "active") void this.syncNow();
     }, SYNC_INTERVAL_MS);
     AppState.addEventListener("change", (state) => {
-      if (state === "active") void this.syncNow();
+      if (state === "active") void this.recheck(OPEN_RECHECK_MS);
     });
+  }
+
+  /**
+   * Re-asks the service whether Task Sync is on (unless the last answer is
+   * younger than `maxAgeMs`), then syncs if it is. Settings and Tasks call
+   * this when they open, so Task Sync switches on with no new build.
+   */
+  async recheck(maxAgeMs = OPEN_RECHECK_MS): Promise<TaskSyncStatus> {
+    await this.engine.refreshAvailability(maxAgeMs);
+    return this.syncNow();
   }
 
   private async refreshStatus(): Promise<TaskSyncStatus> {

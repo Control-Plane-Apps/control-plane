@@ -6,7 +6,7 @@
  */
 import { hmac } from "@noble/hashes/hmac";
 import { sha256 } from "@noble/hashes/sha2";
-import { bytesToHex, hexToBytes, randomBytes, utf8ToBytes } from "@noble/hashes/utils";
+import { bytesToHex, randomBytes, utf8ToBytes } from "@noble/hashes/utils";
 
 import type { TaskSyncErrorReason, TaskSyncSubscription } from "@t3tools/contracts";
 
@@ -20,7 +20,7 @@ export interface TaskSyncConfig {
 
 /** Which app is calling: the device platform sent at sign-in and the checkout return. */
 export interface TaskSyncClientInfo {
-  readonly platform: "macos" | "ios";
+  readonly platform: "macos" | "windows" | "linux" | "ios";
   readonly returnTo: "desktop" | "mobile";
   /** 16 random bytes; defaults to Web Crypto, which React Native may lack. */
   readonly randomBytes?: (length: number) => Uint8Array;
@@ -78,6 +78,12 @@ export interface PushResult {
 type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface TaskSyncCloudClient {
+  /**
+   * Whether the service has Task Sync switched on. Only a 200 with
+   * `{ "available": true }` counts; anything else (404, network error,
+   * `available: false`) means not yet.
+   */
+  readonly availability: () => Promise<boolean>;
   readonly requestCode: (email: string) => Promise<void>;
   readonly verify: (input: {
     email: string;
@@ -111,8 +117,9 @@ function reasonForStatus(status: number, body: { error?: unknown }): TaskSyncErr
   return "server";
 }
 
+/** HMAC-SHA256 keyed with the secret string itself (not hex-decoded), as the server checks it. */
 export function signHandshake(secret: string, keyId: string, ts: number, nonce: string): string {
-  return bytesToHex(hmac(sha256, hexToBytes(secret), utf8ToBytes(`${keyId}.${ts}.${nonce}`)));
+  return bytesToHex(hmac(sha256, utf8ToBytes(secret), utf8ToBytes(`${keyId}.${ts}.${nonce}`)));
 }
 
 export function makeTaskSyncCloudClient(
@@ -171,6 +178,19 @@ export function makeTaskSyncCloudClient(
   };
 
   return {
+    availability: async () => {
+      try {
+        const response = await fetchImpl(`${config.baseUrl}/api/task-sync/availability`, {
+          method: "GET",
+          headers: { accept: "application/json" },
+        });
+        if (response.status !== 200) return false;
+        const body = (await response.json().catch(() => null)) as { available?: unknown } | null;
+        return body?.available === true;
+      } catch {
+        return false;
+      }
+    },
     requestCode: async (email) => {
       await call("/api/auth/request-code", {
         method: "POST",

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -34,6 +34,11 @@ export function TaskSyncSettingsRouteScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Opening this screen asks again whether Task Sync is switched on.
+  useEffect(() => {
+    void store.recheck(0);
+  }, [store]);
+
   const run = async (work: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
@@ -52,7 +57,17 @@ export function TaskSyncSettingsRouteScreen() {
   const lastSynced = formatWhen(status?.lastSyncedAt);
 
   let body;
-  if (state === "unavailable") {
+  if (state === "coming-soon") {
+    body = (
+      <View className="gap-2">
+        <Text className="text-[17px] font-semibold text-foreground">Task Sync is coming soon</Text>
+        <Text className="text-[15px] text-foreground-muted">
+          Task Sync will keep your tasks on this phone while your Mac sleeps. Until then your tasks
+          come through your Mac.
+        </Text>
+      </View>
+    );
+  } else if (state === "unavailable") {
     body = (
       <Text className="text-[15px] text-foreground-muted">
         Task Sync isn't available in this build of Control Plane.

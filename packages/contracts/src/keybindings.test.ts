@@ -116,7 +116,7 @@ it.effect("parses keybinding rules", () =>
     assert.strictEqual(parsedThreadSettle.command, "thread.settle");
 
     const parsedSettledToggle = yield* decode(KeybindingRule, {
-      key: "mod+shift+t",
+      key: "mod+alt+t",
       command: "settled.toggle",
       when: "!terminalFocus",
     });

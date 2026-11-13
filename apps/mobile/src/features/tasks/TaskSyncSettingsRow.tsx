@@ -10,7 +10,13 @@ export function TaskSyncSettingsRow() {
     <SettingsRow
       icon="arrow.clockwise"
       label="Task Sync"
-      value={account.signedIn ? (account.email ?? "Signed in") : "Sign in to sync tasks"}
+      value={
+        account.comingSoon
+          ? "Coming soon"
+          : account.signedIn
+            ? (account.email ?? "Signed in")
+            : "Sign in to sync tasks"
+      }
       target="SettingsTaskSync"
     />
   );
