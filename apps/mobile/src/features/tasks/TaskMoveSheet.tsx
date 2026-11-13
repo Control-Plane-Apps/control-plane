@@ -5,13 +5,14 @@ import {
   isHomeAtTarget,
   type TaskMoveTarget,
 } from "@t3tools/client-runtime/state/projects";
-import { addTaskDays, taskWeekday, type Task } from "@t3tools/contracts";
+import type { Task } from "@t3tools/contracts";
 import { Fragment, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
+import { moveSections } from "./taskMenus";
 import { TaskDatePicker } from "./TaskDatePicker";
 import { RowSeparator, symbol, TaskCard, useTaskPalette } from "./taskUi";
 import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
@@ -25,77 +26,6 @@ type TaskMoveParams = {
   /** Opens straight on the calendar (swipe left, Schedule). */
   readonly mode?: "schedule";
 };
-
-const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-interface MoveEntry {
-  readonly label: string;
-  readonly hint?: string;
-  readonly icon: "calendar" | "tray";
-  readonly target: TaskMoveTarget;
-}
-
-/** Saturday of this weekend; today when it already is the weekend. */
-function weekendDate(today: string): string {
-  const weekday = taskWeekday(today);
-  if (weekday === 6 || weekday === 0) return today;
-  return addTaskDays(today, 6 - weekday);
-}
-
-/** Monday of next week. */
-function nextWeekDate(today: string): string {
-  const weekday = taskWeekday(today);
-  return addTaskDays(today, (8 - weekday) % 7 || 7);
-}
-
-export function moveSections(today: string): ReadonlyArray<{
-  readonly title: string | null;
-  readonly entries: ReadonlyArray<MoveEntry>;
-}> {
-  const tomorrow = addTaskDays(today, 1);
-  return [
-    {
-      title: null,
-      entries: [
-        { label: "Today", icon: "calendar", target: { kind: "today" } },
-        {
-          label: "Tomorrow",
-          hint: WEEKDAYS_SHORT[taskWeekday(tomorrow)],
-          icon: "calendar",
-          target: { kind: "tomorrow" },
-        },
-        {
-          label: "This weekend",
-          icon: "calendar",
-          target: { kind: "date", date: weekendDate(today) },
-        },
-        {
-          label: "Next week",
-          hint: "Mon",
-          icon: "calendar",
-          target: { kind: "date", date: nextWeekDate(today) },
-        },
-      ],
-    },
-    {
-      title: "Commit",
-      entries: [
-        { label: "This week", icon: "tray", target: { kind: "commit", horizon: "week" } },
-        { label: "This month", icon: "tray", target: { kind: "commit", horizon: "month" } },
-        { label: "This year", icon: "tray", target: { kind: "commit", horizon: "year" } },
-      ],
-    },
-    {
-      title: "Backlog",
-      entries: [
-        { label: "General backlog", icon: "tray", target: { kind: "backlog", horizon: null } },
-        { label: "Week backlog", icon: "tray", target: { kind: "backlog", horizon: "week" } },
-        { label: "Month backlog", icon: "tray", target: { kind: "backlog", horizon: "month" } },
-        { label: "Year backlog", icon: "tray", target: { kind: "backlog", horizon: "year" } },
-      ],
-    },
-  ];
-}
 
 export function TaskMoveSheet({ route }: StaticScreenProps<TaskMoveParams>) {
   const navigation = useNavigation();

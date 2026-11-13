@@ -22,8 +22,7 @@ import { AppTextInput } from "../../components/AppText";
 import { AppText as Text } from "../../components/AppText";
 import { ControlPillMenu } from "../../components/ControlPill";
 import { SymbolView } from "../../components/AppSymbol";
-import { moveSections } from "./TaskMoveSheet";
-import { REMINDER_TIMES, REPEAT_OPTIONS } from "./taskMenus";
+import { moveSections, REMINDER_TIMES, REPEAT_OPTIONS } from "./taskMenus";
 import { symbol, TaskCheckbox, TaskChip, useTaskPalette, BARE_INPUT_STYLE } from "./taskUi";
 import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 
