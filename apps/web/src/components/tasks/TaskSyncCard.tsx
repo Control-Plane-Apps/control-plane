@@ -166,8 +166,8 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
       <section aria-label="Task Sync" className="flex flex-col gap-2">
         <h3 className={title}>Turn on Task Sync</h3>
         <p className={body}>
-          Task Sync keeps your tasks on every device for $5 a month. Your tasks stay on this Mac in
-          the meantime.
+          Task Sync keeps your tasks on every device for $5 a month plus applicable tax. Your tasks
+          stay on this Mac in the meantime.
         </p>
         <div className="flex flex-wrap gap-2">
           <Button
