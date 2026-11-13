@@ -83,7 +83,8 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const { usesSplitView } = useAdaptiveWorkspaceLayout().layout;
+  const workspace = useAdaptiveWorkspaceLayout();
+  const { usesSplitView } = workspace.layout;
   // The pane's own width: beside the iPad sidebar it is narrower than the window.
   const [paneWidth, setPaneWidth] = useState(width);
   const wide = paneWidth >= WIDE_LAYOUT_MIN_WIDTH;
@@ -431,7 +432,23 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
           />
           <Text className="text-[17px] text-foreground">Home</Text>
         </Pressable>
-      ) : null}
+      ) : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={
+            workspace.panes.primarySidebarVisible ? "Hide thread sidebar" : "Show thread sidebar"
+          }
+          onPress={workspace.togglePrimarySidebar}
+          className="size-11 items-center justify-center"
+        >
+          <SymbolView
+            name="sidebar.left"
+            size={19}
+            tintColorClassName="accent-foreground"
+            type="monochrome"
+          />
+        </Pressable>
+      )}
       <View className="ml-auto flex-row items-center">
         {view !== "all" ? (
           <ControlPillMenu
