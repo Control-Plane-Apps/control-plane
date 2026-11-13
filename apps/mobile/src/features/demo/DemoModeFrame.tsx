@@ -55,7 +55,7 @@ function DemoModeBanner() {
       <View className="min-h-[36px] flex-row items-center justify-between gap-3 px-4 py-1">
         <View className="flex-1 flex-row items-center gap-2">
           <View className="rounded-full bg-warning-foreground px-2 py-0.5">
-            <Text className="text-[11px] font-t3-bold uppercase text-warning">
+            <Text className="text-[11px] font-t3-bold uppercase text-screen">
               {DEMO_BANNER_TITLE}
             </Text>
           </View>
