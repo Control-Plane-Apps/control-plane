@@ -70,6 +70,8 @@ import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-thread-outbox";
 import { threadEnvironment } from "./threads";
+import { applyStatusReplyTag } from "../features/status/projectStatus.logic";
+import { clearStatusReplyTag, readStatusReplyTag } from "../features/status/statusReplyStore";
 import { useAtomCommand } from "./use-atom-command";
 import {
   composerAttachmentUploadBlockReason,
@@ -436,12 +438,15 @@ export function useThreadComposerState() {
     // the tap frame instead of after file I/O. If the write fails the message
     // is rolled out of the queue and the content is merged back into the
     // draft, preserving anything typed since.
+    // A Status "Re:" chip names the workstream (and question version) this
+    // message answers; the coordinator reads it from the header.
+    const replyTag = readStatusReplyTag(threadKey);
     const enqueuePromise = enqueueThreadOutboxMessage({
       environmentId: selectedThreadShell.environmentId,
       threadId: selectedThreadShell.id,
       messageId,
       commandId: CommandId.make(metadata.commandId),
-      text,
+      text: applyStatusReplyTag(text, replyTag),
       attachments,
       context: draft.context,
       modelSelection,
@@ -455,6 +460,7 @@ export function useThreadComposerState() {
     clearComposerDraftContent(threadKey, { deferAttachmentCleanup: true });
     enqueuePromise.then(
       () => {
+        if (replyTag !== null) clearStatusReplyTag(threadKey);
         // The queued message owns the files now; the sweep sees that and
         // spares them. Deferred to here so a failed write cannot roll the
         // message out of the queue mid-sweep and lose the bytes.

@@ -431,6 +431,13 @@ const config: ExpoConfig = {
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
     },
+    // Task Sync client key for iOS (cplane-ios-1). From the build env / EAS
+    // secrets, never committed. Unset: Tasks come only through the Mac.
+    taskSync: {
+      url: repoEnv.CPLANE_TASK_SYNC_URL ?? null,
+      keyId: repoEnv.CPLANE_IOS_TASK_SYNC_CLIENT_KEY_ID ?? null,
+      secret: repoEnv.CPLANE_IOS_TASK_SYNC_CLIENT_SECRET ?? null,
+    },
     clerk: {
       publishableKey: repoEnv.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? null,
       jwtTemplate: repoEnv.EXPO_PUBLIC_CLERK_JWT_TEMPLATE ?? null,
