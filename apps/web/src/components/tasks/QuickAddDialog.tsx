@@ -164,7 +164,7 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
         <div className="flex items-center gap-2.5 px-4 pt-3.5">
           <span
             aria-hidden
-            className="inline-flex size-4 shrink-0 rounded-[4px] border border-muted-foreground/45"
+            className="inline-flex size-[18px] shrink-0 rounded-[5px] border-[1.5px] border-muted-foreground/45"
           />
           <div className="relative min-w-0 flex-1">
             <input

@@ -127,7 +127,7 @@ export function AddTaskRow(props: {
     >
       <span
         aria-hidden
-        className="inline-flex size-4 shrink-0 items-center justify-center rounded-[4px] border border-dashed border-muted-foreground/45"
+        className="inline-flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border-[1.5px] border-dashed border-muted-foreground/45"
       />
       <input
         aria-label={props.label ?? "Add a task"}

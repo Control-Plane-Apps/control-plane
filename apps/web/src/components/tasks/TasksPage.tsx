@@ -354,25 +354,29 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
       <>
         <h1 className="font-semibold text-2xl">Upcoming</h1>
         <p className="pt-1 text-muted-foreground text-sm">Next 7 days</p>
-        {groups.map((group) => (
-          <section key={group.date} className="pt-6">
-            <div className="flex items-baseline gap-2 border-border border-b pb-1.5">
-              <h2 className="font-medium text-sm">{formatTaskDayTitle(group.date)}</h2>
-              <span className="text-muted-foreground text-xs">
-                {formatUpcomingOffset(group.date, today)}
-              </span>
-              <span className="ms-auto text-muted-foreground text-xs">
-                {group.tasks.length === 0
-                  ? ""
-                  : `${group.tasks.length} ${group.tasks.length === 1 ? "task" : "tasks"}`}
-              </span>
-            </div>
-            <div className="pt-1">
+        <div className="flex flex-col gap-3 pt-5">
+          {groups.map((group) => (
+            <section
+              key={group.date}
+              aria-label={formatTaskDayTitle(group.date)}
+              className="overflow-hidden rounded-xl border border-border bg-card px-6 pt-3 pb-1"
+            >
+              <div className="flex items-baseline gap-2 pb-1">
+                <h2 className="font-semibold text-[15px]">{formatTaskDayTitle(group.date)}</h2>
+                <span className="text-muted-foreground text-xs">
+                  {formatUpcomingOffset(group.date, today)}
+                </span>
+                <span className="ms-auto text-muted-foreground text-xs">
+                  {group.tasks.length === 0
+                    ? ""
+                    : `${group.tasks.length} ${group.tasks.length === 1 ? "task" : "tasks"}`}
+                </span>
+              </div>
               {list(group.tasks, formatTaskDayTitle(group.date))}
               <AddTaskRow onAdd={add({ kind: "date", date: group.date })} />
-            </div>
-          </section>
-        ))}
+            </section>
+          ))}
+        </div>
       </>
     );
     aside = (

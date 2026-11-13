@@ -70,7 +70,7 @@ export function TaskCheckbox(props: {
       aria-label={props.label}
       disabled={props.disabled}
       className={cn(
-        "inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-[4px] border outline-none",
+        "inline-flex size-[18px] shrink-0 cursor-pointer items-center justify-center rounded-[5px] border-[1.5px] outline-none",
         "focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
         props.proposed
           ? "border-dashed border-muted-foreground/60"
@@ -83,7 +83,7 @@ export function TaskCheckbox(props: {
         props.onToggle();
       }}
     >
-      {props.checked ? <CheckIcon aria-hidden className="size-3" strokeWidth={3} /> : null}
+      {props.checked ? <CheckIcon aria-hidden className="size-3" strokeWidth={3.2} /> : null}
     </button>
   );
 }
@@ -240,19 +240,17 @@ export function TaskRow(props: {
           ) : (
             <button
               type="button"
-              className={cn(
-                "min-w-0 flex-1 cursor-pointer truncate text-start font-semibold text-[15px] outline-none",
-                completed && "font-normal text-muted-foreground line-through",
-              )}
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-start outline-none"
               onClick={props.onToggleExpanded}
             >
-              {task.title}
-            </button>
-          )}
-          {expanded ? (
-            <TaskRowMenu task={task} context={context} onClose={props.onToggleExpanded} />
-          ) : (
-            <span className="flex shrink-0 items-center gap-2 text-xs">
+              <span
+                className={cn(
+                  "min-w-0 truncate font-semibold text-[15px]",
+                  completed && "font-normal text-muted-foreground line-through",
+                )}
+              >
+                {task.title}
+              </span>
               {agentActive ? (
                 <span
                   role="img"
@@ -262,11 +260,17 @@ export function TaskRow(props: {
                       : "Handed to an agent"
                   }
                   className={cn(
-                    "size-1.5 rounded-full",
+                    "size-1.5 shrink-0 rounded-full",
                     state.kind === "agent-working" ? "bg-info" : "bg-info/50",
                   )}
                 />
               ) : null}
+            </button>
+          )}
+          {expanded ? (
+            <TaskRowMenu task={task} context={context} onClose={props.onToggleExpanded} />
+          ) : (
+            <span className="flex shrink-0 items-center gap-2 text-xs">
               {status !== undefined && state.kind !== "workstream-done" ? (
                 <span className="inline-flex max-w-40 items-center gap-1 text-muted-foreground">
                   <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-success" />
