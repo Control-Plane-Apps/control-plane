@@ -90,7 +90,8 @@ function reasonForStatus(status: number, body: { error?: unknown }): TaskSyncErr
     return "inactive";
   }
   if (status === 404 && body.error === "no_subscription") return "inactive";
-  if (status === 503) return "network";
+  // Checkout not set up yet is our side; anything else at 503 is transient.
+  if (status === 503) return body.error === "checkout_unavailable" ? "server" : "network";
   if (status === 401) return body.error === "invalid_code" ? "invalid-code" : "signed-out";
   if (status === 429) return "rate-limited";
   if (status === 400) return body.error === "invalid_email" ? "invalid-email" : "server";
@@ -209,7 +210,7 @@ export function makeTaskSyncCloudClient(
     },
     checkout: async (token) => {
       try {
-        return await url("/api/entitlements/task-sync/checkout", token, { channel: "desktop" });
+        return await url("/api/entitlements/task-sync/checkout", token, { returnTo: "desktop" });
       } catch (error) {
         // Already subscribed: managing the subscription is the useful next step.
         if (error instanceof TaskSyncCloudError && error.status === 409) {
