@@ -2134,6 +2134,14 @@ function LegacyFeaturesSection() {
 
 export function GeneralSettingsPanel() {
   const settingsTargetHash = useLocation({ select: (location) => location.hash });
+  const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(() =>
+    Boolean(settingsTargetHash),
+  );
+  const [lastSettingsTargetHash, setLastSettingsTargetHash] = useState(settingsTargetHash);
+  if (lastSettingsTargetHash !== settingsTargetHash) {
+    setLastSettingsTargetHash(settingsTargetHash);
+    if (settingsTargetHash) setAdvancedSettingsOpen(true);
+  }
   const modifierLabel = isMacPlatform(navigator.platform) ? "⌘" : "Ctrl";
   const sendShortcutOptions = [
     { value: "enter", label: "Enter" },
@@ -2431,7 +2439,11 @@ export function GeneralSettingsPanel() {
           />
         )}
       </SettingsSection>
-      <details open={Boolean(settingsTargetHash)} className="space-y-7">
+      <details
+        open={advancedSettingsOpen}
+        onToggle={(event) => setAdvancedSettingsOpen(event.currentTarget.open)}
+        className="space-y-7"
+      >
         <summary className="cursor-pointer text-sm text-muted-foreground">
           Advanced general settings
         </summary>
