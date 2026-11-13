@@ -100,24 +100,23 @@ describe("mobile themes", () => {
   });
 
   it("normalizes persisted theme preferences", () => {
-    expect(normalizeMobileThemeId("ocean")).toBe("ocean");
+    // Paper and clay is the only palette: retired and unknown ids migrate to it.
+    expect(normalizeMobileThemeId("ocean")).toBe(DEFAULT_MOBILE_THEME_ID);
+    expect(normalizeMobileThemeId("material-you")).toBe(DEFAULT_MOBILE_THEME_ID);
     expect(normalizeMobileThemeId("missing-theme")).toBe(DEFAULT_MOBILE_THEME_ID);
     expect(normalizeMobileThemeMode("dark")).toBe("dark");
     expect(normalizeMobileThemeMode("sepia")).toBe("system");
   });
 
-  it("migrates one theme choice to both appearances and preserves independent choices", () => {
-    expect(resolveMobileThemeIds({ themeId: "grove" })).toEqual({
-      light: "grove",
-      dark: "grove",
-    });
+  it("migrates every saved theme choice to Paper and clay", () => {
+    const paperAndClay = { light: DEFAULT_MOBILE_THEME_ID, dark: DEFAULT_MOBILE_THEME_ID };
+    expect(resolveMobileThemeIds({ themeId: "grove" })).toEqual(paperAndClay);
     expect(
       resolveMobileThemeIds({ themeId: "grove", lightThemeId: "iris", darkThemeId: "ocean" }),
-    ).toEqual({ light: "iris", dark: "ocean" });
-    expect(resolveMobileThemeIds({ themeId: "grove", lightThemeId: "missing" })).toEqual({
-      light: DEFAULT_MOBILE_THEME_ID,
-      dark: "grove",
-    });
+    ).toEqual(paperAndClay);
+    expect(resolveMobileThemeIds({ themeId: "grove", lightThemeId: "missing" })).toEqual(
+      paperAndClay,
+    );
   });
 
   it("changes either theme without switching the active appearance", () => {

@@ -9,7 +9,6 @@ import {
   canonicalThemePreference,
   isKnownThemePreference,
   getThemePreferenceMode,
-  parseThemeHalves,
   resolveDesktopTheme,
   resolveThemeAppearance,
   resolveThemeHalf,
@@ -63,13 +62,9 @@ export function readThemeHalvesRaw(): { light?: string; dark?: string } {
   return readStoredThemeHalvesRaw();
 }
 
+// Paper and clay is the only palette, so there is never a per-appearance mix.
 function readStoredThemeHalves(): ThemeHalves | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return parseThemeHalves(window.localStorage.getItem(THEME_HALVES_STORAGE_KEY));
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 /**
@@ -79,20 +74,7 @@ function readStoredThemeHalves(): ThemeHalves | null {
  * other one changed before the set arrived.
  */
 function readStoredThemeHalvesRaw(): { light?: string; dark?: string } {
-  try {
-    const value: unknown = JSON.parse(
-      window.localStorage.getItem(THEME_HALVES_STORAGE_KEY) ?? "null",
-    );
-    if (value === null || typeof value !== "object") return {};
-    const halves: { light?: string; dark?: string } = {};
-    for (const appearance of ["light", "dark"] as const) {
-      const themeId = (value as Record<string, unknown>)[appearance];
-      if (typeof themeId === "string") halves[appearance] = themeId;
-    }
-    return halves;
-  } catch {
-    return {};
-  }
+  return {};
 }
 
 function themeHalvesSignature(halves: ThemeHalves | null): string {
@@ -211,10 +193,35 @@ export function readThemePreference(): Theme {
       cause,
     });
   }
-  if (raw !== null && isKnownThemePreference(raw)) {
-    return canonicalThemePreference(raw);
-  }
+  // Only an appearance mode is a valid preference now; a saved theme id is
+  // migrated by migrateLegacyThemeSelection and otherwise reads as System.
+  if (raw !== null && isThemePreferenceMode(raw)) return raw;
   return DEFAULT_THEME_SNAPSHOT.theme;
+}
+
+/**
+ * Paper and clay replaced the theme library. Anyone who saved a built-in,
+ * custom, or environment theme (or a light/dark mix) keeps their appearance
+ * mode and drops the theme selection. Safe to run repeatedly; storage
+ * failures leave the preference alone because reads already ignore theme ids.
+ */
+export function migrateLegacyThemeSelection(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const storage = window.localStorage;
+    const raw = storage.getItem(STORAGE_KEY);
+    if (raw !== null && !isThemePreferenceMode(raw)) {
+      const mode = readAppearanceModePreference(
+        isKnownThemePreference(raw) ? canonicalThemePreference(raw) : "system",
+      );
+      storage.setItem(THEME_APPEARANCE_MODE_STORAGE_KEY, mode);
+      storage.setItem(STORAGE_KEY, mode);
+    }
+    storage.removeItem(THEME_HALVES_STORAGE_KEY);
+    storage.removeItem(CUSTOM_THEMES_STORAGE_KEY);
+  } catch {
+    // Storage is unavailable; readThemePreference ignores theme ids anyway.
+  }
 }
 
 export function writeThemePreference(theme: Theme): void {
@@ -411,6 +418,7 @@ export function syncDesktopTheme(
 
 // Apply immediately on module load to prevent flash
 if (typeof document !== "undefined" && typeof window !== "undefined") {
+  migrateLegacyThemeSelection();
   applyTheme(getStored());
 }
 
@@ -514,6 +522,8 @@ export function useTheme() {
 
   const setTheme = useCallback((next: Theme): boolean => {
     if (typeof window === "undefined") return false;
+    // Theme ids are no longer selectable; only appearance modes persist.
+    if (!isThemePreferenceMode(next)) return false;
     try {
       // Preserve the current mode before replacing a legacy or inferred theme
       // preference. Otherwise a fresh System preference is re-inferred from
