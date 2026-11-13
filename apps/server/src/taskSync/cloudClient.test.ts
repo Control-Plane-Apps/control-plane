@@ -48,7 +48,7 @@ describe("task sync cloud client", () => {
 
   it("maps a 402 to inactive and a wrong code to invalid-code", async () => {
     const { fetch } = fakeFetch({
-      "/api/planning/changes": () => [402, { error: "task_sync_not_active" }],
+      "/api/planning/changes": () => [402, { error: "task_sync_inactive" }],
       "/api/client/handshake": () => [200, { token: "t", expiresIn: 300 }],
       "/api/auth/verify": () => [401, { error: "invalid_code" }],
     });
@@ -61,11 +61,11 @@ describe("task sync cloud client", () => {
 
   it("opens the billing portal when checkout finds an active subscription", async () => {
     const { fetch } = fakeFetch({
-      "/api/cplane/task-sync/checkout": () => [409, { error: "already_subscribed" }],
-      "/api/cplane/task-sync/portal": () => [200, { url: "https://billing.test/portal" }],
-      "/api/cplane/task-sync": () => [
+      "/api/entitlements/task-sync/checkout": () => [409, { error: "already_subscribed" }],
+      "/api/entitlements/task-sync/portal": () => [200, { url: "https://billing.test/portal" }],
+      "/api/entitlements/task-sync": () => [
         200,
-        { status: "grace", active: true, currentPeriodEnd: null, canManage: true },
+        { status: "past_due", active: true, currentPeriodEnd: null, canManage: true },
       ],
     });
     const client = makeTaskSyncCloudClient(config, fetch);

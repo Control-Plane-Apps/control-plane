@@ -80,7 +80,17 @@ export interface TaskSyncCloudClient {
 }
 
 function reasonForStatus(status: number, body: { error?: unknown }): TaskSyncErrorReason {
-  if (status === 402 || body.error === "task_sync_not_active") return "inactive";
+  // Any 402 from planning sync means the subscription is off
+  // (`task_sync_inactive`; older drafts said `task_sync_not_active`).
+  if (
+    status === 402 ||
+    body.error === "task_sync_inactive" ||
+    body.error === "task_sync_not_active"
+  ) {
+    return "inactive";
+  }
+  if (status === 404 && body.error === "no_subscription") return "inactive";
+  if (status === 503) return "network";
   if (status === 401) return body.error === "invalid_code" ? "invalid-code" : "signed-out";
   if (status === 429) return "rate-limited";
   if (status === 400) return body.error === "invalid_email" ? "invalid-email" : "server";
@@ -178,8 +188,14 @@ export function makeTaskSyncCloudClient(
         body: JSON.stringify(batch),
       })) as PushResult,
     subscription: async (token) => {
-      const body = await call("/api/cplane/task-sync", { method: "GET", bearer: token });
-      const status = body.status === "active" || body.status === "grace" ? body.status : "inactive";
+      const body = await call("/api/entitlements/task-sync", { method: "GET", bearer: token });
+      // `past_due` still syncs during the grace period; `canceled` is off.
+      const status =
+        body.status === "active"
+          ? "active"
+          : body.status === "past_due" || body.status === "grace"
+            ? "grace"
+            : "inactive";
       return {
         status,
         ...(typeof body.currentPeriodEnd === "string"
@@ -193,16 +209,16 @@ export function makeTaskSyncCloudClient(
     },
     checkout: async (token) => {
       try {
-        return await url("/api/cplane/task-sync/checkout", token, { channel: "desktop" });
+        return await url("/api/entitlements/task-sync/checkout", token, { channel: "desktop" });
       } catch (error) {
         // Already subscribed: managing the subscription is the useful next step.
         if (error instanceof TaskSyncCloudError && error.status === 409) {
-          return url("/api/cplane/task-sync/portal", token);
+          return url("/api/entitlements/task-sync/portal", token);
         }
         throw error;
       }
     },
-    portal: (token) => url("/api/cplane/task-sync/portal", token),
+    portal: (token) => url("/api/entitlements/task-sync/portal", token),
     revoke: async (token) => {
       await call("/api/auth/revoke", { method: "POST", bearer: token, body: "{}" }).catch(
         () => undefined,
