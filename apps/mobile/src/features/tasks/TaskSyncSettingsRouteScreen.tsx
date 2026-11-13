@@ -11,8 +11,9 @@ import { cloudErrorMessage, cloudTaskStore } from "./cloudTasks";
 import { useCloudTasks } from "./useMobileTasks";
 
 // Fork-owned. Settings > Task Sync on the phone: sign in to the Control Plane
-// account so Tasks keep working while the Mac sleeps. No purchase on iOS; the
-// subscription is managed from the Mac.
+// account so Tasks keep working while the Mac sleeps. Status and sign-in only:
+// no purchase, no link to buy, and no copy pointing at where to pay (App
+// Review 3.1.1/3.1.3).
 
 function formatWhen(iso: string | undefined): string | null {
   if (iso === undefined) return null;
@@ -142,10 +143,10 @@ export function TaskSyncSettingsRouteScreen() {
   } else if (state === "inactive") {
     body = (
       <View className="gap-3">
-        <Text className="text-[17px] font-semibold text-foreground">Turn on Task Sync</Text>
+        <Text className="text-[17px] font-semibold text-foreground">Task Sync is off</Text>
         <Text className="text-[15px] text-foreground-muted">
-          Task Sync isn't on for {status?.account?.email ?? "this account"}. Turn it on in Control
-          Plane on your Mac under Settings, Task Sync. Tasks still come through your Mac.
+          Task Sync isn't active for {status?.account?.email ?? "this account"}. Tasks still come
+          through your Mac.
         </Text>
         <View className="flex-row flex-wrap gap-2">
           <PillButton
@@ -170,8 +171,7 @@ export function TaskSyncSettingsRouteScreen() {
         <Text className="text-[17px] font-semibold text-foreground">Task Sync is on</Text>
         {grace ? (
           <Text className="text-[15px] text-warning-foreground">
-            Your last payment didn't go through. Update your payment method from your Mac to keep
-            syncing.
+            Task Sync needs attention on this account and may stop syncing soon.
           </Text>
         ) : null}
         <Text className="text-[15px] text-foreground-muted">
