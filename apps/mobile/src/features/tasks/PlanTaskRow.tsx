@@ -294,7 +294,11 @@ function SwipeCell(props: {
 
 function TitleInput(props: { readonly task: Task; readonly actions: TaskActions }) {
   const [value, setValue] = useState(props.task.title);
+  // The title turns editable on its own tap, so the tap that opened the row
+  // never lands in a freshly mounted field and raises the keyboard.
+  const [editing, setEditing] = useState(false);
   const commit = () => {
+    setEditing(false);
     const title = value.trim();
     if (title.length === 0 || title === props.task.title) {
       setValue(props.task.title);
@@ -302,9 +306,22 @@ function TitleInput(props: { readonly task: Task; readonly actions: TaskActions 
     }
     void props.actions.patch(props.task, { title });
   };
+  if (!editing) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Rename ${props.task.title}`}
+        onPress={() => setEditing(true)}
+        className="min-h-[26px] justify-center"
+      >
+        <Text className="text-[17px] font-t3-bold text-foreground">{value}</Text>
+      </Pressable>
+    );
+  }
   return (
     <AppTextInput
       accessibilityLabel="Task title"
+      autoFocus
       style={BARE_INPUT_STYLE}
       className="min-h-[26px] rounded-none border-0 bg-transparent p-0 text-[17px] font-t3-bold text-foreground"
       value={value}
