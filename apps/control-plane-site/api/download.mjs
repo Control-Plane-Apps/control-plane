@@ -1,5 +1,6 @@
-const RELEASES_URL = "https://github.com/lucive-apps/control-plane/releases/latest";
-const LATEST_RELEASE_API = "https://api.github.com/repos/lucive-apps/control-plane/releases/latest";
+const RELEASES_URL = "https://github.com/Control-Plane-Apps/control-plane/releases/latest";
+const LATEST_RELEASE_API =
+  "https://api.github.com/repos/Control-Plane-Apps/control-plane/releases/latest";
 
 export default async function handler(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") {
@@ -24,7 +25,7 @@ export default async function handler(req, res) {
         (item) =>
           /^Control-Plane-\d+\.\d+\.\d+-arm64\.dmg$/.test(item.name) &&
           item.browser_download_url?.startsWith(
-            "https://github.com/lucive-apps/control-plane/releases/download/",
+            "https://github.com/Control-Plane-Apps/control-plane/releases/download/",
           ),
       );
       if (asset) destination = asset.browser_download_url;

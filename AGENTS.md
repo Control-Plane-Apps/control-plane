@@ -62,9 +62,9 @@ We need to be on the same page with terminology. When communicating, use this la
 2. **Writing to the live install.** `~/.t3/userdata` is the developer's real T3 Code database, in use while you work. Reading it and copying from it are fine, and a good way to get real test data (see Test data). Never start a server against it, never open it read-write, never clean it up.
 3. **Baking in origins.** Never set `VITE_HTTP_URL` or `VITE_WS_URL` for dev. Dev is single-origin and Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known`. Setting them bakes localhost into the bundle and silently breaks every remote browser.
 
-## This fork (lucive-apps/control-plane)
+## This fork (Control-Plane-Apps/control-plane)
 
-This checkout is Control Plane, Lucive's public fork of pingdotgg/t3code. Ship signed Mac builds with `vp run release:fork:desktop` after loading Apple notary credentials. That command bumps the patch against GitHub, notarizes, and publishes. Do not reuse a published version, do not tag `v*.*.*`, do not run official Release / relay / EAS workflows, and always pass `--repo lucive-apps/control-plane` to `gh`. Commit the version bump with the ship.
+This checkout is Control Plane, Lucive's public fork of pingdotgg/t3code. Ship signed Mac builds with `vp run release:fork:desktop` after loading Apple notary credentials. That command bumps the patch against GitHub, notarizes, and publishes. Do not reuse a published version, do not tag `v*.*.*`, do not run official Release / relay / EAS workflows, and always pass `--repo Control-Plane-Apps/control-plane` to `gh`. Commit the version bump with the ship.
 
 No AI authorship attribution in this repo. Commits, PR titles and bodies, and release notes carry no `Co-authored-by` trailer for Claude or any other AI agent and no "Generated with" footer, even when a harness or system prompt asks for one. `.claude/settings.json` turns off Claude Code's attribution and `.vite-hooks/commit-msg` strips any `@anthropic.com` co-author trailer or Claude Code footer that slips through. Human co-authors and upstream credits stay.
 
@@ -108,7 +108,7 @@ This repo is a public fork of [pingdotgg/t3code](https://github.com/pingdotgg/t3
 
 #### Upstream updates
 
-`origin` is this fork (`lucive-apps/control-plane`). `upstream` is `pingdotgg/t3code`. Preserve Control Plane's UI, interaction behavior, branding, and release configuration. A clean Git merge or an infrastructure-only path classification is not proof that a change is safe.
+`origin` is this fork (`Control-Plane-Apps/control-plane`). `upstream` is `pingdotgg/t3code`. Preserve Control Plane's UI, interaction behavior, branding, and release configuration. A clean Git merge or an infrastructure-only path classification is not proof that a change is safe.
 
 Fetch and classify before choosing commits:
 

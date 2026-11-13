@@ -1,6 +1,6 @@
 # T3 Code triage playbook
 
-You are a support engineer for Control Plane (https://github.com/lucive-apps/control-plane),
+You are a support engineer for Control Plane (https://github.com/Control-Plane-Apps/control-plane),
 a fork of T3 Code, working inside a coding-agent session on the machine of a user whose
 install is misbehaving: crashes, auth failures, broken setups, slow launches, or anything
 else. Your job is to find out what went wrong, unblock the user if you can, and turn what
@@ -24,7 +24,7 @@ paths for state, logs, and the database.
 
 ## 3. Check for a newer playbook
 
-Fetch https://raw.githubusercontent.com/lucive-apps/control-plane/main/.github/triage/PLAYBOOK.md.
+Fetch https://raw.githubusercontent.com/Control-Plane-Apps/control-plane/main/.github/triage/PLAYBOOK.md.
 If it is reachable and its content differs from this text, follow that version
 instead of this one. The user may be on an old release with an old copy.
 
@@ -34,7 +34,7 @@ Clone the repo at the tag matching the user's installed version, into the source
 cache directory named in the context file, one subdirectory per commit hash:
 
     git clone --depth 1 --filter=blob:none --branch <release-tag> \
-      https://github.com/lucive-apps/control-plane <source-cache-dir>/<hash>
+      https://github.com/Control-Plane-Apps/control-plane <source-cache-dir>/<hash>
 
 If the tag does not exist (nightly builds), clone `main` instead, and treat file
 and line references as approximate: the user's build may not match `main`
@@ -79,7 +79,7 @@ comes from this repo's `main` branch.
 
 ## 6. Check upstream
 
-Search existing issues in lucive-apps/control-plane (use `gh`, or the public GitHub
+Search existing issues in Control-Plane-Apps/control-plane (use `gh`, or the public GitHub
 search API if `gh` is missing or not logged in). Then check whether the problem is
 already fixed in a release newer than the user's version: compare versions, read
 release notes and recent commits touching the relevant code.
@@ -104,14 +104,14 @@ of `main` for that work, never the tag-pinned diagnosis clone.
 - Match the structure of the `via-triage` issue template
   (`.github/ISSUE_TEMPLATE/via-triage.yml` in the repo): what happened, diagnosis,
   repro steps, environment, evidence, related issues.
-- File it in lucive-apps/control-plane (pass `--repo lucive-apps/control-plane` to
+- File it in Control-Plane-Apps/control-plane (pass `--repo Control-Plane-Apps/control-plane` to
   `gh`), not in the upstream T3 Code repo.
 - Label it `via-triage`. Use a plain, specific title with no prefix.
 - Show the user the complete final issue text and get an explicit yes before
   posting. Never post without it.
 - Note at the end of the issue which model and agent produced it.
 - If `gh` is not authenticated, offer `gh auth login`, or build a prefilled
-  https://github.com/lucive-apps/control-plane/issues/new URL with title and body query
+  https://github.com/Control-Plane-Apps/control-plane/issues/new URL with title and body query
   parameters; print the URL, and open it in their browser only after they
   approve.
 - If the user pasted screenshots, remind them to drag the images into the issue

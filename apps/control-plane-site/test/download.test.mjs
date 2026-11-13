@@ -20,7 +20,7 @@ function response() {
 
 NodeTest.test("redirects a download request to the latest arm64 DMG", async () => {
   const dmg =
-    "https://github.com/lucive-apps/control-plane/releases/download/0.0.54/Control-Plane-0.0.54-arm64.dmg";
+    "https://github.com/Control-Plane-Apps/control-plane/releases/download/0.0.54/Control-Plane-0.0.54-arm64.dmg";
   globalThis.fetch = async () => ({
     ok: true,
     json: async () => ({
@@ -49,7 +49,7 @@ NodeTest.test("falls back to releases without caching an API failure", async () 
 
   NodeAssert.equal(
     res.headers.get("Location"),
-    "https://github.com/lucive-apps/control-plane/releases/latest",
+    "https://github.com/Control-Plane-Apps/control-plane/releases/latest",
   );
   NodeAssert.equal(res.headers.get("Cache-Control"), "no-store");
 });
