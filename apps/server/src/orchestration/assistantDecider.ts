@@ -136,10 +136,23 @@ export function requireReplyTo(
   if (target === undefined || project?.assistant == null) {
     return Effect.fail(invariant(commandType, "Only a Project's agents take requests."));
   }
+  const recipient = findThread(readModel, replyTo);
+  // The cross-Project Assistant asks coordinators; their answer goes back to it.
+  const recipientProject =
+    recipient === undefined ? undefined : findThreadProject(readModel, recipient);
+  if (
+    recipient !== undefined &&
+    recipient.deletedAt === null &&
+    recipientProject?.assistant?.scope === "global" &&
+    recipientProject.assistant.archivedAt == null &&
+    recipientProject.id !== project.id &&
+    (recipientProject.assistant.coordinatorThreadId === recipient.id || recipient.pinnedAt != null)
+  ) {
+    return Effect.void;
+  }
   if (assistantThreadRole(project, threadId) === "coordinator") {
     return Effect.fail(invariant(commandType, "The coordinator does not take requests."));
   }
-  const recipient = findThread(readModel, replyTo);
   if (
     recipient === undefined ||
     recipient.deletedAt !== null ||
