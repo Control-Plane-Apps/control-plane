@@ -86,6 +86,7 @@ import { SettingsProjectOverviewRouteScreen } from "./features/settings/Settings
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
 import { SettingsAboutRouteScreen } from "./features/settings/SettingsAboutRouteScreen";
+import { TaskSyncSettingsRouteScreen } from "./features/tasks/TaskSyncSettingsRouteScreen";
 import { SettingsNotificationsRouteScreen } from "./features/settings/SettingsNotificationsRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
 import { SettingsThreadsRouteScreen } from "./features/settings/SettingsThreadsRouteScreen";
@@ -223,6 +224,11 @@ const SettingsContentStack = createNativeStackNavigator({
       screen: SettingsAboutRouteScreen,
       linking: "about",
       options: { title: "About Control Plane" },
+    }),
+    SettingsTaskSync: createNativeStackScreen({
+      screen: TaskSyncSettingsRouteScreen,
+      linking: "task-sync",
+      options: { title: "Task Sync" },
     }),
     SettingsEnvironmentNew: createNativeStackScreen({
       screen: ConnectionsNewRouteScreen,
