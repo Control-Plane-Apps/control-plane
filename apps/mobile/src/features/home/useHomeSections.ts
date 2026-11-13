@@ -1,9 +1,5 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { isGlobalAssistant } from "@t3tools/client-runtime/state/assistant-home";
-import {
-  partitionAssistants,
-  type AssistantPartition,
-} from "@t3tools/client-runtime/state/assistants";
+import { partitionAssistants } from "@t3tools/client-runtime/state/assistants";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
@@ -55,27 +51,6 @@ function environmentIdsWith(
     if (supported(config.environment.capabilities)) ids.add(environmentId);
   }
   return ids;
-}
-
-/**
- * The cross-Project Assistant has its own row above the list, so its Project
- * never lists among Projects. Partitioning first keeps its threads out of
- * Tasks too.
- */
-export function withoutGlobalAssistantEntries<P extends EnvironmentProject, T>(
-  partition: AssistantPartition<P, T>,
-): AssistantPartition<P, T> {
-  const isGlobal = (entry: { readonly project: P }) => isGlobalAssistant(entry.project);
-  if (!partition.assistants.some(isGlobal) && !partition.archivedAssistants.some(isGlobal)) {
-    return partition;
-  }
-  return {
-    ...partition,
-    assistants: partition.assistants.filter((entry) => !isGlobalAssistant(entry.project)),
-    archivedAssistants: partition.archivedAssistants.filter(
-      (entry) => !isGlobalAssistant(entry.project),
-    ),
-  };
 }
 
 /** Which environments support each list action, from their server configs. */
@@ -262,7 +237,7 @@ export function useHomeSections(input: {
     [],
   );
   const partition = useMemo(
-    () => withoutGlobalAssistantEntries(partitionAssistants(input.projects, input.threads, null)),
+    () => partitionAssistants(input.projects, input.threads, null),
     [input.projects, input.threads],
   );
   const sections = useMemo(() => {
