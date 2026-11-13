@@ -84,7 +84,9 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { usesSplitView } = useAdaptiveWorkspaceLayout().layout;
-  const wide = width >= WIDE_LAYOUT_MIN_WIDTH;
+  // The pane's own width: beside the iPad sidebar it is narrower than the window.
+  const [paneWidth, setPaneWidth] = useState(width);
+  const wide = paneWidth >= WIDE_LAYOUT_MIN_WIDTH;
   const today = useTaskToday();
   const { tasks, intents, projects, actions, available } = useMobileTaskStore();
   const threads = useThreadShells();
@@ -409,7 +411,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     </View>
   ) : (
     <View className="min-h-11 flex-row items-center px-1">
-      {!wide || !usesSplitView ? (
+      {!usesSplitView ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Back to Home"
@@ -571,7 +573,11 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   );
 
   return (
-    <View className="flex-1 bg-screen" style={{ paddingTop: insets.top }}>
+    <View
+      className="flex-1 bg-screen"
+      style={{ paddingTop: insets.top }}
+      onLayout={(event) => setPaneWidth(event.nativeEvent.layout.width)}
+    >
       {header}
       {wide ? (
         <View className="flex-1 flex-row">

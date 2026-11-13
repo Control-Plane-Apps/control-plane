@@ -1,4 +1,4 @@
-import { useNavigation } from "@react-navigation/native";
+import { useAppNavigation } from "../threads/sidebar-navigation-shell";
 import { taskCounts } from "@t3tools/client-runtime/state/projects";
 import { Pressable, View } from "react-native";
 
@@ -11,7 +11,7 @@ import { useMobileTasks, useTaskToday } from "./useMobileTasks";
 // Fork-owned. Home's way into personal tasks: "Tasks · 4 today".
 
 export function PlanTasksEntryRow(props: { readonly pane: "screen" | "sidebar" }) {
-  const navigation = useNavigation();
+  const navigation = useAppNavigation();
   const { available, tasks } = useMobileTasks();
   const today = useTaskToday();
   if (!available) return null;
