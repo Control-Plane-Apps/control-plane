@@ -3183,6 +3183,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.taskSyncNow, taskSync.syncNow, {
             "rpc.aggregate": "orchestration",
           }),
+        [WS_METHODS.taskSyncSetPreview]: (input) =>
+          observeRpcEffect(WS_METHODS.taskSyncSetPreview, taskSync.setPreview(input.enabled), {
+            "rpc.aggregate": "orchestration",
+          }),
         [WS_METHODS.schedulesStatus]: (input) =>
           observeRpcEffect(WS_METHODS.schedulesStatus, scheduleService.status(input.projectId), {
             "rpc.aggregate": "orchestration",

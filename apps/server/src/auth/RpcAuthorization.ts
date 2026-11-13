@@ -117,6 +117,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.taskSyncCheckout]: AuthOrchestrationOperateScope,
   [WS_METHODS.taskSyncPortal]: AuthOrchestrationOperateScope,
   [WS_METHODS.taskSyncNow]: AuthOrchestrationOperateScope,
+  [WS_METHODS.taskSyncSetPreview]: AuthOrchestrationOperateScope,
   [WS_METHODS.schedulesStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.schedulesRun]: AuthOrchestrationOperateScope,
   [WS_METHODS.shellOpenInEditor]: AuthOrchestrationOperateScope,

@@ -43,8 +43,13 @@ export const TaskSyncStatus = Schema.Struct({
   error: Schema.optional(Schema.String),
   /** 0-6, Sunday first. The account's week start, which periods follow. */
   weekStartsOn: Schema.Number,
+  /** This install treats Task Sync as available before launch (local preview). */
+  preview: Schema.optional(Schema.Boolean),
 });
 export type TaskSyncStatus = typeof TaskSyncStatus.Type;
+
+export const TaskSyncSetPreviewInput = Schema.Struct({ enabled: Schema.Boolean });
+export type TaskSyncSetPreviewInput = typeof TaskSyncSetPreviewInput.Type;
 
 export const TaskSyncRequestCodeInput = Schema.Struct({ email: TrimmedNonEmptyString });
 export type TaskSyncRequestCodeInput = typeof TaskSyncRequestCodeInput.Type;
