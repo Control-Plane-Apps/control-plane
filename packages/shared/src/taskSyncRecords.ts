@@ -12,8 +12,6 @@
  * Recurring series are a template plus generated instances that point at it
  * with templateId; templates are not shown as tasks.
  */
-import { generateSpreadPinOrderKeys } from "./pinOrderKey.ts";
-
 import type {
   Task,
   TaskHome,
@@ -44,6 +42,7 @@ export interface LuciveWireTask {
 export interface LuciveWirePeriod {
   readonly id: string;
   readonly horizon: "day" | TaskHorizon;
+  readonly anchorDate?: string;
   readonly startsOn: string;
   readonly endsOn: string;
   readonly focus: string | null;
@@ -68,6 +67,27 @@ export interface LucivePlanningState {
 }
 
 const STATUSES = new Set<TaskStatus>(["todo", "completed", "cancelled"]);
+
+const ORDER_DIGITS = "bcdefghijklmnopqrstuvwxyz"; // base 25, never "a", so keys stay valid
+const ORDER_WIDTH = 12;
+const ORDER_OFFSET = 1e9;
+const ORDER_SCALE = 1e4;
+
+/**
+ * A stable order key for a synced sort order: fixed-width base-25 over b-z,
+ * so string order equals numeric order and an unchanged sortOrder always
+ * maps to the same key (a poll never reorders anything by itself).
+ */
+export function orderKeyForSortOrder(sortOrder: number): string {
+  const clamped = Math.min(Math.max(sortOrder, -ORDER_OFFSET + 1), ORDER_OFFSET - 1);
+  let value = Math.round((clamped + ORDER_OFFSET) * ORDER_SCALE);
+  let key = "";
+  for (let i = 0; i < ORDER_WIDTH; i += 1) {
+    key = ORDER_DIGITS[value % 25]! + key;
+    value = Math.floor(value / 25);
+  }
+  return key;
+}
 
 function recurrenceOf(value: unknown): TaskRecurrence | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -130,8 +150,7 @@ export function controlPlaneTasksFromLucive(state: LucivePlanningState, today: s
   const live = state.tasks
     .filter((t) => !t.isTemplate && t.deletedAt === null)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt));
-  const keys = generateSpreadPinOrderKeys(live.length);
-  return live.map((t, index): Task => {
+  return live.map((t): Task => {
     const home: TaskHome =
       commitmentHome(t.id, state, periodsById, today) ??
       (t.scheduledDate !== null
@@ -153,7 +172,7 @@ export function controlPlaneTasksFromLucive(state: LucivePlanningState, today: s
       status,
       home,
       ...(recurrence !== undefined && home.kind === "date" ? { recurrence } : {}),
-      orderKey: keys[index] as Task["orderKey"],
+      orderKey: orderKeyForSortOrder(t.sortOrder) as Task["orderKey"],
       ...(status !== "todo" && t.completedAt !== null ? { completedAt: t.completedAt } : {}),
       importSource: { kind: "lucive", id: t.id },
       ...(t.templateId !== null ? { seriesId: t.templateId } : {}),

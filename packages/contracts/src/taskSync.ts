@@ -21,9 +21,12 @@ export const TaskSyncState = Schema.Literals([
 export type TaskSyncState = typeof TaskSyncState.Type;
 
 export const TaskSyncSubscription = Schema.Struct({
-  status: Schema.Literals(["active", "inactive", "past_due", "canceled"]),
+  /** `grace`: a payment failed, sync keeps running for a few days. */
+  status: Schema.Literals(["active", "grace", "inactive"]),
   currentPeriodEnd: Schema.optional(IsoDateTime),
   cancelAtPeriodEnd: Schema.optional(Schema.Boolean),
+  /** A billing portal exists for this account (it has subscribed before). */
+  canManage: Schema.optional(Schema.Boolean),
 });
 export type TaskSyncSubscription = typeof TaskSyncSubscription.Type;
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  orderKeyForSortOrder,
   controlPlaneIntentsFromLucive,
   controlPlaneTasksFromLucive,
   lucivePlacementOf,
@@ -25,6 +26,16 @@ const wire = (id: string, extra: Partial<LuciveWireTask> = {}): LuciveWireTask =
   updatedAt: AT,
   deletedAt: null,
   ...extra,
+});
+
+describe("orderKeyForSortOrder", () => {
+  it("keeps numeric order as string order, stable per value", () => {
+    const values = [-5, -0.5, 0, 0.25, 1, 2, 10, 1000.5];
+    const keys = values.map(orderKeyForSortOrder);
+    expect([...keys].sort()).toEqual(keys);
+    expect(orderKeyForSortOrder(2)).toBe(orderKeyForSortOrder(2));
+    expect(keys.every((k) => /^[a-z]*[b-z]$/.test(k))).toBe(true);
+  });
 });
 
 describe("Lucive mapping", () => {

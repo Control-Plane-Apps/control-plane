@@ -1,3 +1,4 @@
+// @effect-diagnostics globalFetch:off - a small promise client with an injectable fetch, so tests run against an in-memory fake without an HTTP layer.
 /**
  * HTTP client for the synced task store. Plain promises over an injectable
  * fetch so tests run against an in-memory fake. Errors surface as
@@ -15,11 +16,12 @@ import type {
 } from "@t3tools/shared/taskSyncRecords";
 
 export class TaskSyncCloudError extends Error {
-  constructor(
-    readonly reason: TaskSyncErrorReason,
-    readonly status?: number,
-  ) {
+  readonly reason: TaskSyncErrorReason;
+  readonly status: number | undefined;
+  constructor(reason: TaskSyncErrorReason, status?: number) {
     super(`task sync cloud error: ${reason}${status === undefined ? "" : ` (${status})`}`);
+    this.reason = reason;
+    this.status = status;
   }
 }
 
@@ -78,7 +80,7 @@ export interface TaskSyncCloudClient {
 }
 
 function reasonForStatus(status: number, body: { error?: unknown }): TaskSyncErrorReason {
-  if (status === 402 || body.error === "task_sync_inactive") return "inactive";
+  if (status === 402 || body.error === "task_sync_not_active") return "inactive";
   if (status === 401) return body.error === "invalid_code" ? "invalid-code" : "signed-out";
   if (status === 429) return "rate-limited";
   if (status === 400) return body.error === "invalid_email" ? "invalid-email" : "server";
@@ -136,8 +138,8 @@ export function makeTaskSyncCloudClient(
     return token;
   };
 
-  const url = async (path: string, token: string) => {
-    const body = await call(path, { method: "POST", bearer: token, body: "{}" });
+  const url = async (path: string, token: string, payload: Record<string, unknown> = {}) => {
+    const body = await call(path, { method: "POST", bearer: token, body: JSON.stringify(payload) });
     if (typeof body.url !== "string" || body.url.length === 0) throw new TaskSyncCloudError("server");
     return body.url;
   };
@@ -173,23 +175,31 @@ export function makeTaskSyncCloudClient(
         body: JSON.stringify(batch),
       })) as PushResult,
     subscription: async (token) => {
-      const body = await call("/api/entitlements/task-sync", { method: "GET", bearer: token });
-      const status = body.status;
+      const body = await call("/api/cplane/task-sync", { method: "GET", bearer: token });
+      const status = body.status === "active" || body.status === "grace" ? body.status : "inactive";
       return {
-        status:
-          status === "active" || status === "past_due" || status === "canceled"
-            ? status
-            : "inactive",
+        status,
         ...(typeof body.currentPeriodEnd === "string"
           ? { currentPeriodEnd: body.currentPeriodEnd }
           : {}),
         ...(typeof body.cancelAtPeriodEnd === "boolean"
           ? { cancelAtPeriodEnd: body.cancelAtPeriodEnd }
           : {}),
+        ...(typeof body.canManage === "boolean" ? { canManage: body.canManage } : {}),
       };
     },
-    checkout: (token) => url("/api/entitlements/task-sync/checkout", token),
-    portal: (token) => url("/api/entitlements/task-sync/portal", token),
+    checkout: async (token) => {
+      try {
+        return await url("/api/cplane/task-sync/checkout", token, { returnTo: "desktop" });
+      } catch (error) {
+        // Already subscribed: managing the subscription is the useful next step.
+        if (error instanceof TaskSyncCloudError && error.status === 409) {
+          return url("/api/cplane/task-sync/portal", token);
+        }
+        throw error;
+      }
+    },
+    portal: (token) => url("/api/cplane/task-sync/portal", token),
     revoke: async (token) => {
       await call("/api/auth/revoke", { method: "POST", bearer: token, body: "{}" }).catch(
         () => undefined,
