@@ -271,6 +271,10 @@ export function createMobileThemeVariables(colors: ThemeColors, appearance: Mobi
     "--color-warning": c.warningSurface,
     "--color-warning-border": withAlpha(c.warning, 0.32),
     "--color-warning-foreground": c.warningForeground,
+    "--color-warning-accent": c.warning,
+    // Themes keep success and info independent of their palette.
+    "--color-info-accent": appearance === "dark" ? "#5fa8c9" : "#2f7f9f",
+    "--color-success-accent": appearance === "dark" ? "#86b04a" : "#4d7c0f",
     "--color-danger": c.errorSurface,
     "--color-danger-border": withAlpha(c.error, 0.32),
     "--color-danger-foreground": c.errorForeground,

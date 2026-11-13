@@ -294,10 +294,10 @@ function ProjectStatusPanelContent(
 }
 
 const GROUP_DOT: Record<StatusGroup, string> = {
-  "needs-you": "bg-amber-500",
-  "in-progress": "bg-sky-500",
+  "needs-you": "bg-warning",
+  "in-progress": "bg-info",
   queued: "bg-muted-foreground/40",
-  done: "bg-emerald-500",
+  done: "bg-success",
 };
 
 function StatusRow(props: {
@@ -434,9 +434,9 @@ function StatusRow(props: {
                     className={cn(
                       "size-1.5 shrink-0 rounded-full",
                       agent.tone === "working"
-                        ? "bg-sky-500"
+                        ? "bg-info"
                         : agent.tone === "attention"
-                          ? "bg-amber-500"
+                          ? "bg-warning"
                           : "bg-muted-foreground/40",
                     )}
                   />

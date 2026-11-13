@@ -75,9 +75,9 @@ function WindowRow(props: {
           <View
             className={
               remaining <= 10
-                ? "h-full rounded-full bg-red-500"
+                ? "h-full rounded-full bg-danger-foreground"
                 : remaining <= 30
-                  ? "h-full rounded-full bg-amber-500"
+                  ? "h-full rounded-full bg-warning-accent"
                   : "h-full rounded-full bg-foreground"
             }
             style={[

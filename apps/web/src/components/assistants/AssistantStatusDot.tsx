@@ -21,12 +21,12 @@ export type AssistantRollupStatus = SidebarThreadStatus | "unread" | null;
 // The sidebar's status hues (amber approval, indigo input, sky working, red
 // failed, emerald unread), so a Project reads the same color as its threads.
 const DOT_PRESENTATION: Record<Exclude<AssistantRollupStatus, null>, [string, string]> = {
-  approval: ["bg-amber-500", "Needs approval"],
-  input: ["bg-indigo-500", "Needs input"],
-  working: ["bg-sky-500", "Working"],
-  monitoring: ["bg-sky-500", "Monitoring"],
-  failed: ["bg-red-500", "Failed"],
-  unread: ["bg-emerald-500", "Unread"],
+  approval: ["bg-warning", "Needs approval"],
+  input: ["bg-attention", "Needs input"],
+  working: ["bg-info", "Working"],
+  monitoring: ["bg-info", "Monitoring"],
+  failed: ["bg-error", "Failed"],
+  unread: ["bg-success", "Unread"],
   ready: ["bg-muted-foreground/40", "Ready"],
 };
 
