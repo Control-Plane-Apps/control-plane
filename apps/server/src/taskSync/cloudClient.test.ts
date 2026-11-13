@@ -61,9 +61,9 @@ describe("task sync cloud client", () => {
 
   it("opens the billing portal when checkout finds an active subscription", async () => {
     const { fetch } = fakeFetch({
-      "/api/cplane/task-sync/checkout": () => [409, { error: "already_subscribed" }],
-      "/api/cplane/task-sync/portal": () => [200, { url: "https://billing.test/portal" }],
-      "/api/cplane/task-sync": () => [
+      "/api/entitlements/task-sync/checkout": () => [409, { error: "already_subscribed" }],
+      "/api/entitlements/task-sync/portal": () => [200, { url: "https://billing.test/portal" }],
+      "/api/entitlements/task-sync": () => [
         200,
         { status: "past_due", active: true, currentPeriodEnd: null, canManage: true },
       ],
