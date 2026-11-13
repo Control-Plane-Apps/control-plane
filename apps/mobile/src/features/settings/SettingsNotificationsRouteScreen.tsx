@@ -6,7 +6,7 @@ import { useNavigation } from "@react-navigation/native";
 import * as Effect from "effect/Effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Alert, AppState, Linking, Platform } from "react-native";
+import { Alert, AppState, Linking, Platform, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
@@ -33,6 +33,7 @@ import { hasCloudPublicConfig, resolveRelayClerkTokenOptions } from "../cloud/pu
 import { runtime } from "../../lib/runtime";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
+import { SettingsControlRow } from "./components/SettingsControlRow";
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
@@ -144,19 +145,26 @@ function ControlPlaneNotificationsSettings() {
         </SettingsSection>
         <SettingsSection title="Send me">
           {PUSH_LEVEL_OPTIONS.map((option) => (
-            <SettingsRow
+            <Pressable
               key={option.level}
-              icon={
-                level === option.level
-                  ? { ios: "checkmark.circle.fill", android: "check" }
-                  : { ios: "circle", android: "remove" }
-              }
-              label={option.label}
-              value={option.detail}
-              valuePosition="below"
+              accessibilityRole="radio"
+              accessibilityState={{ checked: level === option.level, disabled: !supported }}
               disabled={!supported}
               onPress={() => savePreferences({ pushNotificationLevel: option.level })}
-            />
+            >
+              <SettingsControlRow
+                icon={
+                  level === option.level
+                    ? { ios: "checkmark.circle.fill", android: "check" }
+                    : { ios: "circle", android: "remove" }
+                }
+                label={option.label}
+                subtitle={option.detail}
+                disabled={!supported}
+              >
+                {null}
+              </SettingsControlRow>
+            </Pressable>
           ))}
         </SettingsSection>
       </ScrollView>
