@@ -82,6 +82,12 @@ function optionsSignature(value: unknown, seen = new WeakSet<object>()): string 
       return `bigint:${String(value)}`;
     case "object": {
       const object = value as object;
+      // A custom header item's element: compare its type and props, never
+      // its internals (owner fibers are huge and cyclic).
+      if (isValidElement(object)) {
+        const type = object.type as { readonly name?: string } | string;
+        return `element:${typeof type === "string" ? type : (type.name ?? "anonymous")}:${optionsSignature(object.props, seen)}`;
+      }
       if (seen.has(object)) return "[circular]";
       seen.add(object);
       if (Array.isArray(value)) {
@@ -128,7 +134,7 @@ function stabilizeOptionFunctions(
     );
   }
   if (value !== null && typeof value === "object") {
-    if (seen.has(value) || "current" in value) return value;
+    if (seen.has(value) || "current" in value || isValidElement(value)) return value;
     seen.add(value);
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
