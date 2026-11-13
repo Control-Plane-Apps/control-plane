@@ -28,7 +28,7 @@ import { cn } from "../../lib/cn";
 import { PillButton } from "../status/ProjectStatusPanel";
 import { recommendationButtonLabel } from "../status/projectStatus.logic";
 import { REMINDER_TIMES, REPEAT_OPTIONS } from "./taskMenus";
-import { symbol, TaskCheckbox, TaskChip, useTaskPalette } from "./taskUi";
+import { symbol, TaskCheckbox, TaskChip, useTaskPalette, BARE_INPUT_STYLE } from "./taskUi";
 import type { TaskActions } from "./useMobileTasks";
 
 // Fork-owned. One personal task. Swipe right to select, swipe left to Move
@@ -301,7 +301,8 @@ function TitleInput(props: { readonly task: Task; readonly actions: TaskActions 
   return (
     <AppTextInput
       accessibilityLabel="Task title"
-      className="min-h-[26px] p-0 text-[17px] font-t3-bold text-foreground"
+      style={BARE_INPUT_STYLE}
+      className="min-h-[26px] rounded-none border-0 bg-transparent p-0 text-[17px] font-t3-bold text-foreground"
       value={value}
       maxLength={TASK_TITLE_MAX}
       multiline
@@ -318,7 +319,8 @@ function NotesInput(props: { readonly task: Task; readonly actions: TaskActions 
   return (
     <AppTextInput
       accessibilityLabel="Notes"
-      className="p-0 text-[15px] leading-[21px] text-foreground-muted"
+      style={BARE_INPUT_STYLE}
+      className="min-h-0 rounded-none border-0 bg-transparent p-0 text-[15px] leading-[21px] text-foreground-muted"
       placeholder="Notes"
       value={value}
       maxLength={TASK_NOTES_MAX}

@@ -54,6 +54,7 @@ import {
   UndoBanner,
   useTaskPalette,
   useUndoNotice,
+  BARE_INPUT_STYLE,
 } from "./taskUi";
 import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 
@@ -521,7 +522,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             <AppTextInput
               accessibilityLabel="Search tasks"
               autoFocus
-              className="min-h-11 rounded-full bg-card px-4 text-[16px]"
+              className="min-h-11 rounded-full border-0 bg-card px-4 py-2 text-[16px]"
               placeholder="Search tasks"
               returnKeyType="search"
               value={query}
@@ -658,7 +659,8 @@ function IntentLine(props: {
   return (
     <AppTextInput
       accessibilityLabel={props.placeholder}
-      className="mx-5 mt-2 p-0 text-[17px] leading-[23px] text-foreground"
+      style={BARE_INPUT_STYLE}
+      className="mx-5 mt-2 min-h-0 rounded-none border-0 bg-transparent p-0 text-[17px] leading-[23px] text-foreground"
       placeholder={props.placeholder}
       value={value}
       maxLength={TASK_INTENT_MAX}

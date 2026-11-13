@@ -11,6 +11,16 @@ import { useAppearancePreferences } from "../settings/appearance/AppearancePrefe
 
 // Fork-owned. Small pieces shared by the Tasks and Status screens.
 
+/** Drops AppTextInput's boxed field chrome for inline, in-row editing. */
+export const BARE_INPUT_STYLE = {
+  borderWidth: 0,
+  borderRadius: 0,
+  backgroundColor: "transparent",
+  minHeight: 0,
+  paddingHorizontal: 0,
+  paddingVertical: 0,
+} as const;
+
 /** An SF Symbol with an Android fallback from the app's Material map. */
 export function symbol(
   ios: SFSymbol,

@@ -24,7 +24,7 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import { SymbolView } from "../../components/AppSymbol";
 import { moveSections } from "./TaskMoveSheet";
 import { REMINDER_TIMES, REPEAT_OPTIONS } from "./taskMenus";
-import { symbol, TaskCheckbox, TaskChip, useTaskPalette } from "./taskUi";
+import { symbol, TaskCheckbox, TaskChip, useTaskPalette, BARE_INPUT_STYLE } from "./taskUi";
 import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 
 // Fork-owned. Quick add: type a title with an optional when-phrase
@@ -101,8 +101,9 @@ export function TaskQuickAddSheet({ route }: StaticScreenProps<TaskQuickAddParam
           <TaskCheckbox checked={false} label="New task" disabled onPress={() => undefined} />
           <AppTextInput
             accessibilityLabel="Task title"
+            style={{ ...BARE_INPUT_STYLE, minHeight: 44 }}
             autoFocus
-            className="min-h-11 flex-1 text-[18px] text-foreground"
+            className="min-h-11 flex-1 rounded-none border-0 bg-transparent px-1 py-2 text-[18px] text-foreground"
             maxLength={TASK_TITLE_MAX}
             onChangeText={setText}
             onSubmitEditing={() => void add()}
