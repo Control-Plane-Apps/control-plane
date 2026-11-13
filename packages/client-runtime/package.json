@@ -231,6 +231,10 @@
       "types": "./src/state/assistantFlows.ts",
       "default": "./src/state/assistantFlows.ts"
     },
+    "./state/assistant-home": {
+      "types": "./src/state/assistantHome.ts",
+      "default": "./src/state/assistantHome.ts"
+    },
     "./state/assistant-thread-view": {
       "types": "./src/state/assistantThreadView.ts",
       "default": "./src/state/assistantThreadView.ts"
