@@ -110,6 +110,7 @@ function LocalSettingsRouteScreen() {
             valuePosition="trailing"
             target="SettingsEnvironments"
           />
+          <TaskSyncSettingsRow />
         </SettingsSection>
 
         <SettingsIndexSections />

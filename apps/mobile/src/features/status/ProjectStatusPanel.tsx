@@ -203,15 +203,9 @@ export function ProjectStatusPanel(props: ProjectStatusPanelProps) {
                 Nothing open. You checked off every finished workstream.
               </Text>
             ) : (
-              <>
-                <Text className="text-center text-[15px] text-foreground-muted">
-                  No workstreams yet.
-                </Text>
-                <Text className="text-center text-[13px] text-foreground-tertiary">
-                  The coordinator keeps one line per workstream here as agents report in, and flags
-                  anything that needs your call.
-                </Text>
-              </>
+              <Text className="text-center text-[15px] text-foreground-muted">
+                No workstreams yet.
+              </Text>
             )}
           </View>
         ) : (
