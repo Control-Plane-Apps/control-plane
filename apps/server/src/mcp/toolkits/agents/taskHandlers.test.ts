@@ -1,6 +1,7 @@
 import { RemoteAgentsLocalOnly } from "../../../agentMachines/testFixtures.ts";
 import {
   CommandId,
+  compareTaskOrder,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProjectId,
@@ -35,13 +36,28 @@ import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerR
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { AgentsToolkitHandlersLive } from "./handlers.ts";
-import { resolveTaskHome, taskHomeOf, withReminder } from "./taskHandlers.ts";
+import {
+  planTaskReorder,
+  resolveTaskHome,
+  taskHomeOf,
+  taskListWindow,
+  withReminder,
+} from "./taskHandlers.ts";
 import {
   AgentsToolkit,
+  TaskDeleteResult,
+  TaskIntentSetResult,
   TaskListResult,
   TaskProposeResult,
+  TaskReorderResult,
+  TaskRestoreResult,
   TaskUpdateResult,
+  type TaskDeleteInput,
+  type TaskIntentSetInput,
+  type TaskListInput,
   type TaskProposeInput,
+  type TaskReorderInput,
+  type TaskRestoreInput,
   type TaskUpdateInput,
 } from "./tools.ts";
 
@@ -183,7 +199,7 @@ const TestLayer = AgentsToolkitHandlersLive.pipe(
       Layer.provide(ThreadBackgroundLiveness.layer),
       Layer.provide(ThreadPlanProgress.layer),
       Layer.provideMerge(OrchestrationProjectionPipelineLive),
-      Layer.provide(OrchestrationEventStoreLive),
+      Layer.provideMerge(OrchestrationEventStoreLive),
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
@@ -278,9 +294,25 @@ const call = <S extends Schema.ConstraintDecoder<unknown>, E, R>(
   );
 
 const tools = {
-  list: (caller: ThreadId) =>
+  list: (caller: ThreadId, params: TaskListInput = {}) =>
     Effect.flatMap(AgentsToolkit, (toolkit) =>
-      call(toolkit.handle("cp_task_list", {}), TaskListResult, caller),
+      call(toolkit.handle("cp_task_list", params), TaskListResult, caller),
+    ),
+  delete: (caller: ThreadId, params: TaskDeleteInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_delete", params), TaskDeleteResult, caller),
+    ),
+  restore: (caller: ThreadId, params: TaskRestoreInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_restore", params), TaskRestoreResult, caller),
+    ),
+  intent: (caller: ThreadId, params: TaskIntentSetInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_intent_set", params), TaskIntentSetResult, caller),
+    ),
+  reorder: (caller: ThreadId, params: TaskReorderInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_reorder", params), TaskReorderResult, caller),
     ),
   propose: (caller: ThreadId, params: TaskProposeInput) =>
     Effect.flatMap(AgentsToolkit, (toolkit) =>
@@ -650,6 +682,610 @@ describe("task agent commands in the decider", () => {
           (task: Task) => task.title === "Weekly review" && task.status === "todo",
         );
         expect(open.map((task) => task.home)).toEqual([{ kind: "date", date: "2026-11-20" }]);
+      }),
+    ),
+  );
+});
+
+// ── Listing, cancelling, deleting, restoring and reordering ─────────
+
+const addTask = (id: string, title: string, home: Task["home"], extra: object = {}) =>
+  dispatch({
+    type: "task.create",
+    commandId: cid(),
+    taskId: TaskId.make(id),
+    title,
+    home,
+    createdAt: SEEDED_AT,
+    ...extra,
+  });
+
+const day = (date: string) => ({ kind: "date", date }) as const;
+
+/** A week of tasks around Friday 2026-11-13 (weeks start Monday the 9th). */
+const seedWeek = Effect.gen(function* () {
+  yield* addTask("run-fri", "Run, 30 min", day("2026-11-13"));
+  yield* addTask("lift-sat", "Gym lift, 45 min", day("2026-11-14"), {
+    notes: "Upper body",
+  });
+  yield* addTask("old", "File expenses", day("2026-11-10"));
+  yield* addTask("next", "Dentist", day("2026-11-18"));
+  yield* addTask("week-goal", "Ship task tools", {
+    kind: "period",
+    horizon: "week",
+    startsOn: "2026-11-09",
+    endsOn: "2026-11-15",
+  });
+  yield* addTask("someday", "Learn Rust", { kind: "backlog", horizon: "year" });
+});
+
+describe("taskListWindow", () => {
+  it("resolves ranges from the local today and refuses conflicting filters", () => {
+    const today = "2026-11-13";
+    expect(taskListWindow({ range: "this-week" }, today)).toEqual({
+      kind: "span",
+      from: "2026-11-09",
+      to: "2026-11-15",
+    });
+    expect(taskListWindow({ range: "next-month" }, today)).toEqual({
+      kind: "span",
+      from: "2026-12-01",
+      to: "2026-12-31",
+    });
+    expect(taskListWindow({ range: "upcoming", days: 3 }, today)).toEqual({
+      kind: "span",
+      from: "2026-11-13",
+      to: "2026-11-15",
+    });
+    expect(taskListWindow({ range: "overdue" }, today)).toEqual({
+      kind: "span",
+      from: null,
+      to: "2026-11-12",
+      openOnly: true,
+    });
+    expect(taskListWindow({ range: "any-backlog" }, today)).toEqual({
+      kind: "backlog",
+      horizon: "any",
+    });
+    expect(taskListWindow({}, today)).toBeNull();
+    expect(taskListWindow({ date: "2026-11-14", range: "today" }, today)).toMatch(/not both/);
+    expect(taskListWindow({ days: 3 }, today)).toMatch(/upcoming/);
+    expect(taskListWindow({ date: "2026-02-30" }, today)).toMatch(/not a real date/);
+  });
+});
+
+describe("planTaskReorder", () => {
+  it("writes one key for one move between keyed neighbours, like a drag", () => {
+    const list = [
+      { id: TaskId.make("a"), orderKey: "d" as never },
+      { id: TaskId.make("b"), orderKey: "h" as never },
+      { id: TaskId.make("c"), orderKey: "p" as never },
+    ];
+    const plan = planTaskReorder(list, ["a", "c", "b"]);
+    expect(plan.map((entry) => entry.id)).toEqual(["c"]);
+    expect(plan[0]!.orderKey > "d" && plan[0]!.orderKey < "h").toBe(true);
+    expect(planTaskReorder(list, ["a", "b", "c"])).toEqual([]);
+  });
+
+  it("materializes keys when the list has never been arranged", () => {
+    const list = [
+      { id: TaskId.make("a"), orderKey: null },
+      { id: TaskId.make("b"), orderKey: null },
+    ];
+    const plan = new Map(planTaskReorder(list, ["b", "a"]).map((e) => [e.id, e.orderKey]));
+    expect(plan.get("b")! < plan.get("a")!).toBe(true);
+  });
+});
+
+describe("cp_task_list filters", () => {
+  it.effect("filters by range, date, text, status and backlog, in display order", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        useAssistant({ tasks: "read" });
+        const titles = (result: { readonly tasks: ReadonlyArray<{ readonly title: string }> }) =>
+          result.tasks.map((task) => task.title);
+        expect(titles(yield* tools.list(ASSISTANT, { range: "this-week" }))).toEqual([
+          "File expenses",
+          "Run, 30 min",
+          "Gym lift, 45 min",
+          "Ship task tools",
+        ]);
+        expect(titles(yield* tools.list(ASSISTANT, { date: "2026-11-14" }))).toEqual([
+          "Gym lift, 45 min",
+          "Ship task tools",
+        ]);
+        expect(titles(yield* tools.list(ASSISTANT, { range: "overdue" }))).toEqual([
+          "File expenses",
+        ]);
+        expect(titles(yield* tools.list(ASSISTANT, { text: "UPPER" }))).toEqual([
+          "Gym lift, 45 min",
+        ]);
+        expect(titles(yield* tools.list(ASSISTANT, { range: "year-backlog" }))).toEqual([
+          "Learn Rust",
+        ]);
+        expect(titles(yield* tools.list(ASSISTANT, { range: "any-backlog" }))).toEqual([
+          "Learn Rust",
+          "Renew passport",
+        ]);
+        const lift = (yield* tools.list(ASSISTANT, { text: "lift" })).tasks[0]!;
+        expect(lift).toMatchObject({
+          id: "lift-sat",
+          notes: "Upper body",
+          status: "todo",
+          home: day("2026-11-14"),
+          synced: false,
+        });
+        expect((yield* tools.list(ASSISTANT, { status: "completed" })).tasks).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("pages with limit and cursor, and filters by linked Project", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        useAssistant({ tasks: "read" });
+        const first = yield* tools.list(ASSISTANT, { limit: 4 });
+        expect(first.total).toBe(7);
+        expect(first.tasks).toHaveLength(4);
+        const second = yield* tools.list(ASSISTANT, { limit: 4, cursor: first.nextCursor! });
+        expect(second.tasks).toHaveLength(3);
+        expect(second.nextCursor).toBeUndefined();
+        const ids = [...first.tasks, ...second.tasks].map((task) => task.id);
+        expect(new Set(ids).size).toBe(7);
+        expect((yield* errorOf(tools.list(ASSISTANT, { cursor: "x" }))).message).toMatch(/cursor/);
+        yield* tools.propose(OTHER_COORD, { title: "Other's task" });
+        expect(
+          (yield* tools.list(ASSISTANT, { projectId: OTHER })).tasks.map((task) => task.title),
+        ).toEqual(["Other's task"]);
+      }),
+    ),
+  );
+
+  it.effect("a coordinator's filters stay inside its own Project", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        useAssistant({});
+        yield* tools.propose(ACME_COORD, { title: "Approve copy", date: "2026-11-14" });
+        const own = yield* tools.list(ACME_COORD, { date: "2026-11-14", status: "any" });
+        expect(own.tasks.map((task) => task.title)).toEqual(["Approve copy"]);
+        expect((yield* tools.list(ACME_COORD, { projectId: OTHER })).tasks).toEqual([]);
+      }),
+    ),
+  );
+});
+
+describe("cp_task_update cancel and cp_task_restore", () => {
+  it.effect("cancels a task like the user's Cancel, and restores it to todo", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        useAssistant({ tasks: "edit" });
+        const cancelled = yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("lift-sat"),
+          status: "cancelled",
+        });
+        expect(cancelled.task.status).toBe("cancelled");
+        expect(cancelled.task.completedAt).toBeDefined();
+        expect((yield* tools.list(ASSISTANT, { range: "this-week" })).tasks).toHaveLength(3);
+        expect(
+          (yield* tools.list(ASSISTANT, { status: "cancelled" })).tasks.map((task) => task.id),
+        ).toEqual(["lift-sat"]);
+        const restored = yield* tools.restore(ASSISTANT, { taskId: TaskId.make("lift-sat") });
+        expect(restored.restored).toBe("cancelled");
+        expect(restored.task.status).toBe("todo");
+        expect(restored.task.completedAt).toBeUndefined();
+        expect(
+          (yield* errorOf(tools.restore(ASSISTANT, { taskId: TaskId.make("lift-sat") }))).message,
+        ).toMatch(/already on the list/);
+      }),
+    ),
+  );
+
+  it.effect("cancelling one occurrence of a repeating task opens no next one", () =>
+    run(
+      Effect.gen(function* () {
+        yield* addTask("daily", "Stretch", day("2026-11-13"), {
+          recurrence: { frequency: "daily", interval: 1 },
+        });
+        useAssistant({ tasks: "edit" });
+        yield* tools.update(ASSISTANT, { taskId: TaskId.make("daily"), status: "cancelled" });
+        const open = (yield* tools.list(ASSISTANT, { text: "stretch", status: "any" })).tasks;
+        expect(open.map((task) => [task.id, task.status])).toEqual([["daily", "cancelled"]]);
+      }),
+    ),
+  );
+
+  it.effect("a coordinator never cancels, even its own proposal", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({});
+        const own = yield* tools.propose(ACME_COORD, { title: "Approve copy" });
+        expect(
+          (yield* errorOf(tools.update(ACME_COORD, { taskId: own.task.id, status: "cancelled" })))
+            .message,
+        ).toMatch(/Only the user completes, cancels or reopens/);
+      }),
+    ),
+  );
+});
+
+describe("cp_task_delete and cp_task_restore", () => {
+  it.effect("deletes a task and restores it exactly as it was, under the same id", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        useAssistant({ tasks: "edit" });
+        const before = yield* storedTask("lift-sat");
+        const deleted = yield* tools.delete(ASSISTANT, { taskId: TaskId.make("lift-sat") });
+        expect(deleted).toEqual({ taskId: "lift-sat", title: "Gym lift, 45 min", synced: false });
+        expect(yield* storedTask("lift-sat")).toBeUndefined();
+        expect(
+          (yield* errorOf(tools.delete(ASSISTANT, { taskId: TaskId.make("lift-sat") }))).message,
+        ).toMatch(/cp_task_restore/);
+        const restored = yield* tools.restore(ASSISTANT_CHANNEL, {
+          taskId: TaskId.make("lift-sat"),
+        });
+        expect(restored.restored).toBe("deleted");
+        const { updatedAt: _a, ...was } = before!;
+        const { updatedAt: _b, ...now } = restored.task;
+        expect(now).toEqual(was);
+        expect(
+          (yield* errorOf(tools.restore(ASSISTANT, { taskId: TaskId.make("never") }))).message,
+        ).toMatch(/no task with that id/);
+      }),
+    ),
+  );
+
+  it.effect("restores a task the user deleted from the UI", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        yield* dispatch({
+          type: "task.delete",
+          commandId: cid(),
+          taskId: TaskId.make("user-task"),
+          createdAt: NOW,
+        });
+        const restored = yield* tools.restore(ASSISTANT, { taskId: TaskId.make("user-task") });
+        expect(restored.task.title).toBe("Renew passport");
+      }),
+    ),
+  );
+
+  it.effect("refuses read-only access, coordinators, and waiting proposals", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        for (const tasks of ["read", "off"] as const) {
+          useAssistant({ tasks });
+          const tags = [
+            (yield* errorOf(tools.delete(ASSISTANT, { taskId: TaskId.make("lift-sat") }))).tag,
+            (yield* errorOf(tools.restore(ASSISTANT, { taskId: TaskId.make("lift-sat") }))).tag,
+            (yield* errorOf(
+              tools.reorder(ASSISTANT, {
+                taskId: TaskId.make("lift-sat"),
+                beforeTaskId: TaskId.make("run-fri"),
+              }),
+            )).tag,
+            (yield* errorOf(tools.intent(ASSISTANT, { horizon: "week", when: "this", text: "x" })))
+              .tag,
+          ];
+          expect(tags).toEqual(Array(4).fill("TaskAccessDeniedError"));
+        }
+        useAssistant({ tasks: "edit" });
+        const proposal = yield* tools.propose(ACME_COORD, { title: "Approve copy" });
+        expect(
+          (yield* errorOf(tools.delete(ACME_COORD, { taskId: proposal.task.id }))).message,
+        ).toMatch(/Only the Assistant/);
+        expect(
+          (yield* errorOf(tools.delete(ASSISTANT, { taskId: proposal.task.id }))).message,
+        ).toMatch(/still a proposal/);
+        expect(yield* storedTask("lift-sat")).toBeDefined();
+      }),
+    ),
+  );
+
+  it.effect("the decider refuses agent deletes and restores from anyone but the Assistant", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        const del = yield* Effect.exit(
+          dispatch({
+            type: "task.agent.delete",
+            commandId: cid(),
+            taskId: TaskId.make("lift-sat"),
+            actorThreadId: ACME_COORD,
+            createdAt: NOW,
+          }),
+        );
+        expect(del._tag).toBe("Failure");
+        const record = (yield* storedTask("lift-sat"))!;
+        const restore = yield* Effect.exit(
+          dispatch({
+            type: "task.agent.restore",
+            commandId: cid(),
+            taskId: TaskId.make("lift-sat"),
+            actorThreadId: ASSISTANT,
+            task: record,
+            createdAt: NOW,
+          }),
+        );
+        expect(restore._tag).toBe("Failure");
+      }),
+    ),
+  );
+});
+
+describe("cp_task_reorder", () => {
+  const backlog = { kind: "backlog", horizon: null } as const;
+  const seedBacklog = Effect.gen(function* () {
+    yield* addTask("b1", "One", backlog, { orderKey: "d" });
+    yield* addTask("b2", "Two", backlog, { orderKey: "h" });
+    yield* addTask("b3", "Three", backlog, { orderKey: "p" });
+  });
+  const order = Effect.map(
+    Effect.flatMap(ProjectionSnapshotQuery, (query) => query.getCommandReadModel()),
+    (model) =>
+      (model.tasks ?? [])
+        .filter((task) => task.home.kind === "backlog" && task.status === "todo")
+        .toSorted(compareTaskOrder)
+        .map((task) => task.id as string),
+  );
+
+  it.effect("moves one task before or after another in its list", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedBacklog;
+        useAssistant({ tasks: "edit" });
+        const moved = yield* tools.reorder(ASSISTANT, {
+          taskId: TaskId.make("b3"),
+          beforeTaskId: TaskId.make("b1"),
+        });
+        expect(moved.tasks.map((task) => task.id)).toEqual(["b3", "b1", "b2", "user-task"]);
+        yield* tools.reorder(ASSISTANT, {
+          taskId: TaskId.make("b3"),
+          afterTaskId: TaskId.make("b2"),
+        });
+        expect(yield* order).toEqual(["b1", "b2", "b3", "user-task"]);
+      }),
+    ),
+  );
+
+  it.effect("puts an ordered list of ids at the top, the rest following", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedBacklog;
+        useAssistant({ tasks: "edit" });
+        yield* tools.reorder(ASSISTANT, {
+          orderedTaskIds: [TaskId.make("user-task"), TaskId.make("b2")],
+        });
+        expect(yield* order).toEqual(["user-task", "b2", "b1", "b3"]);
+      }),
+    ),
+  );
+
+  it.effect("refuses tasks from another list, closed tasks, and malformed requests", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedBacklog;
+        yield* seedWeek;
+        useAssistant({ tasks: "edit" });
+        const message = (params: TaskReorderInput) =>
+          Effect.map(errorOf(tools.reorder(ASSISTANT, params)), (error) => error.message);
+        expect(
+          yield* message({ taskId: TaskId.make("b1"), beforeTaskId: TaskId.make("run-fri") }),
+        ).toMatch(/another list/);
+        expect(yield* message({ taskId: TaskId.make("b1") })).toMatch(/exactly one/);
+        expect(
+          yield* message({
+            taskId: TaskId.make("b1"),
+            beforeTaskId: TaskId.make("b2"),
+            afterTaskId: TaskId.make("b3"),
+          }),
+        ).toMatch(/exactly one/);
+        expect(yield* message({ orderedTaskIds: [TaskId.make("b1"), TaskId.make("b1")] })).toMatch(
+          /only once/,
+        );
+        yield* tools.update(ASSISTANT, { taskId: TaskId.make("b2"), status: "completed" });
+        expect(
+          yield* message({ taskId: TaskId.make("b1"), afterTaskId: TaskId.make("b2") }),
+        ).toMatch(/completed/);
+        expect(
+          (yield* errorOf(
+            tools.reorder(ACME_COORD, {
+              taskId: TaskId.make("b1"),
+              beforeTaskId: TaskId.make("b3"),
+            }),
+          )).tag,
+        ).toBe("TaskAccessDeniedError");
+      }),
+    ),
+  );
+});
+
+describe("repeating tasks, links and intents (Lucive parity)", () => {
+  const weekly = { frequency: "weekly", interval: 1 } as const;
+
+  it.effect("adds a repeating task directly, edits its rule, and stops it", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit", newTasks: "create" });
+        const added = yield* tools.propose(ASSISTANT, {
+          title: "Weekly review",
+          date: "2026-11-13",
+          reminderTime: "16:00",
+          recurrence: weekly,
+          links: { projectId: ACME },
+        });
+        expect(added.added).toBe(true);
+        expect(added.task).toMatchObject({
+          recurrence: weekly,
+          links: { projectId: ACME },
+          home: { kind: "date", date: "2026-11-13", reminderTime: "16:00" },
+        });
+        const edited = yield* tools.update(ASSISTANT, {
+          taskId: added.task.id,
+          recurrence: { frequency: "weekly", interval: 2, daysOfWeek: [5] },
+        });
+        expect(edited.task.recurrence).toEqual({
+          frequency: "weekly",
+          interval: 2,
+          daysOfWeek: [5],
+        });
+        expect(
+          (yield* tools.list(ASSISTANT, { repeating: true })).tasks.map((task) => task.id),
+        ).toEqual([added.task.id]);
+        const stopped = yield* tools.update(ASSISTANT, { taskId: added.task.id, recurrence: null });
+        expect(stopped.task.recurrence).toBeUndefined();
+        expect(stopped.task.status).toBe("todo");
+        expect((yield* tools.list(ASSISTANT, { repeating: true })).tasks).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("makes a plain task repeat from its day, and refuses a repeat off a day", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        useAssistant({ tasks: "edit" });
+        const made = yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("run-fri"),
+          recurrence: { frequency: "daily", interval: 1 },
+        });
+        expect(made.task.recurrence).toEqual({ frequency: "daily", interval: 1 });
+        const offDay = yield* errorOf(
+          tools.update(ASSISTANT, { taskId: TaskId.make("run-fri"), when: "next-week" }),
+        );
+        expect(offDay.message).toMatch(/moves only between days/);
+        const moved = yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("run-fri"),
+          date: "2026-11-16",
+        });
+        expect(moved.task.recurrence).toBeDefined();
+        const backlog = yield* errorOf(
+          tools.update(ASSISTANT, {
+            taskId: TaskId.make("someday"),
+            recurrence: { frequency: "daily", interval: 1 },
+          }),
+        );
+        expect(backlog.message).toMatch(/moves only between days/);
+        const ended = yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("run-fri"),
+          recurrence: null,
+          when: "week-backlog",
+        });
+        expect(ended.task.home).toEqual({ kind: "backlog", horizon: "week" });
+      }),
+    ),
+  );
+
+  it.effect("skipping one occurrence opens the next; restoring brings the skipped one back", () =>
+    run(
+      Effect.gen(function* () {
+        yield* addTask("weekly", "Gym lift", day("2026-11-14"), { recurrence: weekly });
+        useAssistant({ tasks: "edit" });
+        const skipped = yield* tools.delete(ASSISTANT, { taskId: TaskId.make("weekly") });
+        expect(skipped.next).toMatchObject({
+          title: "Gym lift",
+          home: day("2026-11-21"),
+          recurrence: weekly,
+        });
+        expect(yield* storedTask("weekly")).toBeUndefined();
+        const restored = yield* tools.restore(ASSISTANT, { taskId: TaskId.make("weekly") });
+        expect(restored.task.home).toEqual(day("2026-11-14"));
+        expect(yield* storedTask(skipped.next!.id)).toBeDefined();
+      }),
+    ),
+  );
+
+  it.effect("deleting the series stops it, and restore brings the repeat back", () =>
+    run(
+      Effect.gen(function* () {
+        yield* addTask("weekly", "Gym lift", day("2026-11-14"), { recurrence: weekly });
+        useAssistant({ tasks: "edit" });
+        const gone = yield* tools.delete(ASSISTANT, {
+          taskId: TaskId.make("weekly"),
+          scope: "series",
+        });
+        expect(gone.next).toBeUndefined();
+        expect((yield* tools.list(ASSISTANT, { text: "gym", status: "any" })).tasks).toEqual([]);
+        const restored = yield* tools.restore(ASSISTANT, { taskId: TaskId.make("weekly") });
+        expect(restored.task.recurrence).toEqual(weekly);
+        expect(
+          (yield* errorOf(
+            tools.delete(ASSISTANT, { taskId: TaskId.make("user-task"), scope: "series" }),
+          )).message,
+        ).toMatch(/does not repeat/);
+      }),
+    ),
+  );
+
+  it.effect("repeat and links stay with the user and the Assistant", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit", newTasks: "propose" });
+        expect(
+          (yield* errorOf(
+            tools.propose(ASSISTANT, { title: "Stretch", when: "today", recurrence: weekly }),
+          )).message,
+        ).toMatch(/Add directly/);
+        expect(
+          (yield* errorOf(
+            tools.propose(ACME_COORD, { title: "Stretch", when: "today", recurrence: weekly }),
+          )).message,
+        ).toMatch(/proposal cannot repeat/);
+        const own = yield* tools.propose(ACME_COORD, { title: "Approve copy", when: "today" });
+        expect(
+          (yield* errorOf(tools.update(ACME_COORD, { taskId: own.task.id, links: null }))).message,
+        ).toMatch(/repeat or links/);
+        const relinked = yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("user-task"),
+          links: { threadId: ACME_STANDING },
+        });
+        expect(relinked.task.links).toEqual({ projectId: ACME, threadId: ACME_STANDING });
+        const cleared = yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("user-task"),
+          links: null,
+        });
+        expect(cleared.task.links).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("sets and clears period intents, and lists them with the range", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        const set = yield* tools.intent(ASSISTANT, {
+          horizon: "week",
+          when: "this",
+          text: "Ship task tools",
+        });
+        expect(set).toMatchObject({
+          startsOn: "2026-11-09",
+          endsOn: "2026-11-15",
+          intent: { text: "Ship task tools" },
+        });
+        yield* tools.intent(ASSISTANT, { horizon: "month", date: "2026-12-04", text: "Rest" });
+        expect(
+          (yield* tools.list(ASSISTANT, { date: "2026-11-14" })).intents.map((i) => i.text),
+        ).toEqual(["Ship task tools"]);
+        expect(
+          (yield* tools.list(ASSISTANT, { range: "next-month" })).intents.map((i) => i.text),
+        ).toEqual(["Rest"]);
+        const cleared = yield* tools.intent(ASSISTANT, { horizon: "week", when: "this", text: "" });
+        expect(cleared.intent).toBeNull();
+        expect(
+          (yield* errorOf(tools.intent(ASSISTANT, { horizon: "week", text: "x" }))).message,
+        ).toMatch(/either `when` or `date`/);
+        useAssistant({});
+        expect(
+          (yield* errorOf(tools.intent(ACME_COORD, { horizon: "week", when: "this", text: "x" })))
+            .tag,
+        ).toBe("TaskAccessDeniedError");
       }),
     ),
   );

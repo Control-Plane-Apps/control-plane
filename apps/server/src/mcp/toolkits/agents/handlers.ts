@@ -63,6 +63,7 @@ import {
 } from "./agentScope.ts";
 import { makeScheduleHandlers } from "./scheduleHandlers.ts";
 import { makeStatusHandlers } from "./statusHandlers.ts";
+import { OrchestrationEventStoreLive } from "../../../persistence/Layers/OrchestrationEventStore.ts";
 import { makeTaskHandlers } from "./taskHandlers.ts";
 import {
   AgentAmbiguousError,
@@ -911,6 +912,8 @@ export const AgentsToolkitHandlersLive = AgentsToolkitHandlers.pipe(
       ProjectionTurnRepositoryLive,
       ProjectionThreadMessageRepositoryLive,
       ProjectionProjectRepositoryLive,
+      // cp_task_restore reads a deleted task's last record from the log.
+      OrchestrationEventStoreLive,
     ),
   ),
 );

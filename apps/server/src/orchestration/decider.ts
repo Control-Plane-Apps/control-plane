@@ -74,6 +74,8 @@ import {
   decideTaskIntentSet,
   decideTaskAgentCreate,
   decideTaskAgentUpdate,
+  decideTaskAgentDelete,
+  decideTaskAgentRestore,
   decideTaskPropose,
   decideTaskSyncApply,
   decideTaskProposalRespond,
@@ -506,6 +508,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "task.agent.update":
       return yield* decideTaskAgentUpdate(readModel, command);
+
+    case "task.agent.delete":
+      return yield* decideTaskAgentDelete(readModel, command);
+
+    case "task.agent.restore":
+      return yield* decideTaskAgentRestore(readModel, command);
 
     case "task.sync.apply":
       return yield* decideTaskSyncApply(readModel, command);

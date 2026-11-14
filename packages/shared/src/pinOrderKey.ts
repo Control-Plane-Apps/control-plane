@@ -72,3 +72,46 @@ export function generateSpreadPinOrderKeys(count: number): string[] {
   }
   return keys;
 }
+
+/**
+ * Assignments needed to realize a new pinned order. When the moved thread
+ * sits between two keyed (or absent) neighbors, this is a single write to
+ * the moved thread. When a neighbor is keyless (threads pinned before
+ * reordering shipped), the whole section gets fresh spread keys: a
+ * one-time materialization; every move after that is single-write. Active
+ * reordering uses the same planner with activeOrderKey values.
+ */
+export function planPinnedReorder(input: {
+  /** Thread ids in the desired visual order (after the move). */
+  readonly orderedIds: readonly string[];
+  /** Include retained keys from hidden rows; only orderedIds receive writes. */
+  readonly keysById: ReadonlyMap<string, string | null | undefined>;
+  readonly movedId: string;
+}): ReadonlyArray<{ readonly id: string; readonly orderKey: string }> {
+  const { orderedIds, keysById, movedId } = input;
+  const visibleIds = new Set(orderedIds);
+  const reservedKeys = new Set(
+    [...keysById].flatMap(([id, key]) => (!visibleIds.has(id) && key != null ? [key] : [])),
+  );
+  const movedIndex = orderedIds.indexOf(movedId);
+  if (movedIndex === -1) return [];
+  const beforeId = movedIndex > 0 ? orderedIds[movedIndex - 1] : null;
+  const afterId = movedIndex < orderedIds.length - 1 ? orderedIds[movedIndex + 1] : null;
+  const beforeKey = beforeId != null ? (keysById.get(beforeId) ?? null) : null;
+  const afterKey = afterId != null ? (keysById.get(afterId) ?? null) : null;
+  const beforeUsable = beforeId === null || beforeKey != null;
+  const afterUsable = afterId === null || afterKey != null;
+  if (beforeUsable && afterUsable) {
+    let key = pinOrderKeyBetween(beforeKey, afterKey);
+    while (key !== null && reservedKeys.has(key)) key = pinOrderKeyBetween(key, afterKey);
+    if (key !== null) return [{ id: movedId, orderKey: key }];
+  }
+  // Keyless neighbor (or corrupt keys): rewrite the section in the new order.
+  const keys = generateSpreadPinOrderKeys(orderedIds.length + reservedKeys.size)
+    .filter((key) => !reservedKeys.has(key))
+    .slice(0, orderedIds.length);
+  return orderedIds.flatMap((id, index) => {
+    const key = keys[index]!;
+    return keysById.get(id) === key ? [] : [{ id, orderKey: key }];
+  });
+}
