@@ -9,15 +9,11 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { NativeStackHeaderItem } from "@react-navigation/native-stack";
 import type { OrchestrationThread, ThreadId } from "@t3tools/contracts";
 import { useCallback, useMemo, type ReactNode } from "react";
-import { View } from "react-native";
 
-import { SymbolView } from "../../components/AppSymbol";
-import { AppText as Text } from "../../components/AppText";
 import type { AndroidHeaderAction } from "../../components/AndroidScreenHeader";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 import { useAppNavigation } from "../threads/sidebar-navigation-shell";
-import { AssistantMark } from "./AssistantMark";
 import { AssistantAskCards, AssistantOverview, NeedsYouPill } from "./AssistantScreenParts";
 import {
   anchorAskCards,
@@ -31,28 +27,6 @@ import { useNeedsYouActions, useSentNeedsYouKeys } from "./useNeedsYouActions";
 // thread is the cross-Project Assistant's coordinator: its compact header,
 // the overview above the conversation, ask cards inside it, and the
 // Needs-you pill above the composer. Null for every other thread.
-
-/** The centered title: the mark and "Assistant", with the channel under it. */
-export function AssistantHeaderTitle() {
-  return (
-    <View accessibilityLabel="Assistant, Today" accessible className="items-center">
-      <View className="flex-row items-center gap-[5px]">
-        <AssistantMark size={15} />
-        <Text className="text-[17px] font-t3-semibold text-foreground">Assistant</Text>
-      </View>
-      <View className="flex-row items-center gap-0.5">
-        <Text className="text-[12px] text-foreground-muted">Today</Text>
-        <SymbolView
-          name="chevron.down"
-          size={9}
-          tintColorClassName="accent-foreground-muted"
-          type="monochrome"
-          weight="semibold"
-        />
-      </View>
-    </View>
-  );
-}
 
 export interface AssistantScreen<E> {
   readonly feed: ReadonlyArray<E>;
