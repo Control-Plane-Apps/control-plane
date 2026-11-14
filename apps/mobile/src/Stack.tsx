@@ -50,6 +50,7 @@ import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
 import { AddProjectRepositoryRoute } from "./features/projects/AddProjectRepositoryRoute";
 import { AddProjectSourceRoute } from "./features/projects/AddProjectSourceRoute";
 import { ProjectFileScreen } from "./features/projects/ProjectFileScreen";
+import { AllSchedulesScreen } from "./features/projects/AllSchedulesScreen";
 import { ProjectScheduleEditorScreen } from "./features/projects/ProjectScheduleEditorScreen";
 import { ProjectSchedulesScreen } from "./features/projects/ProjectSchedulesScreen";
 import { ProjectSettingsRouteScreen } from "./features/projects/ProjectSettingsRouteScreen";
@@ -288,6 +289,12 @@ const SettingsContentStack = createNativeStackNavigator({
     SettingsProjectSchedules: createNativeStackScreen({
       screen: ProjectSchedulesScreen,
       linking: "projects/:environmentId/:projectId/schedules",
+      options: { title: "Schedules" },
+    }),
+    // Every Project's schedules, the Assistant's first.
+    SettingsSchedules: createNativeStackScreen({
+      screen: AllSchedulesScreen,
+      linking: "schedules",
       options: { title: "Schedules" },
     }),
     SettingsProjectScheduleEditor: createNativeStackScreen({

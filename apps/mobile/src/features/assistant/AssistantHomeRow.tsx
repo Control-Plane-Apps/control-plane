@@ -3,6 +3,7 @@ import { ActivityIndicator, View } from "react-native";
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { RowPressable } from "../../components/RowPressable";
+import { cn } from "../../lib/cn";
 import { rollupDotColor, ThreadStatusDot } from "../threads/thread-status-dot";
 import { AssistantMark } from "./AssistantMark";
 import type { AssistantEntry } from "./useAssistantEntry";
@@ -24,10 +25,17 @@ export function AssistantHomeRow(props: { readonly entry: AssistantEntry }) {
         accessibilityHint="Opens the Assistant"
         accessibilityLabel={count > 0 ? `Assistant, ${count} need you` : "Assistant"}
         accessibilityRole="button"
-        accessibilityState={{ busy: entry.opening }}
+        accessibilityState={{ busy: entry.opening || entry.pending, disabled: entry.pending }}
+        disabled={entry.pending}
         onPress={entry.open}
       >
-        <View className="min-h-[54px] flex-row items-center gap-3 py-2 pr-5 pl-5">
+        {/* Pending holds the same 54px row, dimmed, until an environment answers. */}
+        <View
+          className={cn(
+            "min-h-[54px] flex-row items-center gap-3 py-2 pr-5 pl-5",
+            entry.pending && "opacity-50",
+          )}
+        >
           <AssistantMark size={20} />
           <Text className="flex-1 text-[17px] text-foreground" numberOfLines={1}>
             Assistant

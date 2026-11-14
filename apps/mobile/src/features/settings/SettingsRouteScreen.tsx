@@ -78,6 +78,7 @@ function ConfiguredSettingsRouteScreen() {
           />
           <SettingsRow icon="bell.badge" label="Notifications" target="SettingsNotifications" />
           <TaskSyncSettingsRow />
+          <SettingsRow icon="clock" label="Schedules" target="SettingsSchedules" />
         </SettingsSection>
 
         <SettingsIndexSections />
@@ -114,6 +115,7 @@ function LocalSettingsRouteScreen() {
             <SettingsRow icon="bell.badge" label="Notifications" target="SettingsNotifications" />
           ) : null}
           <TaskSyncSettingsRow />
+          <SettingsRow icon="clock" label="Schedules" target="SettingsSchedules" />
         </SettingsSection>
 
         <SettingsIndexSections />
