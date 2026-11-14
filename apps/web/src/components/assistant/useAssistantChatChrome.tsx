@@ -226,7 +226,6 @@ export function useAssistantChatChrome(input: {
         onCreateChannel={(title) => void createChannel(title)}
         onOpenMemory={input.onOpenMemory}
         onOpenSchedules={input.onOpenSchedules}
-        onOpenSettings={openSettings}
         rightPanelOpen={input.rightPanelOpen}
       />
     ),

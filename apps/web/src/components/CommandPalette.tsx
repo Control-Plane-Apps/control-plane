@@ -1881,6 +1881,18 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push({
     kind: "action",
+    value: "action:assistant-settings",
+    searchTerms: ["assistant", "settings", "morning brief", "brief", "reach", "preferences"],
+    title: "Assistant settings",
+    description: "Morning brief, reach and what it may do for you",
+    icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/settings/assistant" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
     value: "action:schedules",
     searchTerms: ["schedules", "schedule", "cron", "recurring", "all schedules", "automations"],
     title: "Open schedules",

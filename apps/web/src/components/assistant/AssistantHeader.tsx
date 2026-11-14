@@ -1,4 +1,4 @@
-import { BrainIcon, ClockIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { BrainIcon, ClockIcon, PlusIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -9,7 +9,8 @@ import { AssistantMark } from "./AssistantMark";
 // Fork-owned. The Assistant's header: its mark and subtitle, a segmented
 // control of channels (the coordinator is "Today", each pinned thread is a
 // channel such as "Weekly review", then the ping Inbox), and new channel,
-// memory and settings.
+// memory and schedules. Settings > Assistant lives in Settings and the
+// command palette.
 
 export interface AssistantChannel {
   readonly id: string;
@@ -27,7 +28,6 @@ export interface AssistantHeaderProps {
   readonly onOpenMemory: () => void;
   /** Opens the Assistant's Schedules panel; absent when its server has no schedules. */
   readonly onOpenSchedules?: (() => void) | undefined;
-  readonly onOpenSettings: () => void;
   /**
    * The app's panel toggles sit fixed over the header's right edge while the
    * right panel is closed, so the header leaves room for them (as ChatHeader does).
@@ -169,15 +169,6 @@ export function AssistantHeader(props: AssistantHeaderProps) {
             <ClockIcon aria-hidden />
           </Button>
         ) : null}
-        <Button
-          size="icon-sm"
-          variant="ghost-muted"
-          aria-label="Assistant settings"
-          title="Assistant settings"
-          onClick={props.onOpenSettings}
-        >
-          <SettingsIcon aria-hidden />
-        </Button>
       </div>
     </div>
   );

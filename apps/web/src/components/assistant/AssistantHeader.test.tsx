@@ -16,13 +16,14 @@ describe("AssistantHeader", () => {
         onSelect={noop}
         onCreateChannel={noop}
         onOpenMemory={noop}
-        onOpenSettings={noop}
         rightPanelOpen={false}
       />,
     );
     expect(html).toContain('aria-label="New channel"');
     expect(html).not.toContain("<input");
     expect(html).not.toContain("Channel name");
+    // Settings > Assistant is reached from Settings and the command palette.
+    expect(html).not.toContain('aria-label="Assistant settings"');
   });
 });
 
@@ -38,7 +39,6 @@ describe("AssistantHeader schedules", () => {
         onCreateChannel={noop}
         onOpenMemory={noop}
         onOpenSchedules={onOpenSchedules}
-        onOpenSettings={noop}
         rightPanelOpen
       />,
     );
