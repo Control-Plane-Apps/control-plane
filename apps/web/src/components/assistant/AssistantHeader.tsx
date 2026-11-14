@@ -3,6 +3,7 @@ import { type FormEvent, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { AssistantMark } from "./AssistantMark";
 
 // Fork-owned. The Assistant's header: its mark and subtitle, a segmented
@@ -34,16 +35,25 @@ export interface AssistantHeaderProps {
 
 export const ASSISTANT_INBOX_CHANNEL = "inbox";
 
+/** The new channel's title, or null while the name is still blank. */
+export function newChannelTitle(name: string): string | null {
+  const title = name.trim();
+  return title.length === 0 ? null : title;
+}
+
 export function AssistantHeader(props: AssistantHeaderProps) {
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState("");
+  const setOpen = (open: boolean) => {
+    setNaming(open);
+    if (!open) setName("");
+  };
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const title = name.trim();
-    if (title.length === 0) return;
+    const title = newChannelTitle(name);
+    if (title === null) return;
     props.onCreateChannel(title);
-    setName("");
-    setNaming(false);
+    setOpen(false);
   };
   const tabs = [
     ...props.channels,
@@ -68,24 +78,6 @@ export function AssistantHeader(props: AssistantHeaderProps) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {naming ? (
-          <form onSubmit={submit} className="flex items-center gap-1">
-            <input
-              autoFocus
-              aria-label="Channel name"
-              placeholder="Channel name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              onBlur={() => {
-                if (name.trim().length === 0) setNaming(false);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") setNaming(false);
-              }}
-              className="h-7 w-36 rounded-md border border-input bg-popover px-2 text-[13px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            />
-          </form>
-        ) : null}
         <div
           role="group"
           aria-label="Assistant channels"
@@ -111,15 +103,46 @@ export function AssistantHeader(props: AssistantHeaderProps) {
             );
           })}
         </div>
-        <Button
-          size="icon-sm"
-          variant="ghost-muted"
-          aria-label="New channel"
-          title="New channel"
-          onClick={() => setNaming(true)}
-        >
-          <PlusIcon aria-hidden />
-        </Button>
+        <Popover open={naming} onOpenChange={setOpen}>
+          <PopoverTrigger
+            render={
+              <Button
+                size="icon-sm"
+                variant="ghost-muted"
+                aria-label="New channel"
+                title="New channel"
+              />
+            }
+          >
+            <PlusIcon aria-hidden />
+          </PopoverTrigger>
+          <PopoverPopup side="bottom" align="end" sideOffset={6} className="w-64">
+            <form onSubmit={submit} className="flex flex-col gap-2">
+              <label
+                htmlFor="assistant-new-channel"
+                className="text-xs font-medium text-muted-foreground"
+              >
+                New channel
+              </label>
+              <input
+                id="assistant-new-channel"
+                autoFocus
+                placeholder="e.g. Weekly review"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-[13px] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <div className="flex justify-end gap-1.5">
+                <Button size="xs" variant="ghost" type="button" onClick={() => setOpen(false)}>
+                  Cancel
+                </Button>
+                <Button size="xs" type="submit" disabled={newChannelTitle(name) === null}>
+                  Create
+                </Button>
+              </div>
+            </form>
+          </PopoverPopup>
+        </Popover>
         <Button
           size="icon-sm"
           variant="ghost-muted"
