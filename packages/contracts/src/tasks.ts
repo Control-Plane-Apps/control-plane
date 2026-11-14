@@ -59,6 +59,9 @@ export const TaskHome = Schema.Union([
 ]);
 export type TaskHome = typeof TaskHome.Type;
 
+/** The most occurrences a series may be limited to. */
+export const TASK_RECURRENCE_COUNT_MAX = 999;
+
 export const TaskRecurrence = Schema.Struct({
   frequency: Schema.Literals(["daily", "weekly", "monthly"]),
   /** Every N days / weeks / months. */
@@ -69,8 +72,27 @@ export const TaskRecurrence = Schema.Struct({
   ),
   /** 1-31. Monthly only; absent means the anchor day's date. */
   dayOfMonth: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 31 }))),
+  /**
+   * The series ends after this many occurrences, counted like Lucive: live
+   * occurrences only, so a skipped (deleted) one does not count.
+   */
+  endAfterCount: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: TASK_RECURRENCE_COUNT_MAX })),
+  ),
+  /** No occurrence is opened after this day, YYYY-MM-DD. */
+  endAfterDate: Schema.optional(TaskLocalDate),
+  /**
+   * Which live occurrence of the series this is, 1-based. Kept by Control
+   * Plane (and filled from the synced series) only while `endAfterCount` is
+   * set; any value a client sends is replaced.
+   */
+  occurrence: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
 });
 export type TaskRecurrence = typeof TaskRecurrence.Type;
+
+/** How a delete treats a repeating task: skip this occurrence, or stop the series. */
+export const TaskDeleteScope = Schema.Literals(["occurrence", "series"]);
+export type TaskDeleteScope = typeof TaskDeleteScope.Type;
 
 /** What a task is about. A workstream link always names its Project. */
 export const TaskLinks = Schema.Struct({
@@ -291,6 +313,41 @@ export function nextTaskOccurrence(date: string, recurrence: TaskRecurrence): Ta
       return formatCivil(first.y, first.m, Math.min(target, daysInMonth(first.y, first.m)));
     }
   }
+}
+
+/**
+ * A repeat rule as stored: `occurrence` kept only while the series ends
+ * after a count, set to `occurrence` (what the series has reached), and
+ * never from the caller.
+ */
+export function withTaskOccurrence(recurrence: TaskRecurrence, occurrence: number): TaskRecurrence {
+  const { occurrence: _ignored, ...rule } = recurrence;
+  return rule.endAfterCount === undefined
+    ? rule
+    : { ...rule, occurrence: Math.max(1, Math.floor(occurrence)) };
+}
+
+/**
+ * The series' next occurrence after the one on `date`, or null when an end
+ * condition stops it. `counted` is false when that occurrence was skipped
+ * (deleted): like Lucive, only live occurrences count toward
+ * `endAfterCount`, so a skip never ends the series by count.
+ */
+export function followingTaskOccurrence(
+  date: string,
+  recurrence: TaskRecurrence,
+  counted: boolean = true,
+): { readonly date: TaskLocalDate; readonly recurrence: TaskRecurrence } | null {
+  const next = nextTaskOccurrence(date, recurrence);
+  if (recurrence.endAfterDate !== undefined && next > recurrence.endAfterDate) return null;
+  const reached = recurrence.occurrence ?? 1;
+  if (counted && recurrence.endAfterCount !== undefined && reached >= recurrence.endAfterCount) {
+    return null;
+  }
+  return {
+    date: next,
+    recurrence: withTaskOccurrence(recurrence, counted ? reached + 1 : reached),
+  };
 }
 
 let taskWeekStartsOn = 1;

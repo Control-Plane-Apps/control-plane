@@ -573,9 +573,26 @@ function TaskRowMenu(props: {
           >
             Cancel task
           </MenuItem>
-          <MenuItem variant="destructive" onClick={() => void context.actions.delete(task)}>
-            Delete task
-          </MenuItem>
+          {task.recurrence !== undefined && task.home.kind === "date" ? (
+            <>
+              <MenuItem
+                variant="destructive"
+                onClick={() => void context.actions.delete(task, "occurrence")}
+              >
+                Delete this occurrence
+              </MenuItem>
+              <MenuItem
+                variant="destructive"
+                onClick={() => void context.actions.delete(task, "series")}
+              >
+                Stop repeating and delete
+              </MenuItem>
+            </>
+          ) : (
+            <MenuItem variant="destructive" onClick={() => void context.actions.delete(task)}>
+              Delete task
+            </MenuItem>
+          )}
         </MenuPopup>
       </Menu>
       <button

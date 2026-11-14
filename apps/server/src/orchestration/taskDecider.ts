@@ -20,7 +20,8 @@ import {
   isAssistantChannel,
   isTaskLocalDate,
   isProposedTask,
-  nextTaskOccurrence,
+  followingTaskOccurrence,
+  withTaskOccurrence,
   taskIntentKey,
   type OrchestrationCommand,
   type OrchestrationReadModel,
@@ -106,7 +107,23 @@ function recurrenceError(recurrence: TaskRecurrence | undefined, home: TaskHome)
   if (recurrence === undefined) return null;
   // The day is the anchor the next occurrence counts from.
   if (home.kind !== "date") return "Only a task scheduled on a day can repeat.";
+  if (recurrence.endAfterDate !== undefined && !isTaskLocalDate(recurrence.endAfterDate)) {
+    return `'${recurrence.endAfterDate}' is not a date.`;
+  }
   return null;
+}
+
+/**
+ * Which live occurrence a task is in its series, for a rule that ends after
+ * a count: the occurrences of its synced series still here, or 1.
+ */
+function occurrenceOf(readModel: OrchestrationReadModel, task: Task): number {
+  if (task.recurrence?.occurrence !== undefined) return task.recurrence.occurrence;
+  if (task.seriesId === undefined) return 1;
+  return Math.max(
+    1,
+    (readModel.tasks ?? []).filter((entry) => entry.seriesId === task.seriesId).length,
+  );
 }
 
 /**
@@ -183,7 +200,11 @@ function applyPatch(
   const recurrence =
     patch.recurrence === null
       ? undefined
-      : (patch.recurrence ?? (home.kind === "date" ? stored.recurrence : undefined));
+      : patch.recurrence !== undefined
+        ? withTaskOccurrence(patch.recurrence, occurrenceOf(readModel, stored))
+        : home.kind === "date"
+          ? stored.recurrence
+          : undefined;
   const recurrenceProblem = recurrenceError(recurrence, home);
   if (recurrenceProblem !== null) return recurrenceProblem;
   const links = patch.links === undefined ? stored.links : resolveLinks(readModel, patch.links);
@@ -230,11 +251,18 @@ function applyPatch(
  * Completing a repeating task closes this occurrence and opens the next one
  * on its next day, keeping title, notes, links, reminder and order.
  */
-const nextOccurrence = Effect.fn("nextOccurrence")(function* (completed: Task, now: string) {
+const nextOccurrence = Effect.fn("nextOccurrence")(function* (
+  completed: Task,
+  now: string,
+  counted: boolean = true,
+) {
   if (completed.recurrence === undefined || completed.home.kind !== "date") return null;
+  // An end condition (after N occurrences, or on a date) stops the series here.
+  const following = followingTaskOccurrence(completed.home.date, completed.recurrence, counted);
+  if (following === null) return null;
   const crypto = yield* Crypto.Crypto;
   const id = TaskId.make(yield* crypto.randomUUIDv4);
-  const date = nextTaskOccurrence(completed.home.date, completed.recurrence);
+  const date = following.date;
   const {
     completedAt: _completedAt,
     handoff: _handoff,
@@ -248,6 +276,7 @@ const nextOccurrence = Effect.fn("nextOccurrence")(function* (completed: Task, n
     id,
     status: "todo",
     home: { ...completed.home, date },
+    recurrence: following.recurrence,
     createdAt: now,
     updatedAt: now,
   };
@@ -285,7 +314,9 @@ export const decideTaskCreate = Effect.fn("decideTaskCreate")(function* (
     ...(notes !== undefined && notes.length > 0 ? { notes } : {}),
     status: "todo",
     home: command.home,
-    ...(command.recurrence !== undefined ? { recurrence: command.recurrence } : {}),
+    ...(command.recurrence !== undefined
+      ? { recurrence: withTaskOccurrence(command.recurrence, 1) }
+      : {}),
     ...(command.orderKey != null ? { orderKey: command.orderKey } : {}),
     ...(links !== undefined ? { links } : {}),
     ...(command.importSource !== undefined ? { importSource: command.importSource } : {}),
@@ -327,14 +358,48 @@ const writeEdit = Effect.fn("writeEdit")(function* (
   ];
 });
 
+/**
+ * The events that delete `stored`. A repeating task follows Lucive: by
+ * default this occurrence is skipped and the series goes on from its next
+ * day, as when it is completed (a skip does not count toward an end after N
+ * occurrences); with scope "series" the repeat stops first, so Task Sync
+ * retires the series, and this pending occurrence is deleted.
+ */
+const deleteEvents = Effect.fn("deleteEvents")(function* (
+  command: TaskDeleteCommand | TaskAgentDeleteCommand,
+  stored: Task,
+): Decided {
+  const repeating = stored.recurrence !== undefined && stored.home.kind === "date";
+  if (command.scope !== undefined && !repeating) {
+    return yield* invariant(command.type, "That task does not repeat.");
+  }
+  if (!repeating) return yield* taskEvent(command, stored.id, null);
+  if (command.scope === "series") {
+    const { recurrence: _recurrence, ...plain } = stored;
+    return [
+      yield* taskEvent(command, stored.id, { ...plain, updatedAt: command.createdAt }),
+      yield* taskEvent(command, stored.id, null),
+    ];
+  }
+  if (stored.status !== "todo") return yield* taskEvent(command, stored.id, null);
+  const following = yield* nextOccurrence(stored, command.createdAt, false);
+  const removed = yield* taskEvent(command, stored.id, null);
+  return following === null
+    ? removed
+    : [removed, yield* taskEvent(command, following.id, following)];
+});
+
 export const decideTaskDelete = Effect.fn("decideTaskDelete")(function* (
   readModel: OrchestrationReadModel,
   command: TaskDeleteCommand,
 ): Decided {
-  if (findTask(readModel, command.taskId) === undefined) {
+  const stored = findTask(readModel, command.taskId);
+  if (stored === undefined) {
     return yield* invariant(command.type, "That task no longer exists.");
   }
-  return yield* taskEvent(command, command.taskId, null);
+  // A waiting proposal is dismissed, never skipped as an occurrence.
+  if (isProposedTask(stored)) return yield* taskEvent(command, stored.id, null);
+  return yield* deleteEvents(command, stored);
 });
 
 /** `task.proposal.respond`: only the user adds or dismisses a proposal. */
@@ -487,7 +552,9 @@ export const decideTaskAgentCreate = Effect.fn("decideTaskAgentCreate")(function
     ...(notes !== undefined && notes.length > 0 ? { notes } : {}),
     status: "todo",
     home: command.home,
-    ...(command.recurrence !== undefined ? { recurrence: command.recurrence } : {}),
+    ...(command.recurrence !== undefined
+      ? { recurrence: withTaskOccurrence(command.recurrence, 1) }
+      : {}),
     ...(links !== undefined ? { links } : {}),
     createdAt: command.createdAt,
     updatedAt: command.createdAt,
@@ -571,28 +638,7 @@ export const decideTaskAgentDelete = Effect.fn("decideTaskAgentDelete")(function
       "That task is still a proposal. Only the user adds or dismisses it.",
     );
   }
-  const repeating = stored.recurrence !== undefined && stored.home.kind === "date";
-  if (command.scope !== undefined && !repeating) {
-    return yield* invariant(command.type, "That task does not repeat.");
-  }
-  if (!repeating) return yield* taskEvent(command, stored.id, null);
-  if (command.scope === "series") {
-    // Stop repeating first so Task Sync retires the series, then delete this
-    // pending occurrence: Lucive's Stop repeating.
-    const { recurrence: _recurrence, ...plain } = stored;
-    return [
-      yield* taskEvent(command, stored.id, { ...plain, updatedAt: command.createdAt }),
-      yield* taskEvent(command, stored.id, null),
-    ];
-  }
-  // One occurrence: a skip. The series goes on from its next day, as when
-  // the occurrence is completed; Lucive treats a deleted occurrence the same.
-  if (stored.status !== "todo") return yield* taskEvent(command, stored.id, null);
-  const following = yield* nextOccurrence(stored, command.createdAt);
-  const removed = yield* taskEvent(command, stored.id, null);
-  return following === null
-    ? removed
-    : [removed, yield* taskEvent(command, following.id, following)];
+  return yield* deleteEvents(command, stored);
 });
 
 /**

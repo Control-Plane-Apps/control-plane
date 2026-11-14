@@ -27,6 +27,7 @@ import {
   controlPlaneIntentsFromLucive,
   controlPlaneTasksFromLucive,
   lucivePlacementOf,
+  luciveRecurrenceOf,
 } from "../taskSyncRecords.ts";
 
 import {
@@ -104,23 +105,20 @@ const PULL_PAGE_GUARD = 200;
 export const TASK_SYNC_AVAILABILITY_TTL_MS = 3 * 60 * 60 * 1000;
 
 function toWireRecurrence(recurrence: TaskRecurrence): Wire {
-  return {
-    frequency: recurrence.frequency,
-    interval: recurrence.interval,
-    anchor: "calendar",
-    ...(recurrence.daysOfWeek !== undefined ? { daysOfWeek: recurrence.daysOfWeek } : {}),
-    ...(recurrence.dayOfMonth !== undefined ? { dayOfMonth: recurrence.dayOfMonth } : {}),
-  };
+  return luciveRecurrenceOf(recurrence);
 }
 
 function sameRecurrence(wire: unknown, recurrence: TaskRecurrence): boolean {
   if (typeof wire !== "object" || wire === null) return false;
   const w = wire as Record<string, unknown>;
+  const endDate = typeof w.endAfterDate === "string" ? w.endAfterDate.slice(0, 10) : null;
   return (
     w.frequency === recurrence.frequency &&
     w.interval === recurrence.interval &&
     JSON.stringify(w.daysOfWeek ?? null) === JSON.stringify(recurrence.daysOfWeek ?? null) &&
-    (w.dayOfMonth ?? null) === (recurrence.dayOfMonth ?? null)
+    (w.dayOfMonth ?? null) === (recurrence.dayOfMonth ?? null) &&
+    (w.endAfterCount ?? null) === (recurrence.endAfterCount ?? null) &&
+    endDate === (recurrence.endAfterDate ?? null)
   );
 }
 

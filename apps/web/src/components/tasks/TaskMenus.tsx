@@ -2,9 +2,14 @@ import type { TaskHome, TaskRecurrence } from "@t3tools/contracts";
 import {
   formatTaskHome,
   formatTaskRecurrence,
+  formatTaskRecurrenceCadence,
   isHomeAtTarget,
+  taskRecurrenceEnd,
+  withTaskRecurrenceCadence,
+  withTaskRecurrenceEnd,
   type TaskMoveTarget,
 } from "@t3tools/client-runtime/state/projects";
+import { TASK_RECURRENCE_COUNT_MAX } from "@t3tools/contracts";
 import { addTaskDays, taskWeekday } from "@t3tools/contracts";
 import { CheckIcon } from "lucide-react";
 import type { ReactNode } from "react";
@@ -124,32 +129,89 @@ export function TaskRepeatMenu(props: {
   readonly children: ReactNode;
   readonly className?: string;
 }) {
-  const current = props.recurrence === undefined ? null : formatTaskRecurrence(props.recurrence);
+  const { recurrence } = props;
+  const current = recurrence === undefined ? null : formatTaskRecurrenceCadence(recurrence);
+  const end = recurrence === undefined ? null : taskRecurrenceEnd(recurrence);
+  const mark = (on: boolean) => (
+    <CheckIcon aria-hidden className={cn("size-3.5 shrink-0", on ? "opacity-100" : "opacity-0")} />
+  );
   return (
     <Menu>
       <MenuTrigger
         className={props.className}
         disabled={props.disabled}
-        aria-label={current === null ? "Repeat" : `Repeats ${current}`}
+        aria-label={
+          recurrence === undefined ? "Repeat" : `Repeats ${formatTaskRecurrence(recurrence)}`
+        }
       >
         {props.children}
       </MenuTrigger>
-      <MenuPopup align="start" className="w-44">
+      <MenuPopup align="start" className="w-52">
         {REPEAT_OPTIONS.map((option) => {
-          const label = option.value === null ? null : formatTaskRecurrence(option.value);
-          const checked = label === current;
+          const label = option.value === null ? null : formatTaskRecurrenceCadence(option.value);
           return (
-            <MenuItem key={option.label} onClick={() => props.onChange(option.value)}>
+            <MenuItem
+              key={option.label}
+              onClick={() => props.onChange(withTaskRecurrenceCadence(recurrence, option.value))}
+            >
               <span className="flex w-full items-center gap-2">
-                <CheckIcon
-                  aria-hidden
-                  className={cn("size-3.5 shrink-0", checked ? "opacity-100" : "opacity-0")}
-                />
+                {mark(label === current)}
                 {option.label}
               </span>
             </MenuItem>
           );
         })}
+        {recurrence !== undefined && end !== null ? (
+          <MenuGroup>
+            <MenuSeparator />
+            <div className="px-2 py-1 text-muted-foreground text-xs">Ends</div>
+            <MenuItem
+              onClick={() => props.onChange(withTaskRecurrenceEnd(recurrence, { kind: "never" }))}
+            >
+              <span className="flex w-full items-center gap-2">
+                {mark(end.kind === "never")}
+                Never
+              </span>
+            </MenuItem>
+            <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-sm hover:bg-accent">
+              {mark(end.kind === "count")}
+              <span className="flex-1">After</span>
+              <input
+                type="number"
+                min={1}
+                max={TASK_RECURRENCE_COUNT_MAX}
+                aria-label="Number of times"
+                className="w-12 rounded border bg-transparent px-1 text-right"
+                defaultValue={end.kind === "count" ? end.count : ""}
+                onKeyDown={(event) => event.stopPropagation()}
+                onChange={(event) => {
+                  const count = Number(event.target.value);
+                  if (Number.isInteger(count) && count >= 1 && count <= TASK_RECURRENCE_COUNT_MAX) {
+                    props.onChange(withTaskRecurrenceEnd(recurrence, { kind: "count", count }));
+                  }
+                }}
+              />
+              <span>times</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-sm hover:bg-accent">
+              {mark(end.kind === "date")}
+              <span className="flex-1">On</span>
+              <input
+                type="date"
+                aria-label="End date"
+                className="cursor-pointer bg-transparent"
+                value={end.kind === "date" ? end.date : ""}
+                onChange={(event) => {
+                  if (event.target.value) {
+                    props.onChange(
+                      withTaskRecurrenceEnd(recurrence, { kind: "date", date: event.target.value }),
+                    );
+                  }
+                }}
+              />
+            </label>
+          </MenuGroup>
+        ) : null}
       </MenuPopup>
     </Menu>
   );

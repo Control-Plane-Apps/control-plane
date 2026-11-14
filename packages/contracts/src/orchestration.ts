@@ -50,6 +50,7 @@ import {
   TaskOrderKey,
   TaskPatch,
   TaskRecurrence,
+  TaskDeleteScope,
   TaskStatus,
 } from "./tasks.ts";
 import {
@@ -1647,10 +1648,16 @@ export const TaskUpdateCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+/**
+ * The user deletes a task. For a repeating one, `scope` follows Lucive:
+ * "occurrence" (the default) skips it and opens the next; "series" stops
+ * repeating and deletes this pending occurrence.
+ */
 export const TaskDeleteCommand = Schema.Struct({
   type: Schema.Literal("task.delete"),
   commandId: CommandId,
   taskId: TaskId,
+  scope: Schema.optional(TaskDeleteScope),
   createdAt: IsoDateTime,
 });
 
@@ -2058,7 +2065,7 @@ const TaskAgentDeleteCommand = Schema.Struct({
    * Lucive's delete of one occurrence does; "series" stops the repeat and
    * deletes this pending occurrence, as Lucive's Stop repeating does.
    */
-  scope: Schema.optional(Schema.Literals(["occurrence", "series"])),
+  scope: Schema.optional(TaskDeleteScope),
   createdAt: IsoDateTime,
 });
 
