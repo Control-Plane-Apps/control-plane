@@ -5474,7 +5474,7 @@ export default function Sidebar() {
                       const folders = settledViewOpen ? settledProjectFolders : projectFolders;
                       const items: ReactNode[] = [];
                       if (!settledViewOpen) {
-                        items.push(<SidebarTasksSection key="tasks-section" />);
+                        // Design order: the Assistant leads, then Tasks, Projects, Workspaces.
                         if (showAssistantsSection) {
                           items.push(
                             <SidebarAssistantRow
@@ -5492,6 +5492,9 @@ export default function Sidebar() {
                               }
                             />,
                           );
+                        }
+                        items.push(<SidebarTasksSection key="tasks-section" />);
+                        if (showAssistantsSection) {
                           items.push(
                             <SidebarListSectionHeader
                               key="assistants-section"

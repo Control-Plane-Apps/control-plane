@@ -2357,7 +2357,7 @@ function PullRequestsColumn({
       <WorkspacePageHeader
         electron={isElectron}
         reserveNativeControls={!rightPanelOpen}
-        className="relative bg-background"
+        className="relative border-b border-border bg-background"
       >
         {titlebarControls}
         {condensed ? (

@@ -1,4 +1,4 @@
-import { BookOpenIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { BookIcon, PlusIcon, SettingsIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -25,6 +25,11 @@ export interface AssistantHeaderProps {
   readonly onCreateChannel: (title: string) => void;
   readonly onOpenMemory: () => void;
   readonly onOpenSettings: () => void;
+  /**
+   * The app's panel toggles sit fixed over the header's right edge while the
+   * right panel is closed, so the header leaves room for them (as ChatHeader does).
+   */
+  readonly rightPanelOpen: boolean;
 }
 
 export const ASSISTANT_INBOX_CHANNEL = "inbox";
@@ -48,7 +53,13 @@ export function AssistantHeader(props: AssistantHeaderProps) {
     },
   ];
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-3" data-testid="assistant-header">
+    <div
+      className={cn(
+        "flex min-w-0 flex-1 items-center gap-3",
+        props.rightPanelOpen ? "pr-0" : "pr-20 sm:pr-16",
+      )}
+      data-testid="assistant-header"
+    >
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <AssistantMark className="size-5 text-attention-foreground" />
         <div className="flex min-w-0 flex-col leading-tight">
@@ -116,7 +127,7 @@ export function AssistantHeader(props: AssistantHeaderProps) {
           title="Memory"
           onClick={props.onOpenMemory}
         >
-          <BookOpenIcon aria-hidden />
+          <BookIcon aria-hidden />
         </Button>
         <Button
           size="icon-sm"
