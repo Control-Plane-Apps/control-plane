@@ -107,7 +107,10 @@ const SETTINGS_NAV_ITEMS: ReadonlyArray<{
 
 function SettingsSectionIcon({ to }: { to: SettingsPath }) {
   const Icon = SETTINGS_SECTION_ICONS[to];
-  return <Icon className="mt-0.5 size-3.5 shrink-0 text-sidebar-muted-foreground/60" />;
+  // The Assistant keeps its clay mark here, as in the sidebar row.
+  const tone =
+    to === "/settings/assistant" ? "text-attention-foreground" : "text-sidebar-muted-foreground/60";
+  return <Icon className={`mt-0.5 size-3.5 shrink-0 ${tone}`} />;
 }
 
 export function SettingsSidebarNav({ pathname }: { pathname: string }) {

@@ -2,29 +2,35 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   askAnswerMessageIds,
   collectAskCards,
+  collectNeedsYou,
   collectPings,
   isGlobalAssistant,
 } from "@t3tools/client-runtime/state/assistant-home";
+import { taskCounts } from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
+  ASSISTANT_BRIEF_SCHEDULE_ID,
   type EnvironmentId,
   type OrchestrationMessage,
   type OrchestrationThreadActivity,
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
+import { describeCadence } from "@t3tools/shared/schedules";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 
 import { newThreadId } from "~/lib/utils";
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useProjects, useThreadShellsForProjectRefs } from "~/state/entities";
+import { useTaskToday, useTasks } from "~/state/tasks";
 import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { AssistantHeader, ASSISTANT_INBOX_CHANNEL } from "./AssistantHeader";
 import { AssistantInbox } from "./AssistantInbox";
 import { AssistantRail } from "./AssistantRail";
+import { AssistantTodayEmpty } from "./AssistantTodayEmpty";
 import {
   AssistantTimelineCardsContext,
   type AssistantTimelineCardsValue,
@@ -39,6 +45,8 @@ export interface AssistantChatChrome {
   readonly rail: ReactNode;
   /** Replaces the timeline while the Inbox is selected. */
   readonly inbox: ReactNode | null;
+  /** Shown in place of the empty timeline before a channel has messages. */
+  readonly emptyTimeline: ReactNode;
   /** Answers shown inside ask cards, which the timeline leaves out. */
   readonly hiddenMessageIds: ReadonlySet<string>;
   readonly wrapTimeline: (timeline: ReactNode) => ReactNode;
@@ -54,6 +62,7 @@ export function useAssistantChatChrome(input: {
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
   readonly messages: ReadonlyArray<OrchestrationMessage>;
   readonly onOpenMemory: () => void;
+  readonly rightPanelOpen: boolean;
 }): AssistantChatChrome | null {
   const { project, environmentId, threadId } = input;
   const enabled = project !== null && environmentId !== null && isGlobalAssistant(project);
@@ -63,7 +72,14 @@ export function useAssistantChatChrome(input: {
   const createThread = useAtomCommand(threadEnvironment.create, "create channel");
   const pinThread = useAtomCommand(threadEnvironment.pin, "pin channel");
   const [inboxOpenFor, setInboxOpenFor] = useState<string | null>(null);
-  const reach = usePrimaryEnvironment()?.serverConfig?.settings.assistant?.projects ?? null;
+  const assistantSettings = usePrimaryEnvironment()?.serverConfig?.settings.assistant ?? null;
+  const reach = assistantSettings?.projects ?? null;
+  const { tasks } = useTasks();
+  const taskToday = useTaskToday();
+  const tasksTodayCount = useMemo(
+    () => (enabled ? taskCounts(tasks, taskToday).today : 0),
+    [enabled, taskToday, tasks],
+  );
 
   const projectRefs = useMemo(
     () =>
@@ -94,6 +110,17 @@ export function useAssistantChatChrome(input: {
           .map((candidate) => [candidate.id as string, candidate] as const),
       ),
     [environmentId, projects],
+  );
+
+  const needsYouCount = useMemo(
+    () =>
+      enabled
+        ? collectNeedsYou(
+            projects.filter((candidate) => candidate.environmentId === environmentId),
+            reach,
+          ).length
+        : 0,
+    [enabled, environmentId, projects, reach],
   );
 
   const goToThread = useCallback(
@@ -152,8 +179,14 @@ export function useAssistantChatChrome(input: {
     : threadId === coordinatorId
       ? "Talks to every Project coordinator and workspace"
       : channelSchedule
-        ? `${channelSchedule.name} schedule`
+        ? `${channelLabelFor(channelThreads, threadId)} · ${describeCadence(channelSchedule.cron)}`
         : "Channel";
+  const briefSchedule = schedules.find(
+    (schedule) => schedule.id === ASSISTANT_BRIEF_SCHEDULE_ID && schedule.enabled,
+  );
+  const tasksReach = assistantSettings?.tasks ?? "edit";
+  const openTasks = () => void navigate({ to: "/tasks/$view", params: { view: "today" } });
+  const openSettings = () => void navigate({ to: "/settings/assistant" });
 
   const createChannel = async (title: string) => {
     const id = newThreadId();
@@ -191,7 +224,8 @@ export function useAssistantChatChrome(input: {
         }}
         onCreateChannel={(title) => void createChannel(title)}
         onOpenMemory={input.onOpenMemory}
-        onOpenSettings={() => void navigate({ to: "/settings/assistant" })}
+        onOpenSettings={openSettings}
+        rightPanelOpen={input.rightPanelOpen}
       />
     ),
     rail: (
@@ -200,6 +234,20 @@ export function useAssistantChatChrome(input: {
         projects={projects.filter((candidate) => candidate.environmentId === environmentId)}
         reach={reach}
         asks={asks}
+        tasksToday={tasksReach === "off" ? null : { count: tasksTodayCount, onOpen: openTasks }}
+      />
+    ),
+    emptyTimeline: (
+      <AssistantTodayEmpty
+        kind={threadId === coordinatorId ? "today" : "channel"}
+        channelLabel={channelLabelFor(channelThreads, threadId)}
+        briefTime={briefSchedule ? (assistantSettings?.briefTime ?? "07:00") : null}
+        briefDays={assistantSettings?.briefDays ?? "weekdays"}
+        needsYouCount={needsYouCount}
+        tasksTodayCount={tasksReach === "off" ? null : tasksTodayCount}
+        now={new Date()}
+        onOpenSettings={openSettings}
+        onOpenTasks={openTasks}
       />
     ),
     inbox: inboxOpen ? <AssistantInbox pings={pings} onReply={replyHere} /> : null,
@@ -208,4 +256,11 @@ export function useAssistantChatChrome(input: {
       <AssistantTimelineCardsContext value={cardsValue}>{timeline}</AssistantTimelineCardsContext>
     ),
   };
+}
+
+function channelLabelFor(
+  channels: ReadonlyArray<{ readonly id: string; readonly title: string }>,
+  threadId: string,
+): string {
+  return channels.find((channel) => channel.id === threadId)?.title ?? "Channel";
 }

@@ -3594,6 +3594,7 @@ export default function ChatView(props: ChatViewProps) {
     activities: threadActivities,
     messages: activeThread?.messages ?? EMPTY_ASSISTANT_MESSAGES,
     onOpenMemory: () => openMemorySurfaceRef.current(),
+    rightPanelOpen,
   });
   const assistantHiddenMessageIds = globalAssistantChrome?.hiddenMessageIds ?? null;
   const visibleTimelineMessages = useMemo(
@@ -10125,7 +10126,7 @@ export default function ChatView(props: ChatViewProps) {
           data-chat-header
           electron={isElectron}
           reserveNativeControls={reserveTitleBarControlInset && !inlineRightPanelOwnsTitleBar}
-          className="relative bg-background"
+          className="relative border-b border-border bg-background"
         >
           {isElectron && rightPanelControlsAtRoot ? (
             <span
@@ -10243,6 +10244,9 @@ export default function ChatView(props: ChatViewProps) {
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               {(globalAssistantChrome?.wrapTimeline ?? passThroughTimeline)(
                 <MessagesTimeline
+                  {...(globalAssistantChrome
+                    ? { emptyPlaceholder: globalAssistantChrome.emptyTimeline }
+                    : {})}
                   citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                   citationHistoryLoading={threadDetailLoading}
                   {...(!paintOnlyDisplayedTimeline

@@ -52,6 +52,7 @@ import {
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
 import { cn } from "~/lib/utils";
+import { useThreadShellsForProjectRefs } from "~/state/entities";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -576,6 +577,28 @@ export const ChatHeader = memo(function ChatHeader({
  * Project (the server retitles the coordinator to match). Mounted only for a
  * coordinator, so other headers skip the Project action hooks.
  */
+/** "Coordinator · 2 agents running", under the Project name. */
+function CoordinatorSubtitle({ project }: { project: EnvironmentProject }) {
+  const refs = useMemo(
+    () => [{ environmentId: project.environmentId, projectId: project.id }],
+    [project.environmentId, project.id],
+  );
+  const threads = useThreadShellsForProjectRefs(refs);
+  const coordinatorId = project.assistant?.coordinatorThreadId ?? null;
+  const running = threads.filter(
+    (thread) =>
+      thread.id !== coordinatorId &&
+      thread.archivedAt == null &&
+      (thread.session?.status === "running" || thread.session?.status === "starting"),
+  ).length;
+  return (
+    <span className="truncate text-xs font-normal text-muted-foreground">
+      Coordinator
+      {running > 0 ? ` · ${running} ${running === 1 ? "agent" : "agents"} running` : null}
+    </span>
+  );
+}
+
 function CoordinatorCrumb({ project }: { project: EnvironmentProject }) {
   const actions = useAssistantActions();
   const openProjectMenu = useAssistantProjectMenu();
@@ -639,12 +662,17 @@ function CoordinatorCrumb({ project }: { project: EnvironmentProject }) {
               />
             }
           >
-            <ProjectFavicon project={project} className="size-3.5" />
-            <h2 className="min-w-0 truncate">{project.title}</h2>
-            <ChevronDownIcon
-              aria-hidden
-              className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/thread-title:opacity-100 group-focus-visible/thread-title:opacity-100"
-            />
+            <ProjectFavicon project={project} className="size-4" />
+            <span className="flex min-w-0 flex-col leading-tight">
+              <span className="flex min-w-0 items-center gap-1">
+                <h2 className="min-w-0 truncate font-semibold">{project.title}</h2>
+                <ChevronDownIcon
+                  aria-hidden
+                  className="size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/thread-title:opacity-100 group-focus-visible/thread-title:opacity-100"
+                />
+              </span>
+              <CoordinatorSubtitle project={project} />
+            </span>
           </TooltipTrigger>
           <TooltipPopup side="top">{project.title}</TooltipPopup>
         </Tooltip>
