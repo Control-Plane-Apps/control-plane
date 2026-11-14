@@ -16,7 +16,7 @@ export function SidebarAssistantRow({ isActive }: { readonly isActive: boolean }
   const reach = usePrimaryEnvironment()?.serverConfig?.settings.assistant?.projects ?? null;
   const needsYou = useMemo(() => collectNeedsYou(projects, reach).length, [projects, reach]);
   return (
-    <li className="list-none" data-testid="sidebar-global-assistant">
+    <li className="mb-1.5 list-none" data-testid="sidebar-global-assistant">
       <button
         type="button"
         aria-current={isActive ? "page" : undefined}
@@ -28,7 +28,7 @@ export function SidebarAssistantRow({ isActive }: { readonly isActive: boolean }
         onClick={() => void open()}
       >
         <AssistantMark className="size-4 text-attention-foreground" />
-        <span className="min-w-0 flex-1 truncate">Assistant</span>
+        <span className="min-w-0 flex-1 truncate font-medium">Assistant</span>
         {needsYou > 0 ? (
           <span
             className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm bg-attention/12 px-1 text-[11px] font-medium text-attention-foreground tabular-nums"

@@ -346,6 +346,8 @@ const WorkGroupViewCtx = createContext<{
   onToggleEntry: (collapsed: boolean) => void;
 } | null>(null);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
+// The Assistant leaves the design's 32px between its header and the first message.
+const TIMELINE_LIST_ROOMY_HEADER = <div className="h-8" />;
 const TIMELINE_LIST_FADE_HEADER = (
   <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
 );
@@ -475,6 +477,8 @@ interface MessagesTimelineProps {
   hideEmptyPlaceholder?: boolean;
   emptyPlaceholder?: ReactNode;
   topFadeEnabled?: boolean;
+  /** A 32px gap above the first row (the Assistant), instead of 12 to 16px. */
+  roomyTop?: boolean;
   /** Non-null when older turns exist beyond the loaded window. */
   loadEarlier?: CitationHistoryPage | null;
   /** Messages sent during the running turn. They render as ghost bubbles after the live rows. */
@@ -538,6 +542,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hideEmptyPlaceholder = false,
   emptyPlaceholder,
   topFadeEnabled = false,
+  roomyTop = false,
   loadEarlier = null,
   queuedMessages = EMPTY_QUEUED_MESSAGES,
   onSteerQueuedMessage = NOOP_QUEUED_MESSAGE_ACTION,
@@ -1348,6 +1353,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   onLoadEarlier={loadEarlier.onLoadEarlier}
                   fade={topFadeEnabled}
                 />
+              ) : roomyTop ? (
+                TIMELINE_LIST_ROOMY_HEADER
               ) : topFadeEnabled ? (
                 TIMELINE_LIST_FADE_HEADER
               ) : (
