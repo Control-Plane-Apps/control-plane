@@ -509,7 +509,7 @@ export const ChatHeader = memo(function ChatHeader({
               <BrainIcon />
               <span className="hidden @3xl/header-actions:inline">Memory</span>
             </TooltipTrigger>
-            <TooltipPopup>Open MEMORY.md</TooltipPopup>
+            <TooltipPopup>Memory</TooltipPopup>
           </Tooltip>
         ) : null}
         {onOpenSchedules ? (
