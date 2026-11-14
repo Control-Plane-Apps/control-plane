@@ -17,6 +17,7 @@ import {
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   EnvironmentId,
+  isGlobalAssistant,
   PROJECT_SCHEDULE_LIMIT,
   ProjectId,
   type ThreadId,
@@ -62,10 +63,98 @@ export function ProjectSchedulesScreen({ route }: StaticScreenProps<ProjectSched
   // The same screen serves the Project sheet and the Settings sheet.
   const routeName = useRoute().name;
   const insets = useSafeAreaInsets();
-  const isFocused = useIsFocused();
-  const { selectThread } = useAdaptiveWorkspaceLayout();
   const environmentId = EnvironmentId.make(route.params.environmentId);
   const projectId = ProjectId.make(route.params.projectId);
+  const list = useProjectScheduleList(environmentId, projectId);
+  const { project, canCreate } = list;
+  const editorRoute =
+    routeName === "SettingsProjectSchedules"
+      ? "SettingsProjectScheduleEditor"
+      : "ProjectScheduleEditor";
+  const openEditor = (scheduleId: string | null) =>
+    navigation.dispatch(
+      StackActions.push(editorRoute, {
+        environmentId: String(environmentId),
+        projectId: String(projectId),
+        ...(scheduleId === null ? {} : { scheduleId }),
+      }),
+    );
+  // The first screen of the Project sheet closes it; inside Settings the
+  // native back button returns to Project settings.
+  const isSheetRoot = navigation.getState()?.index === 0;
+  const title = "Schedules";
+  const projectLabel =
+    project == null ? null : isGlobalAssistant(project) ? "Assistant" : project.title;
+
+  return (
+    <View className="flex-1 bg-sheet">
+      {/* An iOS formSheet resizes the first ScrollView on its first-subview path to
+          the whole sheet (react-native-screens applyFrameCorrectionForDescendantScrollView),
+          which pushed this list below the sheet when it opens as the sheet's first
+          screen. The nested stack already bounds the screen, so this empty view ends
+          that path. */}
+      <View collapsable={false} pointerEvents="none" />
+      <NativeStackScreenOptions
+        options={{
+          headerShown: Platform.OS !== "android",
+          title,
+          unstable_headerSubtitle: Platform.OS === "ios" ? (projectLabel ?? undefined) : undefined,
+        }}
+      />
+      {Platform.OS === "android" ? (
+        <AndroidScreenHeader
+          title={title}
+          subtitle={projectLabel}
+          actions={[
+            {
+              accessibilityLabel: "New schedule",
+              icon: "plus",
+              onPress: () => openEditor(null),
+              disabled: !canCreate,
+            },
+          ]}
+          onBack={() => navigation.goBack()}
+        />
+      ) : (
+        <>
+          {isSheetRoot ? (
+            <NativeHeaderToolbar placement="left">
+              <NativeHeaderToolbar.Button
+                accessibilityLabel="Close"
+                label="Done"
+                onPress={() => navigation.goBack()}
+              />
+            </NativeHeaderToolbar>
+          ) : null}
+          <NativeHeaderToolbar placement="right">
+            <NativeHeaderToolbar.Button
+              accessibilityLabel="New schedule"
+              disabled={!canCreate}
+              icon="plus"
+              onPress={() => openEditor(null)}
+            />
+          </NativeHeaderToolbar>
+        </>
+      )}
+      <ScrollView
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+        className="flex-1"
+        contentContainerClassName="gap-6 px-5 pt-4"
+        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
+      >
+        <ScheduleListBody list={list} onOpenEditor={openEditor} />
+      </ScrollView>
+    </View>
+  );
+}
+
+export type ProjectScheduleList = ReturnType<typeof useProjectScheduleList>;
+
+/** One Project's schedules, host status and writes: the Schedules screen and the all-schedules list share it. */
+export function useProjectScheduleList(environmentId: EnvironmentId, projectId: ProjectId) {
+  const navigation = useNavigation();
+  const isFocused = useIsFocused();
   const projectRef = useMemo(
     () => scopeProjectRef(environmentId, projectId),
     [environmentId, projectId],
@@ -145,18 +234,6 @@ export function ProjectSchedulesScreen({ route }: StaticScreenProps<ProjectSched
     [actions, environmentId, projectId, refreshStatus],
   );
 
-  const editorRoute =
-    routeName === "SettingsProjectSchedules"
-      ? "SettingsProjectScheduleEditor"
-      : "ProjectScheduleEditor";
-  const openEditor = (scheduleId: string | null) =>
-    navigation.dispatch(
-      StackActions.push(editorRoute, {
-        environmentId: String(environmentId),
-        projectId: String(projectId),
-        ...(scheduleId === null ? {} : { scheduleId }),
-      }),
-    );
   const threadById = useMemo(
     () => new Map<ThreadId, EnvironmentThreadShell>(threads.map((thread) => [thread.id, thread])),
     [threads],
@@ -194,141 +271,108 @@ export function ProjectSchedulesScreen({ route }: StaticScreenProps<ProjectSched
         });
   const unsupported = host?.unsupportedText != null;
   const canCreate = available && !unsupported && schedules.length < PROJECT_SCHEDULE_LIMIT;
-  // The first screen of the Project sheet closes it; inside Settings the
-  // native back button returns to Project settings.
-  const isSheetRoot = navigation.getState()?.index === 0;
-  const title = "Schedules";
+  return {
+    project,
+    assistant,
+    available,
+    host,
+    rows,
+    status,
+    statusQuery,
+    writing,
+    running,
+    setEnabled,
+    runNow,
+    threadById,
+    summary,
+    openAtLoginHint,
+    unsupported,
+    canCreate,
+  };
+}
 
+/** The list under a Schedules header: empty states, rows, then the host line. */
+export function ScheduleListBody(props: {
+  readonly list: ProjectScheduleList;
+  readonly onOpenEditor: (scheduleId: string | null) => void;
+}) {
+  const { selectThread } = useAdaptiveWorkspaceLayout();
+  const { project, assistant, available, host, rows, status, statusQuery, writing, running } =
+    props.list;
+  const { setEnabled, runNow, threadById, summary, openAtLoginHint, unsupported } = props.list;
+  const openEditor = props.onOpenEditor;
   return (
-    <View className="flex-1 bg-sheet">
-      {/* An iOS formSheet resizes the first ScrollView on its first-subview path to
-          the whole sheet (react-native-screens applyFrameCorrectionForDescendantScrollView),
-          which pushed this list below the sheet when it opens as the sheet's first
-          screen. The nested stack already bounds the screen, so this empty view ends
-          that path. */}
-      <View collapsable={false} pointerEvents="none" />
-      <NativeStackScreenOptions
-        options={{
-          headerShown: Platform.OS !== "android",
-          title,
-          unstable_headerSubtitle: Platform.OS === "ios" ? project?.title : undefined,
-        }}
-      />
-      {Platform.OS === "android" ? (
-        <AndroidScreenHeader
-          title={title}
-          subtitle={project?.title ?? null}
-          actions={[
-            {
-              accessibilityLabel: "New schedule",
-              icon: "plus",
-              onPress: () => openEditor(null),
-              disabled: !canCreate,
-            },
-          ]}
-          onBack={() => navigation.goBack()}
+    <>
+      {!available || host === null ? (
+        <EmptyState
+          title="Schedules unavailable"
+          detail={
+            project === null || assistant === null
+              ? "Reconnect to its environment. It may also have been deleted."
+              : "This Project's host does not store schedules. Update Control Plane there."
+          }
+        />
+      ) : host.unsupportedText !== null ? (
+        <EmptyState
+          title="Schedules don't run on this host"
+          detail={host.unsupportedText}
+          actionLabel="How to fix"
+          onAction={() => void Linking.openURL(SCHEDULES_HELP_URL).catch(() => undefined)}
+        />
+      ) : rows.length === 0 ? (
+        <EmptyState
+          title="No schedules yet"
+          detail="Send a prompt on a cadence, such as a weekday morning brief."
+          actionLabel="New schedule"
+          onAction={() => openEditor(null)}
         />
       ) : (
-        <>
-          {isSheetRoot ? (
-            <NativeHeaderToolbar placement="left">
-              <NativeHeaderToolbar.Button
-                accessibilityLabel="Close"
-                label="Done"
-                onPress={() => navigation.goBack()}
+        <SettingsSection>
+          {rows.map((row) => {
+            const linkThread =
+              row.state.linkThreadId === null
+                ? null
+                : (threadById.get(row.state.linkThreadId) ?? null);
+            return (
+              <ScheduleListRow
+                key={row.schedule.id}
+                row={row}
+                writing={writing !== null}
+                enabled={writing?.id === row.schedule.id ? writing.enabled : row.schedule.enabled}
+                running={running.has(row.schedule.id)}
+                hint={row.state.suggestOpenAtLogin && row.state.attention ? openAtLoginHint : null}
+                onEdit={() => openEditor(row.schedule.id)}
+                onRunNow={() => void runNow(row)}
+                onSetEnabled={(enabled) => void setEnabled(row.schedule.id, enabled)}
+                onOpenThread={linkThread === null ? null : () => selectThread(linkThread)}
               />
-            </NativeHeaderToolbar>
-          ) : null}
-          <NativeHeaderToolbar placement="right">
-            <NativeHeaderToolbar.Button
-              accessibilityLabel="New schedule"
-              disabled={!canCreate}
-              icon="plus"
-              onPress={() => openEditor(null)}
-            />
-          </NativeHeaderToolbar>
-        </>
+            );
+          })}
+        </SettingsSection>
       )}
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        showsVerticalScrollIndicator={false}
-        className="flex-1"
-        contentContainerClassName="gap-6 px-5 pt-4"
-        contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
-      >
-        {!available || host === null ? (
-          <EmptyState
-            title="Schedules unavailable"
-            detail={
-              project === null || assistant === null
-                ? "Reconnect to its environment. It may also have been deleted."
-                : "This Project's host does not store schedules. Update Control Plane there."
-            }
-          />
-        ) : host.unsupportedText !== null ? (
-          <EmptyState
-            title="Schedules don't run on this host"
-            detail={host.unsupportedText}
-            actionLabel="How to fix"
-            onAction={() => void Linking.openURL(SCHEDULES_HELP_URL).catch(() => undefined)}
-          />
-        ) : rows.length === 0 ? (
-          <EmptyState
-            title="No schedules yet"
-            detail="Send a prompt on a cadence, such as a weekday morning brief."
-            actionLabel="New schedule"
-            onAction={() => openEditor(null)}
-          />
-        ) : (
-          <SettingsSection>
-            {rows.map((row) => {
-              const linkThread =
-                row.state.linkThreadId === null
-                  ? null
-                  : (threadById.get(row.state.linkThreadId) ?? null);
-              return (
-                <ScheduleListRow
-                  key={row.schedule.id}
-                  row={row}
-                  writing={writing !== null}
-                  enabled={writing?.id === row.schedule.id ? writing.enabled : row.schedule.enabled}
-                  running={running.has(row.schedule.id)}
-                  hint={
-                    row.state.suggestOpenAtLogin && row.state.attention ? openAtLoginHint : null
-                  }
-                  onEdit={() => openEditor(row.schedule.id)}
-                  onRunNow={() => void runNow(row)}
-                  onSetEnabled={(enabled) => void setEnabled(row.schedule.id, enabled)}
-                  onOpenThread={linkThread === null ? null : () => selectThread(linkThread)}
-                />
-              );
-            })}
-          </SettingsSection>
-        )}
-        {available && host !== null && host.unsupportedText === null ? (
-          <View className="gap-1.5 px-2">
-            {summary !== null ? (
-              <Text className="text-sm text-foreground-muted">{summary}</Text>
-            ) : null}
-            {host.problems.map((problem) => (
-              <Text
-                key={problem}
-                accessibilityRole="alert"
-                className="text-sm text-warning-foreground"
-              >
-                {problem}
-              </Text>
-            ))}
-            <Text className="text-sm text-foreground-muted">
-              Times are in {host.timeZone} (host).
+      {available && host !== null && host.unsupportedText === null ? (
+        <View className="gap-1.5 px-2">
+          {summary !== null ? (
+            <Text className="text-sm text-foreground-muted">{summary}</Text>
+          ) : null}
+          {host.problems.map((problem) => (
+            <Text
+              key={problem}
+              accessibilityRole="alert"
+              className="text-sm text-warning-foreground"
+            >
+              {problem}
             </Text>
-          </View>
-        ) : null}
-        {statusQuery.error !== null && status === null && available && !unsupported ? (
-          <Footnote>Couldn't read the host's status: {statusQuery.error}</Footnote>
-        ) : null}
-      </ScrollView>
-    </View>
+          ))}
+          <Text className="text-sm text-foreground-muted">
+            Times are in {host.timeZone} (host).
+          </Text>
+        </View>
+      ) : null}
+      {statusQuery.error !== null && status === null && available && !unsupported ? (
+        <Footnote>Couldn't read the host's status: {statusQuery.error}</Footnote>
+      ) : null}
+    </>
   );
 }
 

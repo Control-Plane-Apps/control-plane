@@ -108,6 +108,16 @@ export function useAssistantScreen<
     });
   }, [navigation]);
 
+  const canSchedule = serverConfig?.environment.capabilities.projectSchedules !== undefined;
+  const assistantProjectId = active ? project.id : null;
+  const openSchedules = useCallback(() => {
+    if (environmentId === null || assistantProjectId === null) return;
+    navigation.navigate("ProjectSheet", {
+      screen: "ProjectSchedules",
+      params: { environmentId: String(environmentId), projectId: String(assistantProjectId) },
+    });
+  }, [assistantProjectId, environmentId, navigation]);
+
   const renderEntryAccessory = useCallback(
     (entry: { readonly id: string }) => {
       const cards = anchoredCards.get(entry.id);
@@ -125,6 +135,18 @@ export function useAssistantScreen<
 
   const header = useMemo(() => {
     const iosRightItems: NativeStackHeaderItem[] = [
+      ...(canSchedule
+        ? [
+            withNativeGlassHeaderItem({
+              type: "button",
+              label: "",
+              accessibilityLabel: "Schedules",
+              icon: { type: "sfSymbol" as const, name: "clock" as const },
+              identifier: "assistant-schedules",
+              onPress: openSchedules,
+            }),
+          ]
+        : []),
       withNativeGlassHeaderItem({
         type: "button",
         label: "",
@@ -135,10 +157,13 @@ export function useAssistantScreen<
       }),
     ];
     const androidActions: AndroidHeaderAction[] = [
+      ...(canSchedule
+        ? [{ accessibilityLabel: "Schedules", icon: "clock" as const, onPress: openSchedules }]
+        : []),
       { accessibilityLabel: "Assistant settings", icon: "gearshape", onPress: openSettings },
     ];
     return { iosRightItems, androidActions };
-  }, [openSettings]);
+  }, [canSchedule, openSchedules, openSettings]);
 
   const listHeader = useMemo(
     () => (
