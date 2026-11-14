@@ -1,4 +1,5 @@
 import {
+  isGlobalAssistant,
   isRunningAgent,
   type ProjectAssistant,
   type ProjectId,
@@ -519,6 +520,48 @@ export function buildScheduleRows(input: {
 }
 
 // ── Project-level helpers ────────────────────────────────────────────
+
+export interface ScheduleProjectLike {
+  readonly id: ProjectId;
+  readonly title: string;
+  readonly assistant?: ProjectAssistant | null | undefined;
+}
+
+export interface ScheduleProjectEntry<P extends ScheduleProjectLike> {
+  readonly project: P;
+  /** "Assistant" for the global Assistant, else the Project's title. */
+  readonly label: string;
+}
+
+/**
+ * The Projects the all-schedules list shows: every live Project with at least
+ * one schedule, the global Assistant first, then by name.
+ */
+export function listScheduleProjects<P extends ScheduleProjectLike>(
+  projects: ReadonlyArray<P>,
+): ScheduleProjectEntry<P>[] {
+  const entries = projects
+    .filter(
+      (project) =>
+        project.assistant != null &&
+        project.assistant.archivedAt == null &&
+        (project.assistant.schedules?.length ?? 0) > 0,
+    )
+    .map((project) => ({
+      project,
+      label: isGlobalAssistant(project) ? "Assistant" : project.title,
+      global: isGlobalAssistant(project),
+    }));
+  return [...entries]
+    .sort((a, b) =>
+      a.global === b.global
+        ? a.label.localeCompare(b.label, undefined, { sensitivity: "base" })
+        : a.global
+          ? -1
+          : 1,
+    )
+    .map(({ project, label }) => ({ project, label }));
+}
 
 /** Any enabled schedule whose last run missed or failed since its last edit, in an unarchived Project. */
 export function hasScheduleAttention(assistant: ProjectAssistant | null | undefined): boolean {

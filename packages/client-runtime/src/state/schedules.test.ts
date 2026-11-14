@@ -42,6 +42,7 @@ import {
   type ScheduleEditorForm,
   type ScheduleListThread,
   type SchedulePreset,
+  listScheduleProjects,
 } from "./schedules.ts";
 
 const ZONE = "America/Denver";
@@ -859,5 +860,34 @@ describe("schedule host and notices", () => {
       "Sep 25 at 16:30",
     );
     expect(formatScheduledMessageTime("not a date", NOW, ZONE)).toBe("");
+  });
+});
+
+describe("listScheduleProjects", () => {
+  const schedule = { id: "s1" } as never;
+  const project = (id: string, title: string, assistant: object | null) =>
+    ({ id, title, assistant }) as never;
+
+  it("puts the global Assistant first, then Projects with schedules by name", () => {
+    const entries = listScheduleProjects([
+      project("p1", "sales", { scope: "project", schedules: [schedule] }),
+      project("p2", "Billing", { scope: "project", schedules: [schedule] }),
+      project("a", "assistant-home", { scope: "global", schedules: [schedule] }),
+    ]);
+    expect(entries.map((entry) => entry.label)).toEqual(["Assistant", "Billing", "sales"]);
+  });
+
+  it("skips Projects without a coordinator, without schedules, or archived", () => {
+    const entries = listScheduleProjects([
+      project("p1", "No coordinator", null),
+      project("p2", "Empty", { scope: "project", schedules: [] }),
+      project("p3", "Archived", {
+        scope: "project",
+        schedules: [schedule],
+        archivedAt: "2026-11-01T00:00:00.000Z",
+      }),
+      project("p4", "Live", { scope: "project", schedules: [schedule] }),
+    ]);
+    expect(entries.map((entry) => entry.label)).toEqual(["Live"]);
   });
 });

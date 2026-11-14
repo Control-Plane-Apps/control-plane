@@ -1,4 +1,4 @@
-import { BookIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { BookIcon, ClockIcon, PlusIcon, SettingsIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -25,6 +25,8 @@ export interface AssistantHeaderProps {
   readonly onSelect: (id: string) => void;
   readonly onCreateChannel: (title: string) => void;
   readonly onOpenMemory: () => void;
+  /** Opens the Assistant's Schedules panel; absent when its server has no schedules. */
+  readonly onOpenSchedules?: (() => void) | undefined;
   readonly onOpenSettings: () => void;
   /**
    * The app's panel toggles sit fixed over the header's right edge while the
@@ -152,6 +154,17 @@ export function AssistantHeader(props: AssistantHeaderProps) {
         >
           <BookIcon aria-hidden />
         </Button>
+        {props.onOpenSchedules ? (
+          <Button
+            size="icon-sm"
+            variant="ghost-muted"
+            aria-label="Schedules"
+            title="Schedules"
+            onClick={props.onOpenSchedules}
+          >
+            <ClockIcon aria-hidden />
+          </Button>
+        ) : null}
         <Button
           size="icon-sm"
           variant="ghost-muted"

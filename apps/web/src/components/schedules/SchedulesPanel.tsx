@@ -18,7 +18,7 @@ import {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { EllipsisIcon, PlayIcon, PlusIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { readLocalApi } from "../../localApi";
@@ -67,11 +67,19 @@ export function SchedulesPanel(props: {
 
 type Editing = { readonly schedule: ProjectSchedule | null };
 
-function SchedulesPanelContent(props: {
+/**
+ * One Project's schedules. The right panel shows it alone; the Schedules page
+ * stacks one "section" per Project under the Project's name.
+ */
+export function SchedulesPanelContent(props: {
   readonly project: EnvironmentProject;
   readonly scheduler: ProjectScheduler;
   readonly capabilityZone: string;
+  readonly variant?: "panel" | "section";
+  /** The section heading; the panel says "Schedules". */
+  readonly heading?: string;
 }) {
+  const section = props.variant === "section";
   const { project } = props;
   const assistant = project.assistant!;
   const navigate = useNavigate();
@@ -159,9 +167,14 @@ function SchedulesPanelContent(props: {
   const editingChanged = scheduleEditorChange(editing?.schedule ?? null, schedules);
 
   return (
-    <div className="flex h-full min-h-0 flex-col text-sm">
+    <div
+      className={cn(
+        "flex flex-col text-sm",
+        section ? "rounded-xl border border-border bg-card" : "h-full min-h-0",
+      )}
+    >
       <div className="flex items-center gap-2 border-border/70 border-b px-3 py-2">
-        <h2 className="min-w-0 flex-1 truncate font-medium">Schedules</h2>
+        <h2 className="min-w-0 flex-1 truncate font-medium">{props.heading ?? "Schedules"}</h2>
         {!unsupported && schedules.length > 0 ? (
           <Button
             type="button"
@@ -175,7 +188,7 @@ function SchedulesPanelContent(props: {
           </Button>
         ) : null}
       </div>
-      <ScrollArea className="min-h-0 flex-1">
+      <ListFrame scroll={!section}>
         {unsupported ? (
           <div className="flex flex-col items-start gap-2 px-3 py-4 text-muted-foreground">
             <p>{host.unsupportedText}</p>
@@ -216,7 +229,7 @@ function SchedulesPanelContent(props: {
             ))}
           </ul>
         )}
-      </ScrollArea>
+      </ListFrame>
       <div className="flex flex-col gap-1.5 border-border/70 border-t px-3 py-2 text-muted-foreground text-xs">
         {!unsupported ? (
           <ScheduleHostLine
@@ -254,6 +267,14 @@ function SchedulesPanelContent(props: {
   );
 }
 
+function ListFrame(props: { readonly scroll: boolean; readonly children: ReactNode }) {
+  return props.scroll ? (
+    <ScrollArea className="min-h-0 flex-1">{props.children}</ScrollArea>
+  ) : (
+    <div>{props.children}</div>
+  );
+}
+
 function ScheduleRow(props: {
   readonly row: ScheduleRowView;
   readonly writing: boolean;
@@ -277,7 +298,13 @@ function ScheduleRow(props: {
       <div
         className={cn("flex min-w-0 flex-1 flex-col gap-0.5", !schedule.enabled && "opacity-60")}
       >
-        <p className="truncate font-medium">{schedule.name}</p>
+        <button
+          type="button"
+          className="cursor-pointer truncate text-start font-medium underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none"
+          onClick={props.onEdit}
+        >
+          {schedule.name}
+        </button>
         <p className="truncate text-muted-foreground text-xs">{detail}</p>
         <p
           className={cn(

@@ -3585,6 +3585,7 @@ export default function ChatView(props: ChatViewProps) {
     projectHandoffMessagePreviews,
   ]);
   const openMemorySurfaceRef = useRef<() => void>(() => {});
+  const openSchedulesSurfaceRef = useRef<() => void>(() => {});
   // The Assistant's channels swap in their own header, rail and cards.
   const globalAssistantChrome = useAssistantChatChrome({
     project: activeProject,
@@ -3594,6 +3595,10 @@ export default function ChatView(props: ChatViewProps) {
     activities: threadActivities,
     messages: activeThread?.messages ?? EMPTY_ASSISTANT_MESSAGES,
     onOpenMemory: () => openMemorySurfaceRef.current(),
+    onOpenSchedules:
+      serverConfig?.environment.capabilities.projectSchedules !== undefined
+        ? () => openSchedulesSurfaceRef.current()
+        : undefined,
     rightPanelOpen,
   });
   const assistantHiddenMessageIds = globalAssistantChrome?.hiddenMessageIds ?? null;
@@ -4781,6 +4786,7 @@ export default function ChatView(props: ChatViewProps) {
   const openSchedulesSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "schedules");
   }, [activeThreadRef]);
+  openSchedulesSurfaceRef.current = openSchedulesSurface;
   // The coordinator's Status board: one record per workstream, written by the
   // coordinator. Replies and recommendations go out as ordinary messages.
   const statusBoardEnabled =

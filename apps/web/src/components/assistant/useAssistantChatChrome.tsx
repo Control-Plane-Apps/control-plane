@@ -62,6 +62,7 @@ export function useAssistantChatChrome(input: {
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
   readonly messages: ReadonlyArray<OrchestrationMessage>;
   readonly onOpenMemory: () => void;
+  readonly onOpenSchedules?: (() => void) | undefined;
   readonly rightPanelOpen: boolean;
 }): AssistantChatChrome | null {
   const { project, environmentId, threadId } = input;
@@ -224,6 +225,7 @@ export function useAssistantChatChrome(input: {
         }}
         onCreateChannel={(title) => void createChannel(title)}
         onOpenMemory={input.onOpenMemory}
+        onOpenSchedules={input.onOpenSchedules}
         onOpenSettings={openSettings}
         rightPanelOpen={input.rightPanelOpen}
       />

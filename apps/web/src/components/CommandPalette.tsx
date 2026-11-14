@@ -1881,6 +1881,18 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push({
     kind: "action",
+    value: "action:schedules",
+    searchTerms: ["schedules", "schedule", "cron", "recurring", "all schedules", "automations"],
+    title: "Open schedules",
+    description: "Every schedule across Projects",
+    icon: <ClockIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/schedules" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
     value: "action:usage",
     searchTerms: ["usage", "use", "tokens", "cost", "spend", "limits", "stats", "analytics"],
     title: "Open usage",

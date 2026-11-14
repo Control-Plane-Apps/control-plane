@@ -26,6 +26,29 @@ describe("AssistantHeader", () => {
   });
 });
 
+describe("AssistantHeader schedules", () => {
+  const render = (onOpenSchedules?: () => void) =>
+    renderToStaticMarkup(
+      <AssistantHeader
+        subtitle=""
+        channels={[]}
+        selected="today"
+        inboxCount={0}
+        onSelect={noop}
+        onCreateChannel={noop}
+        onOpenMemory={noop}
+        onOpenSchedules={onOpenSchedules}
+        onOpenSettings={noop}
+        rightPanelOpen
+      />,
+    );
+
+  it("shows Schedules only when the server stores schedules", () => {
+    expect(render(noop)).toContain('aria-label="Schedules"');
+    expect(render()).not.toContain('aria-label="Schedules"');
+  });
+});
+
 describe("newChannelTitle", () => {
   it("trims the name and refuses a blank one", () => {
     expect(newChannelTitle("  Weekly review ")).toBe("Weekly review");
