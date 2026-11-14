@@ -12,7 +12,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronDownIcon, ClockIcon, ListChecksIcon, NotebookTextIcon } from "lucide-react";
+import { BrainIcon, ChevronDownIcon, ClockIcon, ListChecksIcon } from "lucide-react";
 import {
   memo,
   useCallback,
@@ -506,7 +506,7 @@ export const ChatHeader = memo(function ChatHeader({
                 />
               }
             >
-              <NotebookTextIcon />
+              <BrainIcon />
               <span className="hidden @3xl/header-actions:inline">Memory</span>
             </TooltipTrigger>
             <TooltipPopup>Open MEMORY.md</TooltipPopup>
