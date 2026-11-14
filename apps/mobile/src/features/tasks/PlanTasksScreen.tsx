@@ -44,6 +44,8 @@ import { recommendationReplyText, statusReplyTagFor } from "../status/projectSta
 import { prepareStatusReply } from "../status/ProjectStatusRouteScreen";
 import { sendThreadMessage } from "../status/statusReplyStore";
 import { PlanTaskRow, type PlanTaskRowContext } from "./PlanTaskRow";
+import { ReorderableTaskRows } from "./ReorderableTaskRows";
+import { planTaskReorder } from "./taskReorder";
 import { ProposedTasks } from "./ProposedTasks";
 import { projectForTask, useHandToAgent } from "./taskHandoff";
 import {
@@ -194,27 +196,46 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     [],
   );
 
+  const [reordering, setReordering] = useState(false);
+  const reorder = useCallback(
+    (list: ReadonlyArray<Task>, from: number, to: number) => {
+      for (const assignment of planTaskReorder(list, from, to)) {
+        const task = list.find((candidate) => candidate.id === assignment.id);
+        if (task !== undefined)
+          void actions.patch(task, { orderKey: assignment.orderKey as never });
+      }
+    },
+    [actions],
+  );
+
   const renderList = (
     list: ReadonlyArray<Task>,
-    options?: { hidePeriod?: boolean; trailing?: boolean },
-  ) =>
-    list.map((task, index) => (
-      <Fragment key={task.id}>
-        {index > 0 ? <RowSeparator /> : null}
-        <PlanTaskRow
-          task={task}
-          state={taskAgentState(task, threads, lifecycleProjects)}
-          context={context}
-          expanded={expandedId === task.id}
-          onToggleExpanded={toggleExpanded}
-          selecting={selecting}
-          selected={selectedIds.has(task.id)}
-          onToggleSelected={toggleSelected}
-          hidePeriod={options?.hidePeriod}
-          metaPlacement={options?.trailing ? "trailing" : "below"}
-        />
-      </Fragment>
-    ));
+    options?: { hidePeriod?: boolean; trailing?: boolean; reorderable?: boolean },
+  ) => (
+    <ReorderableTaskRows
+      tasks={list}
+      enabled={options?.reorderable === true && !selecting}
+      onReorder={reorder}
+      onDragActiveChange={setReordering}
+      renderRow={(task, index) => (
+        <>
+          {index > 0 ? <RowSeparator /> : null}
+          <PlanTaskRow
+            task={task}
+            state={taskAgentState(task, threads, lifecycleProjects)}
+            context={context}
+            expanded={expandedId === task.id}
+            onToggleExpanded={toggleExpanded}
+            selecting={selecting}
+            selected={selectedIds.has(task.id)}
+            onToggleSelected={toggleSelected}
+            hidePeriod={options?.hidePeriod}
+            metaPlacement={options?.trailing ? "trailing" : "below"}
+          />
+        </>
+      )}
+    />
+  );
 
   const openQuickAdd = (horizon: "today" | TaskHorizon | "backlog") =>
     navigation.navigate("TaskQuickAdd", {
@@ -265,7 +286,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             <>
               <SectionLabel>Today</SectionLabel>
               <TaskCard>
-                {renderList(open, { hidePeriod: false })}
+                {renderList(open, { hidePeriod: false, reorderable: true })}
                 {open.length > 0 ? <RowSeparator /> : null}
                 {addRow("Add a task", "today")}
               </TaskCard>
@@ -307,7 +328,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
           />
           <SectionLabel>Committed</SectionLabel>
           <TaskCard>
-            {renderList(committed, { hidePeriod: true })}
+            {renderList(committed, { hidePeriod: true, reorderable: true })}
             {committed.length > 0 ? <RowSeparator /> : null}
             {addRow("Add a commitment", view)}
           </TaskCard>
@@ -346,7 +367,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
                 {formatTaskDayTitle(group.date)}
               </SectionLabel>
               {group.tasks.length > 0 ? (
-                <TaskCard>{renderList(group.tasks)}</TaskCard>
+                <TaskCard>{renderList(group.tasks, { reorderable: true })}</TaskCard>
               ) : (
                 <Text className="px-9 text-[14px] text-foreground-tertiary">Nothing yet</Text>
               )}
@@ -372,13 +393,15 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             <TaskCard>
               {addRow("Add a task", "backlog")}
               {result.open.length > 0 ? <RowSeparator /> : null}
-              {renderList(result.open, { trailing: true })}
+              {renderList(result.open, { trailing: true, reorderable: backlogFilter !== "all" })}
             </TaskCard>
           </View>
           {result.recurring.length > 0 ? (
             <>
               <SectionLabel>Recurring</SectionLabel>
-              <TaskCard>{renderList(result.recurring, { trailing: true })}</TaskCard>
+              <TaskCard>
+                {renderList(result.recurring, { trailing: true, reorderable: true })}
+              </TaskCard>
             </>
           ) : null}
           {result.completed > 0 ? (
@@ -525,6 +548,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const main = (
     <View className="flex-1">
       <ScrollView
+        scrollEnabled={!reordering}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         contentContainerStyle={{

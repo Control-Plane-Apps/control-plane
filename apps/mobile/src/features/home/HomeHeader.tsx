@@ -5,7 +5,6 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useCallback, useMemo } from "react";
 import { Platform } from "react-native";
 
-import { BrandJet } from "../../components/BrandJet";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
 import {
@@ -196,13 +195,7 @@ function IosHomeHeader(props: HomeHeaderProps) {
         unstable_headerLeftItems: () =>
           showBack && props.onClearFilter
             ? [createClearFilterHeaderItem({ onPress: props.onClearFilter })]
-            : [
-                {
-                  type: "custom",
-                  element: <BrandJet size={28} />,
-                  hidesSharedBackground: true,
-                },
-              ],
+            : [],
         unstable_headerRightItems: () =>
           createHomeListHeaderItems({
             filterIcon: hasCustomListOptions
