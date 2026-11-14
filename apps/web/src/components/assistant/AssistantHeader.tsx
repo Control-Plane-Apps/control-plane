@@ -74,9 +74,13 @@ export function AssistantHeader(props: AssistantHeaderProps) {
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <AssistantMark className="size-5 text-attention-foreground" />
-        <div className="flex min-w-0 flex-col leading-tight">
-          <span className="text-sm font-semibold text-foreground">Assistant</span>
-          <span className="truncate text-xs text-muted-foreground">{props.subtitle}</span>
+        {/* The design's 17px and 14px lines: the two rows sit centred with
+            room above and below instead of filling the 52px bar. */}
+        <div className="flex min-w-0 flex-col">
+          <span className="text-sm leading-[17px] font-semibold text-foreground">Assistant</span>
+          <span className="truncate text-xs leading-[14px] text-muted-foreground">
+            {props.subtitle}
+          </span>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">

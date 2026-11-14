@@ -10251,7 +10251,7 @@ export default function ChatView(props: ChatViewProps) {
               {(globalAssistantChrome?.wrapTimeline ?? passThroughTimeline)(
                 <MessagesTimeline
                   {...(globalAssistantChrome
-                    ? { emptyPlaceholder: globalAssistantChrome.emptyTimeline }
+                    ? { emptyPlaceholder: globalAssistantChrome.emptyTimeline, roomyTop: true }
                     : {})}
                   citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                   citationHistoryLoading={threadDetailLoading}
