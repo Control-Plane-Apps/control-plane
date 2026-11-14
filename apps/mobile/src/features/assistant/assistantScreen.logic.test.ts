@@ -8,6 +8,7 @@ import {
   needsYouAnswerLabel,
   needsYouKey,
   needsYouPillText,
+  isAssistantPending,
   pickAssistantEnvironment,
   recommendationReplyText,
   statusReplyDraft,
@@ -201,6 +202,28 @@ describe("pickAssistantEnvironment", () => {
     ).toEqual({ environmentId: remote, project: null });
   });
 
+  it("shows a cached Assistant on first render, before its environment reconnects", () => {
+    expect(
+      pickAssistantEnvironment(
+        [
+          { environmentId: local, connected: false, supportsAssistants: false, configKnown: false },
+          {
+            environmentId: remote,
+            connected: false,
+            supportsAssistants: false,
+            configKnown: false,
+          },
+        ],
+        [assistantProject],
+      ),
+    ).toEqual({ environmentId: remote, project: assistantProject });
+    // Even before the environment list itself has loaded.
+    expect(pickAssistantEnvironment([], [assistantProject])).toEqual({
+      environmentId: remote,
+      project: assistantProject,
+    });
+  });
+
   it("is null without a usable environment", () => {
     expect(
       pickAssistantEnvironment(
@@ -208,6 +231,37 @@ describe("pickAssistantEnvironment", () => {
         [],
       ),
     ).toBeNull();
+  });
+});
+
+describe("isAssistantPending", () => {
+  const local = EnvironmentId.make("local");
+  const remote = EnvironmentId.make("remote");
+
+  it("holds the row while every environment is still connecting (first render)", () => {
+    expect(
+      isAssistantPending([
+        { environmentId: local, connected: false, supportsAssistants: false, configKnown: false },
+      ]),
+    ).toBe(true);
+    expect(
+      isAssistantPending([
+        { environmentId: local, connected: true, supportsAssistants: false, configKnown: false },
+      ]),
+    ).toBe(true);
+  });
+
+  it("stops holding once an environment has connected with its config", () => {
+    expect(
+      isAssistantPending([
+        { environmentId: local, connected: true, supportsAssistants: false, configKnown: true },
+        { environmentId: remote, connected: false, supportsAssistants: false, configKnown: false },
+      ]),
+    ).toBe(false);
+  });
+
+  it("is false with no environments at all", () => {
+    expect(isAssistantPending([])).toBe(false);
   });
 });
 

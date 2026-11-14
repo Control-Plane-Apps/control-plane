@@ -192,6 +192,8 @@ interface AssistantEnvironmentCandidate {
   readonly environmentId: EnvironmentId;
   readonly connected: boolean;
   readonly supportsAssistants: boolean;
+  /** Its server config has arrived, so `supportsAssistants` is an answer, not a default. */
+  readonly configKnown?: boolean;
 }
 
 /**
@@ -211,8 +213,27 @@ export function pickAssistantEnvironment<
     );
     if (project !== undefined) return { environmentId: entry.environmentId, project };
   }
+  // Cold launch: Projects render from the cached shell before the environment
+  // reconnects and sends its config. A cached Assistant shows at once (opening
+  // it only needs its coordinator thread) instead of popping in a beat later.
+  const cached = findGlobalAssistantProject(projects);
+  if (cached !== undefined) return { environmentId: cached.environmentId, project: cached };
   const first = usable[0];
   return first === undefined ? null : { environmentId: first.environmentId, project: null };
+}
+
+/**
+ * No Assistant yet and no environment has connected with its config (the
+ * cold-launch window), so it may still turn up: Home holds the row's place
+ * instead of shifting every Project down when it lands.
+ */
+export function isAssistantPending(
+  environments: ReadonlyArray<AssistantEnvironmentCandidate>,
+): boolean {
+  return (
+    environments.length > 0 &&
+    environments.every((entry) => !entry.connected || entry.configKnown === false)
+  );
 }
 
 /** "7:02 AM" in the device's locale. */

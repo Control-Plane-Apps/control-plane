@@ -19,14 +19,16 @@ import { useProjects } from "../../state/entities";
 import { useEnvironments } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { pickAssistantEnvironment } from "./assistantScreen.logic";
+import { isAssistantPending, pickAssistantEnvironment } from "./assistantScreen.logic";
 
 // Fork-owned. The Home row's Assistant: which environment hosts it, how many
 // Status questions wait across that environment's Projects, and opening it,
 // which creates it on first use.
 
 export interface AssistantEntry {
-  readonly environmentId: EnvironmentId;
+  /** Null while `pending`: the row holds its place until an environment answers. */
+  readonly environmentId: EnvironmentId | null;
+  readonly pending: boolean;
   readonly project: EnvironmentProject | null;
   readonly needsYouCount: number;
   readonly opening: boolean;
@@ -42,19 +44,21 @@ export function useAssistantEntry(input: {
   const [opening, setOpening] = useState(false);
   const openingRef = useRef(false);
 
-  const picked = useMemo(
+  const candidates = useMemo(
     () =>
-      pickAssistantEnvironment(
-        environments.map((environment) => ({
-          environmentId: environment.environmentId,
-          connected: environment.connection.phase === "connected",
-          supportsAssistants:
-            environment.serverConfig?.environment.capabilities.assistants === true,
-        })),
-        projects,
-      ),
-    [environments, projects],
+      environments.map((environment) => ({
+        environmentId: environment.environmentId,
+        connected: environment.connection.phase === "connected",
+        supportsAssistants: environment.serverConfig?.environment.capabilities.assistants === true,
+        configKnown: environment.serverConfig != null,
+      })),
+    [environments],
   );
+  const picked = useMemo(
+    () => pickAssistantEnvironment(candidates, projects),
+    [candidates, projects],
+  );
+  const pending = picked === null && isAssistantPending(candidates);
   const environment =
     picked === null
       ? null
@@ -124,12 +128,26 @@ export function useAssistantEntry(input: {
     });
   }, [ensure, onOpenThread, picked, serverConfig]);
 
-  if (picked === null) return null;
+  if (picked === null) {
+    return pending
+      ? {
+          environmentId: null,
+          pending: true,
+          project: null,
+          needsYouCount: 0,
+          opening: false,
+          open: noop,
+        }
+      : null;
+  }
   return {
     environmentId: picked.environmentId,
+    pending: false,
     project: picked.project,
     needsYouCount,
     opening,
     open,
   };
 }
+
+function noop() {}
