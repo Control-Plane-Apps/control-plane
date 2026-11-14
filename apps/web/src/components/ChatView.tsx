@@ -10095,7 +10095,14 @@ export default function ChatView(props: ChatViewProps) {
   });
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+    <div
+      className={cn(
+        "relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background",
+        // The Assistant's two-line title gets a taller bar. The panel toggles and
+        // the right panel's header read the same variable, so they stay aligned.
+        globalAssistantChrome && "[--workspace-topbar-height:60px]",
+      )}
+    >
       <Dialog
         open={
           deviceSetupThread !== null &&
