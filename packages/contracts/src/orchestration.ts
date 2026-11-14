@@ -50,6 +50,7 @@ import {
   TaskOrderKey,
   TaskPatch,
   TaskRecurrence,
+  TaskStatus,
 } from "./tasks.ts";
 import {
   PullRequestActor,
@@ -1996,12 +1997,20 @@ const TaskProposeCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-/** The fields `cp_task_update` may change. Absent keeps; an empty `notes` clears. */
+/**
+ * The fields `cp_task_update` and `cp_task_reorder` may change. Absent keeps;
+ * an empty `notes` clears.
+ */
 export const TaskAgentPatch = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   notes: Schema.optional(Schema.String),
   home: Schema.optional(TaskHome),
-  status: Schema.optional(Schema.Literals(["todo", "completed"])),
+  status: Schema.optional(TaskStatus),
+  orderKey: Schema.optional(Schema.NullOr(TaskOrderKey)),
+  /** A repeat rule for a task on a day; null stops the series (this occurrence stays). */
+  recurrence: Schema.optional(Schema.NullOr(TaskRecurrence)),
+  /** What the task is about; null clears every link. */
+  links: Schema.optional(Schema.NullOr(TaskLinks)),
 });
 export type TaskAgentPatch = typeof TaskAgentPatch.Type;
 
@@ -2017,6 +2026,8 @@ const TaskAgentCreateCommand = Schema.Struct({
   title: TrimmedNonEmptyString,
   notes: Schema.optional(Schema.String),
   home: TaskHome,
+  recurrence: Schema.optional(TaskRecurrence),
+  links: Schema.optional(TaskLinks),
   createdAt: IsoDateTime,
 });
 
@@ -2030,6 +2041,38 @@ const TaskAgentUpdateCommand = Schema.Struct({
   taskId: TaskId,
   actorThreadId: ThreadId,
   patch: TaskAgentPatch,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * The Assistant deletes a task from `cp_task_delete`, like the user's Delete:
+ * the record leaves the list and Task Sync tombstones it. Server only.
+ */
+const TaskAgentDeleteCommand = Schema.Struct({
+  type: Schema.Literal("task.agent.delete"),
+  commandId: CommandId,
+  taskId: TaskId,
+  actorThreadId: ThreadId,
+  /**
+   * For a repeating task: "occurrence" skips this one and opens the next, as
+   * Lucive's delete of one occurrence does; "series" stops the repeat and
+   * deletes this pending occurrence, as Lucive's Stop repeating does.
+   */
+  scope: Schema.optional(Schema.Literals(["occurrence", "series"])),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * The Assistant brings a deleted task back from `cp_task_restore`: `task` is
+ * its last record from the event log, written again under the same id so a
+ * synced task's tombstone is lifted rather than a copy made. Server only.
+ */
+const TaskAgentRestoreCommand = Schema.Struct({
+  type: Schema.Literal("task.agent.restore"),
+  commandId: CommandId,
+  taskId: TaskId,
+  actorThreadId: ThreadId,
+  task: Task,
   createdAt: IsoDateTime,
 });
 
@@ -2051,6 +2094,8 @@ const InternalOrchestrationCommand = Schema.Union([
   TaskProposeCommand,
   TaskAgentCreateCommand,
   TaskAgentUpdateCommand,
+  TaskAgentDeleteCommand,
+  TaskAgentRestoreCommand,
   TaskSyncApplyCommand,
   ProjectStatusSetCommand,
   ProjectStatusDeadlineCommand,

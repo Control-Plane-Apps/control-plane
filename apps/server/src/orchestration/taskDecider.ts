@@ -5,9 +5,10 @@
  * Every write emits the whole record (`task.updated`), like Status. Client
  * commands create, edit and accept tasks. A coordinator proposes through
  * `cp_task_propose` and edits only its own Project's proposals through
- * `cp_task_update`; the Assistant may also add tasks directly and edit any
- * task (its settings are checked by the tool, which this pure decider cannot
- * read). Only the user adds or dismisses a proposal.
+ * `cp_task_update`; the Assistant may also add tasks directly, and edit,
+ * cancel, reorder, delete and restore any task (its settings are checked by
+ * the tool, which this pure decider cannot read). Only the user adds or
+ * dismisses a proposal.
  */
 import {
   TASK_INTENT_MAX,
@@ -48,6 +49,8 @@ type TaskProposeCommand = Extract<OrchestrationCommand, { type: "task.propose" }
 type TaskSyncApplyCommand = Extract<OrchestrationCommand, { type: "task.sync.apply" }>;
 type TaskAgentCreateCommand = Extract<OrchestrationCommand, { type: "task.agent.create" }>;
 type TaskAgentUpdateCommand = Extract<OrchestrationCommand, { type: "task.agent.update" }>;
+type TaskAgentDeleteCommand = Extract<OrchestrationCommand, { type: "task.agent.delete" }>;
+type TaskAgentRestoreCommand = Extract<OrchestrationCommand, { type: "task.agent.restore" }>;
 type TaskCommand =
   | TaskCreateCommand
   | TaskUpdateCommand
@@ -57,7 +60,9 @@ type TaskCommand =
   | TaskProposeCommand
   | TaskSyncApplyCommand
   | TaskAgentCreateCommand
-  | TaskAgentUpdateCommand;
+  | TaskAgentUpdateCommand
+  | TaskAgentDeleteCommand
+  | TaskAgentRestoreCommand;
 
 type Decided = Effect.fn.Return<
   PlannedOrchestrationEvent | ReadonlyArray<PlannedOrchestrationEvent>,
@@ -468,8 +473,13 @@ export const decideTaskAgentCreate = Effect.fn("decideTaskAgentCreate")(function
   if (findTask(readModel, command.taskId) !== undefined) {
     return yield* invariant(command.type, `Task '${command.taskId}' already exists.`);
   }
-  const problem = textError(command.title, command.notes) ?? homeError(command.home);
+  const problem =
+    textError(command.title, command.notes) ??
+    homeError(command.home) ??
+    recurrenceError(command.recurrence, command.home);
   if (problem !== null) return yield* invariant(command.type, problem);
+  const links = resolveLinks(readModel, command.links);
+  if (typeof links === "string") return yield* invariant(command.type, links);
   const notes = command.notes?.trim();
   const task: Task = {
     id: command.taskId,
@@ -477,6 +487,8 @@ export const decideTaskAgentCreate = Effect.fn("decideTaskAgentCreate")(function
     ...(notes !== undefined && notes.length > 0 ? { notes } : {}),
     status: "todo",
     home: command.home,
+    ...(command.recurrence !== undefined ? { recurrence: command.recurrence } : {}),
+    ...(links !== undefined ? { links } : {}),
     createdAt: command.createdAt,
     updatedAt: command.createdAt,
   };
@@ -506,7 +518,16 @@ export const decideTaskAgentUpdate = Effect.fn("decideTaskAgentUpdate")(function
       );
     }
     if (command.patch.status !== undefined && command.patch.status !== stored.status) {
-      return yield* invariant(command.type, "Only the user completes or reopens a task.");
+      return yield* invariant(command.type, "Only the user completes, cancels or reopens a task.");
+    }
+    if (command.patch.orderKey !== undefined) {
+      return yield* invariant(command.type, "Only the user and the Assistant reorder tasks.");
+    }
+    if (command.patch.recurrence !== undefined || command.patch.links !== undefined) {
+      return yield* invariant(
+        command.type,
+        "Only the user and the Assistant change a task's repeat or links.",
+      );
     }
   }
   if (
@@ -522,6 +543,101 @@ export const decideTaskAgentUpdate = Effect.fn("decideTaskAgentUpdate")(function
   const next = applyPatch(readModel, stored, command.patch, command.createdAt);
   if (typeof next === "string") return yield* invariant(command.type, next);
   return yield* writeEdit(command, stored, next);
+});
+
+/** The live Assistant behind an agent command, or undefined. */
+function assistantActor(readModel: OrchestrationReadModel, threadId: string) {
+  const actor = liveActor(readModel, threadId);
+  return actor !== undefined && isAssistantChannel(actor.project, actor.thread) ? actor : undefined;
+}
+
+/**
+ * `task.agent.delete`: the Assistant deletes a task the same way the user's
+ * Delete does, so Task Sync tombstones a synced record instead of losing it.
+ * A waiting proposal is the user's to dismiss.
+ */
+export const decideTaskAgentDelete = Effect.fn("decideTaskAgentDelete")(function* (
+  readModel: OrchestrationReadModel,
+  command: TaskAgentDeleteCommand,
+): Decided {
+  const stored = findTask(readModel, command.taskId);
+  if (stored === undefined) return yield* invariant(command.type, "That task no longer exists.");
+  if (assistantActor(readModel, command.actorThreadId) === undefined) {
+    return yield* invariant(command.type, "Only the Assistant can delete tasks.");
+  }
+  if (isProposedTask(stored)) {
+    return yield* invariant(
+      command.type,
+      "That task is still a proposal. Only the user adds or dismisses it.",
+    );
+  }
+  const repeating = stored.recurrence !== undefined && stored.home.kind === "date";
+  if (command.scope !== undefined && !repeating) {
+    return yield* invariant(command.type, "That task does not repeat.");
+  }
+  if (!repeating) return yield* taskEvent(command, stored.id, null);
+  if (command.scope === "series") {
+    // Stop repeating first so Task Sync retires the series, then delete this
+    // pending occurrence: Lucive's Stop repeating.
+    const { recurrence: _recurrence, ...plain } = stored;
+    return [
+      yield* taskEvent(command, stored.id, { ...plain, updatedAt: command.createdAt }),
+      yield* taskEvent(command, stored.id, null),
+    ];
+  }
+  // One occurrence: a skip. The series goes on from its next day, as when
+  // the occurrence is completed; Lucive treats a deleted occurrence the same.
+  if (stored.status !== "todo") return yield* taskEvent(command, stored.id, null);
+  const following = yield* nextOccurrence(stored, command.createdAt);
+  const removed = yield* taskEvent(command, stored.id, null);
+  return following === null
+    ? removed
+    : [removed, yield* taskEvent(command, following.id, following)];
+});
+
+/**
+ * `task.agent.restore`: writes a deleted task's last record back under its
+ * own id. Links to a Project or thread that is gone are dropped rather than
+ * refusing the restore.
+ */
+export const decideTaskAgentRestore = Effect.fn("decideTaskAgentRestore")(function* (
+  readModel: OrchestrationReadModel,
+  command: TaskAgentRestoreCommand,
+): Decided {
+  if (assistantActor(readModel, command.actorThreadId) === undefined) {
+    return yield* invariant(command.type, "Only the Assistant can restore tasks.");
+  }
+  const record = command.task;
+  if (record.id !== command.taskId) {
+    return yield* invariant(command.type, "The restored record belongs to another task.");
+  }
+  if (findTask(readModel, command.taskId) !== undefined) {
+    return yield* invariant(command.type, "That task was not deleted.");
+  }
+  if (isProposedTask(record)) {
+    return yield* invariant(command.type, "A dismissed proposal cannot be restored.");
+  }
+  const source = record.importSource;
+  if (
+    source !== undefined &&
+    (readModel.tasks ?? []).some(
+      (task) => task.importSource?.kind === source.kind && task.importSource.id === source.id,
+    )
+  ) {
+    return yield* invariant(command.type, "Another task already carries that synced record.");
+  }
+  const problem = homeError(record.home) ?? recurrenceError(record.recurrence, record.home);
+  if (problem !== null) return yield* invariant(command.type, problem);
+  const links = resolveLinks(readModel, record.links);
+  const { links: _links, handoff, ...rest } = record;
+  const keepLinks = typeof links === "string" ? undefined : links;
+  const restored: Task = {
+    ...rest,
+    ...(keepLinks !== undefined ? { links: keepLinks } : {}),
+    ...(handoff !== undefined && keepLinks?.threadId === handoff.threadId ? { handoff } : {}),
+    updatedAt: command.createdAt,
+  };
+  return yield* taskEvent(command, restored.id, restored);
 });
 
 export const decideTaskIntentSet = Effect.fn("decideTaskIntentSet")(function* (

@@ -58,6 +58,8 @@ export class TaskSyncService extends Context.Service<
     readonly checkoutUrl: Effect.Effect<{ url: string }, TaskSyncError>;
     readonly portalUrl: Effect.Effect<{ url: string }, TaskSyncError>;
     readonly syncNow: Effect.Effect<TaskSyncStatus, TaskSyncError>;
+    /** Ids of the tasks kept in step with the synced account; empty when sync is off. */
+    readonly syncedTaskIds: Effect.Effect<ReadonlySet<string>>;
     /** Local pre-launch preview of Task Sync for this install (see setPreview on the engine). */
     readonly setPreview: (enabled: boolean) => Effect.Effect<TaskSyncStatus, TaskSyncError>;
   }
@@ -233,6 +235,9 @@ const make = Effect.gen(function* () {
         await engine.refreshAvailability(0);
         return engine.status();
       }),
+    syncedTaskIds: Effect.promise(() => engine.syncedTaskIds()).pipe(
+      Effect.catchCause(() => Effect.succeed(new Set<string>())),
+    ),
     syncNow: attempt(async () => {
       if (!(await engine.refreshAvailability(0))) return engine.status();
       await engine.refreshSubscription().catch(() => undefined);
@@ -258,4 +263,5 @@ export const layerUnavailable = Layer.succeed(TaskSyncService, {
   portalUrl: unavailable,
   syncNow: unavailable,
   setPreview: () => unavailable,
+  syncedTaskIds: Effect.succeed(new Set<string>()),
 });

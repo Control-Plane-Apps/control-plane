@@ -196,6 +196,21 @@ export class TaskSyncEngine {
     if (!(await this.refreshAvailability())) throw new TaskSyncCloudError("unavailable");
   }
 
+  /**
+   * Ids of the live tasks this device keeps in step with the synced account
+   * (pulled, or queued for upload). Empty when signed out or sync is off.
+   */
+  async syncedTaskIds(): Promise<ReadonlySet<string>> {
+    if (this.deps.client === null) return new Set();
+    const state = await this.load();
+    if (state.account === undefined) return new Set();
+    return new Set(
+      Object.values(state.mirror.tasks)
+        .filter((task) => !task.isTemplate && task.deletedAt === null)
+        .map((task) => task.id),
+    );
+  }
+
   async status(): Promise<TaskSyncStatus> {
     const state = await this.load();
     const base = {
