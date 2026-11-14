@@ -74,7 +74,8 @@ import {
 } from "../terminal/terminalLaunchContext";
 import { terminalDebugLog } from "../terminal/terminalDebugLog";
 import { ThreadDetailScreen, type ThreadDetailScreenProps } from "./ThreadDetailScreen";
-import { AssistantHeaderTitle, useAssistantScreen } from "../assistant/useAssistantScreen";
+import { AssistantHeaderTitle } from "../assistant/AssistantHeaderTitle";
+import { useAssistantScreen } from "../assistant/useAssistantScreen";
 import {
   ThreadGitControls,
   useThreadGitCenterHeaderItems,
