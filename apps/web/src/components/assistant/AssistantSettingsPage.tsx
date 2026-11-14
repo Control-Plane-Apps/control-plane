@@ -12,6 +12,8 @@ import {
   type AssistantSettingsPatch,
   DEFAULT_SERVER_SETTINGS,
 } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
+import { ClockIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { useUpdateEnvironmentSettings } from "~/hooks/useSettings";
@@ -20,6 +22,7 @@ import { usePrimaryEnvironment } from "~/state/environments";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useScheduleActions } from "../schedules/useScheduleActions";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout";
+import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { useGlobalAssistantProject, useProjectsWithoutAssistant } from "./useAssistant";
@@ -124,6 +127,7 @@ export function AssistantSettingsPage() {
     patch({ projects: all.every((id) => next.includes(id)) ? null : next });
   };
 
+  const navigate = useNavigate();
   const needsAssistant = assistantProject === null;
   const briefEnabled = brief?.enabled === true;
 
@@ -362,6 +366,24 @@ export function AssistantSettingsPage() {
                 ))}
               </SelectPopup>
             </Select>
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Schedules">
+        <SettingsRow
+          title="All schedules"
+          description="Every schedule across your Projects and the Assistant, in one list."
+          control={
+            <Button
+              size="sm"
+              variant="outline"
+              type="button"
+              onClick={() => void navigate({ to: "/schedules" })}
+            >
+              <ClockIcon />
+              Open
+            </Button>
           }
         />
       </SettingsSection>

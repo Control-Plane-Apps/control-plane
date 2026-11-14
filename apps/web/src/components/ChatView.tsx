@@ -3585,6 +3585,7 @@ export default function ChatView(props: ChatViewProps) {
     projectHandoffMessagePreviews,
   ]);
   const openMemorySurfaceRef = useRef<() => void>(() => {});
+  const openSchedulesSurfaceRef = useRef<() => void>(() => {});
   // The Assistant's channels swap in their own header, rail and cards.
   const globalAssistantChrome = useAssistantChatChrome({
     project: activeProject,
@@ -3594,6 +3595,10 @@ export default function ChatView(props: ChatViewProps) {
     activities: threadActivities,
     messages: activeThread?.messages ?? EMPTY_ASSISTANT_MESSAGES,
     onOpenMemory: () => openMemorySurfaceRef.current(),
+    onOpenSchedules:
+      serverConfig?.environment.capabilities.projectSchedules !== undefined
+        ? () => openSchedulesSurfaceRef.current()
+        : undefined,
     rightPanelOpen,
   });
   const assistantHiddenMessageIds = globalAssistantChrome?.hiddenMessageIds ?? null;
@@ -4781,6 +4786,7 @@ export default function ChatView(props: ChatViewProps) {
   const openSchedulesSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "schedules");
   }, [activeThreadRef]);
+  openSchedulesSurfaceRef.current = openSchedulesSurface;
   // The coordinator's Status board: one record per workstream, written by the
   // coordinator. Replies and recommendations go out as ordinary messages.
   const statusBoardEnabled =
@@ -10089,7 +10095,14 @@ export default function ChatView(props: ChatViewProps) {
   });
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+    <div
+      className={cn(
+        "relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background",
+        // The Assistant's two-line title gets a taller bar. The panel toggles and
+        // the right panel's header read the same variable, so they stay aligned.
+        globalAssistantChrome && "[--workspace-topbar-height:60px]",
+      )}
+    >
       <Dialog
         open={
           deviceSetupThread !== null &&
@@ -10245,7 +10258,7 @@ export default function ChatView(props: ChatViewProps) {
               {(globalAssistantChrome?.wrapTimeline ?? passThroughTimeline)(
                 <MessagesTimeline
                   {...(globalAssistantChrome
-                    ? { emptyPlaceholder: globalAssistantChrome.emptyTimeline }
+                    ? { emptyPlaceholder: globalAssistantChrome.emptyTimeline, roomyTop: true }
                     : {})}
                   citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                   citationHistoryLoading={threadDetailLoading}
