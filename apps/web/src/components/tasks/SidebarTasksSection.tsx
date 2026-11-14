@@ -128,7 +128,7 @@ export function SidebarTasksSection() {
         </Tooltip>
       </div>
       {expanded ? (
-        <ul className="flex flex-col px-1 pb-2">
+        <ul className="flex flex-col gap-px pt-px pb-3">
           {ROWS.map((row) => {
             const active = pathname === `/tasks/${row.view}`;
             const count = countFor(row.view);
@@ -141,7 +141,7 @@ export function SidebarTasksSection() {
                   to="/tasks/$view"
                   params={{ view: row.view }}
                   className={cn(
-                    "flex h-7 items-center gap-2 rounded-md px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "flex h-[30px] items-center gap-2 rounded-md px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     active
                       ? "bg-sidebar-row-active text-sidebar-foreground"
                       : "text-sidebar-foreground/90 hover:bg-sidebar-row-hover",
