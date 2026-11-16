@@ -197,13 +197,20 @@ export function ProjectStatusPanel(props: ProjectStatusPanelProps) {
       >
         {props.header}
         {groups.length === 0 ? (
-          <View className="gap-2 px-6 pt-24">
+          <View className="items-center gap-2.5 px-6" style={{ paddingTop: 200 }}>
+            <SymbolView
+              name={symbol("checklist", "check")}
+              size={32}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+              weight="light"
+            />
             {hiddenCount > 0 ? (
-              <Text className="text-center text-[15px] text-foreground-muted">
+              <Text className="text-center text-[17px] text-foreground-muted">
                 Nothing open. You checked off every finished workstream.
               </Text>
             ) : (
-              <Text className="text-center text-[15px] text-foreground-muted">
+              <Text className="text-center text-[17px] text-foreground-muted">
                 No workstreams yet.
               </Text>
             )}
@@ -218,7 +225,12 @@ export function ProjectStatusPanel(props: ProjectStatusPanelProps) {
                     className="text-[13px] tabular-nums"
                     style={{ color: group === "needs-you" ? palette.warningText : undefined }}
                   >
-                    <Text className="text-foreground-tertiary">{members.length}</Text>
+                    <Text
+                      className={group === "needs-you" ? undefined : "text-foreground-tertiary"}
+                      style={group === "needs-you" ? { opacity: 0.85 } : undefined}
+                    >
+                      {members.length}
+                    </Text>
                   </Text>
                 }
               >
@@ -227,7 +239,7 @@ export function ProjectStatusPanel(props: ProjectStatusPanelProps) {
               <TaskCard>
                 {members.map((status, index) => (
                   <View key={status.id}>
-                    {index > 0 ? <RowSeparator inset={32} /> : null}
+                    {index > 0 ? <RowSeparator inset={16} /> : null}
                     <StatusRow
                       status={status}
                       group={group}
@@ -433,7 +445,7 @@ function StatusRow(props: {
             {deadline !== null ? (
               <Text
                 style={{
-                  color: deadline.tone === "handled" ? undefined : palette.overdue,
+                  color: deadline.tone === "handled" ? undefined : palette.warningText,
                 }}
               >
                 {"  · "}
@@ -488,8 +500,8 @@ function StatusRow(props: {
               accessibilityLabel={`Reply to ${status.title}`}
               onPress={() => props.onReply(true)}
             />
+            <Text className="text-[13px] text-foreground-muted">Recommended</Text>
           </View>
-          <Text className="text-[13px] text-foreground-muted">Recommended</Text>
         </View>
       ) : answered !== undefined ? (
         <View className="gap-2 pb-2 pl-[33px] pr-4 pt-1">
@@ -529,7 +541,9 @@ function IconButton(props: {
       <SymbolView
         name={symbol(props.icon, props.icon === "checkmark.circle" ? "check" : "edit")}
         size={17}
-        tintColorClassName="accent-icon-muted"
+        tintColorClassName={
+          props.icon === "checkmark.circle" ? "accent-success-accent" : "accent-icon-muted"
+        }
         type="monochrome"
       />
     </Pressable>
@@ -561,7 +575,8 @@ export function PillButton(props: {
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
-        backgroundColor: primary ? palette.accent : palette.chip,
+        // Subtle-strong, not the chip color: in light paper that matches the card.
+        backgroundColor: primary ? palette.accent : palette.swipeSelect,
         maxWidth: "100%",
       })}
     >

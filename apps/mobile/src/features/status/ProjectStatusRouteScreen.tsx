@@ -115,7 +115,7 @@ export function ProjectStatusRouteScreen({ route }: StaticScreenProps<ProjectSta
                 accessibilityRole="button"
                 accessibilityLabel="Close Status"
                 onPress={() => navigation.goBack()}
-                className="size-11 items-center justify-center rounded-full bg-secondary"
+                className="size-11 items-center justify-center rounded-full bg-subtle-strong"
               >
                 <SymbolView
                   name={symbol("xmark", "close")}
