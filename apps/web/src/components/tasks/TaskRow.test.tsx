@@ -1,0 +1,118 @@
+import { act, type ComponentProps } from "react";
+import { create, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+
+const state = vi.hoisted(() => ({ mobile: false }));
+vi.mock("../../hooks/useMediaQuery", () => ({ useIsMobile: () => state.mobile }));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("@dnd-kit/sortable", () => ({
+  useSortable: () => ({ setNodeRef: vi.fn(), setActivatorNodeRef: vi.fn() }),
+}));
+vi.mock("./taskDrag", () => ({ usePrefersReducedMotion: () => true, TASK_DRAG_TRANSITION: null }));
+vi.mock("./TaskMenus", () => ({
+  TaskMoveMenu: () => null,
+  TaskReminderMenu: () => null,
+  TaskRepeatMenu: () => null,
+}));
+vi.mock("../ui/menu", () => ({
+  Menu: () => null,
+  MenuItem: () => null,
+  MenuPopup: () => null,
+  MenuSeparator: () => null,
+  MenuTrigger: () => null,
+}));
+const { TaskRow } = await import("./TaskRow");
+type Props = ComponentProps<typeof TaskRow>;
+const listeners = new Map<string, (event: unknown) => void>();
+class Target {
+  constructor(
+    readonly inside = false,
+    readonly portal = false,
+  ) {}
+  closest() {
+    return this.portal ? this : null;
+  }
+}
+let renderer: ReactTestRenderer | undefined;
+async function mount(expanded = false) {
+  vi.stubGlobal("Element", Target);
+  vi.stubGlobal("document", {
+    addEventListener: (key: string, listener: (event: unknown) => void) =>
+      listeners.set(key, listener),
+    removeEventListener: (key: string) => listeners.delete(key),
+  });
+  const onSelectClick = vi.fn();
+  const onToggleExpanded = vi.fn();
+  const patch = vi.fn();
+  const props = {
+    task: {
+      id: "synthetic",
+      title: "Synthetic task",
+      status: "todo",
+      home: { kind: "backlog", horizon: null },
+    },
+    state: { kind: "none" },
+    expanded,
+    onSelectClick,
+    onToggleExpanded,
+    context: { today: "2026-11-16", projects: [], actions: { patch }, onHandToAgent: vi.fn() },
+  } as unknown as Props;
+  await act(async () => {
+    renderer = create(<TaskRow {...props} />, {
+      createNodeMock: () => ({ contains: (target: Target) => target.inside }),
+    });
+  });
+  return { root: renderer!.root, onSelectClick, onToggleExpanded, patch };
+}
+afterEach(async () => {
+  await act(async () => renderer?.unmount());
+  renderer = undefined;
+  state.mobile = false;
+  listeners.clear();
+  vi.unstubAllGlobals();
+});
+
+describe("TaskRow desktop interactions", () => {
+  it("selects the title or row whitespace without expanding, then expands on double click", async () => {
+    const { root, onSelectClick, onToggleExpanded } = await mount();
+    const row = root.findByType("li");
+    const event = { target: new Target(), stopPropagation: vi.fn() };
+    row.props.onClick(event);
+    root.findByProps({ "data-task-title": true }).props.onClick(event);
+    expect(onSelectClick).toHaveBeenCalledTimes(2);
+    expect(onToggleExpanded).not.toHaveBeenCalled();
+    row.props.onDoubleClick(event);
+    expect(onToggleExpanded).toHaveBeenCalledTimes(1);
+    expect(onSelectClick).toHaveBeenCalledTimes(2);
+  });
+  it("keeps mobile tap-to-open", async () => {
+    state.mobile = true;
+    const { root, onSelectClick, onToggleExpanded } = await mount();
+    root.findByProps({ "data-task-title": true }).props.onClick({ stopPropagation: vi.fn() });
+    expect(onToggleExpanded).toHaveBeenCalledTimes(1);
+    expect(onSelectClick).not.toHaveBeenCalled();
+  });
+  it("collapses outside the expanded box while leaving row and portaled menu interactions alone", async () => {
+    const { onToggleExpanded } = await mount(true);
+    listeners.get("click")?.({ target: new Target(true) });
+    listeners.get("click")?.({ target: new Target(false, true) });
+    expect(onToggleExpanded).not.toHaveBeenCalled();
+    listeners.get("click")?.({ target: new Target() });
+    expect(onToggleExpanded).toHaveBeenCalledTimes(1);
+  });
+  it("cancels a title edit on Escape without saving its draft on blur", async () => {
+    const { root, patch } = await mount(true);
+    const input = root.findByProps({ "aria-label": "Task title" });
+    await act(async () => input.props.onChange({ target: { value: "Unsaved draft" } }));
+    await act(async () =>
+      input.props.onKeyDown({
+        key: "Escape",
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn(),
+        currentTarget: { blur: () => input.props.onBlur() },
+      }),
+    );
+    expect(patch).not.toHaveBeenCalled();
+    expect(input.props.value).toBe("Synthetic task");
+  });
+});

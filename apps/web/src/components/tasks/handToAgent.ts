@@ -65,19 +65,30 @@ export function useHandToAgent() {
   const addPending = usePendingHandoffs((state) => state.add);
 
   return useCallback(
-    async (task: Task, kind: "coordinator" | "agent", project: EnvironmentProject) => {
-      const brief = taskBrief(task);
+    async (
+      input: Task | readonly Task[],
+      kind: "coordinator" | "agent",
+      project: EnvironmentProject,
+    ) => {
+      const tasks: readonly Task[] = Array.isArray(input) ? input : [input as Task];
+      const task = tasks[0];
+      if (!task) return;
+      const brief = tasks.map(taskBrief).join("\n\n");
       const { setPrompt } = useComposerDraftStore.getState();
       if (kind === "coordinator") {
         const coordinatorId = project.assistant?.coordinatorThreadId;
         if (coordinatorId == null) return;
         const threadRef = scopeThreadRef(project.environmentId, coordinatorId);
         setPrompt(threadRef, brief);
-        await actions.handOff(task, {
-          kind: "coordinator",
-          threadId: coordinatorId,
-          at: new Date().toISOString(),
-        });
+        await Promise.all(
+          tasks.map((task) =>
+            actions.handOff(task, {
+              kind: "coordinator",
+              threadId: coordinatorId,
+              at: new Date().toISOString(),
+            }),
+          ),
+        );
         void navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),

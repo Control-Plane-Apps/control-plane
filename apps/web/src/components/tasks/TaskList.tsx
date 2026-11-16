@@ -9,7 +9,7 @@ import {
 } from "@t3tools/client-runtime/state/projects";
 import type { Task } from "@t3tools/contracts";
 import { ListTodoIcon, PlusIcon, XIcon } from "lucide-react";
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode, type MouseEvent } from "react";
 
 import { cn } from "../../lib/utils";
 import {
@@ -49,6 +49,10 @@ export function TaskList(props: {
   readonly reorderable?: boolean;
   readonly label?: string;
   readonly hidePeriod?: boolean;
+  readonly selectedIds?: ReadonlySet<string>;
+  readonly onSelectClick?: (id: string, event: MouseEvent) => void;
+  readonly onHover?: (id: string | null) => void;
+  readonly moveRequest?: { id: string; sequence: number } | null;
 }) {
   const containerId = useId();
   const reorderable = props.reorderable === true;
@@ -97,6 +101,10 @@ export function TaskList(props: {
             state={taskAgentState(task, props.threads, lifecycleProjects)}
             expanded={props.expandedId === task.id}
             onToggleExpanded={() => props.onToggle(task.id)}
+            selected={props.selectedIds?.has(task.id) ?? false}
+            onSelectClick={(event) => props.onSelectClick?.(task.id, event)}
+            onHover={(hovered) => props.onHover?.(hovered ? task.id : null)}
+            moveRequest={props.moveRequest?.id === task.id ? props.moveRequest.sequence : 0}
             context={props.context}
             draggable={task.status === "todo"}
             reorderable={reorderable}
