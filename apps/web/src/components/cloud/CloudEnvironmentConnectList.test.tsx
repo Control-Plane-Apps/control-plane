@@ -201,7 +201,6 @@ describe("cloud onboarding discovery", () => {
       new Map([[newMachineId, entry(ORCHESTRATION_PROTOCOL_VERSION + 1)]]),
     );
     const onSelectionChange = vi.fn();
-    const autoSelectedComputers = new Set<EnvironmentId>();
     function Setup() {
       const [selectedIds, setSelectedIds] = useState<ReadonlySet<EnvironmentId>>(
         new Set([newMachineId]),
@@ -212,7 +211,6 @@ describe("cloud onboarding discovery", () => {
           savedEnvironments={[]}
           showSavedEnvironments
           selection={{
-            autoSelectedComputers,
             selectedIds,
             onChange: (id, checked) => {
               onSelectionChange(id, checked);
@@ -256,9 +254,33 @@ describe("cloud onboarding discovery", () => {
     expect(discovery.register).toHaveBeenCalledTimes(1);
   });
 
-  it("connects and selects discovered computers by default without overwriting deselection", async () => {
-    discovery.listEnvironments.mockResolvedValue(linkedMachines);
-    const autoSelectedComputers = new Set<EnvironmentId>();
+  it("lists discovered computers unticked and registers only the ones the user ticks", async () => {
+    const otherId = EnvironmentId.make("other-computer");
+    const base = linkedMachines.get(newMachineId)!;
+    const twoMachines: DiscoveredEnvironments = new Map([
+      [
+        newMachineId,
+        {
+          ...base,
+          status: Option.some({
+            environmentId: newMachineId,
+            endpoint: base.environment.endpoint,
+            status: "online" as const,
+            checkedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+          }),
+        },
+      ],
+      [
+        otherId,
+        {
+          ...base,
+          environment: { ...base.environment, environmentId: otherId, label: "Mac mini" },
+          availability: "offline" as const,
+        },
+      ],
+    ]);
+    discovery.listEnvironments.mockResolvedValue(twoMachines);
+    const onSelectionChange = vi.fn();
     function Setup() {
       const [selectedIds, setSelectedIds] = useState<ReadonlySet<EnvironmentId>>(new Set());
       return (
@@ -267,15 +289,16 @@ describe("cloud onboarding discovery", () => {
           savedEnvironments={[]}
           showSavedEnvironments
           selection={{
-            autoSelectedComputers,
             selectedIds,
-            onChange: (id, checked) =>
+            onChange: (id, checked) => {
+              onSelectionChange(id, checked);
               setSelectedIds((current) => {
                 const next = new Set(current);
                 if (checked) next.add(id);
                 else next.delete(id);
                 return next;
-              }),
+              });
+            },
           }}
         />
       );
@@ -283,17 +306,40 @@ describe("cloud onboarding discovery", () => {
     await act(async () => {
       renderer = create(<Setup />);
     });
+    // Discovery alone (and repeated refreshes) never ticks or registers anything.
+    await act(async () => publish({ ...discovery.state!, environments: new Map(twoMachines) }));
+    expect(discovery.register).not.toHaveBeenCalled();
+    expect(onSelectionChange).not.toHaveBeenCalled();
+    const inputs = renderer!.root.findAllByType("input");
+    expect(inputs.map((input) => input.props.checked)).toEqual([false, false]);
+    const text = renderer!.root.findAllByType("span").flatMap((span) => span.children);
+    expect(text).toEqual(expect.arrayContaining(["Work laptop", "Seen 2m ago", "Online"]));
+    expect(text).toEqual(expect.arrayContaining(["Mac mini", "Offline"]));
 
-    expect(discovery.register).toHaveBeenCalledTimes(1);
-    expect(renderer!.root.findByType("input").props.checked).toBe(true);
     await act(async () => {
-      await renderer!.root.findByType("input").props.onChange({ target: { checked: false } });
+      await inputs[0]!.props.onChange({ target: { checked: true } });
     });
-    await act(async () => {
-      publish({ ...discovery.state!, environments: new Map(linkedMachines) });
-    });
-    expect(renderer!.root.findByType("input").props.checked).toBe(false);
     expect(discovery.register).toHaveBeenCalledTimes(1);
+    expect(discovery.register.mock.calls[0]![0].target.environmentId).toBe(newMachineId);
+    expect(renderer!.root.findAllByType("input")[0]!.props.checked).toBe(true);
+    expect(renderer!.root.findAllByType("input")[1]!.props.checked).toBe(false);
+  });
+
+  it("never lists this client's own server among the computers to add", async () => {
+    discovery.listEnvironments.mockResolvedValue(linkedMachines);
+    await act(async () => {
+      renderer = create(
+        <CloudEnvironmentConnectRows
+          primaryEnvironmentId={newMachineId}
+          savedEnvironments={[]}
+          showSavedEnvironments
+          selection={{ selectedIds: new Set(), onChange: vi.fn() }}
+          empty={<p>No other computers linked yet.</p>}
+        />,
+      );
+    });
+    expect(renderer!.root.findAllByType("input")).toHaveLength(0);
+    expect(discovery.register).not.toHaveBeenCalled();
   });
 
   it("shows a newly linked computer without remounting and stops polling once found", async () => {

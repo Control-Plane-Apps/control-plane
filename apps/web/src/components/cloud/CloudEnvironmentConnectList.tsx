@@ -34,7 +34,10 @@ import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
-import { presentSavedCloudEnvironmentConnection } from "./cloudEnvironmentConnectionPresentation";
+import {
+  presentDiscoveredMachine,
+  presentSavedCloudEnvironmentConnection,
+} from "./cloudEnvironmentConnectionPresentation";
 
 const EMPTY_DISCOVERY_REFRESH_INTERVAL_MS = 5_000;
 
@@ -68,7 +71,9 @@ function RemoteEnvironmentRowsSkeleton() {
 
 /**
  * The user's T3 Connect environments from relay discovery, each with a
- * Connect button. The primary environment is always excluded; already-saved
+ * Connect button (or, with `selection`, an opt-in checkbox). Discovery never
+ * registers anything on its own: a machine on the account only becomes a
+ * remote of this client when the user clicks Add or ticks it. The primary environment is always excluded; already-saved
  * environments are hidden unless `showSavedEnvironments` renders them with
  * their live connection state (used by onboarding, where the full device mesh
  * should be visible).
@@ -89,7 +94,6 @@ export function CloudEnvironmentConnectRows({
   readonly empty?: ReactNode;
   readonly onDiscoveryReady?: () => void;
   readonly selection?: {
-    readonly autoSelectedComputers?: Set<EnvironmentId>;
     readonly selectedIds: ReadonlySet<EnvironmentId>;
     readonly onChange: (environmentId: EnvironmentId, selected: boolean) => void;
   };
@@ -187,32 +191,24 @@ export function CloudEnvironmentConnectRows({
       environment.environmentId !== primaryEnvironmentId &&
       (showSavedEnvironments || !savedById.has(environment.environmentId)),
   );
-  const selectNewComputers = useEffectEvent(() => {
-    const seen = selection?.autoSelectedComputers;
-    if (!selection || !seen) return;
-    for (const { environment, status, availability } of visibleEnvironments) {
+  // Opt-in only: discovered machines start unticked and are registered only
+  // from the checkbox handler. The one automatic change is unticking a machine
+  // this client cannot talk to (protocol mismatch), so Continue never waits on it.
+  const deselectUnsupportedComputers = useEffectEvent(() => {
+    if (!selection) return;
+    for (const { environment, status } of visibleEnvironments) {
       const id = environment.environmentId;
-      if (availability === "checking") continue;
       if (
-        discoveredCompatibilityError(status) !== null ||
-        savedById.get(id)?.connection.phase === "unsupported"
+        selection.selectedIds.has(id) &&
+        (discoveredCompatibilityError(status) !== null ||
+          savedById.get(id)?.connection.phase === "unsupported")
       ) {
-        seen.add(id);
-        if (selection.selectedIds.has(id)) selection.onChange(id, false);
-        continue;
-      }
-      if (seen.has(id)) continue;
-      seen.add(id);
-      selection.onChange(id, true);
-      if (!savedById.has(id)) {
-        void connectEnvironment(environment).then((connected) => {
-          if (!connected) selection.onChange(id, false);
-        });
+        selection.onChange(id, false);
       }
     }
   });
   useEffect(() => {
-    selectNewComputers();
+    deselectUnsupportedComputers();
   }, [environmentsState.environments]);
 
   // Discovery clears its list on refresh, so poll only until a machine appears.
@@ -351,6 +347,12 @@ export function CloudEnvironmentConnectRows({
                 : (Option.getOrNull(error)?.message ??
                   "T3 Connect · Not added · Relay status unavailable");
     if (selection) {
+      const machine = presentDiscoveredMachine({
+        availability,
+        checkedAt: status === undefined ? null : (Option.getOrNull(status)?.checkedAt ?? null),
+        linkedAt: environment.linkedAt,
+        now: new Date(),
+      });
       return (
         <label
           key={environment.environmentId}
@@ -373,7 +375,10 @@ export function CloudEnvironmentConnectRows({
             kind={machineKind}
             className="size-4 shrink-0 text-muted-foreground"
           />
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">{environment.label}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium">{environment.label}</span>
+            <span className="block truncate text-xs text-muted-foreground">{machine.lastSeen}</span>
+          </span>
           <Tooltip>
             <TooltipTrigger
               render={<span tabIndex={0} />}
@@ -384,14 +389,7 @@ export function CloudEnvironmentConnectRows({
             >
               {connectingEnvironmentIds.has(environment.environmentId)
                 ? "Connecting…"
-                : (savedConnection?.buttonLabel ??
-                  (availability === "online"
-                    ? "Available"
-                    : availability === "offline"
-                      ? "Offline"
-                      : availability === "error"
-                        ? "Unavailable"
-                        : "Checking…"))}
+                : (savedConnection?.buttonLabel ?? machine.reachability)}
             </TooltipTrigger>
             <TooltipPopup className="max-w-80 break-words">
               {unsupportedDetail ?? statusText}
