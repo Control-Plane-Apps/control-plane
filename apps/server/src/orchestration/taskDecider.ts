@@ -25,6 +25,9 @@ import {
   followingTaskOccurrence,
   withTaskOccurrence,
   taskIntentKey,
+  taskHandoffMessage,
+  isTaskHandoffDeliveryId,
+  MessageId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
   type ProjectId,
@@ -891,4 +894,63 @@ function intentEvent(
       payload: { horizon, startsOn, intent },
     }),
   );
+}
+
+/**
+ * The `thread.message.user.append` a handoff with `deliver` sends: one held
+ * message to the receiving thread naming every task in the batch, started by
+ * the AgentCompletionReactor once that thread is idle. Or why it is refused.
+ */
+export function handoffDeliveryCommand(
+  readModel: OrchestrationReadModel,
+  command: TaskHandoffCommand | TaskAgentHandoffCommand,
+): Extract<OrchestrationCommand, { type: "thread.message.user.append" }> | string | null {
+  if (command.deliver === undefined) return null;
+  if (command.handoff === null) return "Only a handoff to a thread sends a message.";
+  const ids = command.deliver.taskIds;
+  if (!ids.includes(command.taskId)) return "The handoff message must include this task.";
+  if (new Set(ids).size !== ids.length) return "Each task may appear only once.";
+  const tasks: Task[] = [];
+  for (const id of ids) {
+    const task = findTask(readModel, id);
+    if (task === undefined) return `There is no task '${id}'.`;
+    if (isProposedTask(task)) return `'${task.title}' is still a proposal.`;
+    tasks.push(task);
+  }
+  const threadId = command.handoff.threadId;
+  const live = (id: string) =>
+    readModel.threads.find((thread) => thread.id === id && thread.deletedAt === null);
+  if (live(threadId) === undefined) return `'${threadId}' is not a thread.`;
+  if (!isTaskHandoffDeliveryId(command.commandId, threadId)) {
+    return "A handoff that sends a message needs a task-handoff command id for that thread.";
+  }
+  const projectOf = (id: string) =>
+    readModel.projects.find((project) => project.id === id && project.deletedAt === null);
+  const text = taskHandoffMessage(tasks, {
+    project: (id) => projectOf(id)?.title,
+    thread: (id) => live(id)?.title,
+    workstream: (projectId, statusId) =>
+      projectOf(projectId)?.assistant?.statuses?.find((status) => status.id === statusId)?.title,
+  });
+  const actor = command.type === "task.agent.handoff" ? live(command.actorThreadId) : undefined;
+  return {
+    type: "thread.message.user.append",
+    commandId: command.commandId,
+    threadId,
+    message: {
+      messageId: MessageId.make(command.commandId),
+      text,
+      attachments: [],
+      ...(actor !== undefined
+        ? {
+            source: {
+              kind: "agent" as const,
+              threadId: actor.id,
+              ...(actor.title.trim().length > 0 ? { threadTitle: actor.title } : {}),
+            },
+          }
+        : {}),
+    },
+    createdAt: command.createdAt,
+  };
 }

@@ -4,6 +4,7 @@ import {
   formatTaskHome,
   formatTaskRecurrence,
   formatTaskTime,
+  handoffLabel,
   homeForMove,
   isTaskOverdue,
   type TaskAgentState,
@@ -655,10 +656,6 @@ function HandToAgentMenu(props: {
       : null;
   const assistant = findGlobalAssistantProject(context.projects) ?? null;
   const handedTo = task.handoff;
-  const handedToAssistant =
-    handedTo !== undefined &&
-    assistant !== null &&
-    handedTo.threadId === assistant.assistant?.coordinatorThreadId;
   return (
     <div className="flex items-center gap-2">
       <Menu>
@@ -696,11 +693,7 @@ function HandToAgentMenu(props: {
       </Menu>
       {handedTo !== undefined ? (
         <span className="text-muted-foreground text-xs">
-          {handedToAssistant
-            ? "With the Assistant"
-            : handedTo.kind === "coordinator"
-              ? `With ${project?.title ?? "the"} coordinator`
-              : "With an agent"}
+          {handoffLabel(handedTo, assistant?.assistant?.coordinatorThreadId, project?.title)}
         </span>
       ) : null}
     </div>

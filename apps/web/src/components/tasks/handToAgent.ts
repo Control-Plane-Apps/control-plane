@@ -1,13 +1,15 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import { taskBrief } from "@t3tools/client-runtime/state/projects";
-import type { Task, TaskId, ThreadId } from "@t3tools/contracts";
+import { sendDeliveredHandoff, taskBrief } from "@t3tools/client-runtime/state/projects";
+import { isGlobalAssistant, type Task, type TaskId, type ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 import { useComposerDraftStore } from "../../composerDraftStore";
+import { randomUUID } from "~/lib/utils";
+import { toastManager } from "../ui/toast";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
 import { useThreadShells } from "../../state/entities";
 import { useTasks } from "../../state/tasks";
@@ -53,9 +55,10 @@ export function projectForTask(
 }
 
 /**
- * Hands a task to its Project's coordinator (the brief goes into the
- * coordinator's composer) or to a new agent (a new draft with the brief).
- * The user reviews and sends; the task links to that thread.
+ * Hands tasks to the Assistant (sent straight to it, see `handToAssistant`),
+ * to a Project's coordinator (the brief goes into the coordinator's
+ * composer), or to a new agent (a new draft with the brief). For the last
+ * two the user reviews and sends; the task links to that thread.
  */
 export function useHandToAgent() {
   const navigate = useNavigate();
@@ -73,6 +76,27 @@ export function useHandToAgent() {
       const tasks: readonly Task[] = Array.isArray(input) ? input : [input as Task];
       const task = tasks[0];
       if (!task) return;
+      if (kind === "coordinator" && isGlobalAssistant(project)) {
+        const assistantId = project.assistant?.coordinatorThreadId;
+        if (assistantId == null) return;
+        const sent = await sendDeliveredHandoff(
+          tasks,
+          assistantId,
+          new Date().toISOString(),
+          randomUUID(),
+          actions.handOff,
+        );
+        if (sent) {
+          toastManager.add({
+            type: "success",
+            title:
+              tasks.length === 1
+                ? "Handed to Assistant"
+                : `Handed ${tasks.length} tasks to Assistant`,
+          });
+        }
+        return;
+      }
       const brief = tasks.map(taskBrief).join("\n\n");
       const { setPrompt } = useComposerDraftStore.getState();
       if (kind === "coordinator") {

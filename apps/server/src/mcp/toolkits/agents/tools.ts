@@ -915,6 +915,12 @@ export const TaskBulkResult = Schema.Struct({
   }),
   succeeded: Schema.Int,
   failed: Schema.Int,
+  delivered: Schema.optional(
+    Schema.Array(ThreadId).annotate({
+      description:
+        "cp_task_handoff: the threads that were sent the tasks as one handoff message (queued until each is idle).",
+    }),
+  ),
 });
 export type TaskBulkResult = typeof TaskBulkResult.Type;
 
@@ -1246,7 +1252,7 @@ const TaskProposalRespondTool = Tool.make("cp_task_proposal_respond", {
 
 const TaskHandoffTool = Tool.make("cp_task_handoff", {
   description:
-    "Record who has one or more tasks, like the user's Hand to agent menu: the Assistant (Hand to Assistant), a Project's coordinator, or an agent thread; `none` clears it. It only links the task to that thread (cp_task_list shows `handoff`); send the thread the brief yourself if it should act. The Assistant only, with task access 'Read and edit'; not for waiting proposals.",
+    "Hand one or more tasks off, like the user's Hand to agent menu: to the Assistant (Hand to Assistant), a Project's coordinator, or an agent thread; `none` clears it. Each task is linked to that thread (cp_task_list shows `handoff`) and the thread is sent the tasks (id, title, notes, home, links) as one handoff message, queued until it is idle, so it routes them; no message goes to your own thread (`delivered` lists the threads that got one). The Assistant only, with task access 'Read and edit'; not for waiting proposals.",
   parameters: TaskHandoffInput,
   success: TaskBulkResult,
   failure: TaskToolError,

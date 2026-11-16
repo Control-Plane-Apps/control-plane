@@ -31,6 +31,8 @@ import {
   localTaskDate,
   taskPeriodFor,
   TaskId,
+  taskHandoffDeliveryId,
+  ThreadId,
   type AssistantSettings,
   type OrchestrationCommand,
   type Task,
@@ -1248,7 +1250,7 @@ export const makeTaskHandlers = Effect.gen(function* () {
               return { kind: "agent", threadId: input.threadId!, at: iso };
           }
         };
-        return yield* eachTask(taskIds, (taskId) =>
+        const outcome = yield* eachTask(taskIds, (taskId) =>
           Effect.gen(function* () {
             const stored = yield* findTask(taskId);
             if (stored === undefined) {
@@ -1278,6 +1280,34 @@ export const makeTaskHandlers = Effect.gen(function* () {
             return task;
           }),
         );
+        // Then each receiving thread gets one handoff message with its tasks,
+        // queued until it is idle, unless the caller is that thread itself.
+        const byThread = new Map<string, TaskId[]>();
+        for (const entry of outcome.results) {
+          const threadId = entry.ok ? entry.task?.handoff?.threadId : undefined;
+          if (threadId === undefined || threadId === callerId) continue;
+          byThread.set(threadId, [...(byThread.get(threadId) ?? []), entry.taskId]);
+        }
+        const delivered: ThreadId[] = [];
+        for (const [threadId, ids] of byThread) {
+          const last = (yield* findTask(ids.at(-1)!))?.handoff;
+          if (last === undefined) continue;
+          const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+          yield* dispatch(
+            {
+              type: "task.agent.handoff",
+              commandId: CommandId.make(taskHandoffDeliveryId(threadId, uuid)),
+              taskId: ids.at(-1)!,
+              actorThreadId: callerId,
+              handoff: last,
+              deliver: { taskIds: ids },
+              createdAt: iso,
+            },
+            "The tasks were handed off, but the handoff message was not sent.",
+          );
+          delivered.push(ThreadId.make(threadId));
+        }
+        return { ...outcome, ...(delivered.length > 0 ? { delivered } : {}) };
       }),
   } satisfies TaskHandlers;
 });

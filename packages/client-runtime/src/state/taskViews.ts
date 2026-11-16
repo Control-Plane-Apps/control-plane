@@ -4,6 +4,9 @@
  * quick-add parser. Fork-owned.
  */
 import {
+  CommandId,
+  taskHandoffDeliveryId,
+  type TaskHandoff,
   addTaskDays,
   compareTaskOrder,
   countStatusesNeedingUser,
@@ -493,6 +496,83 @@ export function projectNeedsYouCount(project: {
 export function taskBrief(task: Pick<Task, "title" | "notes">): string {
   const title = /[.!?]$/.test(task.title) ? task.title : `${task.title}.`;
   return task.notes === undefined ? title : `${title}\n\n${task.notes}`;
+}
+
+/** The handoff message a client's last handoff of a batch sends. */
+export interface HandoffDelivery {
+  readonly commandId: CommandId;
+  readonly taskIds: ReadonlyArray<Task["id"]>;
+}
+
+/** One `task.handoff` a client sends; the last of a batch carries the delivery. */
+export interface TaskHandoffDispatch {
+  readonly taskId: Task["id"];
+  readonly handoff: TaskHandoff;
+  readonly delivery?: HandoffDelivery;
+}
+
+/**
+ * The handoffs that hand `tasks` to the Assistant (or a coordinator) and send
+ * them there as one message: each task is linked, and the last command also
+ * delivers the whole batch, under a delivery id built from `uuid`. Send them
+ * in order, the last after the others succeed.
+ */
+export function planDeliveredHandoff(
+  tasks: ReadonlyArray<Pick<Task, "id">>,
+  threadId: TaskHandoff["threadId"],
+  at: string,
+  uuid: string,
+): ReadonlyArray<TaskHandoffDispatch> {
+  const handoff: TaskHandoff = { kind: "coordinator", threadId, at };
+  const unique = [...new Map(tasks.map((task) => [task.id, task])).values()];
+  return unique.map((task, index) =>
+    index < unique.length - 1
+      ? { taskId: task.id, handoff }
+      : {
+          taskId: task.id,
+          handoff,
+          delivery: {
+            commandId: CommandId.make(taskHandoffDeliveryId(threadId, uuid)),
+            taskIds: unique.map((entry) => entry.id),
+          },
+        },
+  );
+}
+
+/**
+ * Hands `tasks` to the Assistant and sends them there as one handoff message:
+ * runs `planDeliveredHandoff` through `handOff` in order, stopping at the
+ * first failure so no message goes out for a half-saved batch. Resolves to
+ * whether every handoff was saved.
+ */
+export async function sendDeliveredHandoff<T extends Pick<Task, "id">>(
+  tasks: ReadonlyArray<T>,
+  threadId: TaskHandoff["threadId"],
+  at: string,
+  uuid: string,
+  handOff: (task: T, handoff: TaskHandoff, delivery?: HandoffDelivery) => Promise<boolean>,
+): Promise<boolean> {
+  if (tasks.length === 0) return false;
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  for (const step of planDeliveredHandoff(tasks, threadId, at, uuid)) {
+    if (!(await handOff(byId.get(step.taskId)!, step.handoff, step.delivery))) return false;
+  }
+  return true;
+}
+
+/** What a handed-off task's chip says: the Assistant, a coordinator, or an agent. */
+export function handoffLabel(
+  handoff: Pick<TaskHandoff, "kind" | "threadId">,
+  assistantThreadId: string | null | undefined,
+  projectTitle: string | null | undefined,
+): string {
+  if (assistantThreadId != null && handoff.threadId === assistantThreadId) {
+    return "Handed to Assistant";
+  }
+  if (handoff.kind === "coordinator") {
+    return projectTitle != null ? `With ${projectTitle} coordinator` : "With the coordinator";
+  }
+  return "With an agent";
 }
 
 // Quick add: "Ask Dana for Q1 numbers tomorrow 9am".

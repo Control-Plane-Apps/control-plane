@@ -40,6 +40,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   Task,
   TaskHandoff,
+  TaskHandoffDelivery,
   TaskHome,
   TaskHorizon,
   TaskId,
@@ -1684,6 +1685,12 @@ export const TaskHandoffCommand = Schema.Struct({
   commandId: CommandId,
   taskId: TaskId,
   handoff: Schema.NullOr(TaskHandoff),
+  /**
+   * Also send these tasks (this one included) to the receiving thread as one
+   * handoff message, queued until it is idle. Put it on the last handoff of
+   * a batch.
+   */
+  deliver: Schema.optional(TaskHandoffDelivery),
   createdAt: IsoDateTime,
 });
 
@@ -2081,6 +2088,7 @@ const TaskAgentHandoffCommand = Schema.Struct({
   taskId: TaskId,
   actorThreadId: ThreadId,
   handoff: Schema.NullOr(TaskHandoff),
+  deliver: Schema.optional(TaskHandoffDelivery),
   createdAt: IsoDateTime,
 });
 

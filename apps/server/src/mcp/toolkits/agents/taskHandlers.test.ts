@@ -10,6 +10,7 @@ import {
   setTaskWeekStartsOn,
   taskPeriodFor,
   TaskId,
+  taskHandoffDeliveryId,
   ThreadId,
   type AssistantSettings,
   type OrchestrationCommand,
@@ -18,6 +19,7 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -1689,6 +1691,150 @@ describe("cp_task_handoff", () => {
             tools.handoff(ASSISTANT, { taskIds: [TaskId.make("user-task")], to: "none" }),
           )).tag,
         ).toBe("TaskAccessDeniedError");
+      }),
+    ),
+  );
+});
+
+describe("handoff messages", () => {
+  const messagesOf = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly id: string;
+        readonly role: string;
+        readonly text: string;
+        readonly source: string | null;
+      }>`
+        SELECT message_id AS id, role, text, source_json AS source
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId} AND message_id LIKE '%:task-handoff:%'
+        ORDER BY rowid
+      `;
+      return rows.map((row) => ({
+        ...row,
+        source: row.source === null ? undefined : (JSON.parse(row.source) as object),
+      }));
+    });
+
+  it.effect("cp_task_handoff sends each receiving thread one message, never the caller", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        yield* addTask(
+          "t2",
+          "Book flights",
+          { kind: "date", date: "2026-11-20" },
+          {
+            notes: "Window seat",
+            links: { projectId: ACME },
+          },
+        );
+        yield* addTask(
+          "t3",
+          "Pick hotel",
+          { kind: "backlog", horizon: null },
+          {
+            links: { projectId: ACME },
+          },
+        );
+        const toCoordinator = yield* tools.handoff(ASSISTANT, {
+          taskIds: [TaskId.make("t2"), TaskId.make("t3")],
+          to: "coordinator",
+        });
+        expect(toCoordinator.delivered).toEqual([ACME_COORD]);
+        const [message] = yield* messagesOf(ACME_COORD);
+        expect(message?.id).toMatch(/^cp-send:acme-coord:task-handoff:/);
+        expect(message?.text).toContain("these 2 tasks");
+        expect(message?.text).toContain("- Book flights (task t2)");
+        expect(message?.text).toContain("Home: 2026-11-20");
+        expect(message?.text).toContain("Project acme (acme)");
+        expect(message?.text).toContain("Notes: Window seat");
+        expect(message?.text).toContain("- Pick hotel (task t3)");
+        expect(message?.text).toContain("Home: the general backlog");
+        // The Assistant handing tasks to itself sends nothing.
+        const self = yield* tools.handoff(ASSISTANT, {
+          taskIds: [TaskId.make("user-task")],
+          to: "assistant",
+        });
+        expect(self.delivered).toBeUndefined();
+        expect(yield* messagesOf(ASSISTANT)).toEqual([]);
+        // From a pinned channel, the Assistant's thread gets it, from that channel.
+        const fromChannel = yield* tools.handoff(ASSISTANT_CHANNEL, {
+          taskIds: [TaskId.make("user-task")],
+          to: "assistant",
+        });
+        expect(fromChannel.delivered).toEqual([ASSISTANT]);
+        const [handed] = yield* messagesOf(ASSISTANT);
+        expect(handed?.text).toContain("- Renew passport (task user-task)");
+        expect(handed?.source).toMatchObject({ kind: "agent", threadId: ASSISTANT_CHANNEL });
+        // Clearing sends nothing.
+        const cleared = yield* tools.handoff(ASSISTANT_CHANNEL, {
+          taskIds: [TaskId.make("user-task")],
+          to: "none",
+        });
+        expect(cleared.delivered).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("the user's Hand to Assistant sends the batch once, on its last handoff", () =>
+    run(
+      Effect.gen(function* () {
+        yield* addTask("t2", "Book flights", { kind: "backlog", horizon: null });
+        const handoff = { kind: "coordinator", threadId: ASSISTANT, at: SEEDED_AT } as const;
+        yield* dispatch({
+          type: "task.handoff",
+          commandId: cid(),
+          taskId: TaskId.make("user-task"),
+          handoff,
+          createdAt: SEEDED_AT,
+        });
+        const delivery = taskHandoffDeliveryId(ASSISTANT, "batch-1");
+        yield* dispatch({
+          type: "task.handoff",
+          commandId: CommandId.make(delivery),
+          taskId: TaskId.make("t2"),
+          handoff,
+          deliver: { taskIds: [TaskId.make("user-task"), TaskId.make("t2")] },
+          createdAt: SEEDED_AT,
+        });
+        const messages = yield* messagesOf(ASSISTANT);
+        expect(messages.map((message) => message.id)).toEqual([delivery]);
+        expect(messages[0]?.role).toBe("user");
+        expect(messages[0]?.source).toBeUndefined();
+        expect(messages[0]?.text).toContain("Renew passport (task user-task)");
+        expect((yield* storedTask("t2"))?.handoff?.threadId).toBe(ASSISTANT);
+      }),
+    ),
+  );
+
+  it.effect("the decider refuses a delivery that is malformed, and saves nothing", () =>
+    run(
+      Effect.gen(function* () {
+        const handoff = { kind: "coordinator", threadId: ASSISTANT, at: SEEDED_AT } as const;
+        const attempt = (overrides: object) =>
+          Effect.exit(
+            dispatch({
+              type: "task.handoff",
+              commandId: CommandId.make(taskHandoffDeliveryId(ASSISTANT, `x-${cid()}`)),
+              taskId: TaskId.make("user-task"),
+              handoff,
+              deliver: { taskIds: [TaskId.make("user-task")] },
+              createdAt: SEEDED_AT,
+              ...overrides,
+            } as OrchestrationCommand),
+          );
+        // A plain command id: the delivery ledger could not track the message.
+        expect((yield* attempt({ commandId: cid() }))._tag).toBe("Failure");
+        // The batch must include this task, and every task must exist.
+        expect((yield* attempt({ deliver: { taskIds: [TaskId.make("nope")] } }))._tag).toBe(
+          "Failure",
+        );
+        // Clearing a handoff sends nothing.
+        expect((yield* attempt({ handoff: null }))._tag).toBe("Failure");
+        expect((yield* storedTask("user-task"))?.handoff).toBeUndefined();
+        expect(yield* messagesOf(ASSISTANT)).toEqual([]);
       }),
     ),
   );

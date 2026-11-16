@@ -7,6 +7,7 @@ import { Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect } from "react";
 
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
   createNewTaskDraft,
@@ -15,11 +16,13 @@ import {
 } from "../../state/use-composer-drafts";
 import { useThreadOutboxMessages } from "../../state/use-thread-outbox";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
+import { assistantHandoffThread, handTasksToAssistant } from "./assistantHandoff";
 import { useMobileTasks, useTaskActions } from "./useMobileTasks";
 
-// Fork-owned. "Hand to agent", as on desktop: the brief goes into the
-// coordinator's composer, or into a new agent's draft, for the user to review
-// and send. The task links to that thread.
+// Fork-owned. "Hand to agent", as on desktop: Hand to Assistant sends the
+// tasks straight to the Assistant as one handoff message; otherwise the brief
+// goes into the coordinator's composer, or into a new agent's draft, for the
+// user to review and send. The task links to that thread.
 
 /** The Project a task belongs to, or the one that proposed it. */
 export function projectForTask(
@@ -61,6 +64,12 @@ export function useHandToAgent() {
       project: EnvironmentProject,
     ) => {
       if (tasks.length === 0) return;
+      const assistantId = assistantHandoffThread(kind, project);
+      if (assistantId !== null) {
+        // The row's chip turns to "Handed to Assistant"; failures alert from the action.
+        await handTasksToAssistant(tasks, assistantId, actions.handOff, uuidv4());
+        return;
+      }
       const brief = tasks.map((task) => taskBrief(task)).join("\n\n");
       if (kind === "coordinator") {
         const coordinatorId = project.assistant?.coordinatorThreadId;

@@ -26,6 +26,7 @@ import ReanimatedSwipeable, {
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text, AppTextInput } from "../../components/AppText";
 import { ControlPillMenu } from "../../components/ControlPill";
+import { handoffChipLabel } from "./assistantHandoff";
 import { cn } from "../../lib/cn";
 import { PillButton } from "../status/ProjectStatusPanel";
 import { taskRowMeta } from "./taskRowMeta";
@@ -556,9 +557,11 @@ function ExpandedTask(props: {
           <TaskChip
             active
             icon={symbol("bubble.left", "chat_bubble")}
-            label={
-              task.handoff.kind === "coordinator" ? `${project.title} coordinator` : "Agent thread"
-            }
+            label={handoffChipLabel(
+              task.handoff,
+              globalAssistant?.assistant?.coordinatorThreadId,
+              project.title,
+            )}
             onPress={() => context.onOpenThread(project, task.handoff!.threadId)}
           />
         ) : null}

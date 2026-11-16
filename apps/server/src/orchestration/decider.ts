@@ -78,6 +78,7 @@ import {
   decideTaskAgentRestore,
   decideTaskAgentRespond,
   decideTaskAgentHandoff,
+  handoffDeliveryCommand,
   decideTaskPropose,
   decideTaskSyncApply,
   decideTaskProposalRespond,
@@ -497,7 +498,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return yield* decideTaskProposalRespond(readModel, command);
 
     case "task.handoff":
-      return yield* decideTaskHandoff(readModel, command);
+    case "task.agent.handoff": {
+      const handed =
+        command.type === "task.handoff"
+          ? yield* decideTaskHandoff(readModel, command)
+          : yield* decideTaskAgentHandoff(readModel, command);
+      // With `deliver`, the receiving thread also gets one handoff message.
+      const append = handoffDeliveryCommand(readModel, command);
+      if (append === null) return handed;
+      if (typeof append === "string") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: append,
+        });
+      }
+      const sent = yield* decideOrchestrationCommand({ command: append, readModel });
+      return [
+        ...(Array.isArray(handed) ? handed : [handed]),
+        ...(Array.isArray(sent) ? sent : [sent]),
+      ];
+    }
 
     case "task.intent.set":
       return yield* decideTaskIntentSet(readModel, command);
@@ -519,9 +539,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "task.agent.respond":
       return yield* decideTaskAgentRespond(readModel, command);
-
-    case "task.agent.handoff":
-      return yield* decideTaskAgentHandoff(readModel, command);
 
     case "task.sync.apply":
       return yield* decideTaskSyncApply(readModel, command);
