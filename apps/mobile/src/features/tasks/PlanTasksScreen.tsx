@@ -132,7 +132,6 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const handToAgent = useHandToAgent();
   const undo = useUndoNotice();
   const showUndo = undo.show;
-  const palette = useTaskPalette();
 
   const [view, setViewState] = useState<PlanTasksView>(route.params?.view ?? "today");
   // A date inside the Week, Month or Year being browsed; null is the current one.
