@@ -896,7 +896,7 @@ function IntentLine(props: {
     <AppTextInput
       accessibilityLabel={props.placeholder}
       style={BARE_INPUT_STYLE}
-      className="mx-5 mt-2 min-h-0 rounded-none border-0 bg-transparent p-0 text-[17px] leading-[23px] text-foreground"
+      className="mt-0.5 min-h-0 rounded-none border-0 bg-transparent p-0 text-[17px] leading-[23px] text-foreground"
       placeholder={props.placeholder}
       value={value}
       maxLength={TASK_INTENT_MAX}
@@ -1033,8 +1033,8 @@ function RangeChips(props: {
               })}
             >
               <Text
-                className="text-[16px] font-t3-medium"
-                style={{ color: active ? palette.selectedChipForeground : undefined }}
+                className={cn("text-[16px] font-t3-medium", !active && "text-foreground")}
+                style={active ? { color: palette.selectedChipForeground } : undefined}
               >
                 {range.label}
               </Text>
