@@ -44,7 +44,7 @@ import { isTerminalFocused } from "../../lib/terminalFocus";
 import { cn } from "../../lib/utils";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { primaryServerKeybindingsAtom } from "../../state/server";
-import { useTaskToday, useTasks } from "../../state/tasks";
+import { useTaskEnvironmentStatus, useTaskToday, useTasks } from "../../state/tasks";
 import { useTaskSync } from "../../state/taskSync";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { Kbd } from "../ui/kbd";
@@ -262,6 +262,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   const navigate = useNavigate();
   const today = useTaskToday();
   const { environmentId, tasks: allTaskRecords, intents } = useTasks();
+  const taskEnvironmentStatus = useTaskEnvironmentStatus();
   const projects = useProjects();
   const threads = useThreadShells() as ReadonlyArray<TaskLifecycleThread>;
   const actions = useTaskActions(environmentId);
@@ -395,7 +396,8 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   if (environmentId === null) {
     body = (
       <p className="pt-10 text-muted-foreground text-sm">
-        Tasks need this Mac's Control Plane server. Update it to the latest version to use Tasks.
+        Tasks need a Control Plane server that supports them. Update this Mac's server, or connect
+        to one that has your Tasks.
       </p>
     );
   } else if (view === "today") {
@@ -689,6 +691,18 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
           <ScrollArea className="min-h-0 flex-1">
             <div className="mx-auto flex w-full max-w-5xl gap-12 px-6 pt-8 pb-16 sm:px-12">
               <main ref={mainRef} className="min-w-0 max-w-2xl flex-1">
+                {environmentId !== null &&
+                !taskEnvironmentStatus.connected &&
+                taskEnvironmentStatus.phase !== null ? (
+                  <p
+                    role="status"
+                    data-testid="tasks-reconnecting"
+                    className="mb-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-sm"
+                  >
+                    {taskEnvironmentStatus.remoteLabel ?? "This Mac's server"} is reconnecting.
+                    Showing the last synced Tasks; changes will fail until it is back.
+                  </p>
+                ) : null}
                 {body}
               </main>
               {aside !== null ? (
