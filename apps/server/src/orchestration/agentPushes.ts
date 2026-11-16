@@ -621,6 +621,8 @@ export function formatAgentResult(input: {
   readonly outcome: AgentResultOutcome;
   readonly text: string | null;
   readonly questions: ReadonlyArray<string>;
+  /** A prompt to update the Status rows that list this agent, for its coordinator. */
+  readonly statusNote?: string | undefined;
 }): string {
   const header = `Result from agent "${input.agentTitle}" (threadId ${input.agentThreadId}): ${outcomeLabel(input.outcome)}`;
   const reply = input.text?.trim() ?? "";
@@ -635,6 +637,7 @@ export function formatAgentResult(input: {
       ["Questions for the user:", ...input.questions.map((question) => `- ${question}`)].join("\n"),
     );
   }
+  if (input.statusNote !== undefined) parts.push(`Status: ${input.statusNote}`);
   return parts.join("\n\n");
 }
 

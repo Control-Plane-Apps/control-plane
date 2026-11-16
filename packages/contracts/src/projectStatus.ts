@@ -27,6 +27,13 @@ export const PROJECT_STATUS_AGENTS_MAX = 8;
 /** A record the coordinator has not touched for this long reads as stale. */
 export const PROJECT_STATUS_STALE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Default minutes a working row may go without a running agent (or, with no
+ * agents linked, without an update) before it reads as Stalled. The server
+ * setting `statusStallMinutes` overrides it; 0 turns stall detection off.
+ */
+export const PROJECT_STATUS_STALL_MINUTES_DEFAULT = 15;
+
 /** Reminder messages: `cp-status:<projectId>:<statusId>:<openedAtMs>`. */
 export const STATUS_MESSAGE_PREFIX = "cp-status:";
 
@@ -73,6 +80,12 @@ export const ProjectStatusDecision = Schema.Struct({
   autoAccept: Schema.optional(Schema.Struct({ openedAt: IsoDateTime, enabledAt: IsoDateTime })),
   /** The user replied to this workstream; its deadline no longer fires. */
   answeredAt: Schema.optional(IsoDateTime),
+  /**
+   * How the user answered: with the recommended answer's button (or the
+   * same message from a notification), or a reply of their own. Absent on
+   * answers recorded before this existed.
+   */
+  answeredWith: Schema.optional(Schema.Literals(["recommendation", "reply"])),
   /** Set once the deadline passed and was handled; at most once per version. */
   deadlineHandled: Schema.optional(
     Schema.Struct({ at: IsoDateTime, outcome: ProjectStatusDeadlineOutcome }),
@@ -264,4 +277,153 @@ export function recommendationReplyText(
     `${STATUS_RECOMMENDATION_BODY_PREFIX} ${decision.recommendation}`,
     { statusId: status.id, openedAt: decision.openedAt },
   );
+}
+
+/** The user's one-tap answer as the button shows it: an action, never a done state. */
+export function recommendedAnswerLabel(decision: { readonly answer?: string | undefined }): string {
+  return decision.answer === undefined ? "Go with recommendation" : `Answer: ${decision.answer}`;
+}
+
+/**
+ * What the row says once the user answered, or null while it is unanswered.
+ * Only a real answer (the user tapped the recommendation or replied) shows one.
+ */
+export function answeredLabel(decision: {
+  readonly answer?: string | undefined;
+  readonly answeredAt?: string | undefined;
+  readonly answeredWith?: "recommendation" | "reply" | undefined;
+}): string | null {
+  if (decision.answeredAt === undefined) return null;
+  if (decision.answeredWith === "recommendation") {
+    return decision.answer === undefined
+      ? "You answered: went with the recommendation"
+      : `You answered: ${decision.answer}`;
+  }
+  return "You replied";
+}
+
+// --- Stalled rows -----------------------------------------------------------
+
+/**
+ * The thread state stall detection reads, shared by server and clients. A
+ * structural subset of `OrchestrationThreadShell` so this module keeps
+ * importing only baseSchemas.
+ */
+export interface StatusAgentShell {
+  readonly archivedAt: string | null;
+  readonly settledAt: string | null;
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
+  readonly backgroundLiveness?: "working" | "monitoring" | null | undefined;
+  readonly session: { readonly status: string; readonly updatedAt: string } | null;
+  readonly latestTurn: {
+    readonly requestedAt: string;
+    readonly startedAt: string | null;
+    readonly completedAt: string | null;
+  } | null;
+}
+
+/**
+ * Whether an agent counts as on it: a turn starting or running, background
+ * work still alive, or blocked on the user's approval or input (that surfaces
+ * on its own). Idle, completed, failed, stopped, settled and archived agents
+ * do not.
+ */
+export function isStatusAgentLive(shell: StatusAgentShell | null): boolean {
+  if (shell === null || shell.archivedAt !== null) return false;
+  if (shell.hasPendingApprovals || shell.hasPendingUserInput) return true;
+  const session = shell.session?.status;
+  if (session === "running" || session === "starting") return true;
+  if (session === "error") return false;
+  return shell.backgroundLiveness === "working" || shell.backgroundLiveness === "monitoring";
+}
+
+function latestMs(values: ReadonlyArray<string | null | undefined>): number | null {
+  let latest: number | null = null;
+  for (const value of values) {
+    if (value == null) continue;
+    const at = Date.parse(value);
+    if (Number.isFinite(at) && (latest === null || at > latest)) latest = at;
+  }
+  return latest;
+}
+
+/** When an agent last did anything this module can see, or null. */
+export function statusAgentLastActiveMs(shell: StatusAgentShell | null): number | null {
+  if (shell === null) return null;
+  return latestMs([
+    shell.latestTurn?.completedAt,
+    shell.latestTurn?.startedAt,
+    shell.latestTurn?.requestedAt,
+    shell.session?.updatedAt,
+    shell.settledAt,
+    shell.archivedAt,
+  ]);
+}
+
+/** "20m", "2h", "3d": a whole-unit duration, rounded down. */
+export function formatStallDuration(ms: number): string {
+  const minutes = Math.max(1, Math.floor(ms / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+export type StatusStallKind = "agents-stopped" | "no-agents";
+
+export interface StatusStall {
+  readonly kind: StatusStallKind;
+  /** When the clock started: the last agent activity or row update, whichever is later. */
+  readonly sinceMs: number;
+  /** "No agent running for 2h", "No update for 45m". */
+  readonly reason: string;
+}
+
+/** The setting as minutes: a missing or invalid value falls back to the default. */
+export function statusStallMinutesOf(setting: number | null | undefined): number {
+  return typeof setting === "number" && Number.isFinite(setting) && setting >= 0
+    ? setting
+    : PROJECT_STATUS_STALL_MINUTES_DEFAULT;
+}
+
+/**
+ * Whether a row claims work nobody is doing. A `working` row (or a `queued`
+ * one with agents linked) is stalled once none of its agents has been live
+ * for `stallMinutes`, counted from the later of their last activity and the
+ * row's own last update. A `working` row with no agents linked counts from its
+ * last update. A queued row with no agents is simply waiting, never stalled.
+ * `agents` holds the linked threads' shells, null for any that is gone.
+ */
+export function statusStallOf(
+  status: {
+    readonly state: ProjectStatusState;
+    readonly updatedAt: string;
+    readonly agents?: ReadonlyArray<string> | undefined;
+    readonly dismissedAt?: string | undefined;
+  },
+  agents: ReadonlyArray<StatusAgentShell | null>,
+  nowMs: number,
+  stallMinutes: number,
+): StatusStall | null {
+  if (stallMinutes <= 0 || status.dismissedAt !== undefined) return null;
+  const linked = (status.agents?.length ?? 0) > 0;
+  if (status.state !== "working" && !(status.state === "queued" && linked)) return null;
+  const updatedMs = Date.parse(status.updatedAt);
+  if (!Number.isFinite(updatedMs)) return null;
+  if (linked && agents.some(isStatusAgentLive)) return null;
+  const sinceMs = linked
+    ? Math.max(updatedMs, ...agents.map((agent) => statusAgentLastActiveMs(agent) ?? 0))
+    : updatedMs;
+  const idleMs = nowMs - sinceMs;
+  if (idleMs < stallMinutes * 60_000) return null;
+  const duration = formatStallDuration(idleMs);
+  return linked
+    ? { kind: "agents-stopped", sinceMs, reason: `No agent running for ${duration}` }
+    : { kind: "no-agents", sinceMs, reason: `No update for ${duration}` };
+}
+
+/** One nudge per stall: `cp-status:<projectId>:<statusId>:stalled:<sinceMs>`. */
+export function statusStallMessageId(projectId: string, statusId: string, sinceMs: number): string {
+  return `${STATUS_MESSAGE_PREFIX}${projectId}:${statusId}:stalled:${sinceMs}`;
 }

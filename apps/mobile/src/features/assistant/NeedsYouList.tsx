@@ -78,7 +78,9 @@ function NeedsYouRow(props: {
       </Text>
       <View className="-ml-1 flex-row items-center gap-0.5">
         <Pressable
-          accessibilityLabel={props.sent ? `Sent: ${label}` : label}
+          accessibilityLabel={
+            props.sent ? `You answered ${status.title}` : `${label}, the recommended answer`
+          }
           accessibilityRole="button"
           accessibilityState={{ disabled: props.sent }}
           className="h-11 justify-center px-1"
@@ -93,15 +95,16 @@ function NeedsYouRow(props: {
                 : "h-[30px] flex-row items-center gap-1 rounded-full bg-primary px-3"
             }
           >
-            <SymbolView
-              name="checkmark"
-              size={12}
-              tintColorClassName={
-                props.sent ? "accent-foreground-muted" : "accent-primary-foreground"
-              }
-              type="monochrome"
-              weight="bold"
-            />
+            {/* The check marks a sent answer only; an open question's button is an action. */}
+            {props.sent ? (
+              <SymbolView
+                name="checkmark"
+                size={12}
+                tintColorClassName="accent-foreground-muted"
+                type="monochrome"
+                weight="bold"
+              />
+            ) : null}
             <Text
               className={
                 props.sent
@@ -110,7 +113,7 @@ function NeedsYouRow(props: {
               }
               numberOfLines={1}
             >
-              {props.sent ? "Sent" : label}
+              {props.sent ? "You answered" : label}
             </Text>
           </View>
         </Pressable>

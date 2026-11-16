@@ -42,6 +42,7 @@ import {
   type ProviderDriverKind,
 } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import { PROJECT_STATUS_STALL_MINUTES_DEFAULT } from "./projectStatus.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -1170,6 +1171,14 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
   sidebarAutoSettleOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Minutes a working Status row may go with no agent running (or, with no
+   * agents linked, without an update) before it shows as Stalled and its
+   * coordinator gets one nudge. 0 turns stall detection off.
+   */
+  statusStallMinutes: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1440 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(PROJECT_STATUS_STALL_MINUTES_DEFAULT)),
+  ),
   backgroundActivity: BackgroundActivitySettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
@@ -1511,6 +1520,9 @@ export const ServerSettingsPatch = Schema.Struct({
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
+  statusStallMinutes: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1440 })),
+  ),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),

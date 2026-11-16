@@ -357,6 +357,12 @@ export const AgentStopResult = Schema.Struct({
       "True when the agent was working, or had messages from you waiting, and was stopped. Those messages are dropped.",
   }),
   archived: Schema.Boolean,
+  statusReminder: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "Set when this agent is linked to a Status workstream that still says it is moving. Update that row now.",
+    }),
+  ),
 });
 export type AgentStopResult = typeof AgentStopResult.Type;
 
@@ -372,6 +378,12 @@ export const AgentSettleResult = Schema.Struct({
   threadId: ThreadId,
   settled: Schema.Literal(true),
   archived: Schema.Boolean,
+  statusReminder: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "Set when this agent is linked to a Status workstream that still says it is moving. Update that row now.",
+    }),
+  ),
 });
 export type AgentSettleResult = typeof AgentSettleResult.Type;
 
@@ -537,10 +549,24 @@ export const StatusSetResult = Schema.Struct({
     description: "The saved record, or null once removed.",
   }),
   needsYou: Schema.Int.annotate({ description: "Workstreams now waiting on the user." }),
+  warning: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "Set when the saved row claims work no running agent is doing. Fix the row, or link the agent that is on it.",
+    }),
+  ),
 });
 export type StatusSetResult = typeof StatusSetResult.Type;
 
-export const StatusListResult = Schema.Struct({ statuses: Schema.Array(ProjectStatus) });
+export const StatusListResult = Schema.Struct({
+  statuses: Schema.Array(ProjectStatus),
+  stalled: Schema.optional(
+    Schema.Array(Schema.Struct({ id: Schema.String, reason: Schema.String })).annotate({
+      description:
+        "Rows the user sees as Stalled: working with no agent running. Update or close each one.",
+    }),
+  ),
+});
 export type StatusListResult = typeof StatusListResult.Type;
 
 /** Relative homes, counted from the server's local today. */
@@ -980,7 +1006,7 @@ const StatusListTool = Tool.make("cp_status_list", {
 
 const StatusSetTool = Tool.make("cp_status_set", {
   description:
-    "Create, update or remove one workstream on the Project's Status board, which the user reads to see where everything stands and what needs them. Omitted fields keep their value; every call marks the record fresh. Put a decision only the user can make on the workstream it blocks, with your recommendation; clear it once they answer.",
+    "Create, update or remove one workstream on the Project's Status board, which the user reads to see where everything stands and what needs them. Omitted fields keep their value; every call marks the record fresh. Keep a row working only while an agent is on it (list it in agents); the result warns when none is running. Put a decision only the user can make on the workstream it blocks, with your recommendation; clear it once they answer.",
   parameters: StatusSetInput,
   success: StatusSetResult,
   failure: StatusToolError,

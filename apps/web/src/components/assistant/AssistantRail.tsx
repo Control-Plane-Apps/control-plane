@@ -199,14 +199,26 @@ function NeedsYouRow({
       </div>
       <p className="mt-1.5 mb-2 text-sm leading-snug text-foreground">{status.decision.question}</p>
       <div className="flex flex-wrap items-center gap-1.5">
-        <Button size="sm" disabled={sent} onClick={() => void accept()}>
-          <CheckIcon aria-hidden />
-          {sent ? "Sent" : recommendationButtonLabel(status.decision)}
+        {/* An action for an open question; the check appears only once the user sent it. */}
+        <Button
+          size="sm"
+          disabled={sent}
+          aria-label={
+            sent
+              ? `Answer sent to ${status.title}`
+              : `${recommendationButtonLabel(status.decision)}, the recommended answer to ${status.title}`
+          }
+          onClick={() => void accept()}
+        >
+          {sent ? <CheckIcon aria-hidden /> : null}
+          {sent ? "You answered" : recommendationButtonLabel(status.decision)}
         </Button>
         <Button size="sm" variant="outline" onClick={() => openCoordinator(status)}>
           Reply
         </Button>
-        <span className="text-xs text-muted-foreground">Recommended</span>
+        {sent ? null : (
+          <span className="text-xs text-muted-foreground">Recommended · not answered yet</span>
+        )}
       </div>
     </li>
   );

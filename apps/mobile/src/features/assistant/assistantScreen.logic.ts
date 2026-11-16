@@ -6,6 +6,7 @@ import {
   ASSISTANT_BRIEF_SCHEDULE_ID,
   SCHEDULE_MESSAGE_PREFIX,
   findGlobalAssistantProject,
+  recommendedAnswerLabel,
   statusReplyText,
   type EnvironmentId,
   type OrchestrationProjectShell,
@@ -18,8 +19,9 @@ import {
 // feed, and the text a one-tap answer sends.
 
 /** The button label of a Status question: its short answer, or the generic one. */
+/** An action for an open question ("Answer: Retry 3 times"), never a done state. */
 export function needsYouAnswerLabel(decision: Pick<ProjectStatusDecision, "answer">): string {
-  return decision.answer ?? "Go with recommendation";
+  return recommendedAnswerLabel(decision);
 }
 
 const RECOMMENDATION_BODY_PREFIX = "Go with your recommendation:";

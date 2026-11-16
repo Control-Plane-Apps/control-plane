@@ -4,9 +4,13 @@ import {
   STATUS_RECOMMENDATION_BODY_PREFIX,
   isAutoAcceptArmed,
   parseStatusReply,
+  recommendedAnswerLabel,
   sortProjectStatuses,
   statusReplyText,
+  statusStallOf,
   visibleProjectStatuses,
+  type StatusAgentShell,
+  type StatusStall,
   type OrchestrationThreadShell,
   type ProjectStatus,
   type ProjectStatusDecision,
@@ -49,21 +53,50 @@ export function statusGroupOf(status: Pick<ProjectStatus, "state" | "decision">)
   }
 }
 
-/** Non-empty groups in screen order. Checked-off finished rows are left out. */
+/**
+ * Non-empty groups in screen order. Checked-off finished rows are left out.
+ * Stalled rows (by id) sit at the top of In progress, whatever they claim.
+ */
 export function groupProjectStatuses<
-  T extends Pick<ProjectStatus, "state" | "decision" | "dismissedAt">,
+  T extends Pick<ProjectStatus, "id" | "state" | "decision" | "dismissedAt">,
 >(
   statuses: ReadonlyArray<T>,
+  stalledIds: ReadonlySet<string> = new Set(),
 ): ReadonlyArray<{ readonly group: StatusGroup; readonly statuses: ReadonlyArray<T> }> {
   const sorted = sortProjectStatuses(visibleProjectStatuses(statuses));
+  const groupOf = (status: T) =>
+    stalledIds.has(status.id) ? "in-progress" : statusGroupOf(status);
   return STATUS_GROUP_ORDER.flatMap((group) => {
-    const members = sorted.filter((status) => statusGroupOf(status) === group);
-    return members.length === 0 ? [] : [{ group, statuses: members }];
+    const members = sorted.filter((status) => groupOf(status) === group);
+    const ordered =
+      group === "in-progress"
+        ? [
+            ...members.filter((status) => stalledIds.has(status.id)),
+            ...members.filter((status) => !stalledIds.has(status.id)),
+          ]
+        : members;
+    return ordered.length === 0 ? [] : [{ group, statuses: ordered }];
   });
 }
 
+/** A row's stall from its linked agents' shells (absent ones count as gone), or null. */
+export function statusStallFor(
+  status: Pick<ProjectStatus, "state" | "updatedAt" | "agents" | "dismissedAt">,
+  shellsById: ReadonlyMap<string, StatusAgentShell>,
+  nowMs: number,
+  stallMinutes: number,
+): StatusStall | null {
+  return statusStallOf(
+    status,
+    (status.agents ?? []).map((id) => shellsById.get(id) ?? null),
+    nowMs,
+    stallMinutes,
+  );
+}
+
+/** An action for an open question ("Answer: Pilot with 5"), never a done state. */
 export function recommendationButtonLabel(decision: Pick<ProjectStatusDecision, "answer">): string {
-  return decision.answer ?? "Go with recommendation";
+  return recommendedAnswerLabel(decision);
 }
 
 export function showsFullRecommendation(

@@ -27,6 +27,8 @@ import {
   sentRecommendationKeys,
   showsFullRecommendation,
   statusGroupOf,
+  formatStatusAgeShort,
+  statusStallFor,
 } from "./projectStatus.logic";
 
 // A Wednesday at noon, local time, so day arithmetic does not depend on the runner's zone.
@@ -92,7 +94,7 @@ describe("status groups", () => {
 
 describe("decision labels", () => {
   it("uses the short answer, and the old wording for records without one", () => {
-    expect(recommendationButtonLabel({ answer: "Pilot 5" })).toBe("Pilot 5");
+    expect(recommendationButtonLabel({ answer: "Pilot 5" })).toBe("Answer: Pilot 5");
     expect(recommendationButtonLabel({})).toBe("Go with recommendation");
   });
 
@@ -350,5 +352,54 @@ describe("statusReplyPlacement", () => {
     const target = headerReplyTarget(row);
     expect(target).toEqual({ id: "pdf", title: "PDF export", state: "working" });
     expect(statusReplyTagFor(target)).toEqual({ title: "PDF export", statusId: "pdf" });
+  });
+});
+
+describe("stalled rows and freshness", () => {
+  const NOW_MS = Date.parse("2026-11-16T12:00:00.000Z");
+  const ago = (minutes: number) => new Date(NOW_MS - minutes * 60_000).toISOString();
+  const row = (id: string, state: "working" | "queued" | "needs-you" | "done") => ({
+    id,
+    state,
+    title: id,
+    summary: "s",
+    updatedAt: ago(5),
+  });
+
+  it("puts stalled rows at the top of In progress, even a queued one", () => {
+    const groups = groupProjectStatuses(
+      [row("a", "working"), row("b", "working"), row("q", "queued"), row("d", "done")],
+      new Set(["b", "q"]),
+    );
+    expect(groups.map((group) => [group.group, group.statuses.map((s) => s.id)])).toEqual([
+      ["in-progress", ["b", "q", "a"]],
+      ["done", ["d"]],
+    ]);
+  });
+
+  it("reads a row's stall from its agents' live shells", () => {
+    const shell = {
+      archivedAt: null,
+      settledAt: null,
+      hasPendingApprovals: false,
+      hasPendingUserInput: false,
+      session: { status: "ready", updatedAt: ago(40) },
+      latestTurn: { requestedAt: ago(60), startedAt: ago(60), completedAt: ago(40) },
+    };
+    const status = { state: "working" as const, updatedAt: ago(120), agents: ["t1"] };
+    expect(statusStallFor(status, new Map([["t1", shell]]), NOW_MS, 15)?.reason).toBe(
+      "No agent running for 40m",
+    );
+    const live = { ...shell, session: { status: "running", updatedAt: ago(1) } };
+    expect(statusStallFor(status, new Map([["t1", live]]), NOW_MS, 15)).toBeNull();
+    // An agent the client cannot see counts as gone.
+    expect(statusStallFor(status, new Map(), NOW_MS, 15)?.reason).toBe("No agent running for 2h");
+  });
+
+  it("formats the collapsed row's age", () => {
+    expect(formatStatusAgeShort(ago(0), NOW_MS)).toBe("now");
+    expect(formatStatusAgeShort(ago(12), NOW_MS)).toBe("12m");
+    expect(formatStatusAgeShort(ago(180), NOW_MS)).toBe("3h");
+    expect(formatStatusAgeShort(ago(60 * 50), NOW_MS)).toBe("2d");
   });
 });

@@ -77,6 +77,7 @@ import {
   type OwedResult,
 } from "./agentPushes.ts";
 import { isOrchestrationCommandRejection } from "./Errors.ts";
+import { agentStatusReminder } from "./statusFreshness.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 
 export class AgentCompletionReactor extends Context.Service<
@@ -258,6 +259,19 @@ export const make = Effect.gen(function* () {
             outcome: result.outcome,
             text: result.text,
             questions,
+            // Only the coordinator keeps Status, so only its copy asks for an update.
+            statusNote:
+              target === project.assistant.coordinatorThreadId
+                ? agentStatusReminder(
+                    project.assistant.statuses,
+                    agentThreadId,
+                    result.outcome.kind === "finished"
+                      ? "finished"
+                      : result.outcome.kind === "stopped"
+                        ? "stopped"
+                        : "failed",
+                  )
+                : undefined,
           }),
           attachments: [],
           // No replyTo: a pushed turn never owes a result of its own.

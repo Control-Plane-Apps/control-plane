@@ -27,6 +27,7 @@ import {
   type ProjectStatusDecision,
   isAutoAcceptArmed,
   parseStatusReply,
+  STATUS_RECOMMENDATION_BODY_PREFIX,
   type ThreadId,
 } from "@t3tools/contracts";
 import type * as Crypto from "effect/Crypto";
@@ -481,7 +482,18 @@ export const statusReplyEvents = Effect.fn("statusReplyEvents")(function* (
       payload: {
         projectId: project.id,
         statusId: status.id,
-        status: { ...status, decision: { ...decision, answeredAt: input.createdAt } },
+        status: {
+          ...status,
+          decision: {
+            ...decision,
+            answeredAt: input.createdAt,
+            // The one-tap answer (or a notification's) sends exactly this body;
+            // anything else is the user's own words.
+            answeredWith: reply.body.startsWith(STATUS_RECOMMENDATION_BODY_PREFIX)
+              ? ("recommendation" as const)
+              : ("reply" as const),
+          },
+        },
       },
     },
   ];
