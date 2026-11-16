@@ -1,10 +1,11 @@
 /**
- * Sidebar nav: New Chat above the search row. Add workspace lives on the
- * Tasks section header.
+ * Sidebar nav. New Chat and Search sit as icons in the title bar, right of the
+ * collapse toggle; the search field opens under them on demand.
  */
 import { SearchIcon, SquarePenIcon, XIcon } from "lucide-react";
 import {
   type ComponentProps,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -17,6 +18,58 @@ import { Input } from "../ui/input";
 import { SidebarMenuButton } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
+/** "New Chat (⌘N)", or the bare label when the command has no shortcut. */
+export function sidebarActionTooltip(label: string, shortcutLabel: string | null): string {
+  return shortcutLabel ? `${label} (${shortcutLabel})` : label;
+}
+
+/** The search field shows while opened from its icon, and always while it holds a query. */
+export function isSidebarSearchFieldVisible(open: boolean, query: string): boolean {
+  return open || query.length > 0;
+}
+
+/** New Chat and Search as icon buttons, for the title bar beside the collapse toggle. */
+export function SidebarTitlebarActions({
+  onNewChat,
+  newChatDisabled = false,
+  newChatTooltip,
+  searchOpen,
+  onToggleSearch,
+  searchTooltip,
+}: {
+  onNewChat: (event?: ReactMouseEvent<HTMLButtonElement>) => void;
+  newChatDisabled?: boolean;
+  newChatTooltip: string;
+  searchOpen: boolean;
+  onToggleSearch: () => void;
+  searchTooltip: string;
+}) {
+  return (
+    <div className="flex items-center gap-0.5">
+      <SidebarHeaderIconButton
+        label="New Chat"
+        tooltip={newChatTooltip}
+        tooltipSide="bottom"
+        disabled={newChatDisabled}
+        onClick={() => onNewChat()}
+        data-testid="sidebar-new-chat"
+      >
+        <SquarePenIcon aria-hidden className="size-4" />
+      </SidebarHeaderIconButton>
+      <SidebarHeaderIconButton
+        label="Search"
+        tooltip={searchTooltip}
+        tooltipSide="bottom"
+        aria-pressed={searchOpen}
+        onClick={onToggleSearch}
+        data-testid="sidebar-search"
+      >
+        <SearchIcon aria-hidden className="size-4" />
+      </SidebarHeaderIconButton>
+    </div>
+  );
+}
+
 export interface SidebarThreadHeaderProps {
   /** Lands on the search field so a popup can anchor to its width. */
   searchFieldRef?: RefObject<HTMLDivElement | null>;
@@ -24,13 +77,12 @@ export interface SidebarThreadHeaderProps {
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
   onSearchKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
+  /** Leaving an empty field closes it. */
+  onSearchBlur?: (event: ReactFocusEvent<HTMLInputElement>) => void;
   isSearching: boolean;
   searchResultCount: number;
   activeSearchResultIndex: number;
   onClearSearch: () => void;
-  onNewChat: (event?: ReactMouseEvent<HTMLButtonElement>) => void;
-  newChatDisabled?: boolean;
-  newChatTooltip?: ReactNode;
 }
 
 export function SidebarThreadHeader({
@@ -43,9 +95,7 @@ export function SidebarThreadHeader({
   searchResultCount,
   activeSearchResultIndex,
   onClearSearch,
-  onNewChat,
-  newChatDisabled = false,
-  newChatTooltip = "New Chat",
+  onSearchBlur,
 }: SidebarThreadHeaderProps) {
   const resultsVisible = isSearching && searchResultCount > 0;
   // Results shrink as the query narrows, so the active index can outrun the
@@ -55,23 +105,6 @@ export function SidebarThreadHeader({
 
   return (
     <div className="flex flex-col gap-0.5">
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              aria-label="New Chat"
-              disabled={newChatDisabled}
-              onClick={onNewChat}
-              className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-[length:1em] font-normal leading-tight text-sidebar-foreground outline-none hover:bg-sidebar-row-hover disabled:cursor-not-allowed disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-ring"
-            />
-          }
-        >
-          <SquarePenIcon className="size-3.5 shrink-0 text-[var(--sidebar-icon-color)]" />
-          <span className="min-w-0 truncate">New Chat</span>
-        </TooltipTrigger>
-        <TooltipPopup side="right">{newChatTooltip}</TooltipPopup>
-      </Tooltip>
       <div className="flex items-center gap-1">
         <div
           ref={searchFieldRef}
@@ -86,6 +119,7 @@ export function SidebarThreadHeader({
             value={searchQuery}
             onChange={(event) => onSearchQueryChange(event.currentTarget.value)}
             onKeyDown={onSearchKeyDown}
+            onBlur={onSearchBlur}
             placeholder="Search"
             aria-label="Search threads"
             role="combobox"
@@ -128,6 +162,7 @@ export function SidebarThreadHeader({
 export function SidebarHeaderIconButton({
   label,
   tooltip = label,
+  tooltipSide = "top",
   className,
   children,
   ...rest
@@ -135,6 +170,7 @@ export function SidebarHeaderIconButton({
   /** Accessible name; also the tooltip unless `tooltip` says more. */
   label: string;
   tooltip?: ReactNode;
+  tooltipSide?: "top" | "bottom";
   className?: string | undefined;
   children?: ReactNode;
 } & Omit<
@@ -164,7 +200,7 @@ export function SidebarHeaderIconButton({
           className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
         />
       </TooltipTrigger>
-      <TooltipPopup side="top">{tooltip}</TooltipPopup>
+      <TooltipPopup side={tooltipSide}>{tooltip}</TooltipPopup>
     </Tooltip>
   );
 }

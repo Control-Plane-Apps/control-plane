@@ -19,6 +19,7 @@ import {
   CommandId,
   EventId,
   isProjectInAssistantReach,
+  isStatusNeedingUser,
   MessageId,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
@@ -114,7 +115,7 @@ const make = Effect.gen(function* () {
           coordinatorThreadId: marker.coordinatorThreadId,
           coordinatorPhase: threadPhase(threadsById.get(marker.coordinatorThreadId)),
           needsYou: statuses.flatMap((status) =>
-            status.decision !== undefined && status.decision.answeredAt === undefined
+            status.decision !== undefined && isStatusNeedingUser(status)
               ? [
                   {
                     statusId: status.id,

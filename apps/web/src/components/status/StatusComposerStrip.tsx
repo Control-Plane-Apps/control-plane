@@ -1,4 +1,4 @@
-import { sortProjectStatuses, type ProjectStatus } from "@t3tools/contracts";
+import { isStatusNeedingUser, sortProjectStatuses, type ProjectStatus } from "@t3tools/contracts";
 import { XIcon } from "lucide-react";
 import { useMemo } from "react";
 
@@ -24,9 +24,7 @@ export function useStatusComposerBanner(input: {
   return useMemo(() => {
     if (!enabled || threadKey === null) return null;
     // Same rule as the header and sidebar counts: a question already answered waits on the coordinator.
-    const waiting = sortProjectStatuses(statuses).filter(
-      (status) => status.state === "needs-you" && status.decision?.answeredAt === undefined,
-    );
+    const waiting = sortProjectStatuses(statuses).filter(isStatusNeedingUser);
     if (waiting.length === 0) return null;
     return {
       id: `status-needs-you:${threadKey}`,

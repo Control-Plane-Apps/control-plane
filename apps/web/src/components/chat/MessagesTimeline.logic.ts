@@ -335,6 +335,7 @@ function isActivityEntry(entry: TimelineEntry): entry is ActivityEntry {
     : entry.kind === "work" &&
         entry.entry.agentSpawn === undefined &&
         entry.entry.questionAnswer === undefined &&
+        entry.entry.taskProposal === undefined &&
         !isTimelineDividerEntry(entry) &&
         entry.entry.tone !== "error";
 }
@@ -742,10 +743,13 @@ function deriveTurnFolds(input: {
       if (!isDivider && !isReasoning && index > terminalEntryIndex && !isSingleTrailingActivity) {
         continue;
       }
-      // User input and subagent batches stay visible after their turn settles.
+      // User input, subagent batches and task proposals stay visible after
+      // their turn settles.
       if (
         entry.kind === "work" &&
-        (entry.entry.questionAnswer !== undefined || entry.entry.agentSpawn !== undefined)
+        (entry.entry.questionAnswer !== undefined ||
+          entry.entry.agentSpawn !== undefined ||
+          entry.entry.taskProposal !== undefined)
       ) {
         continue;
       }
@@ -1027,6 +1031,7 @@ export function deriveMessagesTimelineRows(input: {
       !entryBelongsToActiveTurn(entry, index) ||
       entry.kind !== "work" ||
       entry.entry.questionAnswer !== undefined ||
+      entry.entry.taskProposal !== undefined ||
       isTimelineDividerEntry(entry) ||
       entry.entry.tone === "error"
     ) {
@@ -1210,6 +1215,7 @@ export function deriveMessagesTimelineRows(input: {
       if (
         timelineEntry.entry.agentSpawn !== undefined ||
         timelineEntry.entry.questionAnswer !== undefined ||
+        timelineEntry.entry.taskProposal !== undefined ||
         timelineEntry.entry.assistantCard !== undefined ||
         timelineEntry.entry.tone === "error"
       ) {
@@ -1237,6 +1243,7 @@ export function deriveMessagesTimelineRows(input: {
           nextEntry.kind !== "work" ||
           nextEntry.entry.agentSpawn !== undefined ||
           nextEntry.entry.questionAnswer !== undefined ||
+          nextEntry.entry.taskProposal !== undefined ||
           nextEntry.entry.assistantCard !== undefined ||
           isTimelineDividerEntry(nextEntry) ||
           nextEntry.entry.tone === "error" ||

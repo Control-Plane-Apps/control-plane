@@ -852,6 +852,41 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.toolLifecycleStatus).toBe("completed");
   });
 
+  it("folds a turn's cp_task_propose calls into one proposal block", () => {
+    const propose = (id: string, title: string, taskId: string, turnId = "turn-1") =>
+      makeActivity({
+        id,
+        kind: "tool.completed",
+        summary: "cplane · cp_task_propose",
+        tone: "tool",
+        turnId,
+        payload: {
+          itemType: "mcp_tool_call",
+          data: {
+            item: {
+              type: "mcpToolCall",
+              id: `call-${id}`,
+              server: "cplane",
+              tool: "cp_task_propose",
+              arguments: { title, when: "this-week" },
+              status: "completed",
+              result: { content: `{"task":{"id":"${taskId}","title":"${title}"` },
+            },
+          },
+        },
+      });
+    const entries = deriveWorkLogEntries([
+      propose("p1", "Draft memo", "task-1"),
+      makeActivity({ id: "cmd", kind: "tool.completed", summary: "Ran ls", turnId: "turn-1" }),
+      propose("p2", "Book flights", "task-2"),
+      propose("p3", "Email Sam", "task-3", "turn-2"),
+    ]);
+    const blocks = entries.filter((entry) => entry.taskProposal !== undefined);
+    expect(blocks.map((entry) => entry.id)).toEqual(["p1", "p3"]);
+    expect(blocks[0]!.taskProposal!.calls.map((call) => call.taskId)).toEqual(["task-1", "task-2"]);
+    expect(blocks[1]!.taskProposal!.calls.map((call) => call.title)).toEqual(["Email Sam"]);
+  });
+
   it("preserves MCP server, tool, arguments, and results for expanded display", () => {
     const item = {
       type: "mcpToolCall",

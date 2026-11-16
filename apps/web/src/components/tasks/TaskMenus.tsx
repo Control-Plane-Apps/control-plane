@@ -11,8 +11,8 @@ import {
 } from "@t3tools/client-runtime/state/projects";
 import { TASK_RECURRENCE_COUNT_MAX } from "@t3tools/contracts";
 import { addTaskDays, taskWeekday } from "@t3tools/contracts";
-import { CheckIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { CalendarIcon, CheckIcon, InboxIcon } from "lucide-react";
+import { useRef, useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { Menu, MenuGroup, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
@@ -22,6 +22,9 @@ const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 type MoveEntry = {
   readonly label: string;
   readonly hint?: string;
+  /** The single key that picks this entry while the menu is open. */
+  readonly key?: string;
+  readonly icon: "day" | "backlog" | null;
   readonly target: TaskMoveTarget;
 };
 
@@ -30,25 +33,49 @@ export function moveEntries(today: string): ReadonlyArray<ReadonlyArray<MoveEntr
   const tomorrow = addTaskDays(today, 1);
   return [
     [
-      { label: "Today", target: { kind: "today" } },
+      { label: "Today", key: "t", icon: "day", target: { kind: "today" } },
       {
         label: "Tomorrow",
         hint: WEEKDAYS_SHORT[taskWeekday(tomorrow)]!,
+        icon: "day",
         target: { kind: "tomorrow" },
       },
     ],
     [
-      { label: "This week", target: { kind: "commit", horizon: "week" } },
-      { label: "This month", target: { kind: "commit", horizon: "month" } },
-      { label: "This year", target: { kind: "commit", horizon: "year" } },
+      { label: "This week", key: "w", icon: null, target: { kind: "commit", horizon: "week" } },
+      { label: "This month", key: "m", icon: null, target: { kind: "commit", horizon: "month" } },
+      { label: "This year", key: "y", icon: null, target: { kind: "commit", horizon: "year" } },
     ],
     [
-      { label: "General backlog", target: { kind: "backlog", horizon: null } },
-      { label: "Week backlog", target: { kind: "backlog", horizon: "week" } },
-      { label: "Month backlog", target: { kind: "backlog", horizon: "month" } },
-      { label: "Year backlog", target: { kind: "backlog", horizon: "year" } },
+      { label: "Week backlog", icon: "backlog", target: { kind: "backlog", horizon: "week" } },
+      { label: "Month backlog", icon: "backlog", target: { kind: "backlog", horizon: "month" } },
+      { label: "Year backlog", icon: "backlog", target: { kind: "backlog", horizon: "year" } },
+      {
+        label: "General backlog",
+        key: "b",
+        icon: "backlog",
+        target: { kind: "backlog", horizon: null },
+      },
     ],
   ];
+}
+
+/** The entry a single key press picks in the open Move menu, if any. */
+export function moveEntryForKey(today: string, key: string): MoveEntry | undefined {
+  const pressed = key.toLowerCase();
+  return moveEntries(today)
+    .flat()
+    .find((entry) => entry.key === pressed);
+}
+
+function MoveIcon(props: { readonly kind: MoveEntry["icon"] }) {
+  if (props.kind === "day") return <CalendarIcon aria-hidden className="size-3.5 shrink-0" />;
+  if (props.kind === "backlog") return <InboxIcon aria-hidden className="size-3.5 shrink-0" />;
+  return <span aria-hidden className="size-3.5 shrink-0" />;
+}
+
+function KeyHint(props: { readonly children: ReactNode }) {
+  return <span className="text-muted-foreground text-xs uppercase">{props.children}</span>;
 }
 
 export function TaskMoveMenu(props: {
@@ -60,30 +87,58 @@ export function TaskMoveMenu(props: {
   readonly className?: string;
 }) {
   const groups = moveEntries(props.today);
+  const [open, setOpen] = useState(false);
+  const dateInput = useRef<HTMLInputElement>(null);
   return (
-    <Menu>
+    <Menu open={open} onOpenChange={setOpen}>
       <MenuTrigger
         className={props.className}
         aria-label={`Move task, now ${formatTaskHome(props.home, props.today)}`}
       >
         {props.children}
       </MenuTrigger>
-      <MenuPopup align="start" className="w-48">
+      <MenuPopup
+        align="start"
+        className="w-52"
+        onKeyDownCapture={(event) => {
+          if (event.metaKey || event.ctrlKey || event.altKey) return;
+          // Letters still pick an entry while the date field has focus; digits fill it.
+          if (event.target instanceof HTMLInputElement && event.target.type !== "date") return;
+          if (event.key.toLowerCase() === "d") {
+            event.preventDefault();
+            event.stopPropagation();
+            dateInput.current?.showPicker?.();
+            return;
+          }
+          const entry = moveEntryForKey(props.today, event.key);
+          if (entry === undefined) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          props.onMove(entry.target);
+        }}
+      >
         {groups.map((group, index) => (
           <MenuGroup key={group[0]!.label}>
             {index > 0 ? <MenuSeparator /> : null}
             {group.map((entry) => {
               const checked = isHomeAtTarget(props.home, entry.target, props.today);
               return (
-                <MenuItem key={entry.label} onClick={() => props.onMove(entry.target)}>
+                <MenuItem
+                  key={entry.label}
+                  className={cn(checked && "bg-accent/60")}
+                  onClick={() => props.onMove(entry.target)}
+                >
                   <span className="flex w-full items-center gap-2">
-                    <CheckIcon
-                      aria-hidden
-                      className={cn("size-3.5 shrink-0", checked ? "opacity-100" : "opacity-0")}
-                    />
+                    <MoveIcon kind={entry.icon} />
                     <span className="flex-1">{entry.label}</span>
+                    {checked ? (
+                      <CheckIcon aria-label="Current" className="size-3.5 shrink-0" />
+                    ) : null}
                     {entry.hint !== undefined ? (
                       <span className="text-muted-foreground text-xs">{entry.hint}</span>
+                    ) : entry.key !== undefined ? (
+                      <KeyHint>{entry.key}</KeyHint>
                     ) : null}
                   </span>
                 </MenuItem>
@@ -91,10 +146,12 @@ export function TaskMoveMenu(props: {
             })}
             {index === 0 ? (
               <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-sm hover:bg-accent">
-                <span aria-hidden className="size-3.5 shrink-0" />
+                <CalendarIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="flex-1">Pick a date</span>
                 <input
+                  ref={dateInput}
                   type="date"
+                  tabIndex={-1}
                   aria-label="Pick a date"
                   className="w-5 cursor-pointer opacity-60"
                   value={props.home.kind === "date" ? props.home.date : ""}
@@ -102,6 +159,7 @@ export function TaskMoveMenu(props: {
                     if (event.target.value) props.onPickDate(event.target.value);
                   }}
                 />
+                <KeyHint>d</KeyHint>
               </label>
             ) : null}
           </MenuGroup>

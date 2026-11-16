@@ -91,6 +91,7 @@ import { RemoteAgentsLive } from "./agentMachines/RemoteAgents.ts";
 import { RemoteAgentStoreLive } from "./agentMachines/RemoteAgentStore.ts";
 import * as AgentCompletionReactor from "./orchestration/AgentCompletionReactor.ts";
 import * as StatusDeadlineReactor from "./orchestration/StatusDeadlineReactor.ts";
+import * as TaskCommitmentRollover from "./orchestration/TaskCommitmentRollover.ts";
 import * as PushNotifier from "./push/PushNotifier.ts";
 import { pushActionRouteLayer, pushDevicesRouteLayer } from "./push/routes.ts";
 import * as ScheduleHost from "./schedules/ScheduleHost.ts";
@@ -285,9 +286,11 @@ const BaseReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(RuntimeReceiptBusLive),
 );
 
-// Pipe arity tops out at 20 steps; Task Sync rides one more.
+// Pipe arity tops out at 20 steps; Task Sync rides one more. Commitment
+// rollover sits above it so it can read Task Sync's week start.
 const ReactorLayerLive = BaseReactorLayerLive.pipe(
   Layer.provideMerge(PushNotifier.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+  Layer.provideMerge(TaskCommitmentRollover.layer),
   Layer.provideMerge(TaskSync.layer),
 );
 

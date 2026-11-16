@@ -868,3 +868,22 @@ describe("applyServerSettingsPatch globalInstructions", () => {
     });
   });
 });
+
+describe("applyServerSettingsPatch taskRolloverToCurrentPeriod", () => {
+  it("defaults commitment rollover off", () => {
+    expect(DEFAULT_SERVER_SETTINGS.taskRolloverToCurrentPeriod).toBe(false);
+  });
+
+  it("turns rollover on and off, and leaves it alone for unrelated patches", () => {
+    const on = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      taskRolloverToCurrentPeriod: true,
+    });
+    expect(on.taskRolloverToCurrentPeriod).toBe(true);
+    expect(
+      applyServerSettingsPatch(on, { globalInstructions: { tasks: false } })
+        .taskRolloverToCurrentPeriod,
+    ).toBe(true);
+    const off = applyServerSettingsPatch(on, { taskRolloverToCurrentPeriod: false });
+    expect(off.taskRolloverToCurrentPeriod).toBe(false);
+  });
+});

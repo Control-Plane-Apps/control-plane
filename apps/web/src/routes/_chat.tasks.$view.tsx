@@ -7,13 +7,16 @@ import {
   type TasksView,
 } from "../components/tasks/TasksPage";
 
-const FILTERS = new Set(["week", "month", "year", "recurring"]);
+const FILTERS = new Set(["week", "month", "year", "recurring", "completed"]);
 
 export const Route = createFileRoute("/_chat/tasks/$view")({
   validateSearch: (raw: Record<string, unknown>): TasksSearch => ({
     ...(typeof raw.project === "string" && raw.project.length > 0 ? { project: raw.project } : {}),
     ...(typeof raw.filter === "string" && FILTERS.has(raw.filter)
       ? { filter: raw.filter as TasksSearch["filter"] }
+      : {}),
+    ...(typeof raw.highlight === "string" && raw.highlight.length > 0
+      ? { highlight: raw.highlight }
       : {}),
   }),
   beforeLoad: ({ params }) => {

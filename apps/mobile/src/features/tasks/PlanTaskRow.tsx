@@ -7,6 +7,8 @@ import {
   type TaskAgentState,
 } from "@t3tools/client-runtime/state/projects";
 import {
+  findGlobalAssistantProject,
+  isGlobalAssistant,
   isProposedTask,
   TASK_NOTES_MAX,
   TASK_TITLE_MAX,
@@ -77,11 +79,15 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
   readonly hidePeriod?: boolean;
   /** The All tasks list puts the home at the trailing edge. */
   readonly metaPlacement?: "below" | "trailing";
+  /** Lit up briefly when opened from a chat's proposal block. */
+  readonly highlighted?: boolean;
 }) {
   const { task, state, context, expanded, selecting, selected } = props;
   const palette = useTaskPalette();
   const swipeRef = useRef<SwipeableMethods | null>(null);
   const project = context.projects.find((p) => p.id === task.links?.projectId) ?? null;
+  // Lucive mobile's check-off (taskCheckOff.ts): the tap writes at once; the
+  // list keeps the checked, struck-through row for CHECK_OFF_LINGER_MS.
   const completed = task.status === "completed";
   const overdue = isTaskOverdue(task, context.today);
   const trailingMeta = props.metaPlacement === "trailing";
@@ -94,7 +100,7 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
 
   const body = (
     <View
-      className={cn("bg-card", selected && "bg-secondary")}
+      className={cn("bg-card", (selected || props.highlighted === true) && "bg-secondary")}
       style={{ paddingVertical: 4, paddingRight: 16 }}
     >
       <View className="flex-row items-start">
@@ -111,7 +117,7 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
               checked={completed}
               label={completed ? `Reopen ${task.title}` : `Complete ${task.title}`}
               onPress={() =>
-                completed
+                task.status === "completed"
                   ? void context.actions.setCompleted(task, false)
                   : context.onComplete(task)
               }
@@ -136,7 +142,6 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
                   "shrink text-[17px] font-t3-bold text-foreground",
                   completed && "font-t3 text-foreground-muted line-through",
                 )}
-                numberOfLines={1}
               >
                 {task.title}
               </Text>
@@ -438,7 +443,11 @@ function ExpandedTask(props: {
       ? undefined
       : project?.assistant?.statuses?.find((s) => s.id === task.links!.statusId);
   const assistantProjects = context.projects.filter((p) => p.assistant != null);
-  const canHandOff = project !== null && project.assistant != null && !isProposedTask(task);
+  // The task's own Project coordinator when it has one; the Assistant is always offered.
+  const ownProject =
+    project !== null && project.assistant != null && !isGlobalAssistant(project) ? project : null;
+  const globalAssistant = findGlobalAssistantProject(context.projects) ?? null;
+  const canHandOff = !isProposedTask(task) && (ownProject !== null || globalAssistant !== null);
 
   return (
     <View className="gap-3 pb-3 pt-1">
@@ -573,16 +582,27 @@ function ExpandedTask(props: {
         {canHandOff ? (
           <ControlPillMenu
             actions={[
-              { id: "coordinator", title: `Ask ${project.title} coordinator` },
-              { id: "agent", title: "Start an agent" },
+              ...(globalAssistant !== null
+                ? [{ id: "assistant", title: "Hand to Assistant" }]
+                : []),
+              ...(ownProject !== null
+                ? [
+                    { id: "coordinator", title: `Ask ${ownProject.title} coordinator` },
+                    { id: "agent", title: "Start an agent" },
+                  ]
+                : []),
             ]}
-            onPressAction={({ nativeEvent }) =>
-              context.onHandToAgent(
-                task,
-                nativeEvent.event === "agent" ? "agent" : "coordinator",
-                project,
-              )
-            }
+            onPressAction={({ nativeEvent }) => {
+              if (nativeEvent.event === "assistant" && globalAssistant !== null) {
+                context.onHandToAgent(task, "coordinator", globalAssistant);
+              } else if (ownProject !== null) {
+                context.onHandToAgent(
+                  task,
+                  nativeEvent.event === "agent" ? "agent" : "coordinator",
+                  ownProject,
+                );
+              }
+            }}
           >
             <View
               accessible

@@ -37,6 +37,7 @@ import {
   type WirePeriodFull,
   type WireTaskWithSeq,
 } from "./cloudClient.ts";
+import { planCommitmentRollover } from "./rollover.ts";
 
 type Wire = Record<string, unknown>;
 
@@ -79,6 +80,22 @@ export interface TaskSyncApply {
   readonly removedIntents: ReadonlyArray<{ horizon: TaskHorizon; startsOn: string }>;
 }
 
+/**
+ * What a commitment rollover pass did. `local`: no synced account, so every
+ * task is this machine's own. `waiting`: synced, but the account's week start
+ * has not arrived this session (or the first merge is pending), so nothing
+ * may move yet. `done`: synced commitments were handled; the caller must not
+ * rewrite any task in `syncedTaskIds` itself.
+ */
+export type TaskSyncRolloverResult =
+  | { readonly state: "local" | "waiting" }
+  | {
+      readonly state: "done";
+      readonly syncedTaskIds: ReadonlySet<string>;
+      readonly retired: number;
+      readonly created: number;
+    };
+
 export interface TaskSyncEngineDeps {
   readonly client: TaskSyncCloudClient | null;
   readonly loadState: () => Promise<TaskSyncPersistedState>;
@@ -93,6 +110,11 @@ export interface TaskSyncEngineDeps {
     intents: ReadonlyArray<TaskIntent>;
   }>;
   readonly onWeekStart?: (day: number) => void;
+  /**
+   * After a sync that applied pulled records, or first heard the account's
+   * week start this session. Not called for a rollover's own apply.
+   */
+  readonly onApplied?: () => void;
   readonly deviceName: string;
   readonly now: () => Date;
   readonly newId: () => string;
@@ -129,6 +151,9 @@ export class TaskSyncEngine {
   private availability: { available: boolean; checkedAtMs: number } | null = null;
   /** Local pre-launch preview: this install treats Task Sync as available. */
   private preview = false;
+  /** Whether `/changes` reported the account's week start since this process started. */
+  private weekStartReceived = false;
+  private appliedSinceNotify = false;
   private readonly deps: TaskSyncEngineDeps;
 
   constructor(deps: TaskSyncEngineDeps) {
@@ -262,6 +287,7 @@ export class TaskSyncEngine {
     await this.deps.setToken(result.token);
     const fresh = emptyTaskSyncState();
     this.state = { ...fresh, account: { email: result.email } };
+    this.weekStartReceived = false;
     this.lastError = undefined;
     await this.save();
     await this.refreshSubscription().catch(() => undefined);
@@ -275,6 +301,7 @@ export class TaskSyncEngine {
     if (token !== null && this.deps.client !== null) await this.deps.client.revoke(token);
     await this.deps.setToken(null);
     this.state = emptyTaskSyncState();
+    this.weekStartReceived = false;
     this.lastError = undefined;
     await this.save();
     return this.status();
@@ -333,6 +360,7 @@ export class TaskSyncEngine {
         // The account revoked this device: back to local-only.
         await this.deps.setToken(null);
         this.state = emptyTaskSyncState();
+        this.weekStartReceived = false;
         await this.save();
       } else {
         this.lastError =
@@ -344,15 +372,24 @@ export class TaskSyncEngine {
     } finally {
       this.syncing = false;
     }
+    if (this.appliedSinceNotify) {
+      this.appliedSinceNotify = false;
+      this.deps.onApplied?.();
+    }
   }
 
   private async push(token: string): Promise<void> {
     const state = await this.load();
     if (this.pendingCount(state) === 0) return;
+    const sent = {
+      tasks: { ...state.outbox.tasks },
+      periods: { ...state.outbox.periods },
+      memberships: { ...state.outbox.memberships },
+    };
     const batch = {
-      periods: Object.values(state.outbox.periods),
-      tasks: Object.values(state.outbox.tasks),
-      memberships: Object.values(state.outbox.memberships),
+      periods: Object.values(sent.periods),
+      tasks: Object.values(sent.tasks),
+      memberships: Object.values(sent.memberships),
     };
     const result = await this.requireClient().push(token, batch);
     for (const remap of result.remaps?.periods ?? []) {
@@ -368,7 +405,13 @@ export class TaskSyncEngine {
         }
       }
     }
-    state.outbox = { tasks: {}, periods: {}, memberships: {} };
+    // Only what was sent leaves the outbox: a record queued during the push
+    // (a local edit, a rollover) goes with the next one.
+    for (const kind of ["tasks", "periods", "memberships"] as const) {
+      for (const [id, record] of Object.entries(sent[kind])) {
+        if (state.outbox[kind][id] === record) delete state.outbox[kind][id];
+      }
+    }
     await this.save();
   }
 
@@ -386,15 +429,24 @@ export class TaskSyncEngine {
         changed = true;
       }
       const weekStartsOn = result.settings?.weekStartsOn;
-      if (typeof weekStartsOn === "number" && weekStartsOn !== state.weekStartsOn) {
-        state.weekStartsOn = weekStartsOn;
-        this.deps.onWeekStart?.(weekStartsOn);
+      if (typeof weekStartsOn === "number") {
+        if (!this.weekStartReceived) {
+          this.weekStartReceived = true;
+          this.appliedSinceNotify = true;
+        }
+        if (weekStartsOn !== state.weekStartsOn) {
+          state.weekStartsOn = weekStartsOn;
+          this.deps.onWeekStart?.(weekStartsOn);
+        }
       }
       state.cursor = result.nextSince;
       if (!result.hasMore) break;
     }
     await this.save();
-    if (changed) await this.applyMirror();
+    if (changed) {
+      await this.applyMirror();
+      this.appliedSinceNotify = true;
+    }
   }
 
   /** Every cloud record as Control Plane sees it, applied in one command. */
@@ -426,6 +478,64 @@ export class TaskSyncEngine {
       month: "2-digit",
       day: "2-digit",
     }).format(this.now());
+  }
+
+  /**
+   * Moves the synced account's expired commitments (see planCommitmentRollover):
+   * old memberships are tombstoned and new ones created on the current period,
+   * found or created by its natural key. Task rows are never written. The
+   * result reaches the event store through the same apply as pulled records,
+   * so it is not pushed back as a task edit.
+   */
+  async rollExpiredCommitments(today: string): Promise<TaskSyncRolloverResult> {
+    if (this.deps.client === null) return { state: "local" };
+    const state = await this.load();
+    if (state.account === undefined) return { state: "local" };
+    if (state.initialMergeDone !== true || !this.weekStartReceived) return { state: "waiting" };
+    const plan = planCommitmentRollover(
+      {
+        tasks: Object.values(state.mirror.tasks),
+        periods: Object.values(state.mirror.periods),
+        memberships: Object.values(state.mirror.memberships),
+      },
+      today,
+      state.weekStartsOn,
+    );
+    const syncedTaskIds = new Set(Object.keys(state.mirror.tasks));
+    if (plan.retire.length === 0 && plan.create.length === 0) {
+      return { state: "done", syncedTaskIds, retired: 0, created: 0 };
+    }
+    const at = this.now().toISOString();
+    for (const membership of plan.retire) {
+      this.queueMembership({
+        ...membership,
+        revision: membership.revision + 1,
+        updatedAt: at,
+        deletedAt: at,
+      });
+    }
+    for (const rolled of plan.create) {
+      const period = this.periodFor(rolled.horizon, rolled.startsOn, rolled.endsOn, at);
+      this.queueMembership({
+        id: this.deps.newId(),
+        periodId: period.id,
+        taskId: rolled.taskId,
+        role: "commitment",
+        sortOrder: rolled.sortOrder,
+        revision: 1,
+        createdAt: at,
+        updatedAt: at,
+        deletedAt: null,
+      });
+    }
+    await this.save();
+    await this.applyMirror();
+    return {
+      state: "done",
+      syncedTaskIds,
+      retired: plan.retire.length,
+      created: plan.create.length,
+    };
   }
 
   /** After the first pull: tasks that exist only here go up to the account. */
@@ -561,6 +671,44 @@ export class TaskSyncEngine {
     return own ?? 0;
   }
 
+  /**
+   * Lucive's placement for the task's home. A dated Lucive commitment shows
+   * here as its period, so while that period home is unchanged (its
+   * commitment is still live) the stored day and reminder stay: only moving
+   * the task elsewhere may clear them.
+   */
+  private placementKeepingDate(task: Task, stored: WireTaskWithSeq | undefined) {
+    const placement = lucivePlacementOf(task.home);
+    const home = task.home;
+    if (home.kind !== "period" || stored === undefined || stored.scheduledDate === null) {
+      return placement;
+    }
+    const state = this.state!;
+    const unchanged = Object.values(state.mirror.memberships).some((membership) => {
+      if (
+        membership.taskId !== task.id ||
+        membership.role !== "commitment" ||
+        membership.deletedAt !== null
+      ) {
+        return false;
+      }
+      const period = state.mirror.periods[membership.periodId];
+      return (
+        period !== undefined &&
+        period.deletedAt === null &&
+        period.horizon === home.horizon &&
+        period.startsOn === home.startsOn
+      );
+    });
+    return unchanged
+      ? {
+          ...placement,
+          scheduledDate: stored.scheduledDate,
+          reminderTime: stored.reminderTime ?? null,
+        }
+      : placement;
+  }
+
   private async recordLocalTask(
     task: Task,
     all: ReadonlyArray<Task>,
@@ -569,7 +717,7 @@ export class TaskSyncEngine {
     const state = await this.load();
     const at = this.now().toISOString();
     const stored = state.mirror.tasks[task.id];
-    const placement = lucivePlacementOf(task.home);
+    const placement = this.placementKeepingDate(task, stored);
     let templateId: string | null = stored?.templateId ?? task.seriesId ?? null;
     const template = templateId === null ? undefined : state.mirror.tasks[templateId];
 

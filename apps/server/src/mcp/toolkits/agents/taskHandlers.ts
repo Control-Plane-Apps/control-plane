@@ -52,6 +52,7 @@ import * as ProjectionSnapshotQuery from "../../../orchestration/Services/Projec
 import { OrchestrationEventStore } from "../../../persistence/Services/OrchestrationEventStore.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import { TaskSyncService } from "../../../taskSync/TaskSyncService.ts";
+import { TaskCommitmentRollover } from "../../../orchestration/TaskCommitmentRollover.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   type AgentsToolkit,
@@ -347,6 +348,9 @@ export const makeTaskHandlers = Effect.gen(function* () {
   const syncedTaskIds = Option.isSome(taskSync)
     ? taskSync.value.syncedTaskIds
     : Effect.succeed<ReadonlySet<string>>(new Set());
+  // Optional the same way: expired commitments roll before a list reads them.
+  const rollover = yield* Effect.serviceOption(TaskCommitmentRollover);
+  const rolloverBeforeRead = Option.isSome(rollover) ? rollover.value.beforeRead : Effect.void;
 
   /** The caller as a coordinator or the Assistant, with the Assistant's settings. */
   const requireCaller = Effect.fn("TaskTools.requireCaller")(function* () {
@@ -471,6 +475,7 @@ export const makeTaskHandlers = Effect.gen(function* () {
     cp_task_list: (input: TaskListInput) =>
       Effect.gen(function* () {
         const { projectId, settings } = yield* requireCaller();
+        yield* rolloverBeforeRead;
         const { today } = yield* nowParts;
         const window = taskListWindow(input, today);
         if (typeof window === "string") {

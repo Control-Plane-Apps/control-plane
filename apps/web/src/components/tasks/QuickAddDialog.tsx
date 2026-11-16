@@ -31,7 +31,11 @@ import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { TaskMoveMenu, TaskReminderMenu, TaskRepeatMenu } from "./TaskMenus";
+import { defaultHomeForView, isTasksView, type TasksSearch } from "./tasksRange";
 import { useTaskActions } from "./useTaskActions";
+
+/** What the quick add title allows; rows wrap rather than truncate. */
+const TITLE_MAX = 120;
 
 const useQuickAddStore = create<{
   readonly open: boolean;
@@ -95,6 +99,12 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
   const routeParams = useRouterState({
     select: (state) => state.matches[state.matches.length - 1]?.params ?? {},
   });
+  const routeSearch = useRouterState({
+    select: (state) => (state.matches[state.matches.length - 1]?.search ?? {}) as TasksSearch,
+  });
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const routeView = (routeParams as Record<string, unknown>).view;
+  const rangeView = pathname.startsWith("/tasks/") && isTasksView(routeView) ? routeView : null;
   const routeThread = useMemo(() => {
     const target = resolveThreadRouteTarget(routeParams as Record<string, string | undefined>);
     if (target?.kind !== "server") return null;
@@ -110,7 +120,9 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const parsed = parseQuickAdd(text, today);
-  const home: TaskHome = homeOverride ?? parsed.home ?? { kind: "date", date: today };
+  // Defaults to the range you are on: the day, the browsed period, or a backlog.
+  const home: TaskHome =
+    homeOverride ?? parsed.home ?? defaultHomeForView(rangeView, routeSearch, today);
   const reminder = home.kind === "date" ? home.reminderTime : undefined;
   const project = projects.find((candidate) => candidate.id === projectId) ?? null;
   const linkedThread = threads.find((thread) => thread.id === threadId) ?? null;
@@ -171,7 +183,7 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
               ref={inputRef}
               aria-label="Task title"
               placeholder="Task title"
-              maxLength={240}
+              maxLength={TITLE_MAX}
               className="w-full bg-transparent text-[15px] outline-none placeholder:text-muted-foreground"
               value={text}
               onChange={(event) => {
@@ -180,6 +192,12 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
               }}
             />
           </div>
+          <span
+            aria-label={`${text.length} of ${TITLE_MAX} characters`}
+            className="shrink-0 text-muted-foreground text-xs tabular-nums"
+          >
+            {text.length}/{TITLE_MAX}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-1 px-4 pt-2 pb-3 ps-10">
           <TaskMoveMenu
@@ -207,15 +225,6 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
               {reminder !== undefined ? formatTaskTime(reminder) : "Remind"}
             </TaskReminderMenu>
           ) : null}
-          <TaskRepeatMenu
-            recurrence={recurrence ?? undefined}
-            disabled={home.kind !== "date"}
-            className={chip(recurrence !== null, true)}
-            onChange={setRecurrence}
-          >
-            <RepeatIcon aria-hidden className="size-3.5" />
-            {recurrence !== null ? formatTaskRecurrence(recurrence) : "Repeat"}
-          </TaskRepeatMenu>
           <Menu>
             <MenuTrigger className={chip(project !== null)} aria-label="Project">
               <FolderIcon aria-hidden className="size-3.5" />
@@ -250,6 +259,15 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
               ) : null}
             </MenuPopup>
           </Menu>
+          <TaskRepeatMenu
+            recurrence={recurrence ?? undefined}
+            disabled={home.kind !== "date"}
+            className={chip(recurrence !== null, true)}
+            onChange={setRecurrence}
+          >
+            <RepeatIcon aria-hidden className="size-3.5" />
+            {recurrence !== null ? formatTaskRecurrence(recurrence) : "Repeat"}
+          </TaskRepeatMenu>
           {linkedThread !== null ? (
             <span className={chip(true)}>
               <MessageCircleIcon aria-hidden className="size-3.5" />
@@ -274,9 +292,16 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
             <Kbd>↵</Kbd> add and open
           </span>
           <button
+            type="button"
+            className="ms-auto inline-flex h-7 cursor-pointer items-center rounded-md border border-border bg-background px-3 text-foreground text-xs hover:bg-accent"
+            onClick={props.onDone}
+          >
+            Cancel
+          </button>
+          <button
             type="submit"
             disabled={busy || parsed.title.trim().length === 0}
-            className="ms-auto inline-flex h-7 cursor-pointer items-center rounded-md bg-primary px-3 font-medium text-primary-foreground text-xs disabled:opacity-50"
+            className="inline-flex h-7 cursor-pointer items-center rounded-md bg-primary px-3 font-medium text-primary-foreground text-xs disabled:opacity-50"
           >
             Add task
           </button>

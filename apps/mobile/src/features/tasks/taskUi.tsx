@@ -48,6 +48,11 @@ export interface TaskPalette {
   readonly checkboxBorder: string;
   readonly shadow: string;
   readonly swipeSchedule: string;
+  readonly card: string;
+  readonly mutedForeground: string;
+  /** The selected range chip: ink on paper, inverted in dark. */
+  readonly selectedChip: string;
+  readonly selectedChipForeground: string;
 }
 
 function colorOf(style: unknown, key: "backgroundColor" | "color" | "borderColor"): string {
@@ -76,6 +81,9 @@ export function useTaskPalette(): TaskPalette {
   const iconMuted = colorOf(useResolveClassNames("text-icon-muted"), "color");
   const shadow = colorOf(useResolveClassNames("bg-primary-shadow"), "backgroundColor");
   const subtleStrong = colorOf(useResolveClassNames("bg-subtle-strong"), "backgroundColor");
+  const card = colorOf(useResolveClassNames("bg-card"), "backgroundColor");
+  const ink = colorOf(useResolveClassNames("bg-foreground"), "backgroundColor");
+  const paper = colorOf(useResolveClassNames("text-screen"), "color");
   return {
     accent: primary,
     accentForeground: onPrimary,
@@ -95,6 +103,10 @@ export function useTaskPalette(): TaskPalette {
     swipeSchedule: info,
     checkboxBorder: iconMuted,
     shadow,
+    card,
+    mutedForeground: muted,
+    selectedChip: ink,
+    selectedChipForeground: paper,
   };
 }
 

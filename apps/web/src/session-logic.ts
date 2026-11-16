@@ -11,6 +11,11 @@ import * as Arr from "effect/Array";
 import { shallow } from "zustand/vanilla/shallow";
 import { isBackgroundTaskActivity } from "@t3tools/client-runtime/state/subagentRuntime";
 import {
+  taskProposeCallOf,
+  withTaskProposeCall,
+  type TaskProposeCall,
+} from "@t3tools/client-runtime/state/projects";
+import {
   commandDetailRepeatsCommand,
   extractCommandOutputText,
   extractWorkLogToolLifecycleStatus,
@@ -95,6 +100,14 @@ export interface WorkLogEntry {
     workflowId: string | null;
     agentTaskIds: ReadonlyArray<string>;
   };
+  /**
+   * Present on a turn's `cp_task_propose` row: every call that turn made,
+   * folded into one block at the first call. The block reads the tasks'
+   * live state from the task store at render time.
+   */
+  taskProposal?: {
+    calls: ReadonlyArray<TaskProposeCall>;
+  };
 }
 
 const workLogCollapseKey = Symbol();
@@ -177,7 +190,7 @@ export function workEntryIndicatesToolNeutralStatus(entry: WorkLogEntry): boolea
   // Spawn CTA rows are never neutral-hidden: mid-run they derive from
   // task.progress (tone "thinking") and the neutral filter was swallowing
   // them exactly while the fleet ran — the one moment they matter most.
-  if (entry.agentSpawn !== undefined) {
+  if (entry.agentSpawn !== undefined || entry.taskProposal !== undefined) {
     return false;
   }
   if (!workLogEntryIsToolLike(entry)) {
@@ -737,7 +750,27 @@ function collapseDerivedWorkLogEntries(
   // rows (live-test finding, thread 7ac7ef05).
   const groupKeyByTaskId = new Map<string, string>();
   const toolLifecycleRowIndex = new Map<string, number>();
+  // A turn's task proposals are one block, at its first call.
+  const proposalRowIndex = new Map<string, number>();
   for (const entry of entries) {
+    const proposeCall = taskProposeCallOf(entry);
+    if (proposeCall !== null) {
+      const key = entry.turnId ? `turn:${entry.turnId}` : `call:${proposeCall.callId}`;
+      const existingIndex = proposalRowIndex.get(key);
+      if (existingIndex !== undefined) {
+        const existing = collapsed[existingIndex]!;
+        collapsed[existingIndex] = {
+          ...existing,
+          taskProposal: {
+            calls: withTaskProposeCall(existing.taskProposal?.calls ?? [], proposeCall),
+          },
+        };
+        continue;
+      }
+      proposalRowIndex.set(key, collapsed.length);
+      collapsed.push({ ...entry, taskProposal: { calls: [proposeCall] } });
+      continue;
+    }
     const isTaskRow =
       entry.taskId !== undefined &&
       !entry.isBackgroundTask &&
