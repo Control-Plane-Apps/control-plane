@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { moveSections, nextWeekDate, weekendDate } from "./taskMenus";
+import {
+  moveSections,
+  nextWeekDate,
+  repeatMenuActions,
+  repeatMenuChoice,
+  weekendDate,
+} from "./taskMenus";
 
 // 2026-11-13 is a Friday.
 const FRIDAY = "2026-11-13";
@@ -32,5 +38,27 @@ describe("Move sheet targets", () => {
       "Month backlog",
       "Year backlog",
     ]);
+  });
+});
+
+describe("Repeat menu", () => {
+  it("offers ends only once the task repeats, and keeps them across cadences", () => {
+    expect(repeatMenuActions(null, FRIDAY).map((a) => a.id)).not.toContain("Never ends");
+    const weekly = repeatMenuChoice(null, "Weekly", FRIDAY)!;
+    const actions = repeatMenuActions(weekly, FRIDAY);
+    expect(actions.find((a) => a.id === "Never ends")?.state).toBe("on");
+    const five = repeatMenuChoice(weekly, "Ends after 5 times", FRIDAY)!;
+    expect(five).toEqual({ frequency: "weekly", interval: 1, endAfterCount: 5 });
+    expect(repeatMenuChoice(five, "Daily", FRIDAY)).toEqual({
+      frequency: "daily",
+      interval: 1,
+      endAfterCount: 5,
+    });
+    expect(repeatMenuChoice(five, "Ends this month", FRIDAY)).toEqual({
+      frequency: "weekly",
+      interval: 1,
+      endAfterDate: "2026-11-30",
+    });
+    expect(repeatMenuChoice(five, "Does not repeat", FRIDAY)).toBeNull();
   });
 });

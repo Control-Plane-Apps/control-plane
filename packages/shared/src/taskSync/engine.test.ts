@@ -258,6 +258,41 @@ describe("TaskSyncEngine", () => {
     });
   });
 
+  it("pushes an end rule to the series template, and updates it when it changes", async () => {
+    const cloud = new FakeCloud();
+    cloud.seedTask({ id: "t1", scheduledDate: "2026-11-16" });
+    const { engine, local } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    const repeating = {
+      ...local.tasks[0]!,
+      recurrence: { frequency: "weekly", interval: 1, endAfterCount: 3, occurrence: 1 },
+    } as Task;
+    local.tasks = [repeating];
+    await engine.onLocalTask("t1", repeating);
+    await engine.sync();
+    const templateId = cloud.tasks.get("t1")!.templateId!;
+    expect(cloud.tasks.get(templateId)?.recurrence).toEqual({
+      frequency: "weekly",
+      interval: 1,
+      anchor: "calendar",
+      endAfterCount: 3,
+    });
+    const dated = {
+      ...repeating,
+      seriesId: templateId,
+      recurrence: { frequency: "weekly", interval: 1, endAfterDate: "2026-12-31" },
+    } as Task;
+    local.tasks = [dated];
+    await engine.onLocalTask("t1", dated);
+    await engine.sync();
+    expect(cloud.tasks.get(templateId)?.recurrence).toEqual({
+      frequency: "weekly",
+      interval: 1,
+      anchor: "calendar",
+      endAfterDate: "2026-12-31",
+    });
+  });
+
   it("never pushes a proposal the user has not added", async () => {
     const cloud = new FakeCloud();
     const { engine } = setup(cloud);

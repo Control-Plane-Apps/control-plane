@@ -2,6 +2,10 @@ import type { ProjectStatus, Task } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  formatTaskRecurrence,
+  taskRecurrenceEnd,
+  withTaskRecurrenceCadence,
+  withTaskRecurrenceEnd,
   allTasks,
   committedTasks,
   formatTaskHome,
@@ -143,5 +147,34 @@ describe("task views", () => {
       ).kind,
     ).toBe("workstream-done");
     expect(taskAgentState({ ...handed, status: "completed" }, idle, []).kind).toBe("completed");
+  });
+});
+
+describe("repeat ends", () => {
+  const weekly = { frequency: "weekly", interval: 1 } as const;
+
+  it("reads how a series ends", () => {
+    expect(formatTaskRecurrence(weekly)).toBe("Weekly");
+    expect(formatTaskRecurrence({ ...weekly, endAfterCount: 5 })).toBe("Weekly, 5 times");
+    expect(formatTaskRecurrence({ ...weekly, endAfterCount: 1 })).toBe("Weekly, once");
+    expect(formatTaskRecurrence({ ...weekly, endAfterDate: "2026-12-31" })).toBe(
+      "Weekly, until Dec 31",
+    );
+  });
+
+  it("sets one end at a time and keeps it across a new cadence", () => {
+    const counted = withTaskRecurrenceEnd(
+      { ...weekly, endAfterDate: "2026-12-31", occurrence: 2 },
+      { kind: "count", count: 4 },
+    );
+    expect(counted).toEqual({ ...weekly, endAfterCount: 4 });
+    expect(taskRecurrenceEnd(counted)).toEqual({ kind: "count", count: 4 });
+    expect(withTaskRecurrenceCadence(counted, { frequency: "daily", interval: 1 })).toEqual({
+      frequency: "daily",
+      interval: 1,
+      endAfterCount: 4,
+    });
+    expect(withTaskRecurrenceCadence(counted, null)).toBeNull();
+    expect(withTaskRecurrenceEnd(counted, { kind: "never" })).toEqual(weekly);
   });
 });

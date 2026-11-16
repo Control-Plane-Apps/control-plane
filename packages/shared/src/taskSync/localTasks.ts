@@ -6,8 +6,10 @@
  * alone because only the Mac owns them.
  */
 import {
-  nextTaskOccurrence,
+  followingTaskOccurrence,
+  withTaskOccurrence,
   type Task,
+  type TaskDeleteScope,
   type TaskHome,
   type TaskId,
   type TaskPatch,
@@ -31,7 +33,7 @@ export function createLocalTask(input: LocalTaskInput, now: string): Task {
     status: "todo",
     home: input.home,
     ...(input.recurrence !== undefined && input.home.kind === "date"
-      ? { recurrence: input.recurrence }
+      ? { recurrence: withTaskOccurrence(input.recurrence, 1) }
       : {}),
     createdAt: now,
     updatedAt: now,
@@ -52,7 +54,11 @@ export function patchLocalTask(
   const recurrence =
     patch.recurrence === null
       ? undefined
-      : (patch.recurrence ?? (home.kind === "date" ? stored.recurrence : undefined));
+      : patch.recurrence !== undefined
+        ? withTaskOccurrence(patch.recurrence, stored.recurrence?.occurrence ?? 1)
+        : home.kind === "date"
+          ? stored.recurrence
+          : undefined;
   const notes =
     patch.notes === undefined
       ? stored.notes
@@ -89,7 +95,16 @@ export function patchLocalTask(
   ) {
     return [next];
   }
-  const { recurrence: rule, ...closed } = next;
+  const { recurrence: _rule, ...closed } = next;
+  const following = followingOf(next, now, newId, true);
+  return following === null ? [closed] : [closed, following];
+}
+
+/** The series' next occurrence after `task`, or null when it ends there. */
+function followingOf(task: Task, now: string, newId: () => TaskId, counted: boolean): Task | null {
+  if (task.recurrence === undefined || task.home.kind !== "date") return null;
+  const following = followingTaskOccurrence(task.home.date, task.recurrence, counted);
+  if (following === null) return null;
   const {
     completedAt: _done,
     handoff: _handoff,
@@ -97,15 +112,38 @@ export function patchLocalTask(
     importSource: _importSource,
     proposal: _proposal,
     ...carried
-  } = next;
-  const following: Task = {
+  } = task;
+  return {
     ...carried,
     id: newId(),
     status: "todo",
-    home: { ...next.home, date: nextTaskOccurrence(next.home.date, rule) },
-    recurrence: rule,
+    home: { ...task.home, date: following.date },
+    recurrence: following.recurrence,
     createdAt: now,
     updatedAt: now,
   };
-  return [closed, following];
+}
+
+/**
+ * Deletes a task the way the server does. Returns, in order, the records to
+ * write (a task, or null for a delete). A repeating task follows Lucive: by
+ * default this occurrence is skipped and the next one opens; with scope
+ * "series" the repeat stops first, so the synced series is retired, and this
+ * pending occurrence is deleted.
+ */
+export function deleteLocalTask(
+  stored: Task,
+  scope: TaskDeleteScope | undefined,
+  now: string,
+  newId: () => TaskId,
+): ReadonlyArray<{ readonly id: TaskId; readonly task: Task | null }> {
+  const removed = { id: stored.id, task: null };
+  if (stored.recurrence === undefined || stored.home.kind !== "date") return [removed];
+  if (scope === "series") {
+    const { recurrence: _rule, ...plain } = stored;
+    return [{ id: stored.id, task: { ...plain, updatedAt: now } }, removed];
+  }
+  if (stored.status !== "todo") return [removed];
+  const following = followingOf(stored, now, newId, false);
+  return following === null ? [removed] : [removed, { id: following.id, task: following }];
 }

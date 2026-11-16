@@ -5,6 +5,7 @@ import {
   controlPlaneIntentsFromLucive,
   controlPlaneTasksFromLucive,
   lucivePlacementOf,
+  luciveRecurrenceOf,
   type LuciveWireTask,
 } from "./taskSyncRecords.ts";
 
@@ -110,5 +111,64 @@ describe("Lucive mapping", () => {
         endsOn: "2026-11-30",
       }).commitment,
     ).toEqual({ horizon: "month", startsOn: "2026-11-01" });
+  });
+});
+
+describe("Lucive repeat end conditions", () => {
+  it("pulls a series' end rule and counts its live occurrences", () => {
+    const tasks = controlPlaneTasksFromLucive(
+      {
+        tasks: [
+          wire("tpl", {
+            isTemplate: true,
+            recurrence: {
+              frequency: "daily",
+              interval: 1,
+              endAfterCount: 5,
+              endAfterDate: "2026-12-31T00:00:00.000Z",
+            },
+          }),
+          wire("done-1", {
+            templateId: "tpl",
+            status: "completed",
+            completedAt: AT,
+            scheduledDate: "2026-11-11",
+          }),
+          wire("skipped", { templateId: "tpl", scheduledDate: "2026-11-12", deletedAt: AT }),
+          wire("open", { templateId: "tpl", scheduledDate: "2026-11-13" }),
+        ],
+        periods: [],
+        memberships: [],
+      },
+      "2026-11-13",
+    );
+    const open = tasks.find((task) => task.id === "open")!;
+    expect(open.recurrence).toEqual({
+      frequency: "daily",
+      interval: 1,
+      endAfterCount: 5,
+      endAfterDate: "2026-12-31",
+      occurrence: 2,
+    });
+  });
+
+  it("pushes the end rule without Control Plane's occurrence count", () => {
+    expect(
+      luciveRecurrenceOf({
+        frequency: "weekly",
+        interval: 2,
+        daysOfWeek: [1],
+        endAfterCount: 4,
+        endAfterDate: "2027-01-31",
+        occurrence: 3,
+      }),
+    ).toEqual({
+      frequency: "weekly",
+      interval: 2,
+      anchor: "calendar",
+      daysOfWeek: [1],
+      endAfterCount: 4,
+      endAfterDate: "2027-01-31",
+    });
   });
 });

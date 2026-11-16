@@ -1,6 +1,7 @@
 import {
   TaskSyncError,
   type Task,
+  type TaskDeleteScope,
   type TaskHorizon,
   type TaskId,
   type TaskIntent,
@@ -20,6 +21,7 @@ import {
 } from "@t3tools/shared/taskSync/engine";
 import {
   createLocalTask,
+  deleteLocalTask,
   patchLocalTask,
   type LocalTaskInput,
 } from "@t3tools/shared/taskSync/localTasks";
@@ -242,9 +244,19 @@ class CloudTaskStore {
     return true;
   }
 
-  async delete(taskId: TaskId): Promise<void> {
-    this.emit({ tasks: this.snapshot.tasks.filter((task) => task.id !== taskId) });
-    await this.engine.onLocalTask(taskId, null);
+  async delete(taskId: TaskId, scope?: TaskDeleteScope): Promise<void> {
+    const stored = this.snapshot.tasks.find((task) => task.id === taskId);
+    const writes =
+      stored === undefined
+        ? [{ id: taskId, task: null }]
+        : deleteLocalTask(stored, scope, new Date().toISOString(), () => uuidv4() as TaskId);
+    const byId = new Map(this.snapshot.tasks.map((task) => [task.id as string, task]));
+    for (const write of writes) {
+      if (write.task === null) byId.delete(write.id);
+      else byId.set(write.id, write.task);
+    }
+    this.emit({ tasks: [...byId.values()] });
+    for (const write of writes) await this.engine.onLocalTask(write.id, write.task);
     this.scheduleSync();
   }
 

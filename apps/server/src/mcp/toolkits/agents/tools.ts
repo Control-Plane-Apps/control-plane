@@ -582,7 +582,7 @@ const taskHomeFields = {
 };
 
 const RECURRENCE_HELP =
-  "Repeat rule for a task on a single day (`date` alone, today or tomorrow): frequency daily / weekly / monthly, interval (every N), daysOfWeek (weekly, 0-6 Sunday first) or dayOfMonth (monthly, 1-31, clamped to short months). The day is the series' first occurrence; only one occurrence is open at a time, and completing (or skipping) it opens the next.";
+  "Repeat rule for a task on a single day (`date` alone, today or tomorrow): frequency daily / weekly / monthly, interval (every N), daysOfWeek (weekly, 0-6 Sunday first) or dayOfMonth (monthly, 1-31, clamped to short months), and optionally how it ends: endAfterCount (stop after N occurrences, 1-999; skipped ones do not count, as in Lucive) and/or endAfterDate (YYYY-MM-DD, no occurrence after that day). Omit both to repeat forever. Give the whole rule each time (it replaces the old one); `occurrence` is kept by Control Plane and ignored. The day is the series' first occurrence; only one occurrence is open at a time, and completing (or skipping) it opens the next unless the series has ended.";
 
 const taskRecurrenceField = TaskRecurrence.annotate({ description: RECURRENCE_HELP });
 

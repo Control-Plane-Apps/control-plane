@@ -90,7 +90,8 @@ export function formatTaskTime(time: string): string {
   return `${hour}:${String(m).padStart(2, "0")} ${suffix}`;
 }
 
-export function formatTaskRecurrence(recurrence: TaskRecurrence): string {
+/** "Weekly", "Every 2 days": the cadence alone, without how the series ends. */
+export function formatTaskRecurrenceCadence(recurrence: TaskRecurrence): string {
   const n = recurrence.interval;
   switch (recurrence.frequency) {
     case "daily":
@@ -100,6 +101,64 @@ export function formatTaskRecurrence(recurrence: TaskRecurrence): string {
     case "monthly":
       return n === 1 ? "Monthly" : `Every ${n} months`;
   }
+}
+
+/** "Weekly", "Weekly, 5 times", "Daily, until Dec 31". */
+export function formatTaskRecurrence(recurrence: TaskRecurrence): string {
+  const cadence = formatTaskRecurrenceCadence(recurrence);
+  const end = taskRecurrenceEnd(recurrence);
+  switch (end.kind) {
+    case "never":
+      return cadence;
+    case "count":
+      return `${cadence}, ${end.count === 1 ? "once" : `${end.count} times`}`;
+    case "date":
+      return `${cadence}, until ${formatTaskShortDate(end.date)}`;
+  }
+}
+
+/** How a series ends. Lucive allows both; the earlier of the two wins, and the menus set one. */
+export type TaskRecurrenceEnd =
+  | { readonly kind: "never" }
+  | { readonly kind: "count"; readonly count: number }
+  | { readonly kind: "date"; readonly date: string };
+
+export function taskRecurrenceEnd(recurrence: TaskRecurrence): TaskRecurrenceEnd {
+  if (recurrence.endAfterCount !== undefined) {
+    return { kind: "count", count: recurrence.endAfterCount };
+  }
+  if (recurrence.endAfterDate !== undefined) return { kind: "date", date: recurrence.endAfterDate };
+  return { kind: "never" };
+}
+
+/** `recurrence` ending as `end` instead (the server keeps the occurrence count). */
+export function withTaskRecurrenceEnd(
+  recurrence: TaskRecurrence,
+  end: TaskRecurrenceEnd,
+): TaskRecurrence {
+  const {
+    endAfterCount: _count,
+    endAfterDate: _date,
+    occurrence: _occurrence,
+    ...cadence
+  } = recurrence;
+  switch (end.kind) {
+    case "never":
+      return cadence;
+    case "count":
+      return { ...cadence, endAfterCount: end.count };
+    case "date":
+      return { ...cadence, endAfterDate: end.date };
+  }
+}
+
+/** A new cadence from a menu, keeping how the current series ends. */
+export function withTaskRecurrenceCadence(
+  current: TaskRecurrence | undefined | null,
+  cadence: TaskRecurrence | null,
+): TaskRecurrence | null {
+  if (cadence === null) return null;
+  return current == null ? cadence : withTaskRecurrenceEnd(cadence, taskRecurrenceEnd(current));
 }
 
 /** How a task's home reads on its row, relative to `today`. */

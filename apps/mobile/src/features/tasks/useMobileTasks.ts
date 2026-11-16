@@ -8,6 +8,7 @@ import {
   localTaskDate,
   type EnvironmentId,
   type Task,
+  type TaskDeleteScope,
   type TaskHandoff,
   type TaskHome,
   type TaskHorizon,
@@ -264,9 +265,12 @@ export function useTaskActions(
         ),
       move: (task: Pick<Task, "id" | "title">, home: TaskHome) =>
         patch(task, { home }, `Could not move ${task.title}`),
-      delete: (task: Pick<Task, "id" | "title">) =>
+      delete: (task: Pick<Task, "id" | "title">, scope?: TaskDeleteScope) =>
         run(`Could not delete ${task.title}`, (id) =>
-          remove({ environmentId: id, input: { taskId: task.id } }),
+          remove({
+            environmentId: id,
+            input: { taskId: task.id, ...(scope !== undefined ? { scope } : {}) },
+          }),
         ),
       respond: (task: Pick<Task, "id" | "title">, accept: boolean) =>
         run(accept ? `Could not add ${task.title}` : `Could not dismiss ${task.title}`, (id) =>
@@ -324,8 +328,8 @@ function cloudActions() {
       ),
     move: (task: Pick<Task, "id" | "title">, home: TaskHome) =>
       patch(task, { home }, `Could not move ${task.title}`),
-    delete: (task: Pick<Task, "id" | "title">) =>
-      guarded(`Could not delete ${task.title}`, () => store.delete(task.id)),
+    delete: (task: Pick<Task, "id" | "title">, scope?: TaskDeleteScope) =>
+      guarded(`Could not delete ${task.title}`, () => store.delete(task.id, scope)),
     respond: async (task: Pick<Task, "id" | "title">, _accept: boolean) => {
       Alert.alert(`Could not answer ${task.title}`, NEEDS_MAC);
       return false;
