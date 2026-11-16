@@ -27,7 +27,7 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import { cn } from "../../lib/cn";
 import { PillButton } from "../status/ProjectStatusPanel";
 import { recommendationButtonLabel } from "../status/projectStatus.logic";
-import { REMINDER_TIMES, REPEAT_OPTIONS } from "./taskMenus";
+import { REMINDER_TIMES, repeatMenuActions, repeatMenuChoice } from "./taskMenus";
 import { symbol, TaskCheckbox, TaskChip, useTaskPalette, BARE_INPUT_STYLE } from "./taskUi";
 import type { TaskActions } from "./useMobileTasks";
 
@@ -479,12 +479,10 @@ function ExpandedTask(props: {
         ) : null}
         {task.home.kind === "date" ? (
           <ControlPillMenu
-            actions={REPEAT_OPTIONS.map((option) => ({ id: option.label, title: option.label }))}
+            actions={[...repeatMenuActions(task.recurrence, context.today)]}
             onPressAction={({ nativeEvent }) =>
               void context.actions.patch(task, {
-                recurrence:
-                  REPEAT_OPTIONS.find((option) => option.label === nativeEvent.event)?.value ??
-                  null,
+                recurrence: repeatMenuChoice(task.recurrence, nativeEvent.event, context.today),
               })
             }
           >
@@ -621,7 +619,20 @@ function ExpandedTask(props: {
           actions={[
             ...(task.handoff !== undefined ? [{ id: "unlink", title: "Unlink agent thread" }] : []),
             { id: "cancel", title: "Cancel task" },
-            { id: "delete", title: "Delete task", attributes: { destructive: true } },
+            ...(task.recurrence !== undefined && task.home.kind === "date"
+              ? [
+                  {
+                    id: "delete-occurrence",
+                    title: "Delete this occurrence",
+                    attributes: { destructive: true },
+                  },
+                  {
+                    id: "delete-series",
+                    title: "Stop repeating and delete",
+                    attributes: { destructive: true },
+                  },
+                ]
+              : [{ id: "delete", title: "Delete task", attributes: { destructive: true } }]),
           ]}
           onPressAction={({ nativeEvent }) => {
             if (nativeEvent.event === "unlink") void context.actions.handOff(task, null);
@@ -633,6 +644,10 @@ function ExpandedTask(props: {
               );
             }
             if (nativeEvent.event === "delete") void context.actions.delete(task);
+            if (nativeEvent.event === "delete-occurrence") {
+              void context.actions.delete(task, "occurrence");
+            }
+            if (nativeEvent.event === "delete-series") void context.actions.delete(task, "series");
           }}
         >
           <View

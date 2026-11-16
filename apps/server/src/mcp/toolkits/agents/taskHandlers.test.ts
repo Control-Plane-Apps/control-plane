@@ -1290,3 +1290,96 @@ describe("repeating tasks, links and intents (Lucive parity)", () => {
     ),
   );
 });
+
+describe("repeat end conditions and the user's Delete (Lucive parity)", () => {
+  const weekly = { frequency: "weekly", interval: 1 } as const;
+
+  it.effect("a series that ends after N occurrences stops opening new ones", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit", newTasks: "create" });
+        const added = yield* tools.propose(ASSISTANT, {
+          title: "Physio",
+          date: "2026-11-13",
+          recurrence: { ...weekly, endAfterCount: 2, occurrence: 7 },
+        });
+        expect(added.task.recurrence).toEqual({ ...weekly, endAfterCount: 2, occurrence: 1 });
+        // Skipping does not count toward the end.
+        const skipped = yield* tools.delete(ASSISTANT, { taskId: added.task.id });
+        expect(skipped.next?.recurrence?.occurrence).toBe(1);
+        yield* tools.update(ASSISTANT, { taskId: skipped.next!.id, status: "completed" });
+        const open = (yield* tools.list(ASSISTANT, { text: "physio" })).tasks;
+        expect(open.map((task) => [task.home, task.recurrence?.occurrence])).toEqual([
+          [day("2026-11-27"), 2],
+        ]);
+        yield* tools.update(ASSISTANT, { taskId: open[0]!.id, status: "completed" });
+        expect((yield* tools.list(ASSISTANT, { text: "physio" })).tasks).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("a series that ends on a date opens nothing after it", () =>
+    run(
+      Effect.gen(function* () {
+        yield* addTask("weekly", "Gym lift", day("2026-11-14"), { recurrence: weekly });
+        useAssistant({ tasks: "edit" });
+        const dated = yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("weekly"),
+          recurrence: { ...weekly, endAfterDate: "2026-11-21" },
+        });
+        expect(dated.task.recurrence).toEqual({ ...weekly, endAfterDate: "2026-11-21" });
+        yield* tools.update(ASSISTANT, { taskId: TaskId.make("weekly"), status: "completed" });
+        const next = (yield* tools.list(ASSISTANT, { text: "gym" })).tasks;
+        expect(next.map((task) => task.home)).toEqual([day("2026-11-21")]);
+        yield* tools.update(ASSISTANT, { taskId: next[0]!.id, status: "completed" });
+        expect((yield* tools.list(ASSISTANT, { text: "gym" })).tasks).toEqual([]);
+        expect(
+          (yield* errorOf(
+            tools.update(ASSISTANT, {
+              taskId: TaskId.make("user-task"),
+              date: "2026-11-20",
+              recurrence: { ...weekly, endAfterDate: "2026-02-30" },
+            }),
+          )).message,
+        ).toMatch(/not a date/);
+      }),
+    ),
+  );
+
+  it.effect("the user's Delete skips one occurrence or stops the series, like the tool", () =>
+    run(
+      Effect.gen(function* () {
+        yield* addTask("weekly", "Gym lift", day("2026-11-14"), { recurrence: weekly });
+        yield* dispatch({
+          type: "task.delete",
+          commandId: cid(),
+          taskId: TaskId.make("weekly"),
+          createdAt: NOW,
+        });
+        const model = yield* (yield* ProjectionSnapshotQuery).getCommandReadModel();
+        const next = (model.tasks ?? []).find((task) => task.title === "Gym lift")!;
+        expect(next.home).toEqual(day("2026-11-21"));
+        expect(next.recurrence).toEqual(weekly);
+        yield* dispatch({
+          type: "task.delete",
+          commandId: cid(),
+          taskId: next.id,
+          scope: "series",
+          createdAt: NOW,
+        });
+        const after = yield* (yield* ProjectionSnapshotQuery).getCommandReadModel();
+        expect((after.tasks ?? []).filter((task) => task.title === "Gym lift")).toEqual([]);
+        const plain = yield* Effect.exit(
+          dispatch({
+            type: "task.delete",
+            commandId: cid(),
+            taskId: TaskId.make("user-task"),
+            scope: "series",
+            createdAt: NOW,
+          }),
+        );
+        expect(plain._tag).toBe("Failure");
+      }),
+    ),
+  );
+});

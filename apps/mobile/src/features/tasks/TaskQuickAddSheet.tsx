@@ -22,7 +22,7 @@ import { AppTextInput } from "../../components/AppText";
 import { AppText as Text } from "../../components/AppText";
 import { ControlPillMenu } from "../../components/ControlPill";
 import { SymbolView } from "../../components/AppSymbol";
-import { moveSections, REMINDER_TIMES, REPEAT_OPTIONS } from "./taskMenus";
+import { moveSections, REMINDER_TIMES, repeatMenuActions, repeatMenuChoice } from "./taskMenus";
 import { symbol, TaskCheckbox, TaskChip, useTaskPalette, BARE_INPUT_STYLE } from "./taskUi";
 import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 
@@ -168,12 +168,9 @@ export function TaskQuickAddSheet({ route }: StaticScreenProps<TaskQuickAddParam
           </ControlPillMenu>
           {home.kind === "date" ? (
             <ControlPillMenu
-              actions={REPEAT_OPTIONS.map((option) => ({ id: option.label, title: option.label }))}
+              actions={[...repeatMenuActions(recurrence, today)]}
               onPressAction={({ nativeEvent }) =>
-                setRecurrence(
-                  REPEAT_OPTIONS.find((option) => option.label === nativeEvent.event)?.value ??
-                    null,
-                )
+                setRecurrence(repeatMenuChoice(recurrence, nativeEvent.event, today))
               }
             >
               <TaskChip

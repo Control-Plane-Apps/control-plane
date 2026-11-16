@@ -348,6 +348,63 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   );
 
 describe("Assistant task tools on a Lucive-synced account", () => {
+  it.effect("a synced series ending after a count stops where Lucive would", () =>
+    run(
+      Effect.gen(function* () {
+        const cloud = new FakeCloud();
+        cloud.seedTask({
+          id: "tpl",
+          title: "Physio",
+          isTemplate: true,
+          recurrence: { frequency: "weekly", interval: 1, endAfterCount: 2 },
+        });
+        cloud.seedTask({
+          id: "occ-1",
+          title: "Physio",
+          scheduledDate: "2026-11-06",
+          templateId: "tpl",
+          status: "completed",
+          completedAt: T0,
+        });
+        cloud.seedTask({
+          id: "occ-2",
+          title: "Physio",
+          scheduledDate: "2026-11-13",
+          templateId: "tpl",
+        });
+        const pump = yield* connect(cloud);
+        const open = (yield* tools.list({ text: "physio" })).tasks;
+        expect(open.map((task) => [task.id, task.recurrence?.occurrence])).toEqual([["occ-2", 2]]);
+        yield* tools.update({ taskId: id("occ-2"), status: "completed" });
+        yield* pump;
+        expect(cloud.tasks.get("occ-2")?.status).toBe("completed");
+        // The second of two: no third occurrence here or on the account.
+        expect((yield* tools.list({ text: "physio" })).tasks).toEqual([]);
+        expect(
+          [...cloud.tasks.values()].filter(
+            (task) => task.templateId === "tpl" && task.status === "todo",
+          ),
+        ).toEqual([]);
+        // Changing the end on the account's series reaches the template.
+        yield* tools.update({
+          taskId: id("occ-2"),
+          status: "todo",
+        });
+        yield* tools.update({
+          taskId: id("occ-2"),
+          recurrence: { frequency: "weekly", interval: 1, endAfterDate: "2026-12-31" },
+        });
+        yield* pump;
+        expect(cloud.tasks.get("tpl")?.recurrence).toEqual({
+          frequency: "weekly",
+          interval: 1,
+          anchor: "calendar",
+          endAfterDate: "2026-12-31",
+        });
+      }),
+    ),
+  );
+
   it.effect("cancel, delete, restore and reorder round-trip through the synced store", () =>
     run(
       Effect.gen(function* () {

@@ -1,6 +1,7 @@
 import type {
   EnvironmentId,
   Task,
+  TaskDeleteScope,
   TaskHandoff,
   TaskHome,
   TaskHorizon,
@@ -102,9 +103,13 @@ export function useTaskActions(environmentId: EnvironmentId | null) {
           completed ? `Could not complete ${task.title}` : `Could not reopen ${task.title}`,
         ),
       move: (task: Task, home: TaskHome) => patch(task, { home }, `Could not move ${task.title}`),
-      delete: (task: Task) =>
+      /** For a repeating task, `scope` skips this occurrence or stops the series. */
+      delete: (task: Task, scope?: TaskDeleteScope) =>
         run(`Could not delete ${task.title}`, (id) =>
-          remove({ environmentId: id, input: { taskId: task.id } }),
+          remove({
+            environmentId: id,
+            input: { taskId: task.id, ...(scope !== undefined ? { scope } : {}) },
+          }),
         ),
       respond: (task: Task, accept: boolean) =>
         run(accept ? `Could not add ${task.title}` : `Could not dismiss ${task.title}`, (id) =>

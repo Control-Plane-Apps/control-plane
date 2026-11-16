@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { addTaskDays, nextTaskOccurrence, taskPeriodFor, taskWeekday } from "./tasks.ts";
+import {
+  addTaskDays,
+  followingTaskOccurrence,
+  nextTaskOccurrence,
+  taskPeriodFor,
+  taskWeekday,
+  withTaskOccurrence,
+} from "./tasks.ts";
 
 describe("task dates", () => {
   it("does calendar arithmetic across month and year ends", () => {
@@ -45,5 +52,39 @@ describe("task dates", () => {
     expect(
       nextTaskOccurrence("2026-11-13", { frequency: "monthly", interval: 1, dayOfMonth: 10 }),
     ).toBe("2026-12-10");
+  });
+});
+
+describe("repeat end conditions", () => {
+  const weekly = { frequency: "weekly", interval: 1 } as const;
+
+  it("counts occurrences only while the series ends after a count", () => {
+    expect(withTaskOccurrence(weekly, 3)).toEqual(weekly);
+    expect(withTaskOccurrence({ ...weekly, endAfterCount: 3, occurrence: 9 }, 2)).toEqual({
+      ...weekly,
+      endAfterCount: 3,
+      occurrence: 2,
+    });
+  });
+
+  it("stops after N occurrences, like Lucive's live-instance count", () => {
+    const rule = withTaskOccurrence({ ...weekly, endAfterCount: 2 }, 1);
+    const second = followingTaskOccurrence("2026-11-13", rule);
+    expect(second).toEqual({ date: "2026-11-20", recurrence: { ...rule, occurrence: 2 } });
+    expect(followingTaskOccurrence("2026-11-20", second!.recurrence)).toBeNull();
+    // A skipped occurrence does not count, so the series goes on.
+    expect(followingTaskOccurrence("2026-11-20", second!.recurrence, false)).toEqual({
+      date: "2026-11-27",
+      recurrence: second!.recurrence,
+    });
+  });
+
+  it("opens nothing after the end date", () => {
+    const rule = { ...weekly, endAfterDate: "2026-11-20" };
+    expect(followingTaskOccurrence("2026-11-13", rule)?.date).toBe("2026-11-20");
+    expect(followingTaskOccurrence("2026-11-20", rule)).toBeNull();
+    expect(
+      followingTaskOccurrence("2026-11-14", { ...weekly, endAfterDate: "2026-11-20" }),
+    ).toBeNull();
   });
 });

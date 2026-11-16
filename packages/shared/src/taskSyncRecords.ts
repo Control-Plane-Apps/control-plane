@@ -12,13 +12,16 @@
  * Recurring series are a template plus generated instances that point at it
  * with templateId; templates are not shown as tasks.
  */
-import type {
-  Task,
-  TaskHome,
-  TaskHorizon,
-  TaskIntent,
-  TaskRecurrence,
-  TaskStatus,
+import {
+  isTaskLocalDate,
+  TASK_RECURRENCE_COUNT_MAX,
+  withTaskOccurrence,
+  type Task,
+  type TaskHome,
+  type TaskHorizon,
+  type TaskIntent,
+  type TaskRecurrence,
+  type TaskStatus,
 } from "@t3tools/contracts";
 
 export interface LuciveWireTask {
@@ -102,11 +105,33 @@ function recurrenceOf(value: unknown): TaskRecurrence | undefined {
     typeof v.dayOfMonth === "number" && v.dayOfMonth >= 1 && v.dayOfMonth <= 31
       ? v.dayOfMonth
       : undefined;
+  const endAfterCount =
+    typeof v.endAfterCount === "number" && Number.isInteger(v.endAfterCount) && v.endAfterCount >= 1
+      ? Math.min(v.endAfterCount, TASK_RECURRENCE_COUNT_MAX)
+      : undefined;
+  // Lucive accepts a date or an ISO date-time; the day is what counts.
+  const endDay = typeof v.endAfterDate === "string" ? v.endAfterDate.slice(0, 10) : undefined;
+  const endAfterDate = endDay !== undefined && isTaskLocalDate(endDay) ? endDay : undefined;
   return {
     frequency,
     interval,
     ...(days !== undefined && days.length > 0 ? { daysOfWeek: days } : {}),
     ...(dayOfMonth !== undefined ? { dayOfMonth } : {}),
+    ...(endAfterCount !== undefined ? { endAfterCount } : {}),
+    ...(endAfterDate !== undefined ? { endAfterDate } : {}),
+  };
+}
+
+/** The repeat rule as Lucive's wire carries it (no Control Plane-only `occurrence`). */
+export function luciveRecurrenceOf(recurrence: TaskRecurrence): Record<string, unknown> {
+  return {
+    frequency: recurrence.frequency,
+    interval: recurrence.interval,
+    anchor: "calendar",
+    ...(recurrence.daysOfWeek !== undefined ? { daysOfWeek: recurrence.daysOfWeek } : {}),
+    ...(recurrence.dayOfMonth !== undefined ? { dayOfMonth: recurrence.dayOfMonth } : {}),
+    ...(recurrence.endAfterCount !== undefined ? { endAfterCount: recurrence.endAfterCount } : {}),
+    ...(recurrence.endAfterDate !== undefined ? { endAfterDate: recurrence.endAfterDate } : {}),
   };
 }
 
@@ -150,6 +175,13 @@ export function controlPlaneTasksFromLucive(state: LucivePlanningState, today: s
   const live = state.tasks
     .filter((t) => !t.isTemplate && t.deletedAt === null)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt));
+  // Lucive counts a series' live occurrences against endAfterCount.
+  const liveInSeries = new Map<string, number>();
+  for (const t of live) {
+    if (t.templateId !== null) {
+      liveInSeries.set(t.templateId, (liveInSeries.get(t.templateId) ?? 0) + 1);
+    }
+  }
   return live.map((t): Task => {
     const home: TaskHome =
       commitmentHome(t.id, state, periodsById, today) ??
@@ -160,9 +192,16 @@ export function controlPlaneTasksFromLucive(state: LucivePlanningState, today: s
             ...(t.reminderTime != null ? { reminderTime: t.reminderTime } : {}),
           }
         : { kind: "backlog", horizon: t.backlogHorizon ?? null });
-    const recurrence = recurrenceOf(
+    const rule = recurrenceOf(
       t.templateId !== null ? templates.get(t.templateId)?.recurrence : t.recurrence,
     );
+    const recurrence =
+      rule === undefined
+        ? undefined
+        : withTaskOccurrence(
+            rule,
+            t.templateId !== null ? (liveInSeries.get(t.templateId) ?? 1) : 1,
+          );
     const status = STATUSES.has(t.status as TaskStatus) ? (t.status as TaskStatus) : "todo";
     const notes = t.notes?.trim();
     return {
