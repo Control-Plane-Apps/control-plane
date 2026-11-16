@@ -5205,6 +5205,10 @@ export default function Sidebar() {
   const newThreadLabel = sidebarActionTooltip("New Chat", newThreadShortcutLabel);
   // The Assistant and Tasks rows stay pinned above the scrolling list.
   const showPinnedRows = !settledViewOpen && !isSearchingThreads;
+  // The Assistant's pinned channels sit under its row, oldest pin first.
+  const assistantChannels = (assistantPartition.globalAssistant?.agents ?? [])
+    .filter((thread) => thread.pinnedAt != null && thread.archivedAt == null)
+    .toSorted((a, b) => (a.pinnedAt ?? "").localeCompare(b.pinnedAt ?? ""));
   return (
     <>
       <SidebarChromeHeader
@@ -5537,7 +5541,21 @@ export default function Sidebar() {
                       const folders = settledViewOpen ? settledProjectFolders : projectFolders;
                       const items: ReactNode[] = [];
                       if (!settledViewOpen) {
-                        // The Assistant and Tasks rows are pinned above; Projects, then Workspaces.
+                        // The Assistant and Tasks rows are pinned above. The Assistant's pinned
+                        // channels lead the list, right under them; then Projects, Workspaces.
+                        if (showAssistantsSection && assistantChannels.length > 0) {
+                          items.push(
+                            <ul
+                              key="global-assistant-channels"
+                              aria-label="Assistant channels"
+                              className="ml-4 flex flex-col gap-px"
+                            >
+                              {assistantChannels.map((thread) =>
+                                renderThreadRowInner(thread, "pinned"),
+                              )}
+                            </ul>,
+                          );
+                        }
                         if (showAssistantsSection) {
                           items.push(
                             <SidebarListSectionHeader
