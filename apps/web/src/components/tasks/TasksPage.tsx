@@ -67,7 +67,7 @@ import {
 } from "./TaskList";
 import { TASK_RANGE_DROP, TaskDayDropZone, TaskDragProvider } from "./taskDrag";
 import type { TaskRowContext } from "./TaskRow";
-import { TaskSyncChip, TaskSyncMarginLine, taskSyncIndicator } from "./TaskSyncIndicator";
+import { TaskSyncChip, taskSyncIndicator } from "./TaskSyncIndicator";
 import {
   defaultHomeForView,
   dropLabelForView,
@@ -448,7 +448,6 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   const weekIntent = taskIntentFor(intents, "week", today);
   const saveIntent = (horizon: TaskHorizon) => (text: string) =>
     void actions.setIntent(horizon, taskPeriodFor(horizon, today).startsOn, text);
-  const syncLine = <TaskSyncMarginLine indicator={sync} />;
 
   let body: ReactNode;
   let aside: ReactNode = null;
@@ -519,7 +518,6 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
               onSave={saveIntent("week")}
             />
           </AsideSection>
-          {syncLine}
         </>
       );
     }
@@ -580,7 +578,6 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
             {VIEW_LABEL[view]} backlog · {backlog.length}
           </Link>
         </AsideSection>
-        {syncLine}
       </>
     );
   } else if (view === "upcoming") {
@@ -634,7 +631,6 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
             onSave={saveIntent("week")}
           />
         </AsideSection>
-        {syncLine}
       </>
     );
   } else {
