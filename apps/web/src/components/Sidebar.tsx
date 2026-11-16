@@ -3191,7 +3191,8 @@ export default function Sidebar() {
     tasksSectionExpanded,
     threadSearchResults,
   ]);
-  // The Creator Micro 2 agent keys follow Cmd+1..Cmd+6 of the default view.
+  // The Creator Micro 2 agent keys follow the first six thread jumps (Cmd+3..Cmd+8)
+  // of the default view.
   const creatorMicroThreads = useMemo(
     () =>
       creatorMicroJumpOrder({
@@ -3345,6 +3346,8 @@ export default function Sidebar() {
     return mapping;
   }, [keybindings, orderedThreadKeys]);
   const { showThreadJumpHints, updateThreadJumpHintsVisibility } = useThreadJumpHintVisibility();
+  const assistantShortcutLabel = shortcutLabelForCommand(keybindings, "assistant.open");
+  const tasksShortcutLabel = shortcutLabelForCommand(keybindings, "tasks.open");
 
   // Settled threads are live shells, so opening one is plain navigation:
   // history stays readable without un-settling, and sending a message or
@@ -4664,7 +4667,7 @@ export default function Sidebar() {
     ],
   );
 
-  // Thread jump (cmd+1..9) and prev/next traversal reuse the same commands as
+  // Thread jump (cmd+3..9) and prev/next traversal reuse the same commands as
   // v1 — the keybinding layer is shared, only the ordered list differs.
   const routeTerminalOpen = useTerminalUiStateStore((state) =>
     routeThreadRef
@@ -4721,7 +4724,7 @@ export default function Sidebar() {
 
   // Same predicate as v1: hints show only while the held modifiers exactly
   // match a thread-jump binding. Adding Shift (screenshots) or Alt no
-  // longer matches ⌘1..9, so the overlay hides for chords like ⌘⇧4.
+  // longer matches ⌘3..9, so the overlay hides for chords like ⌘⇧4.
   const shortcutModifiers = useShortcutModifierState();
   const terminalFocused = useTerminalFocus();
   const shouldShowJumpHintsNow = shouldShowThreadJumpHintsForModifiers(
@@ -5261,9 +5264,20 @@ export default function Sidebar() {
                             thread.projectId === assistantPartition.globalAssistant?.project.id,
                         )
                       }
+                      hint={
+                        showThreadJumpHints && assistantShortcutLabel ? (
+                          <JumpHintBadge label={assistantShortcutLabel} />
+                        ) : null
+                      }
                     />
                   ) : null}
-                  <SidebarTasksSection />
+                  <SidebarTasksSection
+                    hint={
+                      showThreadJumpHints && tasksShortcutLabel ? (
+                        <JumpHintBadge label={tasksShortcutLabel} />
+                      ) : null
+                    }
+                  />
                 </ul>
               ) : null}
             </SidebarGroup>

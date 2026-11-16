@@ -66,3 +66,62 @@ export function planTaskReorder(
     keysById: new Map(tasks.map((task) => [task.id as string, task.orderKey ?? null])),
   });
 }
+
+export interface DropFrame {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * The day card (by date) under the finger while a task is lifted, in window
+ * coordinates. The task's own day is never a target, so dragging inside it
+ * still reorders; a task that is not open has none.
+ */
+export function dayDropTarget(
+  frames: ReadonlyMap<string, DropFrame>,
+  x: number,
+  y: number,
+  lifted: Pick<Task, "home" | "status">,
+): string | null {
+  if (lifted.status !== "todo") return null;
+  for (const [date, frame] of frames) {
+    if (lifted.home.kind === "date" && lifted.home.date === date) continue;
+    if (x >= frame.x && x <= frame.x + frame.width && y >= frame.y && y <= frame.y + frame.height) {
+      return date;
+    }
+  }
+  return null;
+}
+
+export const AUTO_SCROLL_EDGE_PT = 90;
+export const AUTO_SCROLL_MAX_STEP = 14;
+
+/**
+ * How far to scroll this tick for a finger at window y, over a page whose
+ * visible area starts at `top` and is `viewport` tall: negative near the top
+ * edge, positive near the bottom, faster the closer to the edge, and never past
+ * the content (`offset` is the current scroll, `content` the content height).
+ */
+export function autoScrollDelta(input: {
+  readonly y: number;
+  readonly top: number;
+  readonly viewport: number;
+  readonly offset: number;
+  readonly content: number;
+}): number {
+  const bottom = input.top + input.viewport;
+  let step = 0;
+  if (input.y < input.top + AUTO_SCROLL_EDGE_PT) {
+    const depth = Math.min(1, (input.top + AUTO_SCROLL_EDGE_PT - input.y) / AUTO_SCROLL_EDGE_PT);
+    step = -AUTO_SCROLL_MAX_STEP * depth;
+  } else if (input.y > bottom - AUTO_SCROLL_EDGE_PT) {
+    const depth = Math.min(1, (input.y - (bottom - AUTO_SCROLL_EDGE_PT)) / AUTO_SCROLL_EDGE_PT);
+    step = AUTO_SCROLL_MAX_STEP * depth;
+  }
+  if (step === 0) return 0;
+  const max = Math.max(0, input.content - input.viewport);
+  const next = Math.min(max, Math.max(0, input.offset + step));
+  return next - input.offset;
+}

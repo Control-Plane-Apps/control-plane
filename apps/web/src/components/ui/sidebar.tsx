@@ -167,6 +167,10 @@ function SidebarProvider({
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             "--workspace-titlebar-content-left":
               "calc(var(--workspace-controls-left) + var(--workspace-titlebar-control-size) + var(--workspace-titlebar-control-gap))",
+            // Where New Chat starts: one icon gap past the toggle (which sits 1px in from
+            // the controls edge), so toggle, New Chat and Search are evenly spaced.
+            "--workspace-titlebar-actions-left":
+              "calc(var(--workspace-controls-left) + 1px + var(--workspace-titlebar-control-size) + var(--workspace-titlebar-icon-gap))",
             ...style,
           } as React.CSSProperties
         }

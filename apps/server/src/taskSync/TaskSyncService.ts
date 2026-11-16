@@ -176,6 +176,9 @@ const make = Effect.gen(function* () {
     ),
   );
   engine.setPreview(previewFromEnv || previewFromFile);
+  // Read the saved account week start now, so intent tools and rollover use it
+  // from the first call instead of waiting for the first status poll or sync.
+  yield* Effect.promise(() => engine.status()).pipe(Effect.catchCause(() => Effect.void));
 
   let debounce: ReturnType<typeof setTimeout> | null = null;
   const scheduleSync = () => {

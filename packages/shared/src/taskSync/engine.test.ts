@@ -153,7 +153,12 @@ class FakeCloud implements TaskSyncCloudClient {
   };
 }
 
-function setup(cloud: FakeCloud, localTasks: Task[] = [], localIntents: TaskIntent[] = []) {
+function setup(
+  cloud: FakeCloud,
+  localTasks: Task[] = [],
+  localIntents: TaskIntent[] = [],
+  weekStarts: number[] = [],
+) {
   let state = emptyTaskSyncState();
   let token: string | null = null;
   let clock = Date.parse(T0);
@@ -185,6 +190,7 @@ function setup(cloud: FakeCloud, localTasks: Task[] = [], localIntents: TaskInte
     onApplied: () => {
       notified.count += 1;
     },
+    onWeekStart: (day) => weekStarts.push(day),
     deviceName: "Test Mac",
     now: () => new Date((clock += 1000)),
     newId: () => `gen-${(ids += 1)}`,
@@ -279,6 +285,87 @@ describe("TaskSyncEngine", () => {
     await engine.sync();
     const period = [...cloud.periods.values()].find((p) => p.startsOn === "2026-11-09");
     expect(period?.focus).toBe("Ship payments.");
+  });
+
+  it("keeps an intent set here when another device created the same week's period first", async () => {
+    const cloud = new FakeCloud();
+    const { engine, applied } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    await engine.onLocalIntent("week", "2026-11-16", "Get ISN live.");
+    // Another device opens the same week before this push goes out.
+    cloud.seq += 1;
+    cloud.periods.set("their-week", {
+      id: "their-week",
+      horizon: "week",
+      anchorDate: "2026-11-16",
+      startsOn: "2026-11-16",
+      endsOn: "2026-11-22",
+      title: null,
+      focus: null,
+      state: "open",
+      revision: 5,
+      createdAt: T0,
+      updatedAt: T0,
+      deletedAt: null,
+      seq: cloud.seq,
+    });
+    await engine.sync();
+    const removed = applied.flatMap((a) => a.removedIntents);
+    expect(removed).not.toContainEqual({ horizon: "week", startsOn: "2026-11-16" });
+    expect(cloud.periods.get("their-week")?.focus).toBe("Get ISN live.");
+    await engine.sync();
+    expect(applied.at(-1)!.intents).toContainEqual(
+      expect.objectContaining({ horizon: "week", startsOn: "2026-11-16", text: "Get ISN live." }),
+    );
+  });
+
+  it("lets the other device's focus win when it already has one", async () => {
+    const cloud = new FakeCloud();
+    const { engine, applied } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    await engine.onLocalIntent("week", "2026-11-16", "Mine.");
+    cloud.seq += 1;
+    cloud.periods.set("their-week", {
+      id: "their-week",
+      horizon: "week",
+      anchorDate: "2026-11-16",
+      startsOn: "2026-11-16",
+      endsOn: "2026-11-22",
+      title: null,
+      focus: "Theirs.",
+      state: "open",
+      revision: 5,
+      createdAt: T0,
+      updatedAt: T0,
+      deletedAt: null,
+      seq: cloud.seq,
+    });
+    await engine.sync();
+    expect(cloud.periods.get("their-week")?.focus).toBe("Theirs.");
+    expect(applied.at(-1)!.intents).toContainEqual(
+      expect.objectContaining({ startsOn: "2026-11-16", text: "Theirs." }),
+    );
+  });
+
+  it.each([0, 1])("reports the account's week start (%i) to the host", async (day) => {
+    const cloud = new FakeCloud();
+    cloud.weekStartsOn = day;
+    const seen: number[] = [];
+    const { engine } = setup(cloud, [], [], seen);
+    await engine.verify("n@example.com", "123456");
+    expect(seen.at(-1)).toBe(day);
+    expect((await engine.status()).weekStartsOn).toBe(day);
+  });
+
+  it("goes back to Monday weeks when the account signs out", async () => {
+    const cloud = new FakeCloud();
+    cloud.weekStartsOn = 0;
+    const seen: number[] = [];
+    const { engine } = setup(cloud, [], [], seen);
+    await engine.verify("n@example.com", "123456");
+    expect(seen.at(-1)).toBe(0);
+    await engine.signOut();
+    expect(seen.at(-1)).toBe(1);
   });
 
   it("turns on repeat by creating the series template", async () => {

@@ -336,12 +336,18 @@ export function allTasks(
   };
 }
 
+/**
+ * The intent for the period containing `today`. Weeks start on the synced
+ * account's day (`weekStartsOn`, defaulting to the shared setting), the same
+ * day the tools, Task Sync and rollover key a week's intent by.
+ */
 export function taskIntentFor(
   intents: ReadonlyArray<TaskIntent> | undefined,
   horizon: TaskHorizon,
   today: string,
+  weekStartsOn?: number,
 ): TaskIntent | undefined {
-  const { startsOn } = taskPeriodFor(horizon, today);
+  const { startsOn } = taskPeriodFor(horizon, today, weekStartsOn);
   return intents?.find((intent) => intent.horizon === horizon && intent.startsOn === startsOn);
 }
 
@@ -611,6 +617,106 @@ export function homeForMove(target: TaskMoveTarget, current: TaskHome, today: st
     case "backlog":
       return { kind: "backlog", horizon: target.horizon };
   }
+}
+
+/** Whether two homes are the same place (a date's reminder time counts). */
+export function sameTaskHome(a: TaskHome, b: TaskHome): boolean {
+  switch (a.kind) {
+    case "date":
+      return b.kind === "date" && a.date === b.date && a.reminderTime === b.reminderTime;
+    case "period":
+      return (
+        b.kind === "period" &&
+        a.horizon === b.horizon &&
+        a.startsOn === b.startsOn &&
+        a.endsOn === b.endsOn
+      );
+    case "backlog":
+      return b.kind === "backlog" && a.horizon === b.horizon;
+  }
+}
+
+/**
+ * The home a task takes when dropped on a day's card (Upcoming, desktop and
+ * phone): that day, keeping its reminder time. Null when nothing would
+ * change: the task is not open, or already sits on that day. A repeating
+ * task moves only this occurrence, the same as the Move menu's date target.
+ */
+export function dayDropHome(task: Task, date: string, today: string): TaskHome | null {
+  if (task.status !== "todo") return null;
+  if (task.home.kind === "date" && task.home.date === date) return null;
+  return homeForMove({ kind: "date", date }, task.home, today);
+}
+
+/**
+ * A move shown before the server agrees: `saving` while the write is in
+ * flight, `saved` once it landed and the list waits for the server's tasks to
+ * catch up. `baseUpdatedAt` is the task's `updatedAt` when it was dropped, so
+ * any newer server copy (whatever it says) takes over.
+ */
+export interface TaskHomeOverride {
+  readonly home: TaskHome;
+  readonly baseUpdatedAt: string;
+  readonly status: "saving" | "saved";
+}
+
+export type TaskHomeOverrides = ReadonlyMap<string, TaskHomeOverride>;
+
+/** The tasks as they sit while moves are pending. */
+export function applyTaskHomeOverrides(
+  tasks: ReadonlyArray<Task>,
+  overrides: TaskHomeOverrides,
+): ReadonlyArray<Task> {
+  if (overrides.size === 0) return tasks;
+  return tasks.map((task) => {
+    const override = overrides.get(task.id);
+    return override === undefined ? task : { ...task, home: override.home };
+  });
+}
+
+/**
+ * Drops saved moves the server has caught up with (same home, a newer copy,
+ * or the task gone). Returns the same map when nothing settled. `saving`
+ * moves stay until their write finishes.
+ */
+export function settleTaskHomeOverrides(
+  overrides: TaskHomeOverrides,
+  serverTasks: ReadonlyArray<Task>,
+): TaskHomeOverrides {
+  if (overrides.size === 0) return overrides;
+  const byId = new Map(serverTasks.map((task) => [task.id as string, task]));
+  let next: Map<string, TaskHomeOverride> | null = null;
+  for (const [id, override] of overrides) {
+    if (override.status !== "saved") continue;
+    const server = byId.get(id);
+    const caughtUp =
+      server === undefined ||
+      sameTaskHome(server.home, override.home) ||
+      server.updatedAt !== override.baseUpdatedAt;
+    if (!caughtUp) continue;
+    next ??= new Map(overrides);
+    next.delete(id);
+  }
+  return next ?? overrides;
+}
+
+/**
+ * What a finished write does to its override: a failed write rolls the task
+ * back to the server's day (the failure already toasted); an accepted one
+ * keeps the move shown until the server catches up. A newer move of the same
+ * task that replaced this one wins.
+ */
+export function overridesAfterWrite(
+  current: TaskHomeOverrides,
+  taskId: string,
+  written: TaskHomeOverride,
+  accepted: boolean,
+): TaskHomeOverrides {
+  if (current.get(taskId) !== written) return current;
+  const next = new Map(current);
+  if (accepted) next.set(taskId, { ...written, status: "saved" });
+  else next.delete(taskId);
+  return next;
 }
 
 /** Whether `home` is what `target` would produce, for the menu's check mark. */

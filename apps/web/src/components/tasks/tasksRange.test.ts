@@ -53,7 +53,7 @@ describe("Task Sync indicator", () => {
     });
     expect(taskSyncIndicator(status({ state: "signed-out" })).action).toBe("Turn on · $5/month");
     expect(taskSyncIndicator(status({ state: "syncing" })).header).toBe("Syncing");
-    expect(taskSyncIndicator(status({ state: "synced" })).margin).toBe("Synced with Lucive");
+    expect(taskSyncIndicator(status({ state: "synced" })).margin).toBe("Synced with cloud");
     expect(taskSyncIndicator(status({ state: "error", pendingChanges: 3 }))).toMatchObject({
       tone: "offline",
       header: "Offline · 3 waiting",

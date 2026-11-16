@@ -28,6 +28,7 @@ import { AppText as Text, AppTextInput } from "../../components/AppText";
 import { ControlPillMenu } from "../../components/ControlPill";
 import { cn } from "../../lib/cn";
 import { PillButton } from "../status/ProjectStatusPanel";
+import { taskRowMeta } from "./taskRowMeta";
 import { recommendationButtonLabel } from "../status/projectStatus.logic";
 import { REMINDER_TIMES, repeatMenuActions, repeatMenuChoice } from "./taskMenus";
 import { symbol, TaskCheckbox, TaskChip, useTaskPalette, BARE_INPUT_STYLE } from "./taskUi";
@@ -54,16 +55,6 @@ export interface PlanTaskRowContext {
   readonly onOpenThread: (project: EnvironmentProject, threadId: ThreadId) => void;
 }
 
-/** What the row says about where the task lives: time today, overdue day, repeat, period. */
-export function taskRowMeta(task: Task, today: string, hidePeriod: boolean): string | null {
-  if (task.recurrence !== undefined) return formatTaskRecurrence(task.recurrence);
-  if (hidePeriod && task.home.kind === "period") return null;
-  if (task.home.kind === "date" && task.home.date === today) {
-    return task.home.reminderTime !== undefined ? formatTaskTime(task.home.reminderTime) : null;
-  }
-  return formatTaskHome(task.home, today);
-}
-
 const SWIPE_ACTION_WIDTH = 88;
 
 export const PlanTaskRow = memo(function PlanTaskRow(props: {
@@ -77,6 +68,8 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
   readonly onToggleSelected: (taskId: string) => void;
   /** Today hides today's date; commitment lists hide their own period. */
   readonly hidePeriod?: boolean;
+  /** Upcoming hides a row's day, which its section already names. */
+  readonly hideDay?: boolean;
   /** The All tasks list puts the home at the trailing edge. */
   readonly metaPlacement?: "below" | "trailing";
   /** Lit up briefly when opened from a chat's proposal block. */
@@ -95,7 +88,7 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
   const meta =
     trailingMeta && task.recurrence === undefined
       ? formatTaskHome(task.home, context.today)
-      : taskRowMeta(task, context.today, props.hidePeriod === true);
+      : taskRowMeta(task, context.today, props.hidePeriod === true, props.hideDay === true);
   const agentActive = state.kind === "agent-working" || state.kind === "handed-off";
 
   const body = (

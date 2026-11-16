@@ -95,10 +95,10 @@ export function CreatorMicroSettings() {
         {...searchableSetting("creator-micro")}
         description={
           <>
-            The six top keys glow with the status of the chats on ⌘1 to ⌘6 and open them when
-            pressed. Turning this on backs up the pad and rebinds those six keys once; turning it
-            off puts ⌘1 to ⌘6 back. The dial, joystick and other keys keep their Work Louder Input
-            settings.
+            The six top keys glow with the status of the first six chats in the sidebar (⌘3 to ⌘8)
+            and open them when pressed. Turning this on backs up the pad and rebinds those six keys
+            once; turning it off puts ⌘1 to ⌘6 back. The dial, joystick and other keys keep their
+            Work Louder Input settings.
           </>
         }
         status={

@@ -4,8 +4,10 @@ import {
   type KeybindingWhenNode,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ResolvedKeybindingsConfig,
+  TASK_RANGE_KEYBINDING_COMMANDS,
   THREAD_JUMP_KEYBINDING_COMMANDS,
   type ModelPickerJumpKeybindingCommand,
+  type TaskRangeKeybindingCommand,
   type ThreadJumpKeybindingCommand,
 } from "@t3tools/contracts";
 import { isElectron } from "./env";
@@ -36,6 +38,7 @@ export interface ShortcutMatchContext {
   previewOpen: boolean;
   isWeb: boolean;
   isDesktop: boolean;
+  /** Also provided by resolveContext (the platform), through the index signature. */
   [key: string]: boolean;
 }
 
@@ -149,6 +152,7 @@ function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatc
     previewOpen: false,
     isWeb: !isElectron,
     isDesktop: isElectron,
+    isMac: isMacPlatform(resolvePlatform(options)),
     ...options?.context,
   };
 }
@@ -303,6 +307,15 @@ export function threadJumpCommandForIndex(index: number): ThreadJumpKeybindingCo
 
 export function threadJumpIndexFromCommand(command: string): number | null {
   const index = THREAD_JUMP_KEYBINDING_COMMANDS.indexOf(command as ThreadJumpKeybindingCommand);
+  return index === -1 ? null : index;
+}
+
+export function taskRangeCommandForIndex(index: number): TaskRangeKeybindingCommand | null {
+  return TASK_RANGE_KEYBINDING_COMMANDS[index] ?? null;
+}
+
+export function taskRangeIndexFromCommand(command: string): number | null {
+  const index = TASK_RANGE_KEYBINDING_COMMANDS.indexOf(command as TaskRangeKeybindingCommand);
   return index === -1 ? null : index;
 }
 

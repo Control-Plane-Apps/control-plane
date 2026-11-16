@@ -5,7 +5,10 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProjectId,
+  getTaskWeekStartsOn,
   ProviderInstanceId,
+  setTaskWeekStartsOn,
+  taskPeriodFor,
   TaskId,
   ThreadId,
   type AssistantSettings,
@@ -13,7 +16,7 @@ import {
   type Task,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -1288,6 +1291,44 @@ describe("repeating tasks, links and intents (Lucive parity)", () => {
         ).toBe("TaskAccessDeniedError");
       }),
     ),
+  );
+});
+
+describe("week intents follow the synced week start", () => {
+  const savedWeekStart = getTaskWeekStartsOn();
+  afterEach(() => setTaskWeekStartsOn(savedWeekStart));
+
+  // 2026-11-16 is a Monday. A Monday-start week begins that day; a
+  // Sunday-start week began the day before.
+  it.effect.each([
+    { weekStartsOn: 1, startsOn: "2026-11-16", endsOn: "2026-11-22" },
+    { weekStartsOn: 0, startsOn: "2026-11-15", endsOn: "2026-11-21" },
+  ])(
+    "keys Monday's intent by the week starting $startsOn when weeks start on day $weekStartsOn",
+    ({ weekStartsOn, startsOn, endsOn }) =>
+      run(
+        Effect.gen(function* () {
+          setTaskWeekStartsOn(weekStartsOn);
+          useAssistant({ tasks: "edit" });
+          const set = yield* tools.intent(ASSISTANT, {
+            horizon: "week",
+            date: "2026-11-16",
+            text: "Get ISN live and check in with every trial",
+          });
+          expect(set).toMatchObject({ startsOn, endsOn });
+          const listed = yield* tools.list(ASSISTANT, { date: "2026-11-16" });
+          expect(listed.intents).toEqual([expect.objectContaining({ horizon: "week", startsOn })]);
+          // The same key a view finds by asking for the week containing that day.
+          const model = yield* (yield* ProjectionSnapshotQuery).getCommandReadModel();
+          expect(
+            model.taskIntents?.find(
+              (intent) =>
+                intent.horizon === "week" &&
+                intent.startsOn === taskPeriodFor("week", "2026-11-16", weekStartsOn).startsOn,
+            )?.text,
+          ).toBe("Get ISN live and check in with every trial");
+        }),
+      ),
   );
 });
 

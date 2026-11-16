@@ -51,6 +51,12 @@ export interface TaskSyncPersistedState {
   inactive?: boolean;
   /** Set once the first full pull ran and local-only tasks were uploaded. */
   initialMergeDone?: boolean;
+  /**
+   * Focus lines set here on a period another device had already created. The
+   * cloud keeps the other device's row, so the focus is written onto it once
+   * the pull has brought that row in (period id to focus).
+   */
+  focusRetry?: Record<string, string>;
   mirror: {
     tasks: Record<string, WireTaskWithSeq>;
     periods: Record<string, WirePeriodFull>;
@@ -287,6 +293,8 @@ export class TaskSyncEngine {
     await this.deps.setToken(result.token);
     const fresh = emptyTaskSyncState();
     this.state = { ...fresh, account: { email: result.email } };
+    // A new account's weeks start on the default until its own setting arrives.
+    this.deps.onWeekStart?.(this.state.weekStartsOn);
     this.weekStartReceived = false;
     this.lastError = undefined;
     await this.save();
@@ -301,6 +309,7 @@ export class TaskSyncEngine {
     if (token !== null && this.deps.client !== null) await this.deps.client.revoke(token);
     await this.deps.setToken(null);
     this.state = emptyTaskSyncState();
+    this.deps.onWeekStart?.(this.state.weekStartsOn);
     this.weekStartReceived = false;
     this.lastError = undefined;
     await this.save();
@@ -338,7 +347,9 @@ export class TaskSyncEngine {
     this.syncing = true;
     try {
       if (state.initialMergeDone === true) await this.push(token);
-      await this.pull(token);
+      const requeued = await this.pull(token);
+      // A focus put back on another device's period goes up straight away.
+      if (requeued && state.initialMergeDone === true) await this.push(token);
       if (state.initialMergeDone !== true) {
         await this.uploadLocalOnly();
         state.initialMergeDone = true;
@@ -360,6 +371,7 @@ export class TaskSyncEngine {
         // The account revoked this device: back to local-only.
         await this.deps.setToken(null);
         this.state = emptyTaskSyncState();
+        this.deps.onWeekStart?.(this.state.weekStartsOn);
         this.weekStartReceived = false;
         await this.save();
       } else {
@@ -398,6 +410,10 @@ export class TaskSyncEngine {
       if (period !== undefined) {
         delete state.mirror.periods[remap.from];
         state.mirror.periods[remap.to] = { ...period, id: remap.to };
+        // The cloud keeps the other device's row and drops this one's focus.
+        if ((period.focus ?? "").trim().length > 0) {
+          state.focusRetry = { ...state.focusRetry, [remap.to]: period.focus! };
+        }
       }
       for (const membership of Object.values(state.mirror.memberships)) {
         if (membership.periodId === remap.from) {
@@ -415,13 +431,18 @@ export class TaskSyncEngine {
     await this.save();
   }
 
-  private async pull(token: string): Promise<void> {
+  /** Pulls the cloud's changes; true when it queued a focus to put back (see `focusRetry`). */
+  private async pull(token: string): Promise<boolean> {
     const state = await this.load();
     let changed = false;
+    const pulledPeriodIds = new Set<string>();
     for (let page = 0; page < PULL_PAGE_GUARD; page += 1) {
       const result = await this.requireClient().changes(token, state.cursor);
       for (const task of result.tasks) state.mirror.tasks[task.id] = task;
-      for (const period of result.periods) state.mirror.periods[period.id] = period;
+      for (const period of result.periods) {
+        state.mirror.periods[period.id] = period;
+        pulledPeriodIds.add(period.id);
+      }
       for (const membership of result.memberships) {
         state.mirror.memberships[membership.id] = membership;
       }
@@ -442,11 +463,37 @@ export class TaskSyncEngine {
       state.cursor = result.nextSince;
       if (!result.hasMore) break;
     }
+    const requeued = this.requeueLostFocus(state, pulledPeriodIds);
     await this.save();
     if (changed) {
       await this.applyMirror();
       this.appliedSinceNotify = true;
     }
+    return requeued;
+  }
+
+  /**
+   * An intent set here on a week another device had already opened lands on
+   * that device's period, and the cloud keeps its row, focus empty. Once the
+   * row is pulled, write the focus back onto it so the intent is not read as
+   * cleared. If the other device already has a focus, that one stands.
+   */
+  private requeueLostFocus(state: TaskSyncPersistedState, pulledPeriodIds: Set<string>): boolean {
+    if (state.focusRetry === undefined) return false;
+    let requeued = false;
+    const at = this.now().toISOString();
+    for (const [periodId, focus] of Object.entries(state.focusRetry)) {
+      const row = state.mirror.periods[periodId];
+      if (row !== undefined && !pulledPeriodIds.has(periodId)) continue;
+      delete state.focusRetry[periodId];
+      if (row === undefined || row.deletedAt !== null || (row.focus ?? "").trim().length > 0) {
+        continue;
+      }
+      this.queuePeriod({ ...row, focus, revision: row.revision + 1, updatedAt: at });
+      requeued = true;
+    }
+    if (Object.keys(state.focusRetry).length === 0) delete state.focusRetry;
+    return requeued;
   }
 
   /** Every cloud record as Control Plane sees it, applied in one command. */

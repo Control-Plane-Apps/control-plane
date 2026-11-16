@@ -1,5 +1,10 @@
-import type { ProjectStatus, Task } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import {
+  setTaskWeekStartsOn,
+  type ProjectStatus,
+  type Task,
+  type TaskIntent,
+} from "@t3tools/contracts";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
   formatTaskRecurrence,
@@ -15,6 +20,13 @@ import {
   proposedTasks,
   proposedTasksForThread,
   taskAgentState,
+  taskIntentFor,
+  applyTaskHomeOverrides,
+  dayDropHome,
+  overridesAfterWrite,
+  sameTaskHome,
+  settleTaskHomeOverrides,
+  type TaskHomeOverride,
   todayTasks,
   upcomingTasks,
 } from "./taskViews.ts";
@@ -217,5 +229,143 @@ describe("proposedTasksForThread", () => {
     expect(
       proposedTasksForThread(tasks, "coordinator-thread", "hometrace").map((t) => t.id),
     ).toEqual(["from-coordinator", "from-agent"]);
+  });
+});
+
+describe("taskIntentFor", () => {
+  afterEach(() => setTaskWeekStartsOn(1));
+  // The Assistant's intent for the week of Monday 2026-11-16, and a Sunday-keyed twin.
+  const mondayWeek: TaskIntent = {
+    horizon: "week",
+    startsOn: "2026-11-16",
+    text: "Get ISN live",
+    updatedAt: AT,
+  };
+  const sundayWeek: TaskIntent = { ...mondayWeek, startsOn: "2026-11-15" };
+
+  it("finds the Monday-start week's intent for any day in that week", () => {
+    setTaskWeekStartsOn(1);
+    for (const day of ["2026-11-16", "2026-11-19", "2026-11-22"]) {
+      expect(taskIntentFor([mondayWeek], "week", day)).toBe(mondayWeek);
+    }
+    expect(taskIntentFor([sundayWeek], "week", "2026-11-16")).toBeUndefined();
+  });
+
+  it("finds the Sunday-start week's intent for any day in that week", () => {
+    setTaskWeekStartsOn(0);
+    for (const day of ["2026-11-15", "2026-11-16", "2026-11-21"]) {
+      expect(taskIntentFor([sundayWeek], "week", day)).toBe(sundayWeek);
+    }
+    expect(taskIntentFor([mondayWeek], "week", "2026-11-16")).toBeUndefined();
+  });
+
+  it("takes the week start from the caller when given, ahead of the shared setting", () => {
+    setTaskWeekStartsOn(1);
+    expect(taskIntentFor([sundayWeek], "week", "2026-11-16", 0)).toBe(sundayWeek);
+    expect(taskIntentFor([mondayWeek], "week", "2026-11-16", 1)).toBe(mondayWeek);
+  });
+});
+
+describe("dropping a task on a day", () => {
+  const gym = task("gym", { home: { kind: "date", date: "2026-11-18" } });
+
+  it("moves to that day, keeping the reminder time", () => {
+    const timed = task("timed", {
+      home: { kind: "date", date: "2026-11-18", reminderTime: "07:00" },
+    });
+    expect(dayDropHome(timed, "2026-11-19", TODAY)).toEqual({
+      kind: "date",
+      date: "2026-11-19",
+      reminderTime: "07:00",
+    });
+    expect(dayDropHome(gym, "2026-11-19", TODAY)).toEqual({ kind: "date", date: "2026-11-19" });
+  });
+
+  it("does nothing on its own day or for a task that is not open", () => {
+    expect(dayDropHome(gym, "2026-11-18", TODAY)).toBeNull();
+    expect(dayDropHome({ ...gym, status: "completed" }, "2026-11-19", TODAY)).toBeNull();
+  });
+
+  it("moves a repeating occurrence to the day like any other task", () => {
+    const repeating = task("washer", {
+      home: { kind: "date", date: "2026-11-19" },
+      recurrence: { frequency: "monthly", interval: 1 },
+    });
+    expect(dayDropHome(repeating, "2026-11-20", TODAY)).toEqual({
+      kind: "date",
+      date: "2026-11-20",
+    });
+  });
+
+  it("moves a period or backlog task onto a day", () => {
+    const committed = task("c", {
+      home: { kind: "period", horizon: "week", startsOn: "2026-11-16", endsOn: "2026-11-22" },
+    });
+    expect(dayDropHome(committed, "2026-11-17", TODAY)).toEqual({
+      kind: "date",
+      date: "2026-11-17",
+    });
+  });
+});
+
+describe("optimistic task moves", () => {
+  const gym = task("gym", { home: { kind: "date", date: "2026-11-18" } });
+  const moved = { kind: "date", date: "2026-11-19" } as const;
+  const override = (status: TaskHomeOverride["status"]): TaskHomeOverride => ({
+    home: moved,
+    baseUpdatedAt: gym.updatedAt,
+    status,
+  });
+
+  it("shows the move at once, and leaves other tasks alone", () => {
+    const other = task("other");
+    const shown = applyTaskHomeOverrides([gym, other], new Map([["gym", override("saving")]]));
+    expect(shown[0]!.home).toEqual(moved);
+    expect(shown[1]).toBe(other);
+    expect(applyTaskHomeOverrides([gym], new Map())).toEqual([gym]);
+  });
+
+  it("keeps a saved move until the server has the same home, a newer copy, or no task", () => {
+    const overrides = new Map([["gym", override("saved")]]);
+    expect(settleTaskHomeOverrides(overrides, [gym])).toBe(overrides);
+    expect(settleTaskHomeOverrides(overrides, [{ ...gym, home: moved }]).size).toBe(0);
+    expect(
+      settleTaskHomeOverrides(overrides, [
+        {
+          ...gym,
+          home: { kind: "date", date: "2026-11-20" },
+          updatedAt: "2026-11-16T09:00:00.000Z",
+        },
+      ]).size,
+    ).toBe(0);
+    expect(settleTaskHomeOverrides(overrides, []).size).toBe(0);
+  });
+
+  it("never settles a move whose write is still in flight", () => {
+    const overrides = new Map([["gym", override("saving")]]);
+    expect(settleTaskHomeOverrides(overrides, [{ ...gym, home: moved }])).toBe(overrides);
+  });
+
+  it("rolls back on a failed write and keeps on an accepted one", () => {
+    const written = override("saving");
+    const overrides = new Map([["gym", written]]);
+    expect(overridesAfterWrite(overrides, "gym", written, false).size).toBe(0);
+    expect(overridesAfterWrite(overrides, "gym", written, true).get("gym")?.status).toBe("saved");
+  });
+
+  it("lets a newer move of the same task win over an older write's result", () => {
+    const older = override("saving");
+    const newer: TaskHomeOverride = { ...older, home: { kind: "date", date: "2026-11-21" } };
+    const overrides = new Map([["gym", newer]]);
+    expect(overridesAfterWrite(overrides, "gym", older, false)).toBe(overrides);
+  });
+
+  it("compares homes by place", () => {
+    expect(
+      sameTaskHome({ kind: "date", date: "2026-11-18" }, { kind: "date", date: "2026-11-18" }),
+    ).toBe(true);
+    expect(
+      sameTaskHome({ kind: "date", date: "2026-11-18" }, { kind: "backlog", horizon: null }),
+    ).toBe(false);
   });
 });

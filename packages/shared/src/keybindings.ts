@@ -7,6 +7,7 @@ import {
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ResolvedKeybindingRule,
   type ResolvedKeybindingsConfig,
+  TASK_RANGE_KEYBINDING_COMMANDS,
   THREAD_JUMP_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
 
@@ -17,6 +18,9 @@ type WhenToken =
   | { type: "or" }
   | { type: "lparen" }
   | { type: "rparen" };
+
+/** How many thread jumps get a default key (Cmd+3 to Cmd+9). */
+export const THREAD_JUMP_DEFAULT_KEY_COUNT = 7;
 
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+b", command: "sidebar.toggle" },
@@ -66,11 +70,24 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+shift+c", command: "thread.copyReference", when: "!terminalFocus" },
   { key: "mod+shift+s", command: "thread.settle", when: "!terminalFocus" },
   { key: "mod+shift+p", command: "thread.pin", when: "!terminalFocus" },
-  ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
-    key: `mod+${index + 1}`,
-    command,
-    when: "isDesktop",
-  })),
+  // Cmd+1 and Cmd+2 open the Assistant and Tasks, so the thread jumps start at
+  // Cmd+3: thread N is Cmd+(N+2), for the first seven threads. Jumps 8 and 9
+  // stay available commands with no default key.
+  { key: "mod+1", command: "assistant.open", when: "isDesktop && !modelPickerOpen" },
+  { key: "mod+2", command: "tasks.open", when: "isDesktop && !modelPickerOpen" },
+  ...THREAD_JUMP_KEYBINDING_COMMANDS.slice(0, THREAD_JUMP_DEFAULT_KEY_COUNT).map(
+    (command, index) => ({
+      key: `mod+${index + 3}`,
+      command,
+      when: "isDesktop",
+    }),
+  ),
+  // The Tasks page's range tabs: Ctrl+1 to Ctrl+6 on a Mac (Cmd+1 and Cmd+2
+  // are global), Alt+1 to Alt+6 elsewhere, where mod is Ctrl itself.
+  ...TASK_RANGE_KEYBINDING_COMMANDS.flatMap((command, index) => [
+    { key: `ctrl+${index + 1}`, command, when: "isDesktop && isMac" },
+    { key: `alt+${index + 1}`, command, when: "isDesktop && !isMac" },
+  ]),
   ...MODEL_PICKER_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
     key: `mod+${index + 1}`,
     command,

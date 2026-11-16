@@ -52,7 +52,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
     >
       <SidebarTrigger className="relative z-10 md:hidden" />
       {actions ? (
-        <div className="relative z-10 flex items-center md:ml-[var(--workspace-titlebar-content-left)]">
+        <div className="relative z-10 flex items-center md:ml-[var(--workspace-titlebar-actions-left)]">
           {actions}
         </div>
       ) : null}

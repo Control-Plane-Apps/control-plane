@@ -1,4 +1,5 @@
 import {
+  setTaskWeekStartsOn,
   TaskSyncError,
   type Task,
   type TaskDeleteScope,
@@ -108,6 +109,12 @@ class CloudTaskStore {
     if (cached !== null) {
       this.snapshot = { tasks: cached.tasks, intents: cached.intents, status: null };
     }
+    // Weeks follow the account's week start from the first render, before the
+    // engine has loaded; the engine keeps it current from then on.
+    const persisted = readJson<TaskSyncPersistedState>("state.json");
+    if (persisted !== null && typeof persisted.weekStartsOn === "number") {
+      setTaskWeekStartsOn(persisted.weekStartsOn);
+    }
     this.engine = new TaskSyncEngine({
       client:
         config === null
@@ -132,6 +139,7 @@ class CloudTaskStore {
           : "Control Plane on iPhone",
       now: () => new Date(),
       newId: () => uuidv4(),
+      onWeekStart: setTaskWeekStartsOn,
     });
   }
 

@@ -20,6 +20,7 @@ import {
   taskAgentState,
   taskCounts,
   taskIntentFor,
+  dayDropHome,
   todayTasks,
   upcomingTasks,
   type TaskBacklogFilter,
@@ -33,7 +34,7 @@ import {
   type TaskHorizon,
   type ThreadId,
 } from "@t3tools/contracts";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, RefreshControl, ScrollView, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -49,8 +50,9 @@ import { sendThreadMessage } from "../status/statusReplyStore";
 import { PlanTaskRow, type PlanTaskRowContext } from "./PlanTaskRow";
 import { ReorderableTaskRows, type TaskDropTargets } from "./ReorderableTaskRows";
 import { CHECK_OFF_LINGER_MS, withLingeringTasks } from "./taskCheckOff";
-import { planTaskReorder } from "./taskReorder";
+import { autoScrollDelta, dayDropTarget, planTaskReorder } from "./taskReorder";
 import { ProposedTasks } from "./ProposedTasks";
+import { useOptimisticTaskHomes } from "./useOptimisticTaskHomes";
 import { projectForTask, useHandToAgent } from "./taskHandoff";
 import {
   RowSeparator,
@@ -107,6 +109,9 @@ const MONTHS = [
   "December",
 ];
 
+/** Drop-target keys for Upcoming's day cards (range chips use their view name). */
+const DAY_TARGET_PREFIX = "day:";
+
 /** The bubble over a range chip while a task hovers it. */
 function dropLabel(view: PlanTasksView, today: string): string | null {
   switch (view) {
@@ -137,7 +142,8 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const [paneWidth, setPaneWidth] = useState(width);
   const wide = paneWidth >= WIDE_LAYOUT_MIN_WIDTH;
   const today = useTaskToday();
-  const { tasks, intents, projects, actions, available, source } = useMobileTaskStore();
+  const { tasks: storeTasks, intents, projects, actions, available, source } = useMobileTaskStore();
+  const { tasks, move: moveTask } = useOptimisticTaskHomes(storeTasks, actions.move);
   const threads = useThreadShells();
   const handToAgent = useHandToAgent();
   const undo = useUndoNotice();
@@ -148,6 +154,18 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const chipFrames = useRef(
     new Map<string, { x: number; y: number; width: number; height: number }>(),
   );
+  // Upcoming's day cards, in window coordinates, as long-press drop targets.
+  const dayRefs = useRef(new Map<string, View | null>());
+  const dayFrames = useRef(
+    new Map<string, { x: number; y: number; width: number; height: number }>(),
+  );
+  const measureDays = useCallback(() => {
+    for (const [date, node] of dayRefs.current) {
+      node?.measureInWindow((x, y, width, height) => {
+        dayFrames.current.set(date, { x, y, width, height });
+      });
+    }
+  }, []);
   const [projectFilter, setProjectFilter] = useState<ProjectFilter>(null);
   const [backlogFilter, setBacklogFilter] = useState<TaskBacklogFilter>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -300,6 +318,42 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   );
 
   const [reordering, setReordering] = useState(false);
+  // The day whose row is lifted: its section is raised above the others so the
+  // row stays visible as it travels over them.
+  const [liftedDate, setLiftedDate] = useState<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollMetrics = useRef({ offset: 0, content: 0, viewport: 0, top: 0 });
+  const measureScroll = useCallback(() => {
+    (scrollRef.current as unknown as View | null)?.measureInWindow((_x, y, _w, height) => {
+      scrollMetrics.current.top = y;
+      scrollMetrics.current.viewport = height;
+    });
+  }, []);
+  const setDragActive = useCallback(
+    (active: boolean, task: Task | null) => {
+      setReordering(active);
+      setLiftedDate(active && task?.home.kind === "date" ? task.home.date : null);
+      // The page can have scrolled since the cards last reported their frames.
+      if (active) {
+        measureDays();
+        measureScroll();
+      }
+    },
+    [measureDays, measureScroll],
+  );
+  /** Scrolls while a lifted row's finger is near the top or bottom edge. */
+  const autoScroll = useCallback((y: number) => {
+    const metrics = scrollMetrics.current;
+    const delta = autoScrollDelta({ y, ...metrics });
+    if (delta === 0) return 0;
+    metrics.offset += delta;
+    scrollRef.current?.scrollTo({ y: metrics.offset, animated: false });
+    // The day cards moved with the content; keep their frames in step.
+    for (const [date, frame] of dayFrames.current) {
+      dayFrames.current.set(date, { ...frame, y: frame.y - delta });
+    }
+    return delta;
+  }, []);
   const reorder = useCallback(
     (list: ReadonlyArray<Task>, from: number, to: number) => {
       for (const assignment of planTaskReorder(list, from, to)) {
@@ -312,7 +366,11 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   );
 
   const dropTargets: TaskDropTargets = {
-    hitTest: (x, y) => {
+    hitTest: (x, y, lifted) => {
+      if (view === "upcoming") {
+        const date = dayDropTarget(dayFrames.current, x, y, lifted);
+        if (date !== null) return `${DAY_TARGET_PREFIX}${date}`;
+      }
       for (const [target, frame] of chipFrames.current) {
         if (dropLabel(target as PlanTasksView, today) === null) continue;
         if (
@@ -327,27 +385,39 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       return null;
     },
     onHover: setDropHover,
+    autoScroll: view === "upcoming" ? autoScroll : undefined,
     onDrop: (task, target) => {
+      if (target.startsWith(DAY_TARGET_PREFIX)) {
+        const home = dayDropHome(task, target.slice(DAY_TARGET_PREFIX.length), today);
+        if (home !== null) void moveTask(task, home);
+        return;
+      }
       const move =
         target === "today"
           ? ({ kind: "today" } as const)
           : target === "week" || target === "month" || target === "year"
             ? ({ kind: "commit", horizon: target } as const)
             : null;
-      if (move !== null) void actions.move(task, homeForMove(move, task.home, today));
+      if (move !== null) void moveTask(task, homeForMove(move, task.home, today));
     },
   };
 
   const renderList = (
     list: ReadonlyArray<Task>,
-    options?: { hidePeriod?: boolean; trailing?: boolean; reorderable?: boolean },
+    options?: {
+      hidePeriod?: boolean;
+      /** Rows already sit under their day's label (Upcoming). */
+      hideDay?: boolean;
+      trailing?: boolean;
+      reorderable?: boolean;
+    },
   ) => (
     <ReorderableTaskRows
       tasks={list}
       enabled={options?.reorderable === true && !selecting}
       onReorder={reorder}
-      onDragActiveChange={setReordering}
-      dropTargets={wide ? undefined : dropTargets}
+      onDragActiveChange={setDragActive}
+      dropTargets={!wide || view === "upcoming" ? dropTargets : undefined}
       renderRow={(listed, index) => {
         // A lingering row is listed as open but renders the real, checked task.
         const task = taskById.get(listed.id) ?? listed;
@@ -364,6 +434,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
               selected={selectedIds.has(task.id)}
               onToggleSelected={toggleSelected}
               hidePeriod={options?.hidePeriod}
+              hideDay={options?.hideDay}
               metaPlacement={options?.trailing ? "trailing" : "below"}
               highlighted={highlightIds.has(task.id)}
             />
@@ -521,7 +592,14 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       content = (
         <>
           {groups.map((group) => (
-            <Fragment key={group.date}>
+            <DayDropZone
+              key={group.date}
+              date={group.date}
+              hovering={dropHover === `${DAY_TARGET_PREFIX}${group.date}`}
+              lifted={liftedDate === group.date}
+              refs={dayRefs.current}
+              onMeasure={measureDays}
+            >
               <SectionLabel
                 trailing={
                   <Text className="text-[13px] text-foreground-tertiary">
@@ -539,11 +617,13 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
                 highlightIds={highlightIds}
               />
               {group.tasks.length > 0 ? (
-                <TaskCard>{renderList(group.tasks, { reorderable: true })}</TaskCard>
+                <TaskCard style={reordering ? { overflow: "visible" } : undefined}>
+                  {renderList(group.tasks, { reorderable: true, hideDay: true })}
+                </TaskCard>
               ) : group.proposals.length > 0 ? null : (
                 <Text className="px-9 text-[14px] text-foreground-tertiary">Nothing yet</Text>
               )}
-            </Fragment>
+            </DayDropZone>
           ))}
         </>
       );
@@ -746,7 +826,17 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const main = (
     <View className="flex-1">
       <ScrollView
+        ref={scrollRef}
         scrollEnabled={!reordering}
+        onScroll={(event) => {
+          scrollMetrics.current.offset = event.nativeEvent.contentOffset.y;
+          if (view === "upcoming") measureDays();
+        }}
+        onContentSizeChange={(_width, height) => {
+          scrollMetrics.current.content = height;
+        }}
+        onLayout={measureScroll}
+        scrollEventThrottle={16}
         refreshControl={
           selecting ? undefined : (
             <RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />
@@ -963,6 +1053,42 @@ function BacklogFilters(props: {
         );
       })}
     </ScrollView>
+  );
+}
+
+/**
+ * One day of Upcoming: its label and card. While a lifted task from another
+ * day hovers it, a dashed outline shows where it will land.
+ */
+function DayDropZone(props: {
+  readonly date: string;
+  readonly hovering: boolean;
+  /** A row of this day is lifted: stack above the other days. */
+  readonly lifted: boolean;
+  readonly refs: Map<string, View | null>;
+  readonly onMeasure: () => void;
+  readonly children: ReactNode;
+}) {
+  const palette = useTaskPalette();
+  return (
+    <View
+      ref={(node) => {
+        props.refs.set(props.date, node);
+      }}
+      collapsable={false}
+      onLayout={props.onMeasure}
+      className="rounded-3xl pb-1"
+      style={{
+        marginHorizontal: 4,
+        zIndex: props.lifted ? 50 : 0,
+        borderWidth: 1.5,
+        borderStyle: props.hovering ? "dashed" : "solid",
+        borderColor: props.hovering ? palette.accent : "transparent",
+      }}
+    >
+      {/* Cancels the outline's inset so the rows keep their usual margins. */}
+      <View style={{ marginHorizontal: -5.5 }}>{props.children}</View>
+    </View>
   );
 }
 

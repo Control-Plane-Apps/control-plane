@@ -10,7 +10,7 @@ export interface TaskSyncIndicator {
   readonly tone: TaskSyncTone;
   /** The header chip, e.g. "On this Mac", "Offline · 3 waiting". */
   readonly header: string;
-  /** The margin line under the intent, e.g. "Synced with Lucive". */
+  /** The margin line under the intent, e.g. "Synced with cloud". */
   readonly margin: string;
   /** A quiet call to action in the margin, linking to Task Sync settings. */
   readonly action: string | null;
@@ -40,7 +40,7 @@ export function taskSyncIndicator(status: TaskSyncStatus | null): TaskSyncIndica
     case "syncing":
       return { tone: "syncing", header: "Syncing", margin: "Syncing", action: null };
     case "synced":
-      return { tone: "synced", header: "Synced", margin: "Synced with Lucive", action: null };
+      return { tone: "synced", header: "Synced", margin: "Synced with cloud", action: null };
     case "error": {
       const waiting = status.pendingChanges;
       return {

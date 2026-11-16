@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+const files = vi.hoisted(() => ({ state: null as string | null }));
+
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", isPad: false },
   AppState: { currentState: "active", addEventListener: vi.fn() },
@@ -25,9 +27,15 @@ vi.mock("expo-file-system", () => {
     create() {}
   }
   class File {
-    exists = false;
+    name: string;
+    constructor(_dir: unknown, name: string) {
+      this.name = name;
+    }
+    get exists() {
+      return this.name === "state.json" && files.state !== null;
+    }
     textSync() {
-      return "";
+      return this.name === "state.json" ? (files.state ?? "") : "";
     }
     write() {}
   }
@@ -40,6 +48,7 @@ let availability: () => Response;
 
 beforeEach(() => {
   calls.length = 0;
+  files.state = null;
   vi.resetModules();
   vi.stubGlobal("fetch", async (url: string) => {
     const path = new URL(url).pathname;
@@ -63,5 +72,23 @@ describe("phone Task Sync gate", () => {
     const { cloudTaskStore } = await import("./cloudTasks");
     const status = await cloudTaskStore().recheck(0);
     expect(status.state).toBe("signed-out");
+  });
+});
+
+describe("phone week start", () => {
+  it.each([0, 1])("starts weeks on the account's day %i from the saved sync state", async (day) => {
+    files.state = JSON.stringify({
+      version: 1,
+      cursor: 0,
+      weekStartsOn: day,
+      mirror: { tasks: {}, periods: {}, memberships: {} },
+      outbox: { tasks: {}, periods: {}, memberships: {} },
+    });
+    // Modules reset per test, so read the setting from the instance the store uses.
+    const { getTaskWeekStartsOn, setTaskWeekStartsOn } = await import("@t3tools/contracts");
+    setTaskWeekStartsOn(day === 0 ? 1 : 0);
+    const { cloudTaskStore } = await import("./cloudTasks");
+    cloudTaskStore();
+    expect(getTaskWeekStartsOn()).toBe(day);
   });
 });

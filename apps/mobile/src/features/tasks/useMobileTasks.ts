@@ -5,7 +5,9 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
+  getTaskWeekStartsOn,
   localTaskDate,
+  setTaskWeekStartsOn,
   type EnvironmentId,
   type Task,
   type TaskDeleteScope,
@@ -17,6 +19,7 @@ import {
   type TaskLinks,
   type TaskPatch,
   type TaskRecurrence,
+  type TaskSyncStatus,
 } from "@t3tools/contracts";
 import { presentConnectionState } from "@t3tools/client-runtime/connection";
 import * as Option from "effect/Option";
@@ -129,6 +132,31 @@ export interface MobileTasks {
   readonly projects: ReadonlyArray<EnvironmentProject>;
 }
 
+/**
+ * With the Mac connected, its intents are keyed by the account's week start,
+ * which only the Mac's Task Sync status carries. Reading it here keeps the
+ * phone's weeks on the same day; the cloud copy sets it from its own sync.
+ */
+function useMacWeekStart(environmentId: EnvironmentId | null, macConnected: boolean): void {
+  const readStatus = useAtomCommand(projectEnvironment.taskSyncStatus, { reportFailure: false });
+  const [, setWeekStart] = useState(getTaskWeekStartsOn());
+  useEffect(() => {
+    if (environmentId === null || !macConnected) return;
+    let cancelled = false;
+    void readStatus({ environmentId, input: undefined as never }).then((result) => {
+      if (cancelled || result._tag !== "Success") return;
+      const { weekStartsOn } = result.value as TaskSyncStatus;
+      if (weekStartsOn === getTaskWeekStartsOn()) return;
+      setTaskWeekStartsOn(weekStartsOn);
+      // Weeks are read from the shared setting at render; render again.
+      setWeekStart(getTaskWeekStartsOn());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [environmentId, macConnected, readStatus]);
+}
+
 export function useMobileTasks(): MobileTasks {
   const environmentId = useTaskEnvironmentId();
   const state = useAtomValue(
@@ -137,6 +165,7 @@ export function useMobileTasks(): MobileTasks {
   const macConnected = useMacConnected(environmentId);
   const cloud = useCloudTasks();
   const useCloud = !macConnected && cloudSignedIn(cloud);
+  useMacWeekStart(environmentId, macConnected);
   const allProjects = useProjects();
   const projects = useMemo(
     () =>
