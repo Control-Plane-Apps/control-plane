@@ -32,7 +32,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, View, useWindowDimensions } from "react-native";
+import { Pressable, RefreshControl, ScrollView, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SymbolView } from "../../components/AppSymbol";
@@ -126,7 +126,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const [paneWidth, setPaneWidth] = useState(width);
   const wide = paneWidth >= WIDE_LAYOUT_MIN_WIDTH;
   const today = useTaskToday();
-  const { tasks, intents, projects, actions, available } = useMobileTaskStore();
+  const { tasks, intents, projects, actions, available, source } = useMobileTaskStore();
   const threads = useThreadShells();
   const handToAgent = useHandToAgent();
   const undo = useUndoNotice();
@@ -147,6 +147,26 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     setViewState(next);
     setExpandedId(null);
   }, []);
+
+  // Pull to refresh: with Task Sync this syncs now; tasks read through the Mac
+  // are already live, so the spinner just confirms.
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    const minimum = new Promise((resolve) => setTimeout(resolve, 400));
+    try {
+      await Promise.all([
+        source === "cloud"
+          ? cloudTaskStore()
+              .recheck(0)
+              .catch(() => undefined)
+          : undefined,
+        minimum,
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [source]);
 
   // Opening Tasks rechecks whether Task Sync has been switched on (at most once a minute).
   useEffect(() => {
@@ -644,6 +664,11 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     <View className="flex-1">
       <ScrollView
         scrollEnabled={!reordering}
+        refreshControl={
+          selecting ? undefined : (
+            <RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />
+          )
+        }
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         contentContainerStyle={{

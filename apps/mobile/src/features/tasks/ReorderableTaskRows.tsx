@@ -4,10 +4,11 @@ import { type ReactNode, useMemo, useRef, useState } from "react";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, {
   ReduceMotion,
+  runOnJS,
   type SharedValue,
   useAnimatedStyle,
   useSharedValue,
-  withTiming,
+  withSpring,
 } from "react-native-reanimated";
 
 import { moveItem, type ReorderFrame, reorderShift, reorderTargetIndex } from "./taskReorder";
@@ -170,28 +171,31 @@ function ReorderItem(props: {
   readonly children: ReactNode;
 }) {
   const { index, handlers, lifted, dragging, shift, translation, translationX } = props;
-  const gesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .enabled(props.enabled)
-        .activateAfterLongPress(LONG_PRESS_MS)
-        .shouldCancelWhenOutside(false)
-        .runOnJS(true)
-        .onStart(() => handlers.current.start(index))
-        .onUpdate((event) =>
-          handlers.current.move(
-            event.translationY,
-            event.translationX,
-            event.absoluteX,
-            event.absoluteY,
-          ),
-        )
-        .onEnd((_, success) => handlers.current.end(success))
-        .onFinalize((_, success) => {
-          if (!success) handlers.current.end(false);
-        }),
-    [handlers, index, props.enabled],
-  );
+  const gesture = useMemo(() => {
+    // The lifted row follows the finger on the UI thread, so the drag stays
+    // smooth while the JS side works out the slot and any range under it.
+    const start = () => handlers.current.start(index);
+    const move = (dy: number, dx: number, x: number, y: number) =>
+      handlers.current.move(dy, dx, x, y);
+    const end = (commit: boolean) => handlers.current.end(commit);
+    return Gesture.Pan()
+      .enabled(props.enabled)
+      .activateAfterLongPress(LONG_PRESS_MS)
+      .shouldCancelWhenOutside(false)
+      .onStart(() => {
+        runOnJS(start)();
+      })
+      .onUpdate((event) => {
+        translation.value = event.translationY;
+        runOnJS(move)(event.translationY, event.translationX, event.absoluteX, event.absoluteY);
+      })
+      .onEnd((_, success) => {
+        runOnJS(end)(success);
+      })
+      .onFinalize((_, success) => {
+        if (!success) runOnJS(end)(false);
+      });
+  }, [handlers, index, props.enabled, translation]);
   const style = useAnimatedStyle(() => ({
     zIndex: lifted ? 10 : 0,
     shadowOpacity: lifted ? 0.18 : 0,
@@ -201,7 +205,12 @@ function ReorderItem(props: {
         translateY: lifted
           ? translation.value
           : dragging
-            ? withTiming(shift, { duration: 160, reduceMotion: ReduceMotion.System })
+            ? withSpring(shift, {
+                damping: 26,
+                stiffness: 320,
+                mass: 0.8,
+                reduceMotion: ReduceMotion.System,
+              })
             : 0,
       },
       { scale: lifted ? 1.02 : 1 },

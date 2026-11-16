@@ -17,12 +17,14 @@ export function PlanTasksEntryRow(props: { readonly pane: "screen" | "sidebar" }
   if (!available) return null;
   const counts = taskCounts(tasks, today);
   const sidebar = props.pane === "sidebar";
-  const detail = counts.today > 0 ? `${counts.today} today` : null;
+  // Home reads "4 today"; the iPad sidebar row matches desktop's bare count.
+  const detail =
+    counts.today > 0 ? (sidebar ? String(counts.today) : `${counts.today} today`) : null;
   return (
     <View className={sidebar ? "px-2 pt-2" : undefined}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={detail === null ? "Tasks" : `Tasks, ${detail}`}
+        accessibilityLabel={counts.today > 0 ? `Tasks, ${counts.today} open today` : "Tasks"}
         accessibilityHint="Opens your tasks"
         onPress={() => navigation.navigate("PlanTasks", { view: "today" })}
         className={cn(
