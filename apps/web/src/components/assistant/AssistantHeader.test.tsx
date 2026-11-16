@@ -1,73 +1,64 @@
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
 import { AssistantHeader } from "./AssistantHeader";
 
 const noop = () => undefined;
 
 describe("AssistantHeader", () => {
-  it("keeps Today, pinned channels and Inbox without channel creation", async () => {
-    const onSelect = vi.fn();
+  it.each([
+    [0, null],
+    [1, "1"],
+    [9, "9"],
+    [10, "9+"],
+    [42, "9+"],
+  ])("shows the unread badge for %s pings without a channel switch", async (count, label) => {
     let renderer!: ReactTestRenderer;
     await act(async () => {
       renderer = create(
         <AssistantHeader
-          subtitle="Across 3 Projects"
-          channels={[
-            { id: "today", label: "Today" },
-            { id: "weekly", label: "Weekly review" },
-          ]}
-          selected="today"
-          inboxCount={0}
-          onSelect={onSelect}
+          subtitle="Talks to every Project coordinator and workspace"
+          inboxCount={count as number}
+          inbox={<div>Example ping</div>}
+          onInboxOpenChange={noop}
           onOpenMemory={noop}
+          onOpenSchedules={noop}
           rightPanelOpen={false}
         />,
       );
     });
-    const buttons = renderer.root.findAllByType("button");
-    expect(buttons.some((button) => button.props["aria-label"] === "New channel")).toBe(false);
-    expect(renderer.root.findAllByType("input")).toHaveLength(0);
-    const tabs = buttons.filter((button) => button.props["aria-pressed"] !== undefined);
-    expect(tabs.map((button) => button.children.join(""))).toEqual([
-      "Today",
-      "Weekly review",
+    const root = renderer.root;
+    const buttons = root.findAllByType("button");
+    expect(buttons.map((button) => button.props["aria-label"])).toEqual([
       "Inbox",
+      "Memory",
+      "Schedules",
     ]);
-    await act(async () => {
-      tabs[1]!.props.onClick();
-      tabs[2]!.props.onClick();
-    });
-    expect(onSelect.mock.calls).toEqual([["weekly"], ["inbox"]]);
+    expect(root.findAllByProps({ role: "group" })).toHaveLength(0);
+    expect(root.findAllByType("input")).toHaveLength(0);
+    const badges = root.findAllByProps({ "data-testid": "assistant-inbox-badge" });
+    expect(badges.map((badge) => badge.children.join(""))).toEqual(label === null ? [] : [label]);
     await act(async () => renderer.unmount());
   });
-});
 
-describe("AssistantHeader schedules", () => {
-  it("shows Schedules only when the server stores schedules", async () => {
-    for (const onOpenSchedules of [noop, undefined]) {
-      let renderer!: ReactTestRenderer;
-      await act(async () => {
-        renderer = create(
-          <AssistantHeader
-            subtitle=""
-            channels={[]}
-            selected="today"
-            inboxCount={0}
-            onSelect={noop}
-            onOpenMemory={noop}
-            onOpenSchedules={onOpenSchedules}
-            rightPanelOpen
-          />,
-        );
-      });
-      expect(
-        renderer.root
-          .findAllByType("button")
-          .some((button) => button.props["aria-label"] === "Schedules"),
-      ).toBe(onOpenSchedules !== undefined);
-      await act(async () => renderer.unmount());
-    }
+  it("omits Schedules when the server has none", async () => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <AssistantHeader
+          subtitle=""
+          inboxCount={0}
+          inbox={null}
+          onInboxOpenChange={noop}
+          onOpenMemory={noop}
+          rightPanelOpen
+        />,
+      );
+    });
+    expect(
+      renderer.root.findAllByType("button").map((button) => button.props["aria-label"]),
+    ).toEqual(["Inbox", "Memory"]);
+    await act(async () => renderer.unmount());
   });
 });

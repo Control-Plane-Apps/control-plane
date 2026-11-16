@@ -18,14 +18,15 @@ import {
 } from "@t3tools/contracts";
 import { describeCadence } from "@t3tools/shared/schedules";
 import { useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useMemo } from "react";
 
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useProjects, useThreadShellsForProjectRefs } from "~/state/entities";
 import { useTaskToday, useTasks } from "~/state/tasks";
 import { buildThreadRouteParams } from "../../threadRoutes";
-import { AssistantHeader, ASSISTANT_INBOX_CHANNEL } from "./AssistantHeader";
+import { AssistantHeader } from "./AssistantHeader";
 import { AssistantInbox } from "./AssistantInbox";
+import { useAssistantInboxState } from "./useAssistantInboxState";
 import { AssistantRail } from "./AssistantRail";
 import { AssistantTodayEmpty } from "./AssistantTodayEmpty";
 import {
@@ -67,7 +68,7 @@ export function useAssistantChatChrome(input: {
   const navigate = useNavigate();
   const projects = useProjects();
   const send = useSendToThread();
-  const [inboxOpenFor, setInboxOpenFor] = useState<string | null>(null);
+  const inboxKey = `${environmentId}:${threadId}`;
   const assistantSettings = usePrimaryEnvironment()?.serverConfig?.settings.assistant ?? null;
   const reach = assistantSettings?.projects ?? null;
   const { tasks } = useTasks();
@@ -94,6 +95,7 @@ export function useAssistantChatChrome(input: {
     () => (enabled ? collectPings(input.activities) : []),
     [enabled, input.activities],
   );
+  const { unreadCount, onOpenChange } = useAssistantInboxState(inboxKey, pings);
   const hiddenMessageIds = useMemo(
     () => (asks.length > 0 ? askAnswerMessageIds(asks) : EMPTY_IDS),
     [asks],
@@ -157,12 +159,6 @@ export function useAssistantChatChrome(input: {
     .filter((thread) => thread.pinnedAt != null && thread.id !== coordinatorId)
     .filter((thread) => thread.archivedAt == null)
     .toSorted((a, b) => (a.pinnedAt ?? "").localeCompare(b.pinnedAt ?? ""));
-  const channels = [
-    { id: coordinatorId as string, label: "Today" },
-    ...channelThreads.map((thread) => ({ id: thread.id as string, label: thread.title })),
-  ];
-  const inboxOpen = inboxOpenFor === threadId;
-  const selected = inboxOpen ? ASSISTANT_INBOX_CHANNEL : (threadId as string);
   const schedules = project.assistant?.schedules ?? [];
   const channelSchedule = schedules.find(
     (schedule) =>
@@ -170,9 +166,8 @@ export function useAssistantChatChrome(input: {
       (schedule.target === threadId ||
         (schedule.target === "coordinator" && threadId === coordinatorId)),
   );
-  const subtitle = inboxOpen
-    ? "Pings from your Assistant"
-    : threadId === coordinatorId
+  const subtitle =
+    threadId === coordinatorId
       ? "Talks to every Project coordinator and workspace"
       : channelSchedule
         ? `${channelLabelFor(channelThreads, threadId)} · ${describeCadence(channelSchedule.cron)}`
@@ -187,18 +182,11 @@ export function useAssistantChatChrome(input: {
   return {
     header: (
       <AssistantHeader
+        key={inboxKey}
         subtitle={subtitle}
-        channels={channels}
-        selected={selected}
-        inboxCount={pings.length}
-        onSelect={(id) => {
-          if (id === ASSISTANT_INBOX_CHANNEL) {
-            setInboxOpenFor(threadId);
-            return;
-          }
-          setInboxOpenFor(null);
-          if (id !== threadId) void goToThread(environmentId, id as ThreadId);
-        }}
+        inboxCount={unreadCount}
+        inbox={<AssistantInbox pings={pings} onReply={replyHere} />}
+        onInboxOpenChange={onOpenChange}
         onOpenMemory={input.onOpenMemory}
         onOpenSchedules={input.onOpenSchedules}
         rightPanelOpen={input.rightPanelOpen}
@@ -226,7 +214,7 @@ export function useAssistantChatChrome(input: {
         onOpenTasks={openTasks}
       />
     ),
-    inbox: inboxOpen ? <AssistantInbox pings={pings} onReply={replyHere} /> : null,
+    inbox: null,
     hiddenMessageIds,
     wrapTimeline: (timeline) => (
       <AssistantTimelineCardsContext value={cardsValue}>{timeline}</AssistantTimelineCardsContext>
