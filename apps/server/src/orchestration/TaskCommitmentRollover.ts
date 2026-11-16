@@ -1,22 +1,24 @@
 /**
  * Commitment rollover. Fork-owned. When a week, month or year ends, its
  * unfinished commitments move to the period of the same horizon that holds
- * today, so a commitment several periods old lands in the current one.
+ * today, by the rule agreed with Lucive so both apps move them the same way.
  *
- * Gated by `tasks.rollCommitmentsForward` (off by default): Lucive syncs the
- * same tasks, so only one app may apply the rule. Each move is an ordinary
- * `task.update` of the task's home, which Task Sync pushes like a user edit
- * (it retires the old commitment and adds the new one). The task keeps its
- * order key. After a move the home ends on or after today, so a rerun finds
- * nothing to do.
+ * Gated by `taskRolloverToCurrentPeriod` (off by default). Synced tasks are
+ * moved by Task Sync on its own planning records: the old commitment is
+ * retired and a new one created, the task row is never rewritten, and the
+ * result reaches the event store like a pull. Tasks only this machine holds
+ * (Task Sync off, or never synced) move with an ordinary `task.update`.
  *
- * Runs once after activation, whenever the local date changes (checked on a
- * short timer) and when the setting is switched on.
+ * Runs after activation, whenever the local date changes (checked on a short
+ * timer), after each Task Sync apply, when the setting is switched on, and
+ * before task reads (`beforeRead`). Runs are serialized and idempotent: after
+ * one pass no expired commitment is left to move.
  *
  * @module TaskCommitmentRollover
  */
 import {
   CommandId,
+  getTaskWeekStartsOn,
   isProposedTask,
   localTaskDate,
   taskPeriodFor,
@@ -28,6 +30,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
@@ -44,6 +47,8 @@ import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 const COMMAND_PREFIX = "task-rollover:";
 /** How often the local date is checked. A move lands at most this long after midnight. */
 const DATE_CHECK_INTERVAL = "5 minutes";
+/** How long a read waits for a catch-up; a slower one lands as live updates. */
+const READ_WAIT = "2 seconds";
 
 type PeriodHome = Extract<TaskHome, { readonly kind: "period" }>;
 
@@ -53,29 +58,33 @@ export interface CommitmentMove {
 }
 
 /** Whether the setting asks for rollover. */
-export function rolloverEnabled(settings: Pick<ServerSettings, "tasks">): boolean {
-  return settings.tasks.rollCommitmentsForward;
+export function rolloverEnabled(
+  settings: Pick<ServerSettings, "taskRolloverToCurrentPeriod">,
+): boolean {
+  return settings.taskRolloverToCurrentPeriod;
 }
 
 /**
- * Open commitments whose period ended before `today`, each with the period of
- * its horizon that contains `today`. Only plain todo tasks move: completed or
- * cancelled ones, waiting proposals and repeating tasks stay where they are.
- * The read model holds no deleted tasks.
+ * Expired commitments among tasks only this machine holds, each with the
+ * period of its horizon that contains `today`. Only plain todo tasks move:
+ * completed or cancelled ones, waiting proposals and repeating tasks stay
+ * where they are, and nothing moves to a period that does not start after
+ * its current one. The read model holds no deleted tasks.
  */
 export function expiredCommitmentMoves(
   tasks: ReadonlyArray<Task>,
   today: string,
+  weekStartsOn: number = getTaskWeekStartsOn(),
 ): CommitmentMove[] {
   const moves: CommitmentMove[] = [];
   for (const task of tasks) {
     const home = task.home;
     if (home.kind !== "period" || home.endsOn >= today) continue;
-    if (task.status !== "todo" || task.recurrence !== undefined || isProposedTask(task)) continue;
-    moves.push({
-      task,
-      newHome: { kind: "period", horizon: home.horizon, ...taskPeriodFor(home.horizon, today) },
-    });
+    if (task.status !== "todo" || isProposedTask(task)) continue;
+    if (task.recurrence !== undefined || task.seriesId !== undefined) continue;
+    const target = taskPeriodFor(home.horizon, today, weekStartsOn);
+    if (target.startsOn <= home.startsOn) continue;
+    moves.push({ task, newHome: { kind: "period", horizon: home.horizon, ...target } });
   }
   return moves;
 }
@@ -83,8 +92,13 @@ export function expiredCommitmentMoves(
 export class TaskCommitmentRollover extends Context.Service<
   TaskCommitmentRollover,
   {
-    /** Moves expired commitments now when the setting is on. Returns how many moved. */
+    /** Rolls expired commitments now when the setting is on. Returns how many moved. */
     readonly runCatchUp: Effect.Effect<number>;
+    /**
+     * Before serving tasks: catches up when today has not been handled yet,
+     * waiting a short while for it. Free once today is done.
+     */
+    readonly beforeRead: Effect.Effect<void>;
   }
 >()("t3/orchestration/TaskCommitmentRollover") {}
 
@@ -92,24 +106,44 @@ export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
   const settingsService = yield* ServerSettingsService;
-  // Reading Task Sync loads its saved state, which sets the account's week
-  // start before any week is computed. Optional: tests run without it.
+  // Optional: tests and builds without Task Sync treat every task as local.
   const taskSync = yield* Effect.serviceOption(TaskSyncService);
   const lock = yield* Semaphore.make(1);
+  /** The last local day a full pass completed. */
   let lastDay: string | null = null;
+
+  const today = DateTime.now.pipe(Effect.map((now) => localTaskDate(DateTime.toEpochMillis(now))));
 
   const catchUp = Effect.gen(function* () {
     const settings = yield* settingsService.getSettings;
     if (!rolloverEnabled(settings)) return 0;
-    if (Option.isSome(taskSync)) yield* taskSync.value.syncedTaskIds;
     const now = yield* DateTime.now;
     const createdAt = DateTime.formatIso(now);
-    const today = localTaskDate(DateTime.toEpochMillis(now));
-    lastDay = today;
-    const model = yield* snapshots.getCommandReadModel();
-    const moves = expiredCommitmentMoves(model.tasks ?? [], today);
+    const day = localTaskDate(DateTime.toEpochMillis(now));
+
+    // Synced tasks first: Task Sync moves their commitments and refuses
+    // until it has the account's week start this session.
+    let synced: ReadonlySet<string> = new Set();
     let moved = 0;
-    for (const { task, newHome } of moves) {
+    if (Option.isSome(taskSync)) {
+      const result = yield* taskSync.value.rollExpiredCommitments(day);
+      if (result.state === "waiting") return 0;
+      if (result.state === "done") {
+        synced = result.syncedTaskIds;
+        moved += result.created;
+        if (result.retired > 0) {
+          yield* Effect.logInfo("rolled synced commitments", {
+            created: result.created,
+            retired: result.retired,
+            today: day,
+          });
+        }
+      }
+    }
+
+    const model = yield* snapshots.getCommandReadModel();
+    const local = (model.tasks ?? []).filter((task) => !synced.has(task.id));
+    for (const { task, newHome } of expiredCommitmentMoves(local, day)) {
       yield* engine
         .dispatch({
           type: "task.update",
@@ -136,7 +170,8 @@ export const make = Effect.gen(function* () {
           ),
         );
     }
-    if (moved > 0) yield* Effect.logInfo("rolled commitments forward", { moved, today });
+    lastDay = day;
+    if (moved > 0) yield* Effect.logInfo("rolled commitments forward", { moved, today: day });
     return moved;
   });
 
@@ -152,17 +187,28 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  /** Runs only when the local date moved past the last run. */
+  /** Runs only when the local date moved past the last completed run. */
   const onTick = Effect.gen(function* () {
-    const today = localTaskDate(DateTime.toEpochMillis(yield* DateTime.now));
-    if (today === lastDay) return;
+    if ((yield* today) === lastDay) return;
     yield* runCatchUp;
+  });
+
+  const beforeRead = Effect.gen(function* () {
+    if ((yield* today) === lastDay) return;
+    // Detached, so a slow pass finishes even when the read stops waiting.
+    const fiber = yield* Effect.forkDetach(runCatchUp);
+    yield* Fiber.join(fiber).pipe(Effect.timeoutOption(READ_WAIT), Effect.asVoid);
   });
 
   yield* forkParked(runCatchUp);
   yield* forkParked(
     onTick.pipe(Effect.repeat(Schedule.spaced(DATE_CHECK_INTERVAL)), Effect.asVoid),
   );
+  if (Option.isSome(taskSync)) {
+    // Pulled records may arrive already expired, or the week start may have
+    // just arrived: handle them right after each apply.
+    yield* forkParked(Stream.runForEach(taskSync.value.applied, () => runCatchUp));
+  }
   // Subscribe before reading the current value so a flip in between is seen.
   yield* forkParked(
     Effect.scoped(
@@ -182,7 +228,7 @@ export const make = Effect.gen(function* () {
     ),
   );
 
-  return { runCatchUp } satisfies TaskCommitmentRollover["Service"];
+  return { runCatchUp, beforeRead } satisfies TaskCommitmentRollover["Service"];
 });
 
 export const layer = Layer.effect(TaskCommitmentRollover, make);

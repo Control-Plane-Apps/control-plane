@@ -3,7 +3,12 @@ import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics globalDate:off - the client under test takes a plain clock.
 import { describe, expect, it } from "vite-plus/test";
 
-import { makeTaskSyncCloudClient, signHandshake, TaskSyncCloudError } from "./cloudClient.ts";
+import {
+  deviceTimeZone,
+  makeTaskSyncCloudClient,
+  signHandshake,
+  TaskSyncCloudError,
+} from "./cloudClient.ts";
 
 const SECRET = "a".repeat(64);
 const config = { baseUrl: "https://cloud.test", keyId: "cplane-test-1", secret: SECRET };
@@ -107,5 +112,47 @@ describe("task sync cloud client", () => {
     const client = makeTaskSyncCloudClient(config, fetch);
     expect(await client.checkout("device")).toBe("https://billing.test/portal");
     expect(await client.subscription("device")).toEqual({ status: "grace", canManage: true });
+  });
+
+  it("sends this device's time zone on planning push and changes only", async () => {
+    const ok = () =>
+      [200, { tasks: [], periods: [], memberships: [], nextSince: 0, hasMore: false }] as [
+        number,
+        unknown,
+      ];
+    const { fetch, calls } = fakeFetch({
+      "/api/planning/changes": ok,
+      "/api/planning/push": () => [200, {}],
+      "/api/entitlements/task-sync": () => [200, { status: "active" }],
+    });
+    const zone = (path: string) =>
+      (calls.find((call) => call.path === path)!.init.headers as Record<string, string>)[
+        "x-lucive-time-zone"
+      ];
+    const client = makeTaskSyncCloudClient(config, fetch, undefined, {
+      platform: "macos",
+      returnTo: "desktop",
+      timeZone: () => "America/Denver",
+    });
+    await client.changes("device", 0);
+    await client.push("device", { tasks: [], periods: [], memberships: [] });
+    await client.subscription("device");
+    expect(zone("/api/planning/changes")).toBe("America/Denver");
+    expect(zone("/api/planning/push")).toBe("America/Denver");
+    expect(zone("/api/entitlements/task-sync")).toBeUndefined();
+
+    // By default the runtime's own zone; an unknown zone sends no header.
+    const byDefault = fakeFetch({ "/api/planning/changes": ok });
+    await makeTaskSyncCloudClient(config, byDefault.fetch).changes("device", 0);
+    const sent = (byDefault.calls[0]!.init.headers as Record<string, string>)["x-lucive-time-zone"];
+    expect(sent).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(sent).toBe(deviceTimeZone());
+    const unknown = fakeFetch({ "/api/planning/changes": ok });
+    await makeTaskSyncCloudClient(config, unknown.fetch, undefined, {
+      platform: "macos",
+      returnTo: "desktop",
+      timeZone: () => undefined,
+    }).changes("device", 0);
+    expect(unknown.calls[0]!.init.headers).not.toHaveProperty("x-lucive-time-zone");
   });
 });

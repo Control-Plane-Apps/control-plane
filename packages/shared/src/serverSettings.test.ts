@@ -869,23 +869,21 @@ describe("applyServerSettingsPatch globalInstructions", () => {
   });
 });
 
-describe("applyServerSettingsPatch tasks", () => {
+describe("applyServerSettingsPatch taskRolloverToCurrentPeriod", () => {
   it("defaults commitment rollover off", () => {
-    expect(DEFAULT_SERVER_SETTINGS.tasks).toEqual({ rollCommitmentsForward: false });
+    expect(DEFAULT_SERVER_SETTINGS.taskRolloverToCurrentPeriod).toBe(false);
   });
 
   it("turns rollover on and off, and leaves it alone for unrelated patches", () => {
     const on = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
-      tasks: { rollCommitmentsForward: true },
+      taskRolloverToCurrentPeriod: true,
     });
-    expect(on.tasks).toEqual({ rollCommitmentsForward: true });
-    expect(applyServerSettingsPatch(on, { tasks: {} }).tasks).toEqual({
-      rollCommitmentsForward: true,
-    });
-    expect(applyServerSettingsPatch(on, { globalInstructions: { tasks: false } }).tasks).toEqual({
-      rollCommitmentsForward: true,
-    });
-    const off = applyServerSettingsPatch(on, { tasks: { rollCommitmentsForward: false } });
-    expect(off.tasks).toEqual({ rollCommitmentsForward: false });
+    expect(on.taskRolloverToCurrentPeriod).toBe(true);
+    expect(
+      applyServerSettingsPatch(on, { globalInstructions: { tasks: false } })
+        .taskRolloverToCurrentPeriod,
+    ).toBe(true);
+    const off = applyServerSettingsPatch(on, { taskRolloverToCurrentPeriod: false });
+    expect(off.taskRolloverToCurrentPeriod).toBe(false);
   });
 });

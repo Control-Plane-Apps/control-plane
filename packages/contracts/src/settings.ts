@@ -1084,18 +1084,6 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
-/** Fork-owned task settings. */
-export const TaskSettings = Schema.Struct({
-  /**
-   * When a week, month or year ends, move its unfinished commitments to the
-   * current period of the same horizon (todo only; repeating tasks and
-   * proposals stay put). Off until Lucive ships the same rule: both apps sync
-   * the same tasks, so only one rule may move them.
-   */
-  rollCommitmentsForward: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-});
-export type TaskSettings = typeof TaskSettings.Type;
-
 export const ServerSettings = Schema.Struct({
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
@@ -1294,8 +1282,14 @@ export const ServerSettings = Schema.Struct({
   globalInstructions: GlobalInstructionsScopes.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   /** The cross-Project Assistant: what it reaches and may do. Fork-owned. */
   assistant: AssistantSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-  /** Personal task behavior on this environment. Fork-owned. */
-  tasks: TaskSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /**
+   * When a week, month or year ends, move its unfinished commitments into the
+   * current period of the same horizon. Fork-owned. Off until Lucive ships
+   * the same rule: both apps sync the same tasks and must apply one rule.
+   */
+  taskRolloverToCurrentPeriod: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -1577,9 +1571,7 @@ export const ServerSettingsPatch = Schema.Struct({
   agentPlacement: Schema.optionalKey(AgentPlacementSettingsPatch),
   globalInstructions: Schema.optionalKey(GlobalInstructionsScopesPatch),
   assistant: Schema.optionalKey(AssistantSettingsPatch),
-  tasks: Schema.optionalKey(
-    Schema.Struct({ rollCommitmentsForward: Schema.optionalKey(Schema.Boolean) }),
-  ),
+  taskRolloverToCurrentPeriod: Schema.optionalKey(Schema.Boolean),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

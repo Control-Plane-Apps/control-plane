@@ -13,12 +13,15 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
+import type { TaskSyncRolloverResult } from "@t3tools/shared/taskSync/engine";
 
 import { ServerActivation } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { TaskSyncService } from "../taskSync/TaskSyncService.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 import {
@@ -148,6 +151,7 @@ describe("expiredCommitmentMoves", () => {
         },
       }),
       task("repeat", old, { recurrence: { frequency: "weekly", interval: 1 } }),
+      task("occurrence", old, { seriesId: "series-1" }),
     ];
     assert.deepStrictEqual(expiredCommitmentMoves(tasks, TODAY), []);
   });
@@ -167,6 +171,14 @@ describe("expiredCommitmentMoves", () => {
       TODAY,
     );
     assert.strictEqual(moves.length, 1);
+  });
+
+  it("never moves to a period that does not start after the current one", () => {
+    // A malformed record ending before today but starting on the current week.
+    assert.deepStrictEqual(
+      expiredCommitmentMoves([task("odd", week("2026-11-16", "2026-11-15"))], TODAY),
+      [],
+    );
   });
 
   it("follows the account's week start", () => {
@@ -189,7 +201,7 @@ describe("rolloverEnabled", () => {
   it("is off by default", () => {
     assert.strictEqual(rolloverEnabled(DEFAULT_SERVER_SETTINGS), false);
     assert.strictEqual(
-      rolloverEnabled({ ...DEFAULT_SERVER_SETTINGS, tasks: { rollCommitmentsForward: true } }),
+      rolloverEnabled({ ...DEFAULT_SERVER_SETTINGS, taskRolloverToCurrentPeriod: true }),
       true,
     );
   });
@@ -197,16 +209,37 @@ describe("rolloverEnabled", () => {
 
 describe("TaskCommitmentRollover", () => {
   const expired = task("w", week("2026-11-09", "2026-11-15"));
+  const syncedExpired = task("synced", week("2026-11-09", "2026-11-15"));
 
-  const harness = (enabled: boolean) =>
+  const harness = (
+    enabled: boolean,
+    options: { sync?: TaskSyncRolloverResult; activated?: boolean } = {},
+  ) =>
     Effect.gen(function* () {
       const dispatched = yield* Ref.make<OrchestrationCommand[]>([]);
-      // Parked forever: only the explicit catch-up runs in these tests.
+      const syncRuns = yield* Ref.make<string[]>([]);
+      const syncRan = yield* Queue.unbounded<void>();
+      const applied = yield* Queue.unbounded<void>();
+      // Parked forever unless activated: then only explicit runs happen.
       const activation = yield* Deferred.make<void>();
+      if (options.activated === true) yield* Deferred.succeed(activation, undefined);
+      const taskSync =
+        options.sync === undefined
+          ? Layer.empty
+          : Layer.mock(TaskSyncService)({
+              rollExpiredCommitments: (today) =>
+                Ref.update(syncRuns, (list) => [...list, today]).pipe(
+                  Effect.andThen(Queue.offer(syncRan, undefined)),
+                  Effect.as(options.sync!),
+                ),
+              applied: Stream.fromQueue(applied),
+            });
       const dependencies = Layer.mergeAll(
         Layer.mock(ProjectionSnapshotQuery)({
           getCommandReadModel: () =>
-            Effect.succeed({ tasks: [expired] } as unknown as OrchestrationReadModel),
+            Effect.succeed({
+              tasks: [expired, syncedExpired],
+            } as unknown as OrchestrationReadModel),
         }),
         Layer.mock(OrchestrationEngineService)({
           readEvents: () => Stream.empty,
@@ -215,43 +248,129 @@ describe("TaskCommitmentRollover", () => {
           streamDomainEvents: Stream.empty,
           latestSequence: Effect.succeed(0),
         }),
-        ServerSettings.layerTest({ tasks: { rollCommitmentsForward: enabled } }),
+        ServerSettings.layerTest({ taskRolloverToCurrentPeriod: enabled }),
         Layer.succeed(ServerActivation, Deferred.await(activation)),
+        taskSync,
       );
-      return { dispatched, layer: rolloverLayer.pipe(Layer.provide(dependencies)) };
+      return {
+        dispatched,
+        syncRuns,
+        syncRan,
+        applied,
+        layer: rolloverLayer.pipe(Layer.provide(dependencies)),
+      };
     });
 
   // Noon UTC on Monday 16 November 2026: the 16th in any zone within 11 hours of UTC.
   const noonToday = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-11-16T12:00:00.000Z"));
 
+  const runOnce = Effect.gen(function* () {
+    const rollover = yield* TaskCommitmentRollover;
+    return yield* rollover.runCatchUp;
+  });
+
+  const taskUpdates = (commands: ReadonlyArray<OrchestrationCommand>) =>
+    commands.flatMap((command) => (command.type === "task.update" ? [command] : []));
+
   it.effect("does nothing while the setting is off", () =>
     Effect.gen(function* () {
-      const { dispatched, layer } = yield* harness(false);
+      const { dispatched, syncRuns, layer } = yield* harness(false, {
+        sync: { state: "done", syncedTaskIds: new Set(), created: 0, retired: 0 },
+      });
       yield* TestClock.setTime(noonToday);
-      const moved = yield* Effect.gen(function* () {
-        const rollover = yield* TaskCommitmentRollover;
-        return yield* rollover.runCatchUp;
-      }).pipe(Effect.provide(layer));
+      const moved = yield* runOnce.pipe(Effect.provide(layer));
+      assert.strictEqual(moved, 0);
+      assert.deepStrictEqual(yield* Ref.get(dispatched), []);
+      assert.deepStrictEqual(yield* Ref.get(syncRuns), []);
+    }),
+  );
+
+  it.effect("moves a task only this machine holds with task.update when on", () =>
+    Effect.gen(function* () {
+      const { dispatched, layer } = yield* harness(true);
+      yield* TestClock.setTime(noonToday);
+      const moved = yield* runOnce.pipe(Effect.provide(layer));
+      assert.strictEqual(moved, 2);
+      const [command] = taskUpdates(yield* Ref.get(dispatched));
+      assert.strictEqual(command?.taskId, expired.id);
+      assert.deepStrictEqual(command?.patch, { home: week("2026-11-16", "2026-11-22") });
+      assert.isTrue(command?.commandId.startsWith("task-rollover:w:week:2026-11-16:"));
+    }),
+  );
+
+  it.effect("leaves synced tasks to Task Sync and never rewrites them", () =>
+    Effect.gen(function* () {
+      const { dispatched, syncRuns, layer } = yield* harness(true, {
+        sync: {
+          state: "done",
+          syncedTaskIds: new Set([syncedExpired.id]),
+          created: 1,
+          retired: 1,
+        },
+      });
+      yield* TestClock.setTime(noonToday);
+      const moved = yield* runOnce.pipe(Effect.provide(layer));
+      assert.deepStrictEqual(yield* Ref.get(syncRuns), ["2026-11-16"]);
+      // One synced move by Task Sync, one local task.update.
+      assert.strictEqual(moved, 2);
+      assert.deepStrictEqual(
+        taskUpdates(yield* Ref.get(dispatched)).map((command) => command.taskId),
+        [expired.id],
+      );
+    }),
+  );
+
+  it.effect("moves nothing while Task Sync waits for the account's week start", () =>
+    Effect.gen(function* () {
+      const { dispatched, layer } = yield* harness(true, { sync: { state: "waiting" } });
+      yield* TestClock.setTime(noonToday);
+      const moved = yield* runOnce.pipe(Effect.provide(layer));
       assert.strictEqual(moved, 0);
       assert.deepStrictEqual(yield* Ref.get(dispatched), []);
     }),
   );
 
-  it.effect("moves an expired commitment with task.update when on", () =>
+  it.effect("catches up before a read once per day, and again after a waiting pass", () =>
     Effect.gen(function* () {
-      const { dispatched, layer } = yield* harness(true);
+      const done = yield* harness(true, { sync: { state: "local" } });
       yield* TestClock.setTime(noonToday);
-      const moved = yield* Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const rollover = yield* TaskCommitmentRollover;
-        return yield* rollover.runCatchUp;
+        yield* rollover.beforeRead;
+        yield* rollover.beforeRead;
+        assert.strictEqual((yield* Ref.get(done.syncRuns)).length, 1);
+        // The next day: one more pass.
+        yield* TestClock.adjust("1 day");
+        yield* rollover.beforeRead;
+        yield* rollover.beforeRead;
+        assert.strictEqual((yield* Ref.get(done.syncRuns)).length, 2);
+      }).pipe(Effect.provide(done.layer));
+
+      const waiting = yield* harness(true, { sync: { state: "waiting" } });
+      yield* Effect.gen(function* () {
+        const rollover = yield* TaskCommitmentRollover;
+        yield* rollover.beforeRead;
+        yield* rollover.beforeRead;
+        // A pass that had to wait does not count as done for the day.
+        assert.strictEqual((yield* Ref.get(waiting.syncRuns)).length, 2);
+      }).pipe(Effect.provide(waiting.layer));
+    }),
+  );
+
+  it.effect("runs after each Task Sync apply", () =>
+    Effect.gen(function* () {
+      const { syncRan, applied, layer } = yield* harness(true, {
+        sync: { state: "done", syncedTaskIds: new Set(), created: 0, retired: 0 },
+        activated: true,
+      });
+      yield* TestClock.setTime(noonToday);
+      yield* Effect.gen(function* () {
+        yield* TaskCommitmentRollover;
+        // The activation pass.
+        yield* Queue.take(syncRan);
+        yield* Queue.offer(applied, undefined);
+        yield* Queue.take(syncRan);
       }).pipe(Effect.provide(layer));
-      assert.strictEqual(moved, 1);
-      const [command] = yield* Ref.get(dispatched);
-      assert.strictEqual(command?.type, "task.update");
-      if (command?.type !== "task.update") return;
-      assert.strictEqual(command.taskId, expired.id);
-      assert.deepStrictEqual(command.patch, { home: week("2026-11-16", "2026-11-22") });
-      assert.isTrue(command.commandId.startsWith("task-rollover:w:week:2026-11-16:"));
     }),
   );
 });

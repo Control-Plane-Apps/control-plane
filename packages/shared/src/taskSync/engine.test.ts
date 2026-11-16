@@ -26,11 +26,51 @@ class FakeCloud implements TaskSyncCloudClient {
   availabilityChecks = 0;
   changeCalls = 0;
   pushes: PushBatch[] = [];
+  /** What `/changes` reports as the account's week start; undefined sends none. */
+  weekStartsOn: number | undefined = 1;
+  /** Runs while a push is in flight, before the cloud answers. */
+  duringPush: (() => Promise<void>) | null = null;
 
   availability = async () => {
     this.availabilityChecks += 1;
     return this.available;
   };
+
+  seedPeriod(id: string, horizon: "week" | "month", startsOn: string, endsOn: string, extra = {}) {
+    this.seq += 1;
+    this.periods.set(id, {
+      id,
+      horizon,
+      anchorDate: startsOn,
+      startsOn,
+      endsOn,
+      title: null,
+      focus: null,
+      state: "open",
+      revision: 1,
+      createdAt: T0,
+      updatedAt: T0,
+      deletedAt: null,
+      ...extra,
+      seq: this.seq,
+    });
+  }
+
+  seedCommitment(id: string, periodId: string, taskId: string, sortOrder = 0) {
+    this.seq += 1;
+    this.memberships.set(id, {
+      id,
+      periodId,
+      taskId,
+      role: "commitment",
+      sortOrder,
+      revision: 1,
+      createdAt: T0,
+      updatedAt: T0,
+      deletedAt: null,
+      seq: this.seq,
+    });
+  }
 
   seedTask(task: Partial<WireTaskWithSeq> & { id: string }) {
     this.seq += 1;
@@ -74,12 +114,13 @@ class FakeCloud implements TaskSyncCloudClient {
       memberships: after(this.memberships.values()),
       nextSince: this.seq,
       hasMore: false,
-      settings: { weekStartsOn: 1 },
+      ...(this.weekStartsOn === undefined ? {} : { settings: { weekStartsOn: this.weekStartsOn } }),
     };
   };
 
   push = async (_token: string, batch: PushBatch) => {
     if (!this.active) throw new TaskSyncCloudError("inactive", 402);
+    if (this.duringPush !== null) await this.duringPush();
     this.pushes.push(batch);
     const remaps: Array<{ from: string; to: string }> = [];
     for (const raw of batch.periods) {
@@ -118,6 +159,7 @@ function setup(cloud: FakeCloud, localTasks: Task[] = [], localIntents: TaskInte
   let clock = Date.parse(T0);
   let ids = 0;
   const applied: TaskSyncApply[] = [];
+  const notified = { count: 0 };
   const local = { tasks: localTasks, intents: localIntents };
   const engine = new TaskSyncEngine({
     client: cloud,
@@ -140,11 +182,14 @@ function setup(cloud: FakeCloud, localTasks: Task[] = [], localIntents: TaskInte
       ];
     },
     readLocal: async () => local,
+    onApplied: () => {
+      notified.count += 1;
+    },
     deviceName: "Test Mac",
     now: () => new Date((clock += 1000)),
     newId: () => `gen-${(ids += 1)}`,
   });
-  return { engine, applied, local, state: () => state };
+  return { engine, applied, local, notified, state: () => state };
 }
 
 const localTask = (id: string, extra: Partial<Task> = {}): Task =>
@@ -373,5 +418,193 @@ describe("TaskSyncEngine", () => {
     await engine.verify("n@example.com", "123456");
     const status = await engine.signOut();
     expect(status.state).toBe("signed-out");
+  });
+
+  it("keeps a Lucive dated commitment's day when Control Plane edits it in place", async () => {
+    const cloud = new FakeCloud();
+    cloud.seedPeriod("this-week", "week", "2026-11-09", "2026-11-15");
+    cloud.seedTask({
+      id: "t1",
+      title: "Book flights",
+      scheduledDate: "2026-11-12",
+      reminderTime: "09:00",
+    });
+    cloud.seedCommitment("c1", "this-week", "t1");
+    const { engine, local } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    // Shown as its week, not its day.
+    expect(local.tasks[0]!.home).toMatchObject({ kind: "period", startsOn: "2026-11-09" });
+
+    const renamed = { ...local.tasks[0]!, title: "Book flights to Denver" };
+    local.tasks = [renamed];
+    await engine.onLocalTask("t1", renamed);
+    await engine.sync();
+    expect(cloud.tasks.get("t1")).toMatchObject({
+      title: "Book flights to Denver",
+      scheduledDate: "2026-11-12",
+      reminderTime: "09:00",
+    });
+
+    // Moving it to another period is an explicit home change: the day clears.
+    const moved = {
+      ...renamed,
+      home: { kind: "period", horizon: "month", startsOn: "2026-11-01", endsOn: "2026-11-30" },
+    } as Task;
+    local.tasks = [moved];
+    await engine.onLocalTask("t1", moved);
+    await engine.sync();
+    expect(cloud.tasks.get("t1")).toMatchObject({ scheduledDate: null, reminderTime: null });
+  });
+
+  it("keeps a record queued during a push for the next one", async () => {
+    const cloud = new FakeCloud();
+    cloud.seedTask({ id: "t1" });
+    cloud.seedTask({ id: "t2" });
+    const { engine, local } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    const first = { ...local.tasks.find((t) => t.id === "t1")!, title: "First" };
+    const second = { ...local.tasks.find((t) => t.id === "t2")!, title: "Second" };
+    await engine.onLocalTask("t1", first);
+    cloud.duringPush = async () => {
+      cloud.duringPush = null;
+      await engine.onLocalTask("t2", second);
+    };
+    await engine.sync();
+    expect(cloud.tasks.get("t1")?.title).toBe("First");
+    expect((await engine.status()).pendingChanges).toBe(1);
+    await engine.sync();
+    expect(cloud.tasks.get("t2")?.title).toBe("Second");
+  });
+});
+
+describe("TaskSyncEngine commitment rollover", () => {
+  // Monday 16 November 2026: last week (9-15 Nov) has ended.
+  const TODAY = "2026-11-16";
+
+  const seeded = () => {
+    const cloud = new FakeCloud();
+    cloud.seedPeriod("last-week", "week", "2026-11-09", "2026-11-15");
+    cloud.seedPeriod("this-week", "week", "2026-11-16", "2026-11-22");
+    cloud.seedTask({ id: "rolls", title: "Undated", sortOrder: 40 });
+    cloud.seedTask({ id: "dated", scheduledDate: "2026-11-12", reminderTime: "09:00" });
+    cloud.seedTask({ id: "already" });
+    cloud.seedCommitment("c-rolls", "last-week", "rolls", 2);
+    cloud.seedCommitment("c-dated", "last-week", "dated", 1);
+    cloud.seedCommitment("c-already", "this-week", "already", 4);
+    return cloud;
+  };
+
+  it("moves memberships only: the synced task record is untouched", async () => {
+    const cloud = seeded();
+    const { engine, applied, state } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    const before = structuredClone(state().mirror.tasks);
+    const cloudBefore = structuredClone(cloud.tasks.get("rolls"));
+    const appliedBefore = applied.length;
+
+    const result = await engine.rollExpiredCommitments(TODAY);
+    expect(result).toMatchObject({ state: "done", created: 1, retired: 2 });
+    if (result.state !== "done") return;
+    expect(result.syncedTaskIds.has("rolls")).toBe(true);
+
+    // No task record changed or queued: same revision-free row, same updatedAt.
+    expect(state().mirror.tasks).toEqual(before);
+    expect(state().outbox.tasks).toEqual({});
+    // The old commitments are tombstoned, one new commitment on this week.
+    const outbox = Object.values(state().outbox.memberships);
+    const tombstoned = outbox.filter((m) => m.deletedAt !== null).map((m) => m.id);
+    expect([...(tombstoned as string[])].sort()).toEqual(["c-dated", "c-rolls"]);
+    expect(state().mirror.memberships["c-rolls"]).toMatchObject({ revision: 2 });
+    const created = outbox.find((m) => m.deletedAt === null);
+    expect(created).toMatchObject({
+      taskId: "rolls",
+      periodId: "this-week",
+      role: "commitment",
+      revision: 1,
+      // After this week's live commitment (4), not the task's own sortOrder.
+      sortOrder: 5,
+    });
+    expect(created?.id).not.toBe("c-rolls");
+
+    // Control Plane's read model follows through the pull path.
+    expect(applied.length).toBe(appliedBefore + 1);
+    const homes = Object.fromEntries(applied.at(-1)!.tasks.map((t) => [t.id, t.home]));
+    expect(homes.rolls).toEqual({
+      kind: "period",
+      horizon: "week",
+      startsOn: "2026-11-16",
+      endsOn: "2026-11-22",
+    });
+    // The dated commitment shows as its (overdue) day again, reminder kept.
+    expect(homes.dated).toEqual({ kind: "date", date: "2026-11-12", reminderTime: "09:00" });
+
+    // Only memberships go up; the cloud's task row is the same.
+    await engine.sync();
+    const pushed = cloud.pushes.at(-1)!;
+    expect(pushed.tasks).toEqual([]);
+    expect(pushed.periods).toEqual([]);
+    expect(pushed.memberships).toHaveLength(3);
+    expect(cloud.tasks.get("rolls")).toEqual(cloudBefore);
+
+    // Nothing left to do.
+    const again = await engine.rollExpiredCommitments(TODAY);
+    expect(again).toMatchObject({ state: "done", created: 0, retired: 0 });
+  });
+
+  it("creates the current period by its natural key when no device has it yet", async () => {
+    const cloud = new FakeCloud();
+    cloud.seedPeriod("last-week", "week", "2026-11-09", "2026-11-15");
+    cloud.seedTask({ id: "t1" });
+    cloud.seedCommitment("c1", "last-week", "t1", 7);
+    const { engine, state } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    await engine.rollExpiredCommitments(TODAY);
+    const periods = Object.values(state().outbox.periods);
+    expect(periods).toHaveLength(1);
+    expect(periods[0]).toMatchObject({
+      horizon: "week",
+      startsOn: "2026-11-16",
+      endsOn: "2026-11-22",
+      state: "open",
+    });
+    const created = Object.values(state().outbox.memberships).find((m) => m.deletedAt === null);
+    expect(created).toMatchObject({ periodId: periods[0]!.id, sortOrder: 0 });
+  });
+
+  it("waits for the account's week start this session before moving anything", async () => {
+    const cloud = seeded();
+    cloud.weekStartsOn = undefined;
+    const { engine, state, notified } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    const notifiedBefore = notified.count;
+    expect(await engine.rollExpiredCommitments(TODAY)).toEqual({ state: "waiting" });
+    expect(state().outbox.memberships).toEqual({});
+
+    // The next pull brings it: the caller is told, and rollover may run.
+    cloud.weekStartsOn = 1;
+    await engine.sync();
+    expect(notified.count).toBe(notifiedBefore + 1);
+    expect(await engine.rollExpiredCommitments(TODAY)).toMatchObject({ state: "done" });
+  });
+
+  it("tells the caller after a sync that applied pulled records, not after a quiet one", async () => {
+    const cloud = seeded();
+    const { engine, notified } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    const afterSignIn = notified.count;
+    expect(afterSignIn).toBeGreaterThan(0);
+    await engine.sync();
+    expect(notified.count).toBe(afterSignIn);
+    cloud.seedTask({ id: "new" });
+    await engine.sync();
+    expect(notified.count).toBe(afterSignIn + 1);
+    // A rollover's own apply does not ask for another rollover.
+    await engine.rollExpiredCommitments(TODAY);
+    expect(notified.count).toBe(afterSignIn + 1);
+  });
+
+  it("leaves everything to the caller when not signed in", async () => {
+    const { engine } = setup(seeded());
+    expect(await engine.rollExpiredCommitments(TODAY)).toEqual({ state: "local" });
   });
 });

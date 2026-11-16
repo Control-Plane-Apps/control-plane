@@ -10,7 +10,7 @@ import { Switch } from "../components/ui/switch";
 import { usePrimarySettings, useUpdatePrimarySettings } from "../hooks/useSettings";
 
 function TaskSyncSettingsPanel() {
-  const rollForward = usePrimarySettings((settings) => settings.tasks.rollCommitmentsForward);
+  const rollForward = usePrimarySettings((settings) => settings.taskRolloverToCurrentPeriod);
   const updateSettings = useUpdatePrimarySettings();
   return (
     <SettingsPageContainer>
@@ -21,17 +21,17 @@ function TaskSyncSettingsPanel() {
       </SettingsSection>
       <SettingsSection id="task-commitments" title="Commitments">
         <SettingsRow
-          title="Roll unfinished commitments into the next period"
+          title="Roll unfinished commitments into the current week, month or year"
           description="When a week, month or year ends, its open commitments move to the current one."
           serverScoped
-          settingKeys={["tasks"]}
+          settingKeys={["taskRolloverToCurrentPeriod"]}
           control={
             <Switch
               checked={rollForward}
               onCheckedChange={(checked) =>
-                updateSettings({ tasks: { rollCommitmentsForward: Boolean(checked) } })
+                updateSettings({ taskRolloverToCurrentPeriod: Boolean(checked) })
               }
-              aria-label="Roll unfinished commitments into the next period"
+              aria-label="Roll unfinished commitments into the current week, month or year"
             />
           }
         />
