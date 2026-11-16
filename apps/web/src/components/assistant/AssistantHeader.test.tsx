@@ -1,58 +1,64 @@
-import { renderToStaticMarkup } from "react-dom/server";
+import { act } from "react";
+import { create, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it } from "vite-plus/test";
 
-import { AssistantHeader, newChannelTitle } from "./AssistantHeader";
+import { AssistantHeader } from "./AssistantHeader";
 
 const noop = () => undefined;
 
 describe("AssistantHeader", () => {
-  it("keeps the new channel field out of the bar until + is clicked", () => {
-    const html = renderToStaticMarkup(
-      <AssistantHeader
-        subtitle="Across 3 Projects"
-        channels={[{ id: "today", label: "Today" }]}
-        selected="today"
-        inboxCount={0}
-        onSelect={noop}
-        onCreateChannel={noop}
-        onOpenMemory={noop}
-        rightPanelOpen={false}
-      />,
-    );
-    expect(html).toContain('aria-label="New channel"');
-    expect(html).not.toContain("<input");
-    expect(html).not.toContain("Channel name");
-    // Settings > Assistant is reached from Settings and the command palette.
-    expect(html).not.toContain('aria-label="Assistant settings"');
+  it.each([
+    [0, null],
+    [1, "1"],
+    [9, "9"],
+    [10, "9+"],
+    [42, "9+"],
+  ])("shows the unread badge for %s pings without a channel switch", async (count, label) => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <AssistantHeader
+          subtitle="Talks to every Project coordinator and workspace"
+          inboxCount={count as number}
+          inbox={<div>Example ping</div>}
+          onInboxOpenChange={noop}
+          onOpenMemory={noop}
+          onOpenSchedules={noop}
+          rightPanelOpen={false}
+        />,
+      );
+    });
+    const root = renderer.root;
+    const buttons = root.findAllByType("button");
+    expect(buttons.map((button) => button.props["aria-label"])).toEqual([
+      "Inbox",
+      "Memory",
+      "Schedules",
+    ]);
+    expect(root.findAllByProps({ role: "group" })).toHaveLength(0);
+    expect(root.findAllByType("input")).toHaveLength(0);
+    const badges = root.findAllByProps({ "data-testid": "assistant-inbox-badge" });
+    expect(badges.map((badge) => badge.children.join(""))).toEqual(label === null ? [] : [label]);
+    await act(async () => renderer.unmount());
   });
-});
 
-describe("AssistantHeader schedules", () => {
-  const render = (onOpenSchedules?: () => void) =>
-    renderToStaticMarkup(
-      <AssistantHeader
-        subtitle=""
-        channels={[]}
-        selected="today"
-        inboxCount={0}
-        onSelect={noop}
-        onCreateChannel={noop}
-        onOpenMemory={noop}
-        onOpenSchedules={onOpenSchedules}
-        rightPanelOpen
-      />,
-    );
-
-  it("shows Schedules only when the server stores schedules", () => {
-    expect(render(noop)).toContain('aria-label="Schedules"');
-    expect(render()).not.toContain('aria-label="Schedules"');
-  });
-});
-
-describe("newChannelTitle", () => {
-  it("trims the name and refuses a blank one", () => {
-    expect(newChannelTitle("  Weekly review ")).toBe("Weekly review");
-    expect(newChannelTitle("   ")).toBeNull();
-    expect(newChannelTitle("")).toBeNull();
+  it("omits Schedules when the server has none", async () => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <AssistantHeader
+          subtitle=""
+          inboxCount={0}
+          inbox={null}
+          onInboxOpenChange={noop}
+          onOpenMemory={noop}
+          rightPanelOpen
+        />,
+      );
+    });
+    expect(
+      renderer.root.findAllByType("button").map((button) => button.props["aria-label"]),
+    ).toEqual(["Inbox", "Memory"]);
+    await act(async () => renderer.unmount());
   });
 });

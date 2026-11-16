@@ -5492,6 +5492,22 @@ export default function Sidebar() {
                               }
                             />,
                           );
+                          const channels = (assistantPartition.globalAssistant?.agents ?? [])
+                            .filter(
+                              (thread) => thread.pinnedAt != null && thread.archivedAt == null,
+                            )
+                            .toSorted((a, b) => (a.pinnedAt ?? "").localeCompare(b.pinnedAt ?? ""));
+                          if (channels.length > 0) {
+                            items.push(
+                              <ul
+                                key="global-assistant-channels"
+                                aria-label="Assistant channels"
+                                className="ml-4 flex flex-col gap-px"
+                              >
+                                {channels.map((thread) => renderThreadRowInner(thread, "pinned"))}
+                              </ul>,
+                            );
+                          }
                         }
                         items.push(<SidebarTasksSection key="tasks-section" />);
                         if (showAssistantsSection) {
