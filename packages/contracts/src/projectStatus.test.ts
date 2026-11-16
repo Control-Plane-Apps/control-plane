@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -114,7 +115,8 @@ describe("older status events", () => {
 
 describe("statusStallOf", () => {
   const NOW_MS = Date.parse("2026-11-16T12:00:00.000Z");
-  const ago = (minutes: number) => new Date(NOW_MS - minutes * 60_000).toISOString();
+  const ago = (minutes: number) =>
+    DateTime.formatIso(DateTime.makeUnsafe(NOW_MS - minutes * 60_000));
   const idleAgent = (completedMinutesAgo: number): StatusAgentShell => ({
     archivedAt: null,
     settledAt: null,

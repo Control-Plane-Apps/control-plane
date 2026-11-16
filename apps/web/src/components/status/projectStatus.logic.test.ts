@@ -3,6 +3,7 @@ import {
   PROJECT_STATUS_STALE_MS,
   parseStatusReply,
   sortProjectStatuses,
+  ThreadId,
   type OrchestrationThreadShell,
   type ProjectStatusDecision,
 } from "@t3tools/contracts";
@@ -386,7 +387,11 @@ describe("stalled rows and freshness", () => {
       session: { status: "ready", updatedAt: ago(40) },
       latestTurn: { requestedAt: ago(60), startedAt: ago(60), completedAt: ago(40) },
     };
-    const status = { state: "working" as const, updatedAt: ago(120), agents: ["t1"] };
+    const status = {
+      state: "working" as const,
+      updatedAt: ago(120),
+      agents: [ThreadId.make("t1")],
+    };
     expect(statusStallFor(status, new Map([["t1", shell]]), NOW_MS, 15)?.reason).toBe(
       "No agent running for 40m",
     );

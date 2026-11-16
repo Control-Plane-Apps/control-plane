@@ -357,7 +357,6 @@ function StatusRow(props: {
   // Stale only means something for work still expected to move.
   const stale =
     (group === "needs-you" || group === "in-progress") && isStatusStale(status.updatedAt, now);
-  const updated = formatStatusAge(status.updatedAt, now);
   const decision = status.decision;
   const deadline = decision === undefined ? null : describeDecisionDeadline(decision, now);
   // Rows showing a question offer Reply beside it; every other row gets a
@@ -403,7 +402,6 @@ function StatusRow(props: {
                 "shrink-0 text-xs tabular-nums",
                 stale ? "font-medium text-warning-foreground" : "text-muted-foreground/70",
               )}
-              title={stale ? `Stale: updated ${updated}` : `Updated ${updated}`}
             >
               <span className="sr-only">{stale ? "Stale, updated " : "Updated "}</span>
               {formatStatusAgeShort(status.updatedAt, now)}
