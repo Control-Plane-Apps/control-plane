@@ -13,7 +13,6 @@ import {
   homeForMove,
   parseQuickAdd,
   proposedTasks,
-  shiftTaskPeriod,
   taskAgentState,
   todayTasks,
   upcomingTasks,
@@ -180,17 +179,7 @@ describe("repeat ends", () => {
   });
 });
 
-describe("range navigation and the Completed filter", () => {
-  it("steps to the previous and next week, month and year", () => {
-    // Weeks start on Monday by default: Nov 13 2026 sits in the week of Nov 9.
-    expect(shiftTaskPeriod("week", TODAY, 1)).toBe("2026-11-16");
-    expect(shiftTaskPeriod("week", TODAY, -1)).toBe("2026-11-02");
-    expect(shiftTaskPeriod("month", TODAY, 1)).toBe("2026-12-01");
-    expect(shiftTaskPeriod("month", "2026-01-31", -1)).toBe("2025-12-01");
-    expect(shiftTaskPeriod("year", TODAY, -2)).toBe("2024-01-01");
-    expect(shiftTaskPeriod("month", TODAY, 0)).toBe("2026-11-01");
-  });
-
+describe("the Completed filter", () => {
   it("lists completed tasks newest first under the Completed filter", () => {
     const tasks = [
       task("open"),

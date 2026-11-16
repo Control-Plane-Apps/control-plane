@@ -25,8 +25,6 @@ export const TASK_VIEW_LABEL: Record<TasksView, string> = {
 export interface TasksSearch {
   readonly project?: string | undefined;
   readonly filter?: Exclude<TaskBacklogFilter, "all"> | undefined;
-  /** A date inside the Week, Month or Year being browsed; absent means the current one. */
-  readonly at?: string | undefined;
 }
 
 /** Where a task dropped on a range tab lands; Upcoming and All tasks take no drops. */
@@ -72,7 +70,7 @@ export function defaultHomeForView(
     case "week":
     case "month":
     case "year":
-      return { kind: "period", horizon: view, ...taskPeriodFor(view, search.at ?? today) };
+      return { kind: "period", horizon: view, ...taskPeriodFor(view, today) };
     case "all": {
       const filter = search.filter;
       return filter === "week" || filter === "month" || filter === "year"

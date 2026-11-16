@@ -9,7 +9,6 @@ import {
   formatTaskRange,
   formatUpcomingOffset,
   proposedTasks,
-  shiftTaskPeriod,
   taskCounts,
   taskIntentFor,
   todayTasks,
@@ -27,14 +26,7 @@ import {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import {
-  CheckIcon,
-  ChevronDownIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  ListFilterIcon,
-  PlusIcon,
-} from "lucide-react";
+import { CheckIcon, ChevronDownIcon, ListFilterIcon, PlusIcon } from "lucide-react";
 import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
@@ -87,7 +79,6 @@ function tasksSearch(search: TasksSearch, patch: TasksSearch): TasksSearch {
   return {
     ...(next.project !== undefined ? { project: next.project } : {}),
     ...(next.filter !== undefined ? { filter: next.filter } : {}),
-    ...(next.at !== undefined ? { at: next.at } : {}),
   };
 }
 
@@ -180,7 +171,8 @@ function AsideSection(props: { readonly title?: string; readonly children: React
 function RangeTabs(props: {
   readonly view: TasksView;
   readonly today: string;
-  readonly counts: Readonly<Record<"today" | "week" | "month" | "year", number>>;
+  /** Open today, the only count the switcher shows. */
+  readonly todayCount: number;
   readonly shortcutFor: (index: number) => string | null;
   readonly onSelect: (view: TasksView) => void;
   readonly onDropTask: (event: DragEvent, view: TasksView) => void;
@@ -194,10 +186,7 @@ function RangeTabs(props: {
     >
       {TASK_VIEWS.map((entry, index) => {
         const selected = entry === props.view;
-        const count =
-          entry === "today" || entry === "week" || entry === "month" || entry === "year"
-            ? props.counts[entry]
-            : 0;
+        const count = entry === "today" ? props.todayCount : 0;
         const droppable = dropTargetForView(entry) !== null;
         const dropping = dropView === entry;
         const shortcut = props.shortcutFor(index);
@@ -264,25 +253,6 @@ function RangeTabs(props: {
   );
 }
 
-function PeriodNav(props: { readonly onShift: (steps: number) => void; readonly unit: string }) {
-  const button = (steps: number, label: string, icon: ReactNode) => (
-    <button
-      type="button"
-      aria-label={label}
-      className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-      onClick={() => props.onShift(steps)}
-    >
-      {icon}
-    </button>
-  );
-  return (
-    <span className="inline-flex items-center gap-0.5 ps-2">
-      {button(-1, `Previous ${props.unit}`, <ChevronLeftIcon aria-hidden className="size-4" />)}
-      {button(1, `Next ${props.unit}`, <ChevronRightIcon aria-hidden className="size-4" />)}
-    </span>
-  );
-}
-
 export function TasksPage(props: { readonly view: TasksView; readonly search: TasksSearch }) {
   const { view, search } = props;
   const navigate = useNavigate();
@@ -321,7 +291,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     void navigate({
       to: "/tasks/$view",
       params: { view: next },
-      search: tasksSearch({ ...search, at: undefined, filter: undefined }, patch),
+      search: tasksSearch({ ...search, filter: undefined }, patch),
     });
   const setFilter = (project: string | null) =>
     void navigate({
@@ -386,10 +356,8 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   );
 
   const weekIntent = taskIntentFor(intents, "week", today);
-  const saveIntent =
-    (horizon: TaskHorizon, anchor = today) =>
-    (text: string) =>
-      void actions.setIntent(horizon, taskPeriodFor(horizon, anchor).startsOn, text);
+  const saveIntent = (horizon: TaskHorizon) => (text: string) =>
+    void actions.setIntent(horizon, taskPeriodFor(horizon, today).startsOn, text);
   const syncLine = <TaskSyncMarginLine indicator={sync} />;
 
   let body: ReactNode;
@@ -466,49 +434,26 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     }
   } else if (view === "week" || view === "month" || view === "year") {
     const horizon: TaskHorizon = view;
-    const anchor = search.at ?? today;
-    const period = taskPeriodFor(horizon, anchor);
-    const current = taskPeriodFor(horizon, today).startsOn === period.startsOn;
-    const committed = committedTasks(tasks, horizon, anchor);
+    const period = taskPeriodFor(horizon, today);
+    const committed = committedTasks(tasks, horizon, today);
     const backlog = backlogTasks(tasks, horizon);
-    const intent = taskIntentFor(intents, horizon, anchor);
+    const intent = taskIntentFor(intents, horizon, today);
     const parent: TaskHorizon | null =
       horizon === "week" ? "month" : horizon === "month" ? "year" : null;
-    const shift = (steps: number) => {
-      const next = shiftTaskPeriod(horizon, anchor, steps);
-      const isCurrent = taskPeriodFor(horizon, today).startsOn === next;
-      void navigate({
-        to: "/tasks/$view",
-        params: { view },
-        search: tasksSearch(search, { at: isCurrent ? undefined : next }),
-      });
-    };
     body = (
       <>
-        <div className="flex items-center">
-          <h1 className="font-semibold text-2xl">
-            {formatTaskPeriodTitle(horizon, period.startsOn)}
-          </h1>
-          <PeriodNav unit={horizon} onShift={shift} />
-          {!current ? (
-            <button
-              type="button"
-              className="ms-2 cursor-pointer text-muted-foreground text-xs hover:text-foreground"
-              onClick={() => goTo(view, projectFilter === null ? {} : { project: projectFilter })}
-            >
-              This {horizon}
-            </button>
-          ) : null}
-        </div>
+        <h1 className="font-semibold text-2xl">
+          {formatTaskPeriodTitle(horizon, period.startsOn)}
+        </h1>
         <p className="pt-1 text-muted-foreground text-sm">
           {formatTaskRange(period.startsOn, period.endsOn)}
         </p>
         <IntentEditor
           key={`${period.startsOn}:${intent?.text ?? ""}`}
           intent={intent}
-          placeholder={current ? `Set this ${horizon}'s intent` : `Set the ${horizon}'s intent`}
+          placeholder={`Set this ${horizon}'s intent`}
           className="pt-4 text-[15px]"
-          onSave={saveIntent(horizon, anchor)}
+          onSave={saveIntent(horizon)}
         />
         <TasksSectionLabel>Committed</TasksSectionLabel>
         {list(committed, "Committed", true, true)}
@@ -538,6 +483,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
             {VIEW_LABEL[view]} backlog · {backlog.length}
           </Link>
         </AsideSection>
+        {syncLine}
       </>
     );
   } else if (view === "upcoming") {
@@ -660,7 +606,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
           <RangeTabs
             view={view}
             today={today}
-            counts={counts}
+            todayCount={counts.today}
             shortcutFor={shortcutFor}
             onSelect={(next) =>
               goTo(next, projectFilter === null ? {} : { project: projectFilter })

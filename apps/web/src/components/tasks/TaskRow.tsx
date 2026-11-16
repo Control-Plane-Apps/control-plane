@@ -231,7 +231,10 @@ export function TaskRow(props: {
           {props.draggable ? (
             <GripVerticalIcon
               aria-hidden
-              className="absolute left-1.5 size-3.5 cursor-grab text-muted-foreground/60 opacity-0 group-hover/task:opacity-100"
+              className={cn(
+                "absolute left-1.5 size-3.5 cursor-grab text-muted-foreground/60 opacity-0 group-hover/task:opacity-100",
+                (expanded || props.dimmed) && "opacity-100",
+              )}
             />
           ) : null}
           <TaskCheckbox

@@ -17,10 +17,10 @@ describe("tasks range helpers", () => {
       startsOn: "2026-11-09",
       endsOn: "2026-11-15",
     });
-    expect(defaultHomeForView("month", { at: "2026-12-04" }, TODAY)).toMatchObject({
+    expect(defaultHomeForView("month", {}, TODAY)).toMatchObject({
       kind: "period",
       horizon: "month",
-      startsOn: "2026-12-01",
+      startsOn: "2026-11-01",
     });
     expect(defaultHomeForView("all", {}, TODAY)).toEqual({ kind: "backlog", horizon: null });
     expect(defaultHomeForView("all", { filter: "year" }, TODAY)).toEqual({
@@ -57,7 +57,8 @@ describe("Task Sync indicator", () => {
     expect(taskSyncIndicator(status({ state: "error", pendingChanges: 3 }))).toMatchObject({
       tone: "offline",
       header: "Offline · 3 waiting",
-      margin: "3 changes waiting",
+      margin: "Offline",
+      detail: "3 changes waiting",
     });
   });
 });

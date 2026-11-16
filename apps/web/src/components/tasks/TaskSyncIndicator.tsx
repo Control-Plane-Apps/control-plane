@@ -14,6 +14,8 @@ export interface TaskSyncIndicator {
   readonly margin: string;
   /** A quiet call to action in the margin, linking to Task Sync settings. */
   readonly action: string | null;
+  /** Plain text after the margin label, e.g. "3 changes waiting". */
+  readonly detail?: string | null;
 }
 
 /**
@@ -44,9 +46,9 @@ export function taskSyncIndicator(status: TaskSyncStatus | null): TaskSyncIndica
       return {
         tone: "offline",
         header: waiting > 0 ? `Offline · ${waiting} waiting` : "Offline",
-        margin:
-          waiting > 0 ? `${waiting} ${waiting === 1 ? "change" : "changes"} waiting` : "Offline",
+        margin: "Offline",
         action: null,
+        detail: waiting > 0 ? `${waiting} ${waiting === 1 ? "change" : "changes"} waiting` : null,
       };
     }
   }
@@ -94,6 +96,12 @@ export function TaskSyncMarginLine(props: { readonly indicator: TaskSyncIndicato
     >
       <ToneIcon tone={indicator.tone} />
       <span>{indicator.margin}</span>
+      {indicator.detail ? (
+        <>
+          <span aria-hidden>·</span>
+          <span>{indicator.detail}</span>
+        </>
+      ) : null}
       {indicator.action !== null ? (
         <>
           <span aria-hidden>·</span>

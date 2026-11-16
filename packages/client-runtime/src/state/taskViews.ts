@@ -335,23 +335,6 @@ export function allTasks(
   };
 }
 
-/**
- * A date inside the period `steps` periods away from the one holding
- * `anchor`: the previous and next arrows on Week, Month and Year.
- */
-export function shiftTaskPeriod(horizon: TaskHorizon, anchor: string, steps: number): string {
-  let { startsOn, endsOn } = taskPeriodFor(horizon, anchor);
-  for (let index = 0; index < Math.abs(steps); index += 1) {
-    const next = taskPeriodFor(
-      horizon,
-      steps > 0 ? addTaskDays(endsOn, 1) : addTaskDays(startsOn, -1),
-    );
-    startsOn = next.startsOn;
-    endsOn = next.endsOn;
-  }
-  return startsOn;
-}
-
 export function taskIntentFor(
   intents: ReadonlyArray<TaskIntent> | undefined,
   horizon: TaskHorizon,
