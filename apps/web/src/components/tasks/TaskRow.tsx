@@ -8,7 +8,13 @@ import {
   isTaskOverdue,
   type TaskAgentState,
 } from "@t3tools/client-runtime/state/projects";
-import { isProposedTask, type Task, type ThreadId } from "@t3tools/contracts";
+import {
+  findGlobalAssistantProject,
+  isGlobalAssistant,
+  isProposedTask,
+  type Task,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import {
   BellIcon,
@@ -55,6 +61,9 @@ function chipClass(active = false) {
 }
 
 /** The square checkbox; dashed while the task is still a proposal. */
+/** How long a checked-off task stays in place before it leaves the list. */
+const CHECK_OFF_DELAY_MS = 900;
+
 export function TaskCheckbox(props: {
   readonly checked: boolean;
   readonly proposed?: boolean;
@@ -123,7 +132,7 @@ function LifecycleLine(props: {
         {coordinator != null ? (
           <button
             type="button"
-            className="shrink-0 cursor-pointer font-medium text-warning-foreground hover:underline"
+            className="shrink-0 cursor-pointer font-medium text-primary hover:underline"
             onClick={() => props.onOpenThread(coordinator)}
           >
             Answer
@@ -193,7 +202,27 @@ export function TaskRow(props: {
     task.links?.statusId === undefined
       ? undefined
       : project?.assistant?.statuses?.find((s) => s.id === task.links!.statusId);
-  const completed = task.status === "completed";
+  // Checking off shows the tick for a beat before the row leaves; a second
+  // click in that window cancels. The write fires even if the row unmounts.
+  const [settling, setSettling] = useState<ReturnType<typeof setTimeout> | null>(null);
+  const completed = task.status === "completed" || settling !== null;
+  const toggleCompleted = () => {
+    if (settling !== null) {
+      clearTimeout(settling);
+      setSettling(null);
+      return;
+    }
+    if (task.status === "completed") {
+      void context.actions.setCompleted(task, false);
+      return;
+    }
+    setSettling(
+      setTimeout(() => {
+        setSettling(null);
+        void context.actions.setCompleted(task, true);
+      }, CHECK_OFF_DELAY_MS),
+    );
+  };
   const overdue = isTaskOverdue(task, context.today);
   const meta = rowMeta(task, context.today, props.hidePeriod === true);
   const agentActive = state.kind === "agent-working" || state.kind === "handed-off";
@@ -240,7 +269,7 @@ export function TaskRow(props: {
           <TaskCheckbox
             checked={completed}
             label={completed ? `Reopen ${task.title}` : `Complete ${task.title}`}
-            onToggle={() => void context.actions.setCompleted(task, !completed)}
+            onToggle={toggleCompleted}
           />
           {expanded ? (
             <TitleInput key={task.title} task={task} context={context} />
@@ -498,7 +527,9 @@ function ExpandedTask(props: {
           {task.recurrence !== undefined ? formatTaskRecurrence(task.recurrence) : "Repeat"}
         </TaskRepeatMenu>
       </div>
-      {project !== null && project.assistant != null && !isProposedTask(task) ? (
+      {!isProposedTask(task) &&
+      ((project !== null && project.assistant != null) ||
+        findGlobalAssistantProject(context.projects) !== undefined) ? (
         <HandToAgentMenu task={task} project={project} context={context} />
       ) : null}
     </div>
@@ -507,11 +538,21 @@ function ExpandedTask(props: {
 
 function HandToAgentMenu(props: {
   readonly task: Task;
-  readonly project: EnvironmentProject;
+  readonly project: EnvironmentProject | null;
   readonly context: TaskRowContext;
 }) {
-  const { task, project, context } = props;
+  const { task, context } = props;
+  // The task's own Project when it has a coordinator; the Assistant is always offered.
+  const project =
+    props.project !== null && props.project.assistant != null && !isGlobalAssistant(props.project)
+      ? props.project
+      : null;
+  const assistant = findGlobalAssistantProject(context.projects) ?? null;
   const handedTo = task.handoff;
+  const handedToAssistant =
+    handedTo !== undefined &&
+    assistant !== null &&
+    handedTo.threadId === assistant.assistant?.coordinatorThreadId;
   return (
     <div className="flex items-center gap-2">
       <Menu>
@@ -526,19 +567,34 @@ function HandToAgentMenu(props: {
           <ChevronDownIcon aria-hidden className="size-3 opacity-60" />
         </MenuTrigger>
         <MenuPopup align="start" className="w-60">
-          <MenuItem onClick={() => context.onHandToAgent(task, "coordinator", project)}>
-            <MessageCircleIcon aria-hidden className="size-3.5" />
-            Ask {project.title} coordinator
-          </MenuItem>
-          <MenuItem onClick={() => context.onHandToAgent(task, "agent", project)}>
-            <BotIcon aria-hidden className="size-3.5" />
-            Start an agent in {project.title}
-          </MenuItem>
+          {assistant !== null ? (
+            <MenuItem onClick={() => context.onHandToAgent(task, "coordinator", assistant)}>
+              <MessageCircleIcon aria-hidden className="size-3.5" />
+              Hand to Assistant
+            </MenuItem>
+          ) : null}
+          {project !== null ? (
+            <>
+              {assistant !== null ? <MenuSeparator /> : null}
+              <MenuItem onClick={() => context.onHandToAgent(task, "coordinator", project)}>
+                <MessageCircleIcon aria-hidden className="size-3.5" />
+                Ask {project.title} coordinator
+              </MenuItem>
+              <MenuItem onClick={() => context.onHandToAgent(task, "agent", project)}>
+                <BotIcon aria-hidden className="size-3.5" />
+                Start an agent in {project.title}
+              </MenuItem>
+            </>
+          ) : null}
         </MenuPopup>
       </Menu>
       {handedTo !== undefined ? (
         <span className="text-muted-foreground text-xs">
-          {handedTo.kind === "coordinator" ? `With ${project.title} coordinator` : "With an agent"}
+          {handedToAssistant
+            ? "With the Assistant"
+            : handedTo.kind === "coordinator"
+              ? `With ${project?.title ?? "the"} coordinator`
+              : "With an agent"}
         </span>
       ) : null}
     </div>
