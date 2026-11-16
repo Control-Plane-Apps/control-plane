@@ -1,4 +1,5 @@
-import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
+import { useDndMonitor } from "@dnd-kit/core";
+import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import {
   addAllProposalsLabel,
   formatTaskHome,
@@ -8,10 +9,17 @@ import {
 } from "@t3tools/client-runtime/state/projects";
 import type { Task } from "@t3tools/contracts";
 import { ListTodoIcon, PlusIcon, XIcon } from "lucide-react";
-import { useEffect, useState, type DragEvent, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
-import { TASK_DRAG_TYPE, TaskCheckbox, TaskRow, type TaskRowContext } from "./TaskRow";
+import {
+  applyTaskOrder,
+  overrideAfterWrites,
+  planTaskDrop,
+  settleTaskOrderOverride,
+  type TaskOrderOverride,
+} from "./taskDrag.logic";
+import { TaskCheckbox, TaskRow, type TaskRowContext } from "./TaskRow";
 
 /** Lists hold one expanded row at a time across the page. */
 export function useExpandedTask() {
@@ -22,6 +30,15 @@ export function useExpandedTask() {
   };
 }
 
+/** A list whose order is not the user's keeps its rows still while one drags past. */
+const noShuffle = () => null;
+
+/**
+ * One list of rows inside the Tasks page's drag context (TaskDragProvider).
+ * Rows sort live while dragging; a drop shows the new order at once, writes
+ * the order keys in the background and rolls back to the server's order if
+ * any write fails.
+ */
 export function TaskList(props: {
   readonly tasks: ReadonlyArray<Task>;
   readonly context: TaskRowContext;
@@ -33,77 +50,73 @@ export function TaskList(props: {
   readonly label?: string;
   readonly hidePeriod?: boolean;
 }) {
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [drop, setDrop] = useState<{
-    readonly id: string;
-    readonly side: "before" | "after";
-  } | null>(null);
-  useEffect(() => {
-    if (dragId === null) return;
-    const reset = () => {
-      setDragId(null);
-      setDrop(null);
-    };
-    window.addEventListener("dragend", reset);
-    return () => window.removeEventListener("dragend", reset);
-  }, [dragId]);
+  const containerId = useId();
+  const reorderable = props.reorderable === true;
+  const [override, setOverride] = useState<TaskOrderOverride | null>(null);
+  const serverIds = useMemo(() => props.tasks.map((task) => task.id as string), [props.tasks]);
+  // A saved drag gives way to the server's order once it catches up.
+  const settled = settleTaskOrderOverride(override, serverIds);
+  if (settled !== override) setOverride(settled);
+  const tasks = applyTaskOrder(props.tasks, settled);
+  const ids = useMemo(() => tasks.map((task) => task.id as string), [tasks]);
   const lifecycleProjects = props.context.projects as ReadonlyArray<TaskLifecycleProject>;
 
-  const onDrop = (target: Task, side: "before" | "after") => {
-    const movedId = dragId;
-    setDragId(null);
-    setDrop(null);
-    if (movedId === null || movedId === target.id) return;
-    const ids = props.tasks.map((task) => task.id as string).filter((id) => id !== movedId);
-    const at = ids.indexOf(target.id) + (side === "after" ? 1 : 0);
-    ids.splice(at, 0, movedId);
-    const assignments = planPinnedReorder({
-      orderedIds: ids,
-      movedId,
-      keysById: new Map(props.tasks.map((task) => [task.id as string, task.orderKey ?? null])),
-    });
-    for (const assignment of assignments) {
-      const task = props.tasks.find((candidate) => candidate.id === assignment.id);
-      if (task !== undefined)
-        void props.context.actions.patch(task, { orderKey: assignment.orderKey as never });
-    }
-  };
+  useDndMonitor({
+    onDragEnd: ({ active, over }) => {
+      if (!reorderable || over === null) return;
+      const sameList = (data: unknown) =>
+        (data as { sortable?: { containerId?: unknown } } | undefined)?.sortable?.containerId ===
+        containerId;
+      if (!sameList(active.data.current) || !sameList(over.data.current)) return;
+      const plan = planTaskDrop(tasks, String(active.id), String(over.id));
+      if (plan === null) return;
+      const written: TaskOrderOverride = { ids: plan.orderedIds, status: "saving" };
+      setOverride(written);
+      void Promise.all(
+        plan.assignments.map((assignment) => {
+          const task = tasks.find((candidate) => candidate.id === assignment.id);
+          return task === undefined
+            ? Promise.resolve(true)
+            : props.context.actions.patch(task, { orderKey: assignment.orderKey as never });
+        }),
+      ).then((results) => setOverride((current) => overrideAfterWrites(current, written, results)));
+    },
+  });
 
   return (
-    <ul aria-label={props.label} className="flex flex-col">
-      {props.tasks.map((task) => (
-        <TaskRow
-          key={task.id}
-          task={task}
-          state={taskAgentState(task, props.threads, lifecycleProjects)}
-          expanded={props.expandedId === task.id}
-          onToggleExpanded={() => props.onToggle(task.id)}
-          context={props.context}
-          draggable={task.status === "todo"}
-          dimmed={dragId === task.id}
-          hidePeriod={props.hidePeriod === true}
-          dropIndicator={drop?.id === task.id ? drop.side : null}
-          onDragStart={(event: DragEvent<HTMLLIElement>) => {
-            event.dataTransfer.setData(TASK_DRAG_TYPE, task.id);
-            event.dataTransfer.setData("text/plain", task.title);
-            event.dataTransfer.effectAllowed = "move";
-            setDragId(task.id);
-          }}
-          onDragOver={(event: DragEvent<HTMLLIElement>) => {
-            if (!props.reorderable || dragId === null) return;
-            event.preventDefault();
-            const rect = event.currentTarget.getBoundingClientRect();
-            const side = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
-            if (drop?.id !== task.id || drop.side !== side) setDrop({ id: task.id, side });
-          }}
-          onDrop={(event: DragEvent<HTMLLIElement>) => {
-            if (!props.reorderable) return;
-            event.preventDefault();
-            onDrop(task, drop?.side ?? "after");
-          }}
-        />
-      ))}
-    </ul>
+    <SortableContext
+      id={containerId}
+      items={ids}
+      strategy={reorderable ? verticalListSortingStrategy : noShuffle}
+    >
+      <ul aria-label={props.label} className="flex flex-col">
+        {tasks.map((task) => (
+          <TaskRow
+            key={task.id}
+            task={task}
+            state={taskAgentState(task, props.threads, lifecycleProjects)}
+            expanded={props.expandedId === task.id}
+            onToggleExpanded={() => props.onToggle(task.id)}
+            context={props.context}
+            draggable={task.status === "todo"}
+            reorderable={reorderable}
+            hidePeriod={props.hidePeriod === true}
+          />
+        ))}
+      </ul>
+    </SortableContext>
+  );
+}
+
+/** What travels under the pointer while a row drags (TaskDragProvider's overlay). */
+export function TaskDragPreview(props: { readonly task: Task }) {
+  return (
+    <div className="flex min-w-0 cursor-grabbing items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-1.5 shadow-md">
+      <TaskCheckbox checked={false} label={props.task.title} onToggle={() => {}} disabled />
+      <span className="min-w-0 truncate font-semibold text-[15px] leading-snug">
+        {props.task.title}
+      </span>
+    </div>
   );
 }
 

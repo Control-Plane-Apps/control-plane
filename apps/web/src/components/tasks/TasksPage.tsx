@@ -29,7 +29,8 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { CheckIcon, ChevronDownIcon, ListFilterIcon, PlusIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useDroppable } from "@dnd-kit/core";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { isElectron } from "../../env";
@@ -56,11 +57,13 @@ import { openTaskQuickAdd } from "./QuickAddDialog";
 import {
   AddTaskRow,
   ProposedTasks,
+  TaskDragPreview,
   TaskList,
   TasksSectionLabel,
   useExpandedTask,
 } from "./TaskList";
-import { TASK_DRAG_TYPE, type TaskRowContext } from "./TaskRow";
+import { TASK_RANGE_DROP, TaskDragProvider } from "./taskDrag";
+import type { TaskRowContext } from "./TaskRow";
 import { TaskSyncChip, TaskSyncMarginLine, taskSyncIndicator } from "./TaskSyncIndicator";
 import {
   defaultHomeForView,
@@ -177,81 +180,80 @@ function RangeTabs(props: {
   readonly todayCount: number;
   readonly shortcutFor: (index: number) => string | null;
   readonly onSelect: (view: TasksView) => void;
-  readonly onDropTask: (event: DragEvent, view: TasksView) => void;
 }) {
-  const [dropView, setDropView] = useState<TasksView | null>(null);
   return (
     <div
       role="tablist"
       aria-label="Task ranges"
       className="flex shrink-0 items-center gap-0.5 rounded-lg bg-muted/70 p-0.5"
     >
-      {TASK_VIEWS.map((entry, index) => {
-        const selected = entry === props.view;
-        const count = entry === "today" ? props.todayCount : 0;
-        const droppable = dropTargetForView(entry) !== null;
-        const dropping = dropView === entry;
-        const shortcut = props.shortcutFor(index);
-        const tooltip = dropping
-          ? dropLabelForView(entry, props.today)
-          : shortcut !== null
-            ? `${VIEW_LABEL[entry]} ${shortcut}`
-            : null;
-        const tab = (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={selected}
-            className={cn(
-              "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              selected
-                ? "bg-background font-medium text-foreground shadow-xs"
-                : "text-muted-foreground hover:text-foreground",
-              dropping && "border-primary border-dashed",
-            )}
-            onClick={() => props.onSelect(entry)}
-            onDragOver={
-              droppable
-                ? (event) => {
-                    if (!event.dataTransfer.types.includes(TASK_DRAG_TYPE)) return;
-                    event.preventDefault();
-                    if (dropView !== entry) setDropView(entry);
-                  }
-                : undefined
-            }
-            onDragLeave={() => setDropView((current) => (current === entry ? null : current))}
-            onDrop={
-              droppable
-                ? (event) => {
-                    setDropView(null);
-                    props.onDropTask(event, entry);
-                  }
-                : undefined
-            }
-          >
-            {VIEW_LABEL[entry]}
-            {count > 0 ? (
-              <span className="text-muted-foreground text-xs tabular-nums">{count}</span>
-            ) : null}
-          </button>
-        );
-        return (
-          <span key={entry} className="contents">
-            {entry === "upcoming" ? (
-              <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
-            ) : null}
-            {tooltip !== null ? (
-              <Tooltip open={dropping ? true : undefined}>
-                <TooltipTrigger render={tab} />
-                <TooltipPopup side="bottom">{tooltip}</TooltipPopup>
-              </Tooltip>
-            ) : (
-              tab
-            )}
-          </span>
-        );
-      })}
+      {TASK_VIEWS.map((entry, index) => (
+        <span key={entry} className="contents">
+          {entry === "upcoming" ? (
+            <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+          ) : null}
+          <RangeTab
+            entry={entry}
+            selected={entry === props.view}
+            today={props.today}
+            count={entry === "today" ? props.todayCount : 0}
+            shortcut={props.shortcutFor(index)}
+            onSelect={() => props.onSelect(entry)}
+          />
+        </span>
+      ))}
     </div>
+  );
+}
+
+/** One range tab; Today, Week, Month and Year take dragged tasks (TaskDragProvider). */
+function RangeTab(props: {
+  readonly entry: TasksView;
+  readonly selected: boolean;
+  readonly today: string;
+  readonly count: number;
+  readonly shortcut: string | null;
+  readonly onSelect: () => void;
+}) {
+  const { entry } = props;
+  const { setNodeRef, isOver: dropping } = useDroppable({
+    id: `${TASK_RANGE_DROP}:${entry}`,
+    data: { type: TASK_RANGE_DROP, view: entry },
+    disabled: dropTargetForView(entry) === null,
+  });
+  const tooltip = dropping
+    ? dropLabelForView(entry, props.today)
+    : props.shortcut !== null
+      ? `${VIEW_LABEL[entry]} ${props.shortcut}`
+      : null;
+  const tab = (
+    <button
+      ref={setNodeRef}
+      type="button"
+      role="tab"
+      aria-selected={props.selected}
+      className={cn(
+        "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        props.selected
+          ? "bg-background font-medium text-foreground shadow-xs"
+          : "text-muted-foreground hover:text-foreground",
+        dropping && "border-primary border-dashed",
+      )}
+      onClick={props.onSelect}
+    >
+      {VIEW_LABEL[entry]}
+      {props.count > 0 ? (
+        <span className="text-muted-foreground text-xs tabular-nums">{props.count}</span>
+      ) : null}
+    </button>
+  );
+  return tooltip !== null ? (
+    <Tooltip open={dropping ? true : undefined}>
+      <TooltipTrigger render={tab} />
+      <TooltipPopup side="bottom">{tooltip}</TooltipPopup>
+    </Tooltip>
+  ) : (
+    tab
   );
 }
 
@@ -359,12 +361,9 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     return command === null ? null : shortcutLabelForCommand(keybindings, command);
   };
 
-  const onDropTask = (event: DragEvent, target: TasksView) => {
-    const move = dropTargetForView(target);
-    const taskId = event.dataTransfer.getData(TASK_DRAG_TYPE);
-    const task = allTaskRecords.find((candidate) => candidate.id === taskId);
-    if (move === null || task === undefined) return;
-    event.preventDefault();
+  const onDropOnRange = (task: Task, target: string) => {
+    const move = dropTargetForView(target as TasksView);
+    if (move === null) return;
     void actions.move(task, homeForMove(move, task.home, today));
   };
 
@@ -653,43 +652,51 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
-        <WorkspacePageHeader electron={isElectron} className="border-b border-border">
-          <RangeTabs
-            view={view}
-            today={today}
-            todayCount={counts.today}
-            shortcutFor={shortcutFor}
-            onSelect={(next) =>
-              goTo(next, projectFilter === null ? {} : { project: projectFilter })
-            }
-            onDropTask={onDropTask}
-          />
-          <div className="ms-auto flex items-center gap-2">
-            {environmentId !== null ? <TaskSyncChip indicator={sync} /> : null}
-            <ProjectFilterMenu value={projectFilter} onChange={setFilter} />
-            <button
-              type="button"
-              className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-              onClick={() => openTaskQuickAdd()}
-            >
-              <PlusIcon aria-hidden className="size-4" />
-              Add task
-              {quickAddShortcut ? (
-                <span className="text-muted-foreground text-xs">{quickAddShortcut}</span>
+        <TaskDragProvider
+          tasks={allTaskRecords}
+          onDropOnRange={onDropOnRange}
+          onDropOnSidebar={(task) =>
+            void actions.move(task, homeForMove({ kind: "today" }, task.home, today))
+          }
+          renderOverlay={(task) => <TaskDragPreview task={task} />}
+        >
+          <WorkspacePageHeader electron={isElectron} className="border-b border-border">
+            <RangeTabs
+              view={view}
+              today={today}
+              todayCount={counts.today}
+              shortcutFor={shortcutFor}
+              onSelect={(next) =>
+                goTo(next, projectFilter === null ? {} : { project: projectFilter })
+              }
+            />
+            <div className="ms-auto flex items-center gap-2">
+              {environmentId !== null ? <TaskSyncChip indicator={sync} /> : null}
+              <ProjectFilterMenu value={projectFilter} onChange={setFilter} />
+              <button
+                type="button"
+                className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => openTaskQuickAdd()}
+              >
+                <PlusIcon aria-hidden className="size-4" />
+                Add task
+                {quickAddShortcut ? (
+                  <span className="text-muted-foreground text-xs">{quickAddShortcut}</span>
+                ) : null}
+              </button>
+            </div>
+          </WorkspacePageHeader>
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="mx-auto flex w-full max-w-5xl gap-12 px-6 pt-8 pb-16 sm:px-12">
+              <main ref={mainRef} className="min-w-0 max-w-2xl flex-1">
+                {body}
+              </main>
+              {aside !== null ? (
+                <aside className="hidden w-52 shrink-0 flex-col gap-6 pt-1 lg:flex">{aside}</aside>
               ) : null}
-            </button>
-          </div>
-        </WorkspacePageHeader>
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="mx-auto flex w-full max-w-5xl gap-12 px-6 pt-8 pb-16 sm:px-12">
-            <main ref={mainRef} className="min-w-0 max-w-2xl flex-1">
-              {body}
-            </main>
-            {aside !== null ? (
-              <aside className="hidden w-52 shrink-0 flex-col gap-6 pt-1 lg:flex">{aside}</aside>
-            ) : null}
-          </div>
-        </ScrollArea>
+            </div>
+          </ScrollArea>
+        </TaskDragProvider>
       </div>
     </SidebarInset>
   );
