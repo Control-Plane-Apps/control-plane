@@ -7,6 +7,7 @@ import {
   addTaskDays,
   compareTaskOrder,
   countStatusesNeedingUser,
+  isStatusNeedingUser,
   isProposedTask,
   taskPeriodFor,
   taskDaysBetween,
@@ -402,7 +403,7 @@ export function taskAgentState(
   if (task.status !== "todo") return { kind: "completed" };
   const status = linkedStatusOf(task, projects);
   if (status !== undefined) {
-    if (status.state === "needs-you" && status.decision?.answeredAt === undefined) {
+    if (isStatusNeedingUser(status)) {
       return { kind: "needs-you", status };
     }
     if (status.state === "done") {

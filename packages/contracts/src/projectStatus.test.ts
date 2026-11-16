@@ -5,6 +5,7 @@ import { ProjectStatusUpdatedPayload } from "./orchestration.ts";
 
 import {
   countStatusesNeedingUser,
+  isStatusNeedingUser,
   parseStatusReply,
   sortProjectStatuses,
   statusReminderMessageId,
@@ -60,6 +61,16 @@ describe("project status helpers", () => {
       ]),
     ).toBe(2);
     expect(countStatusesNeedingUser(undefined)).toBe(0);
+  });
+
+  it("needs the user only for an unanswered, visible needs-you record", () => {
+    const at = "2026-11-16T14:30:12.858Z";
+    expect(isStatusNeedingUser({ state: "needs-you", decision: {} })).toBe(true);
+    expect(isStatusNeedingUser({ state: "needs-you" })).toBe(true);
+    expect(isStatusNeedingUser({ state: "needs-you", decision: { answeredAt: at } })).toBe(false);
+    expect(isStatusNeedingUser({ state: "needs-you", dismissedAt: at })).toBe(false);
+    expect(isStatusNeedingUser({ state: "working", decision: {} })).toBe(false);
+    expect(isStatusNeedingUser({ state: "done", decision: {} })).toBe(false);
   });
 
   it("names one reminder per decision version", () => {
