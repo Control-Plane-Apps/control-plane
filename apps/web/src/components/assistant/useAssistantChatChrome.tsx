@@ -20,12 +20,9 @@ import { describeCadence } from "@t3tools/shared/schedules";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 
-import { newThreadId } from "~/lib/utils";
 import { usePrimaryEnvironment } from "~/state/environments";
 import { useProjects, useThreadShellsForProjectRefs } from "~/state/entities";
 import { useTaskToday, useTasks } from "~/state/tasks";
-import { threadEnvironment } from "~/state/threads";
-import { useAtomCommand } from "~/state/use-atom-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { AssistantHeader, ASSISTANT_INBOX_CHANNEL } from "./AssistantHeader";
 import { AssistantInbox } from "./AssistantInbox";
@@ -70,8 +67,6 @@ export function useAssistantChatChrome(input: {
   const navigate = useNavigate();
   const projects = useProjects();
   const send = useSendToThread();
-  const createThread = useAtomCommand(threadEnvironment.create, "create channel");
-  const pinThread = useAtomCommand(threadEnvironment.pin, "pin channel");
   const [inboxOpenFor, setInboxOpenFor] = useState<string | null>(null);
   const assistantSettings = usePrimaryEnvironment()?.serverConfig?.settings.assistant ?? null;
   const reach = assistantSettings?.projects ?? null;
@@ -189,25 +184,6 @@ export function useAssistantChatChrome(input: {
   const openTasks = () => void navigate({ to: "/tasks/$view", params: { view: "today" } });
   const openSettings = () => void navigate({ to: "/settings/assistant" });
 
-  const createChannel = async (title: string) => {
-    const id = newThreadId();
-    const created = await createThread({
-      environmentId,
-      input: {
-        threadId: id,
-        projectId: project.id,
-        title,
-        modelSelection: project.defaultModelSelection ?? undefined,
-        runtimeMode: input.runtimeMode,
-        branch: null,
-        worktreePath: null,
-      } as never,
-    });
-    if (created._tag !== "Success") return;
-    await pinThread({ environmentId, input: { threadId: id } as never });
-    void goToThread(environmentId, id);
-  };
-
   return {
     header: (
       <AssistantHeader
@@ -223,7 +199,6 @@ export function useAssistantChatChrome(input: {
           setInboxOpenFor(null);
           if (id !== threadId) void goToThread(environmentId, id as ThreadId);
         }}
-        onCreateChannel={(title) => void createChannel(title)}
         onOpenMemory={input.onOpenMemory}
         onOpenSchedules={input.onOpenSchedules}
         rightPanelOpen={input.rightPanelOpen}
