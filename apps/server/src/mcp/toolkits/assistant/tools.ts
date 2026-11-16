@@ -109,6 +109,12 @@ export const AssistantAskInput = Schema.Struct({
   question: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSISTANT_ASK_QUESTION_MAX)).annotate({
     description: "What to ask. Each coordinator receives it as written.",
   }),
+  title: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(80)).annotate({
+      description:
+        'A short title for the user\'s Working on list, 2 to 6 words, such as "Collapsible Assistant panel". No file paths or URLs. Derived from the question when omitted.',
+    }),
+  ),
   projectIds: Schema.optional(Schema.Array(Schema.String)).annotate({
     description: "Project ids from cp_assistant_overview. Omit to ask every Project in your reach.",
   }),

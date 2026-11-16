@@ -42,8 +42,58 @@ export type AssistantAskActivityTarget = typeof AssistantAskActivityTarget.Type;
 export const AssistantAskActivityPayload = Schema.Struct({
   askId: AssistantAskId,
   question: Schema.String,
+  /** A short title for lists ("Collapsible Assistant panel"); absent on older asks. */
+  title: Schema.optional(Schema.String),
   targets: Schema.Array(AssistantAskActivityTarget),
 });
+
+/** Longest ask title a list shows. */
+export const ASSISTANT_ASK_TITLE_MAX = 48;
+
+const URL_PATTERN = /\b(?:https?|file):\/\/\S+/gi;
+// Absolute, home-relative and Windows paths, and bare relative paths with a
+// folder and an extension ("apps/web/src/x.tsx").
+const PATH_PATTERN =
+  /(?:~|\.{1,2})?\/(?:[\w.@%+-]+\/)*[\w.@%+-]+\/?|\b[A-Za-z]:\\\S+|\b(?:[\w.-]+\/)+[\w.-]+\.\w{1,8}\b/g;
+
+function clipWords(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "")}…`;
+}
+
+/**
+ * The short title lists show for an ask: the Assistant's own title when it
+ * gave one, else the question's first sentence. Either way file paths and
+ * URLs are dropped, so a list never shows "/Users/...".
+ */
+export function assistantAskTitle(question: string, title?: string | undefined): string {
+  const clean = (text: string) =>
+    text
+      .replace(URL_PATTERN, " ")
+      .replace(PATH_PATTERN, " ")
+      // What a removed path leaves behind: "with a screenshot at :" and empty brackets.
+      .replace(/\(\s*\)|\[\s*\]|"\s*"/g, " ")
+      .replace(/\b(?:at|in|from|to|see)\s+(?=[,.;:)]|$)/gi, "")
+      .replace(/\s+([,.;:!?])/g, "$1")
+      .replace(/([,;:])(?:\s*[,;:])+/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^[,;:.\s-]+|[,;:\s-]+$/g, "");
+  const given = title === undefined ? "" : clean(title);
+  if (given.length > 0) return clipWords(given, ASSISTANT_ASK_TITLE_MAX);
+  let text = clean(question);
+  // A lead-in naming who asked ("From Nick, with a screenshot: ...") is not the subject.
+  const colon = text.indexOf(": ");
+  if (colon > 0 && colon <= 60 && text.length - colon > 16) {
+    text = text.slice(colon + 2).replace(/^["“']+/, "");
+  }
+  const firstSentence = /^(.+?[.?!])(?:\s|$)/.exec(text)?.[1] ?? text;
+  const trimmed = firstSentence.replace(/[.]$/, "");
+  const fallback = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  return fallback.length > 0 ? clipWords(fallback, ASSISTANT_ASK_TITLE_MAX) : "Question";
+}
 export type AssistantAskActivityPayload = typeof AssistantAskActivityPayload.Type;
 
 /** What a coordinator sees: who is asking and that its final message is the answer. */

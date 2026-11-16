@@ -15,6 +15,7 @@ import {
   type ProjectStatus,
   type ProjectStatusDecision,
   sortProjectStatuses,
+  assistantAskTitle,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -125,6 +126,8 @@ export interface AssistantAskCard {
   readonly askId: string;
   readonly activityId: string;
   readonly question: string;
+  /** Short and path-free, for lists; derived from the question for older asks. */
+  readonly title: string;
   readonly createdAt: string;
   readonly targets: ReadonlyArray<AssistantAskTargetView>;
   readonly answeredCount: number;
@@ -168,6 +171,7 @@ export function collectAskCards(
       askId: payload.value.askId,
       activityId: activity.id,
       question: payload.value.question,
+      title: assistantAskTitle(payload.value.question, payload.value.title),
       createdAt: activity.createdAt,
       targets,
       answeredCount: targets.filter((target) => target.answer !== null).length,

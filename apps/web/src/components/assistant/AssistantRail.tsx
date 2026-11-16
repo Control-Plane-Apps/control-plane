@@ -21,6 +21,7 @@ import { statusReplyTagFor, useStatusReplyStore } from "../status/statusReplySto
 import { useMinuteNow } from "../status/ProjectStatusPanel";
 import { Button } from "../ui/button";
 import { useAssistantRailStore } from "./assistantRailStore";
+import { AssistantTodayTasks } from "./AssistantTodayTasks";
 import { recommendationTextFor, useSendToThread } from "./useAssistant";
 
 // Fork-owned. The Assistant's right rail: what needs the user across every
@@ -63,7 +64,7 @@ export function AssistantRail(props: AssistantRailProps) {
             : `${pending.length} coordinators`;
         return {
           key: `ask:${ask.askId}`,
-          title: ask.question,
+          title: ask.title,
           detail: `Asked ${who} · ${formatStatusAge(ask.createdAt, now)}`,
           tone: "working" as const,
           askId: ask.askId,
@@ -75,7 +76,7 @@ export function AssistantRail(props: AssistantRailProps) {
   return (
     <aside
       aria-label="Across your work"
-      className="flex w-80 shrink-0 flex-col gap-2.5 overflow-y-auto border-l border-border bg-sidebar px-4 pt-4 pb-4 xl:w-96"
+      className="flex w-80 shrink-0 flex-col gap-2.5 overflow-y-auto border-l border-border bg-sidebar px-4 pt-4 pb-4 xl:w-96 [&>*]:shrink-0"
       data-testid="assistant-rail"
     >
       <h3 className="flex items-center gap-1.5 text-xs font-medium text-warning-foreground">
@@ -145,22 +146,7 @@ export function AssistantRail(props: AssistantRailProps) {
         </ul>
       )}
 
-      {props.tasksToday ? (
-        <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">Today</span>
-          <span className="tabular-nums">
-            {props.tasksToday.count} {props.tasksToday.count === 1 ? "task" : "tasks"}
-          </span>
-          <span className="flex-1" />
-          <button
-            type="button"
-            className="cursor-pointer font-medium hover:text-foreground"
-            onClick={props.tasksToday.onOpen}
-          >
-            Open Tasks
-          </button>
-        </div>
-      ) : null}
+      {props.tasksToday ? <AssistantTodayTasks onOpenTasks={props.tasksToday.onOpen} /> : null}
     </aside>
   );
 }

@@ -157,7 +157,7 @@ export function AssistantAskCards(props: {
             {card.targets.map((target, index) => (
               <View
                 key={target.coordinatorThreadId}
-                accessibilityLabel={`Asked ${target.title}: ${card.question}. ${
+                accessibilityLabel={`Asked ${target.title}: ${card.title}. ${
                   target.answer !== null ? "Answered" : "Waiting"
                 }`}
                 accessible
@@ -173,7 +173,7 @@ export function AssistantAskCards(props: {
                   size={16}
                 />
                 <Text className="flex-1 text-[15px] text-foreground" numberOfLines={1}>
-                  {card.question}
+                  {card.title}
                 </Text>
                 <Text
                   className={
