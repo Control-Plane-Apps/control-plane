@@ -109,6 +109,7 @@ import {
   useAssistantThreadHeader,
 } from "../projects/useAssistantThreadView";
 import { ThreadTasksFooter, StatusReplyChip } from "../tasks/ThreadTaskAccessories";
+import { useThreadTaskProposalAccessory } from "../tasks/ThreadTaskProposals";
 import { ProjectStatusInspector } from "../status/ProjectStatusInspector";
 
 interface ThreadInspectorSelection {
@@ -347,6 +348,24 @@ function ThreadRouteContent(
     detail: selectedThreadDetail,
     feed: composer.selectedThreadFeed,
   });
+  // A chat's task proposals draw inline, under the reply of the turn that made them.
+  const shownFeed = assistantScreen?.feed ?? composer.selectedThreadFeed;
+  const proposalAccessory = useThreadTaskProposalAccessory({
+    threadId: selectedThread?.id ?? null,
+    activities: selectedThreadDetail?.activities ?? null,
+    feed: shownFeed,
+  });
+  const assistantAccessory = assistantScreen?.renderEntryAccessory;
+  const renderFeedEntryAccessory = useMemo(() => {
+    if (proposalAccessory === null) return assistantAccessory;
+    if (assistantAccessory === undefined) return proposalAccessory;
+    return (entry: { readonly id: string }) => (
+      <>
+        {assistantAccessory(entry)}
+        {proposalAccessory(entry)}
+      </>
+    );
+  }, [assistantAccessory, proposalAccessory]);
   const [inspectorSelection, setInspectorSelection] = useState<ThreadInspectorSelection | null>(
     () => (props.renderInspector ? { routeThreadIdentity, mode: "route" } : null),
   );
@@ -1093,7 +1112,7 @@ function ThreadRouteContent(
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           feedbackSubmissions={composer.feedbackSubmissions}
           onDismissFeedback={composer.dismissFeedback}
-          selectedThreadFeed={assistantScreen?.feed ?? composer.selectedThreadFeed}
+          selectedThreadFeed={shownFeed}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           isCompacting={composer.isCompacting}
           creationState={creationState}
@@ -1136,15 +1155,9 @@ function ThreadRouteContent(
           loadEarlier={loadEarlierTurns}
           assistantTimeline={assistantTimeline}
           feedListHeader={assistantScreen?.listHeader}
-          renderFeedEntryAccessory={assistantScreen?.renderEntryAccessory}
+          renderFeedEntryAccessory={renderFeedEntryAccessory}
           composerPlaceholder={assistantScreen?.composerPlaceholder}
-          feedFooter={
-            <ThreadTasksFooter
-              threadId={selectedThread.id}
-              project={selectedThreadProject}
-              isCoordinator={assistantTimeline?.role === "coordinator"}
-            />
-          }
+          feedFooter={<ThreadTasksFooter threadId={selectedThread.id} />}
           composerAccessory={
             <>
               {assistantScreen?.composerAccessory ?? null}

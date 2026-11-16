@@ -82,6 +82,8 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
   readonly hidePeriod?: boolean;
   /** The All tasks list puts the home at the trailing edge. */
   readonly metaPlacement?: "below" | "trailing";
+  /** Lit up briefly when opened from a chat's proposal block. */
+  readonly highlighted?: boolean;
 }) {
   const { task, state, context, expanded, selecting, selected } = props;
   const palette = useTaskPalette();
@@ -115,7 +117,7 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
 
   const body = (
     <View
-      className={cn("bg-card", selected && "bg-secondary")}
+      className={cn("bg-card", (selected || props.highlighted === true) && "bg-secondary")}
       style={{ paddingVertical: 4, paddingRight: 16 }}
     >
       <View className="flex-row items-start">

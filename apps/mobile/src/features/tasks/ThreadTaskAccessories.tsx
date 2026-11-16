@@ -1,9 +1,7 @@
 import { useNavigation } from "@react-navigation/native";
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   formatTaskHome,
   formatTaskTime,
-  proposedTasksForThread,
   taskForThread,
 } from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
@@ -13,67 +11,48 @@ import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { clearStatusReplyTag, useStatusReplyTag } from "../status/statusReplyStore";
-import { ProposedTasks } from "./ProposedTasks";
 import { symbol, useTaskPalette } from "./taskUi";
 import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 
-// Fork-owned. What a thread shows about personal tasks: the task it works
-// on (any thread) and the tasks this chat proposed (on a coordinator, every
-// proposal for its Project).
+// Fork-owned. What a thread shows about personal tasks under its feed: the
+// task it works on (any thread). The tasks a chat proposes show inline in
+// the transcript instead (ThreadTaskProposals).
 
-export function ThreadTasksFooter(props: {
-  readonly threadId: ThreadId;
-  readonly project: EnvironmentProject | null;
-  readonly isCoordinator: boolean;
-}) {
+export function ThreadTasksFooter(props: { readonly threadId: ThreadId }) {
   const navigation = useNavigation();
-  const { available, tasks, projects, actions } = useMobileTaskStore();
+  const { available, tasks } = useMobileTaskStore();
   const today = useTaskToday();
   if (!available) return null;
   const linked = taskForThread(tasks, props.threadId);
-  const proposals = proposedTasksForThread(
-    tasks,
-    props.threadId,
-    props.isCoordinator && props.project !== null ? props.project.id : null,
-  );
-  if (linked === undefined && proposals.length === 0) return null;
-  const reminder = linked?.home.kind === "date" ? linked.home.reminderTime : undefined;
+  if (linked === undefined) return null;
+  const reminder = linked.home.kind === "date" ? linked.home.reminderTime : undefined;
   return (
     <View className="gap-2 pb-2">
-      {linked !== undefined ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Linked task, ${linked.title}. Open in Tasks`}
-          onPress={() =>
-            navigation.navigate("PlanTasks", {
-              view: linked.home.kind === "period" ? linked.home.horizon : "today",
-            })
-          }
-          className="min-h-11 flex-row items-center gap-2 rounded-xl bg-card px-3"
-        >
-          <SymbolView
-            name={symbol("checklist", "check")}
-            size={13}
-            tintColorClassName="accent-icon-muted"
-            type="monochrome"
-          />
-          <Text className="shrink text-[14px] font-t3-medium text-foreground" numberOfLines={1}>
-            {linked.title}
-          </Text>
-          <Text className="text-[13px] text-foreground-muted" numberOfLines={1}>
-            {formatTaskHome(linked.home, today)}
-            {reminder !== undefined ? ` · ${formatTaskTime(reminder)}` : ""}
-          </Text>
-          <Text className="ml-auto text-[13px] text-foreground-muted">Open in Tasks</Text>
-        </Pressable>
-      ) : null}
-      <ProposedTasks
-        tasks={proposals}
-        projects={projects}
-        today={today}
-        actions={actions}
-        variant="card"
-      />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Linked task, ${linked.title}. Open in Tasks`}
+        onPress={() =>
+          navigation.navigate("PlanTasks", {
+            view: linked.home.kind === "period" ? linked.home.horizon : "today",
+          })
+        }
+        className="min-h-11 flex-row items-center gap-2 rounded-xl bg-card px-3"
+      >
+        <SymbolView
+          name={symbol("checklist", "check")}
+          size={13}
+          tintColorClassName="accent-icon-muted"
+          type="monochrome"
+        />
+        <Text className="shrink text-[14px] font-t3-medium text-foreground" numberOfLines={1}>
+          {linked.title}
+        </Text>
+        <Text className="text-[13px] text-foreground-muted" numberOfLines={1}>
+          {formatTaskHome(linked.home, today)}
+          {reminder !== undefined ? ` · ${formatTaskTime(reminder)}` : ""}
+        </Text>
+        <Text className="ml-auto text-[13px] text-foreground-muted">Open in Tasks</Text>
+      </Pressable>
     </View>
   );
 }

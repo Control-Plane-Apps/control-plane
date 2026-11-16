@@ -14,7 +14,9 @@ import {
   formatUpcomingOffset,
   formatTaskDayTitle,
   homeForMove,
-  proposedTasks,
+  decodeTaskHighlight,
+  proposedTasksForView,
+  proposedTasksOnDate,
   taskAgentState,
   taskCounts,
   taskIntentFor,
@@ -70,7 +72,15 @@ import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 
 export type PlanTasksView = "today" | TaskHorizon | "upcoming" | "all";
 
-type PlanTasksParams = { readonly view?: PlanTasksView } | undefined;
+type PlanTasksParams =
+  | {
+      readonly view?: PlanTasksView;
+      /** Task ids to light up briefly, comma separated (from a chat's proposal block). */
+      readonly highlight?: string;
+    }
+  | undefined;
+
+const HIGHLIGHT_MS = 2400;
 
 const RANGES: ReadonlyArray<{ readonly view: PlanTasksView; readonly label: string }> = [
   { view: "today", label: "Today" },
@@ -147,6 +157,20 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     setViewState(next);
     setExpandedId(null);
   }, []);
+
+  // Opened again from a chat (the screen may already be mounted): switch to
+  // the asked range and light up the tasks it names for a moment.
+  const paramView = route.params?.view;
+  const paramHighlight = route.params?.highlight;
+  const [highlightIds, setHighlightIds] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (paramView !== undefined) setView(paramView);
+    const ids = decodeTaskHighlight(paramHighlight);
+    setHighlightIds(new Set(ids));
+    if (ids.length === 0) return;
+    const timer = setTimeout(() => setHighlightIds(new Set()), HIGHLIGHT_MS);
+    return () => clearTimeout(timer);
+  }, [paramHighlight, paramView, setView]);
 
   // Pull to refresh: with Task Sync this syncs now; tasks read through the Mac
   // are already live, so the spinner just confirms.
@@ -308,6 +332,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             onToggleSelected={toggleSelected}
             hidePeriod={options?.hidePeriod}
             metaPlacement={options?.trailing ? "trailing" : "below"}
+            highlighted={highlightIds.has(task.id)}
           />
         </>
       )}
@@ -346,7 +371,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       title = formatTaskWeekday(today);
       subtitle = formatTaskMonthDay(today);
       const open = visible(todayTasks(tasks, today));
-      const proposals = visible(proposedTasks(tasks));
+      const proposals = visible(proposedTasksForView(tasks, "today", today));
       const done = visible(completedToday(tasks, today));
       content = (
         <>
@@ -355,7 +380,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             projects={projects}
             today={today}
             actions={actions}
-            variant="list"
+            highlightIds={highlightIds}
           />
           {open.length === 0 && proposals.length === 0 ? (
             <>
@@ -410,6 +435,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       const committed = visible(committedTasks(tasks, horizon, today));
       const backlog = backlogTasks(tasks, horizon).length;
       const intent = taskIntentFor(intents, horizon, today);
+      const proposals = visible(proposedTasksForView(tasks, horizon, today));
       content = (
         <>
           <View className="pt-3">
@@ -425,6 +451,13 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
               </View>
             </TaskCard>
           </View>
+          <ProposedTasks
+            tasks={proposals}
+            projects={projects}
+            today={today}
+            actions={actions}
+            highlightIds={highlightIds}
+          />
           <SectionLabel>Committed</SectionLabel>
           <TaskCard>
             {renderList(committed, { hidePeriod: true, reorderable: true })}
@@ -449,6 +482,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       const groups = upcomingTasks(tasks, today).map((group) => ({
         ...group,
         tasks: visible(group.tasks),
+        proposals: visible(proposedTasksOnDate(tasks, group.date)),
       }));
       content = (
         <>
@@ -463,9 +497,16 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
               >
                 {formatTaskDayTitle(group.date)}
               </SectionLabel>
+              <ProposedTasks
+                tasks={group.proposals}
+                projects={projects}
+                today={today}
+                actions={actions}
+                highlightIds={highlightIds}
+              />
               {group.tasks.length > 0 ? (
                 <TaskCard>{renderList(group.tasks, { reorderable: true })}</TaskCard>
-              ) : (
+              ) : group.proposals.length > 0 ? null : (
                 <Text className="px-9 text-[14px] text-foreground-tertiary">Nothing yet</Text>
               )}
             </Fragment>
@@ -477,6 +518,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     case "all": {
       title = "All tasks";
       const result = allTasks(visible(tasks), backlogFilter);
+      const proposals = visible(proposedTasksForView(tasks, "all", today, backlogFilter));
       content = (
         <>
           <BacklogFilters
@@ -496,6 +538,13 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             </View>
           ) : (
             <>
+              <ProposedTasks
+                tasks={proposals}
+                projects={projects}
+                today={today}
+                actions={actions}
+                highlightIds={highlightIds}
+              />
               <View className="pt-1">
                 <TaskCard>
                   {backlogFilter !== "recurring" ? addRow("Add to backlog", "backlog") : null}
