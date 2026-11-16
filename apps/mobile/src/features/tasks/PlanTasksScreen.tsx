@@ -48,6 +48,7 @@ import { prepareStatusReply } from "../status/ProjectStatusRouteScreen";
 import { sendThreadMessage } from "../status/statusReplyStore";
 import { PlanTaskRow, type PlanTaskRowContext } from "./PlanTaskRow";
 import { ReorderableTaskRows, type TaskDropTargets } from "./ReorderableTaskRows";
+import { CHECK_OFF_LINGER_MS, withLingeringTasks } from "./taskCheckOff";
 import { planTaskReorder } from "./taskReorder";
 import { ProposedTasks } from "./ProposedTasks";
 import { projectForTask, useHandToAgent } from "./taskHandoff";
@@ -206,12 +207,41 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     [navigation, usesSplitView],
   );
 
+  // Lucive mobile's check-off (taskCheckOff.ts): write now, keep the checked
+  // row in its list for CHECK_OFF_LINGER_MS, then let the list drop it.
+  const [lingering, setLingering] = useState<ReadonlySet<string>>(() => new Set());
+  const lingerTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const linger = useCallback((taskId: string) => {
+    setLingering((current) => new Set(current).add(taskId));
+    const existing = lingerTimers.current.get(taskId);
+    if (existing !== undefined) clearTimeout(existing);
+    lingerTimers.current.set(
+      taskId,
+      setTimeout(() => {
+        lingerTimers.current.delete(taskId);
+        setLingering((current) => {
+          const next = new Set(current);
+          next.delete(taskId);
+          return next;
+        });
+      }, CHECK_OFF_LINGER_MS),
+    );
+  }, []);
+  useEffect(() => {
+    const timers = lingerTimers.current;
+    return () => timers.forEach(clearTimeout);
+  }, []);
+  /** What the open lists are built from: just-completed rows keep their place. */
+  const listTasks = useMemo(() => withLingeringTasks(tasks, lingering), [tasks, lingering]);
+  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+
   const context: PlanTaskRowContext = useMemo(
     () => ({
       today,
       actions,
       projects,
       onComplete: (task: Task) => {
+        linger(task.id);
         void actions.setCompleted(task, true).then((ok) => {
           if (ok) showUndo(`Completed ${task.title}`, () => void actions.setCompleted(task, false));
         });
@@ -245,7 +275,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       },
       onOpenThread: openThread,
     }),
-    [actions, handToAgent, navigation, openThread, projects, showUndo, today],
+    [actions, handToAgent, linger, navigation, openThread, projects, showUndo, today],
   );
 
   const lifecycleProjects = projects as ReadonlyArray<TaskLifecycleProject>;
@@ -318,24 +348,28 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       onReorder={reorder}
       onDragActiveChange={setReordering}
       dropTargets={wide ? undefined : dropTargets}
-      renderRow={(task, index) => (
-        <>
-          {index > 0 ? <RowSeparator /> : null}
-          <PlanTaskRow
-            task={task}
-            state={taskAgentState(task, threads, lifecycleProjects)}
-            context={context}
-            expanded={expandedId === task.id}
-            onToggleExpanded={toggleExpanded}
-            selecting={selecting}
-            selected={selectedIds.has(task.id)}
-            onToggleSelected={toggleSelected}
-            hidePeriod={options?.hidePeriod}
-            metaPlacement={options?.trailing ? "trailing" : "below"}
-            highlighted={highlightIds.has(task.id)}
-          />
-        </>
-      )}
+      renderRow={(listed, index) => {
+        // A lingering row is listed as open but renders the real, checked task.
+        const task = taskById.get(listed.id) ?? listed;
+        return (
+          <>
+            {index > 0 ? <RowSeparator /> : null}
+            <PlanTaskRow
+              task={task}
+              state={taskAgentState(task, threads, lifecycleProjects)}
+              context={context}
+              expanded={expandedId === task.id}
+              onToggleExpanded={toggleExpanded}
+              selecting={selecting}
+              selected={selectedIds.has(task.id)}
+              onToggleSelected={toggleSelected}
+              hidePeriod={options?.hidePeriod}
+              metaPlacement={options?.trailing ? "trailing" : "below"}
+              highlighted={highlightIds.has(task.id)}
+            />
+          </>
+        );
+      }}
     />
   );
 
@@ -370,7 +404,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     case "today": {
       title = formatTaskWeekday(today);
       subtitle = formatTaskMonthDay(today);
-      const open = visible(todayTasks(tasks, today));
+      const open = visible(todayTasks(listTasks, today));
       const proposals = visible(proposedTasksForView(tasks, "today", today));
       const done = visible(completedToday(tasks, today));
       content = (
@@ -432,7 +466,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
           ? `Week of ${formatTaskShortDate(period.startsOn)}`
           : formatTaskPeriodTitle(horizon, period.startsOn);
       subtitle = formatTaskRange(period.startsOn, period.endsOn);
-      const committed = visible(committedTasks(tasks, horizon, today));
+      const committed = visible(committedTasks(listTasks, horizon, today));
       const backlog = backlogTasks(tasks, horizon).length;
       const intent = taskIntentFor(intents, horizon, today);
       const proposals = visible(proposedTasksForView(tasks, horizon, today));
@@ -479,7 +513,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     case "upcoming": {
       title = "Upcoming";
       subtitle = "Next 7 days";
-      const groups = upcomingTasks(tasks, today).map((group) => ({
+      const groups = upcomingTasks(listTasks, today).map((group) => ({
         ...group,
         tasks: visible(group.tasks),
         proposals: visible(proposedTasksOnDate(tasks, group.date)),
@@ -517,7 +551,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     }
     case "all": {
       title = "All tasks";
-      const result = allTasks(visible(tasks), backlogFilter);
+      const result = allTasks(visible(listTasks), backlogFilter);
       const proposals = visible(proposedTasksForView(tasks, "all", today, backlogFilter));
       content = (
         <>

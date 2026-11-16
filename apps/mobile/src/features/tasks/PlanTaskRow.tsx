@@ -36,9 +36,6 @@ import type { TaskActions } from "./useMobileTasks";
 // Fork-owned. One personal task. Swipe right to select, swipe left to Move
 // or Schedule; tap the title to open it in place.
 
-/** How long a checked-off task stays in place before it leaves the list. */
-const CHECK_OFF_DELAY_MS = 900;
-
 export interface PlanTaskRowContext {
   readonly today: string;
   readonly actions: TaskActions;
@@ -89,23 +86,9 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
   const palette = useTaskPalette();
   const swipeRef = useRef<SwipeableMethods | null>(null);
   const project = context.projects.find((p) => p.id === task.links?.projectId) ?? null;
-  // Checking off shows the tick for a beat before the row leaves; a second
-  // tap in that window cancels. The write fires even if the row unmounts.
-  const [settling, setSettling] = useState<ReturnType<typeof setTimeout> | null>(null);
-  const completed = task.status === "completed" || settling !== null;
-  const checkOff = () => {
-    if (settling !== null) {
-      clearTimeout(settling);
-      setSettling(null);
-      return;
-    }
-    setSettling(
-      setTimeout(() => {
-        setSettling(null);
-        context.onComplete(task);
-      }, CHECK_OFF_DELAY_MS),
-    );
-  };
+  // Lucive mobile's check-off (taskCheckOff.ts): the tap writes at once; the
+  // list keeps the checked, struck-through row for CHECK_OFF_LINGER_MS.
+  const completed = task.status === "completed";
   const overdue = isTaskOverdue(task, context.today);
   const trailingMeta = props.metaPlacement === "trailing";
   // The All tasks list names every home, Today included.
@@ -136,7 +119,7 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
               onPress={() =>
                 task.status === "completed"
                   ? void context.actions.setCompleted(task, false)
-                  : checkOff()
+                  : context.onComplete(task)
               }
             />
           )}
