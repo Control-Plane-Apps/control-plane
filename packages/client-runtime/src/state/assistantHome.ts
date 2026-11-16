@@ -176,6 +176,19 @@ export function collectAskCards(
   return cards;
 }
 
+/**
+ * Asks still waiting on a coordinator, for "Working on": an ask leaves once
+ * every asked coordinator replied, or once the user dismissed it.
+ */
+export function pendingAskCards(
+  asks: ReadonlyArray<AssistantAskCard>,
+  dismissedAskIds: ReadonlySet<string> = new Set(),
+): AssistantAskCard[] {
+  return asks.filter(
+    (ask) => ask.answeredCount < ask.targets.length && !dismissedAskIds.has(ask.askId),
+  );
+}
+
 /** Message ids of answers already shown inside an ask card, which the timeline can hide. */
 export function askAnswerMessageIds(cards: ReadonlyArray<AssistantAskCard>): ReadonlySet<string> {
   const ids = new Set<string>();

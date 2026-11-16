@@ -4,11 +4,12 @@ import {
   type AssistantNeedsYouItem,
   assistantWorkingOn,
   collectNeedsYou,
+  pendingAskCards,
 } from "@t3tools/client-runtime/state/assistant-home";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { ProjectStatus, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -19,6 +20,7 @@ import { formatStatusAge, recommendationButtonLabel } from "../status/projectSta
 import { statusReplyTagFor, useStatusReplyStore } from "../status/statusReplyStore";
 import { useMinuteNow } from "../status/ProjectStatusPanel";
 import { Button } from "../ui/button";
+import { useAssistantRailStore } from "./assistantRailStore";
 import { recommendationTextFor, useSendToThread } from "./useAssistant";
 
 // Fork-owned. The Assistant's right rail: what needs the user across every
@@ -41,15 +43,17 @@ export function AssistantRail(props: AssistantRailProps) {
     [props.projects, props.reach],
   );
   const now = useMinuteNow();
+  const dismissedAskIds = useAssistantRailStore((state) => state.dismissedAskIds);
+  const dismissAsk = useAssistantRailStore((state) => state.dismissAsk);
   const working = useMemo(() => {
     const own = assistantWorkingOn(props.assistant).map((status) => ({
       key: `status:${status.id}`,
       title: status.title,
       detail: status.summary,
       tone: status.state === "queued" ? ("idle" as const) : ("working" as const),
+      askId: null,
     }));
-    const waiting = props.asks
-      .filter((ask) => ask.answeredCount < ask.targets.length)
+    const waiting = pendingAskCards(props.asks, new Set(dismissedAskIds))
       .toReversed()
       .map((ask) => {
         const pending = ask.targets.filter((target) => target.answer === null);
@@ -62,10 +66,11 @@ export function AssistantRail(props: AssistantRailProps) {
           title: ask.question,
           detail: `Asked ${who} · ${formatStatusAge(ask.createdAt, now)}`,
           tone: "working" as const,
+          askId: ask.askId,
         };
       });
     return [...waiting, ...own];
-  }, [now, props.asks, props.assistant]);
+  }, [dismissedAskIds, now, props.asks, props.assistant]);
 
   return (
     <aside
@@ -104,7 +109,10 @@ export function AssistantRail(props: AssistantRailProps) {
           {working.map((entry, index) => (
             <li
               key={entry.key}
-              className={cn("flex gap-2.5 px-3.5 py-2.5", index > 0 && "border-t border-border")}
+              className={cn(
+                "group/working flex gap-2.5 px-3.5 py-2.5",
+                index > 0 && "border-t border-border",
+              )}
             >
               <span
                 aria-hidden
@@ -113,10 +121,25 @@ export function AssistantRail(props: AssistantRailProps) {
                   entry.tone === "working" ? "bg-info" : "bg-muted-foreground/45",
                 )}
               />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-foreground">{entry.title}</p>
                 <p className="truncate text-xs text-muted-foreground">{entry.detail}</p>
               </div>
+              {entry.askId !== null ? (
+                // An ask that will never hear back (a coordinator archived, or
+                // an answer lost) can be cleared by hand; the card in the
+                // conversation keeps its history.
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  className="-me-1.5 shrink-0 text-muted-foreground opacity-0 group-hover/working:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+                  aria-label={`Dismiss "${entry.title}" from Working on`}
+                  onClick={() => dismissAsk(entry.askId!)}
+                >
+                  <XIcon />
+                </Button>
+              ) : null}
             </li>
           ))}
         </ul>

@@ -1,5 +1,11 @@
 import type { ReactNode } from "react";
-import { BellIcon, BrainIcon, ClockIcon } from "lucide-react";
+import {
+  BellIcon,
+  BrainIcon,
+  ClockIcon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
+} from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
@@ -21,6 +27,43 @@ export interface AssistantHeaderProps {
    * right panel is closed, so the header leaves room for them (as ChatHeader does).
    */
   readonly rightPanelOpen: boolean;
+  /** The Needs you / Working on / Today rail beside the conversation. */
+  readonly rail?: {
+    readonly collapsed: boolean;
+    /** Shown on the toggle while collapsed, so nothing waiting goes unseen. */
+    readonly needsYouCount: number;
+    readonly shortcutLabel: string | null;
+    readonly onToggle: () => void;
+  };
+}
+
+function RailToggle(props: NonNullable<AssistantHeaderProps["rail"]>) {
+  const action = props.collapsed
+    ? "Show Needs you and Working on"
+    : "Hide Needs you and Working on";
+  const waiting = props.collapsed && props.needsYouCount > 0;
+  return (
+    <Button
+      size="icon-sm"
+      variant="ghost-muted"
+      aria-label={waiting ? `${action}, ${props.needsYouCount} need you` : action}
+      aria-pressed={!props.collapsed}
+      title={props.shortcutLabel ? `${action} (${props.shortcutLabel})` : action}
+      data-testid="assistant-rail-toggle"
+      onClick={props.onToggle}
+    >
+      {props.collapsed ? <PanelRightOpenIcon aria-hidden /> : <PanelRightCloseIcon aria-hidden />}
+      {waiting ? (
+        <span
+          aria-hidden
+          data-testid="assistant-rail-needs-you-badge"
+          className="absolute -top-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-[10px] font-semibold text-warning-foreground tabular-nums dark:text-background"
+        >
+          {props.needsYouCount > 9 ? "9+" : props.needsYouCount}
+        </span>
+      ) : null}
+    </Button>
+  );
 }
 
 export function AssistantHeader(props: AssistantHeaderProps) {
@@ -91,6 +134,7 @@ export function AssistantHeader(props: AssistantHeaderProps) {
             <ClockIcon aria-hidden />
           </Button>
         ) : null}
+        {props.rail ? <RailToggle {...props.rail} /> : null}
       </div>
     </div>
   );

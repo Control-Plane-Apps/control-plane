@@ -61,4 +61,46 @@ describe("AssistantHeader", () => {
     ).toEqual(["Inbox", "Memory"]);
     await act(async () => renderer.unmount());
   });
+
+  it.each([
+    [false, 2, "Hide Needs you and Working on", []],
+    [true, 0, "Show Needs you and Working on", []],
+    [true, 3, "Show Needs you and Working on, 3 need you", ["3"]],
+  ])(
+    "toggles the rail (collapsed %s, %s needing you)",
+    async (collapsed, needsYouCount, label, badges) => {
+      let toggled = 0;
+      let renderer!: ReactTestRenderer;
+      await act(async () => {
+        renderer = create(
+          <AssistantHeader
+            subtitle=""
+            inboxCount={0}
+            inbox={null}
+            onInboxOpenChange={noop}
+            onOpenMemory={noop}
+            rightPanelOpen={false}
+            rail={{
+              collapsed: collapsed as boolean,
+              needsYouCount: needsYouCount as number,
+              shortcutLabel: "⌥⌘S",
+              onToggle: () => (toggled += 1),
+            }}
+          />,
+        );
+      });
+      const toggle = renderer.root.findAll(
+        (node) => node.type === "button" && node.props["data-testid"] === "assistant-rail-toggle",
+      )[0]!;
+      expect(toggle.props["aria-label"]).toBe(label);
+      expect(
+        renderer.root
+          .findAllByProps({ "data-testid": "assistant-rail-needs-you-badge" })
+          .map((badge) => badge.children.join("")),
+      ).toEqual(badges);
+      await act(async () => toggle.props.onClick());
+      expect(toggled).toBe(1);
+      await act(async () => renderer.unmount());
+    },
+  );
 });

@@ -20,7 +20,11 @@ import { describeCadence } from "@t3tools/shared/schedules";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useMemo } from "react";
 
+import { useAtomValue } from "@effect/atom-react";
+
+import { shortcutLabelForCommand } from "~/keybindings";
 import { usePrimaryEnvironment } from "~/state/environments";
+import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useProjects, useThreadShellsForProjectRefs } from "~/state/entities";
 import { useTaskToday, useTasks } from "~/state/tasks";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -28,6 +32,7 @@ import { AssistantHeader } from "./AssistantHeader";
 import { AssistantInbox } from "./AssistantInbox";
 import { useAssistantInboxState } from "./useAssistantInboxState";
 import { AssistantRail } from "./AssistantRail";
+import { useAssistantRailStore } from "./assistantRailStore";
 import { AssistantTodayEmpty } from "./AssistantTodayEmpty";
 import {
   AssistantTimelineCardsContext,
@@ -69,6 +74,10 @@ export function useAssistantChatChrome(input: {
   const projects = useProjects();
   const send = useSendToThread();
   const inboxKey = `${environmentId}:${threadId}`;
+  const railCollapsed = useAssistantRailStore((state) => state.collapsed);
+  const toggleRail = useAssistantRailStore((state) => state.toggleCollapsed);
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const railShortcutLabel = shortcutLabelForCommand(keybindings, "assistant.toggleRail");
   const assistantSettings = usePrimaryEnvironment()?.serverConfig?.settings.assistant ?? null;
   const reach = assistantSettings?.projects ?? null;
   const { tasks } = useTasks();
@@ -190,9 +199,15 @@ export function useAssistantChatChrome(input: {
         onOpenMemory={input.onOpenMemory}
         onOpenSchedules={input.onOpenSchedules}
         rightPanelOpen={input.rightPanelOpen}
+        rail={{
+          collapsed: railCollapsed,
+          needsYouCount,
+          shortcutLabel: railShortcutLabel,
+          onToggle: toggleRail,
+        }}
       />
     ),
-    rail: (
+    rail: railCollapsed ? null : (
       <AssistantRail
         assistant={project}
         projects={projects.filter((candidate) => candidate.environmentId === environmentId)}
