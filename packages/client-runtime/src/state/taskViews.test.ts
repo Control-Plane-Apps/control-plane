@@ -13,6 +13,7 @@ import {
   homeForMove,
   parseQuickAdd,
   proposedTasks,
+  proposedTasksForThread,
   taskAgentState,
   todayTasks,
   upcomingTasks,
@@ -192,5 +193,29 @@ describe("the Completed filter", () => {
     expect(completed.completed).toBe(2);
     expect(allTasks(tasks, "all").done).toEqual([]);
     expect(allTasks(tasks, "all").open.map((entry) => entry.id)).toEqual(["open"]);
+  });
+});
+
+describe("proposedTasksForThread", () => {
+  const proposal = (projectId: string, threadId: string) => ({
+    status: "todo" as const,
+    proposal: { projectId, threadId, proposedAt: AT },
+  });
+  const tasks = [
+    task("from-assistant", proposal("assistant-project", "assistant-thread") as Partial<Task>),
+    task("from-coordinator", proposal("hometrace", "coordinator-thread") as Partial<Task>),
+    task("from-agent", proposal("hometrace", "agent-thread") as Partial<Task>),
+  ];
+
+  it("shows a thread its own proposals, and a coordinator its Project's", () => {
+    expect(proposedTasksForThread(tasks, "assistant-thread", null).map((t) => t.id)).toEqual([
+      "from-assistant",
+    ]);
+    expect(proposedTasksForThread(tasks, "agent-thread", null).map((t) => t.id)).toEqual([
+      "from-agent",
+    ]);
+    expect(
+      proposedTasksForThread(tasks, "coordinator-thread", "hometrace").map((t) => t.id),
+    ).toEqual(["from-coordinator", "from-agent"]);
   });
 });

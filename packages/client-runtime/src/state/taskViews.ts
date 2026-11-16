@@ -456,6 +456,23 @@ export function proposedTasksForProject(tasks: ReadonlyArray<Task>, projectId: s
   return proposedTasks(tasks).filter((task) => task.proposal?.projectId === projectId);
 }
 
+/**
+ * The proposals a chat shows as its block: the ones this thread proposed
+ * (the Assistant, an agent or a coordinator), plus, on a coordinator, every
+ * proposal for its Project.
+ */
+export function proposedTasksForThread(
+  tasks: ReadonlyArray<Task>,
+  threadId: string,
+  coordinatorProjectId: string | null,
+): Task[] {
+  return proposedTasks(tasks).filter(
+    (task) =>
+      task.proposal?.threadId === threadId ||
+      (coordinatorProjectId !== null && task.proposal?.projectId === coordinatorProjectId),
+  );
+}
+
 /** Needs-you count across one Project's board, for rows outside the thread. */
 export function projectNeedsYouCount(project: {
   readonly assistant?: { readonly statuses?: ReadonlyArray<ProjectStatus> } | null;

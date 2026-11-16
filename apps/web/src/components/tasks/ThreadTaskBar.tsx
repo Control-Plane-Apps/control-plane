@@ -2,7 +2,7 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   formatTaskHome,
   formatTaskTime,
-  proposedTasksForProject,
+  proposedTasksForThread,
   taskForThread,
 } from "@t3tools/client-runtime/state/projects";
 import type { ThreadId } from "@t3tools/contracts";
@@ -16,7 +16,8 @@ import { useTaskActions } from "./useTaskActions";
 
 /**
  * Under a thread's header: the task this thread is working on (any thread),
- * and, on a coordinator, the tasks it proposed that wait for the user.
+ * and the tasks this chat proposed that wait for the user (on a coordinator,
+ * every proposal for its Project).
  */
 export function ThreadTaskBar(props: {
   readonly threadId: ThreadId;
@@ -29,10 +30,11 @@ export function ThreadTaskBar(props: {
   const projects = useProjects();
   if (environmentId === null) return null;
   const linked = taskForThread(tasks, props.threadId);
-  const proposals =
-    props.isCoordinator && props.project !== null
-      ? proposedTasksForProject(tasks, props.project.id)
-      : [];
+  const proposals = proposedTasksForThread(
+    tasks,
+    props.threadId,
+    props.isCoordinator && props.project !== null ? props.project.id : null,
+  );
   if (linked === undefined && proposals.length === 0) return null;
   const reminder = linked?.home.kind === "date" ? linked.home.reminderTime : undefined;
   return (
