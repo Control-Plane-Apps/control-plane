@@ -15,9 +15,17 @@ import { moveItem, type ReorderFrame, reorderShift, reorderTargetIndex } from ".
 // Fork-owned. Long-press a task, then drag it up or down to reorder the list.
 // The pan only activates after the hold and fails if the finger moves first,
 // so a quick vertical move still scrolls and a horizontal one still reaches
-// the row's swipe actions (select, Move, Schedule).
+// the row's swipe actions (select, Move, Schedule). With `dropTargets`, the
+// lifted row can also be dragged onto a range chip to move its home.
 
 const LONG_PRESS_MS = 300;
+
+/** Places outside the list a lifted row can be dropped on, in window coordinates. */
+export interface TaskDropTargets {
+  readonly hitTest: (x: number, y: number) => string | null;
+  readonly onHover: (target: string | null) => void;
+  readonly onDrop: (task: Task, target: string) => void;
+}
 
 interface Drag {
   readonly from: number;
@@ -33,9 +41,12 @@ export function ReorderableTaskRows(props: {
   /** The drop, in the list's own indices. */
   readonly onReorder: (tasks: ReadonlyArray<Task>, from: number, to: number) => void;
   readonly onDragActiveChange?: (active: boolean) => void;
+  readonly dropTargets?: TaskDropTargets;
 }) {
   const frames = useRef<Array<ReorderFrame | undefined>>([]);
   const translation = useSharedValue(0);
+  const translationX = useSharedValue(0);
+  const hovered = useRef<string | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   // Hold the dropped order until the store's own order catches up, so rows
   // don't flash back to their old slots while the write is in flight.
@@ -56,18 +67,31 @@ export function ReorderableTaskRows(props: {
   const latest = useRef({ props, tasks, drag });
   latest.current = { props, tasks, drag };
 
+  const setHovered = (target: string | null) => {
+    if (hovered.current === target) return;
+    hovered.current = target;
+    latest.current.props.dropTargets?.onHover(target);
+    if (target !== null) void Haptics.selectionAsync().catch(() => undefined);
+  };
   const start = (index: number) => {
     translation.value = 0;
+    translationX.value = 0;
+    hovered.current = null;
     const next = { from: index, to: index, height: frames.current[index]?.height ?? 0 };
     latest.current.drag = next;
     setDrag(next);
     latest.current.props.onDragActiveChange?.(true);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
   };
-  const move = (dy: number) => {
+  const move = (dy: number, dx: number, x: number, y: number) => {
     const current = latest.current.drag;
     if (current === null) return;
     translation.value = dy;
+    const target = latest.current.props.dropTargets?.hitTest(x, y) ?? null;
+    setHovered(target);
+    // Follow the finger sideways only while it is over a drop target.
+    translationX.value = target === null ? 0 : dx;
+    if (target !== null) return;
     const to = reorderTargetIndex(frames.current, current.from, dy);
     if (to === current.to) return;
     const next = { ...current, to };
@@ -82,9 +106,17 @@ export function ReorderableTaskRows(props: {
     latest.current.drag = null;
     setDrag(null);
     translation.value = 0;
+    translationX.value = 0;
+    const target = hovered.current;
+    setHovered(null);
     latest.current.props.onDragActiveChange?.(false);
-    if (!commit || current.from === current.to) return;
     const list = latest.current.tasks;
+    const lifted = list[current.from];
+    if (commit && target !== null && lifted !== undefined) {
+      latest.current.props.dropTargets?.onDrop(lifted, target);
+      return;
+    }
+    if (!commit || current.from === current.to) return;
     setPending({
       base: latest.current.props.tasks.map((task) => task.id).join("\n"),
       ids: moveItem(
@@ -102,11 +134,12 @@ export function ReorderableTaskRows(props: {
     <ReorderItem
       key={task.id}
       index={index}
-      enabled={props.enabled && tasks.length > 1}
+      enabled={props.enabled && (tasks.length > 1 || props.dropTargets !== undefined)}
       lifted={drag?.from === index}
       dragging={drag !== null}
       shift={drag === null ? 0 : reorderShift(index, drag.from, drag.to, drag.height)}
       translation={translation}
+      translationX={translationX}
       onLayout={(frame) => {
         frames.current[index] = frame;
         frames.current.length = tasks.length;
@@ -125,17 +158,18 @@ function ReorderItem(props: {
   readonly dragging: boolean;
   readonly shift: number;
   readonly translation: SharedValue<number>;
+  readonly translationX: SharedValue<number>;
   readonly onLayout: (frame: ReorderFrame) => void;
   readonly handlers: {
     readonly current: {
       readonly start: (index: number) => void;
-      readonly move: (dy: number) => void;
+      readonly move: (dy: number, dx: number, x: number, y: number) => void;
       readonly end: (commit: boolean) => void;
     };
   };
   readonly children: ReactNode;
 }) {
-  const { index, handlers, lifted, dragging, shift, translation } = props;
+  const { index, handlers, lifted, dragging, shift, translation, translationX } = props;
   const gesture = useMemo(
     () =>
       Gesture.Pan()
@@ -144,7 +178,14 @@ function ReorderItem(props: {
         .shouldCancelWhenOutside(false)
         .runOnJS(true)
         .onStart(() => handlers.current.start(index))
-        .onUpdate((event) => handlers.current.move(event.translationY))
+        .onUpdate((event) =>
+          handlers.current.move(
+            event.translationY,
+            event.translationX,
+            event.absoluteX,
+            event.absoluteY,
+          ),
+        )
         .onEnd((_, success) => handlers.current.end(success))
         .onFinalize((_, success) => {
           if (!success) handlers.current.end(false);
@@ -155,6 +196,7 @@ function ReorderItem(props: {
     zIndex: lifted ? 10 : 0,
     shadowOpacity: lifted ? 0.18 : 0,
     transform: [
+      { translateX: lifted ? translationX.value : 0 },
       {
         translateY: lifted
           ? translation.value

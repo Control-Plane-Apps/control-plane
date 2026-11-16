@@ -32,20 +32,26 @@ import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 type TaskQuickAddParams = {
   /** Where a task lands when the title names no day. */
   readonly horizon?: "today" | TaskHorizon | "backlog";
+  /** A date inside the Week, Month or Year being browsed; the current one when absent. */
+  readonly at?: string;
+  /** Which backlog a "backlog" add lands in; the general backlog when absent. */
+  readonly backlog?: TaskHorizon;
   readonly projectId?: string;
 };
 
 export function defaultQuickAddHome(
   horizon: TaskQuickAddParams["horizon"],
   today: string,
+  at?: string,
+  backlog?: TaskHorizon,
 ): TaskHome {
   switch (horizon) {
     case "week":
     case "month":
     case "year":
-      return { kind: "period", horizon, ...taskPeriodFor(horizon, today) };
+      return { kind: "period", horizon, ...taskPeriodFor(horizon, at ?? today) };
     case "backlog":
-      return { kind: "backlog", horizon: null };
+      return { kind: "backlog", horizon: backlog ?? null };
     default:
       return { kind: "date", date: today };
   }
@@ -64,7 +70,10 @@ export function TaskQuickAddSheet({ route }: StaticScreenProps<TaskQuickAddParam
   const [busy, setBusy] = useState(false);
 
   const parsed = useMemo(() => parseQuickAdd(text, today), [text, today]);
-  const baseHome = homeOverride ?? parsed.home ?? defaultQuickAddHome(route.params?.horizon, today);
+  const baseHome =
+    homeOverride ??
+    parsed.home ??
+    defaultQuickAddHome(route.params?.horizon, today, route.params?.at, route.params?.backlog);
   const home: TaskHome =
     baseHome.kind !== "date" || reminderOverride === undefined
       ? baseHome

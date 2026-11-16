@@ -13,7 +13,9 @@ import {
   formatTaskWeekday,
   formatUpcomingOffset,
   formatTaskDayTitle,
+  homeForMove,
   proposedTasks,
+  shiftTaskPeriod,
   taskAgentState,
   taskCounts,
   taskIntentFor,
@@ -30,7 +32,7 @@ import {
   type TaskHorizon,
   type ThreadId,
 } from "@t3tools/contracts";
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -44,7 +46,7 @@ import { recommendationReplyText, statusReplyTagFor } from "../status/projectSta
 import { prepareStatusReply } from "../status/ProjectStatusRouteScreen";
 import { sendThreadMessage } from "../status/statusReplyStore";
 import { PlanTaskRow, type PlanTaskRowContext } from "./PlanTaskRow";
-import { ReorderableTaskRows } from "./ReorderableTaskRows";
+import { ReorderableTaskRows, type TaskDropTargets } from "./ReorderableTaskRows";
 import { planTaskReorder } from "./taskReorder";
 import { ProposedTasks } from "./ProposedTasks";
 import { projectForTask, useHandToAgent } from "./taskHandoff";
@@ -61,24 +63,57 @@ import {
 import { cloudTaskStore } from "./cloudTasks";
 import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 
-// Fork-owned. Personal tasks on phone and iPad: Today, Week, Month, Year and
-// all Tasks, with select mode, Move, quick add and hand to agent. Named
-// "Plan" in code so it is never confused with the thread list's old "tasks".
+// Fork-owned. Personal tasks on phone and iPad: Today, Week, Month, Year,
+// Upcoming and All tasks in one view switched by a chip row (the same model as
+// desktop), with select mode, Move, quick add, hand to agent, and long-press
+// drag onto a range chip. Named "Plan" in code so it is never confused with
+// the thread list's old "tasks".
 
 export type PlanTasksView = "today" | TaskHorizon | "upcoming" | "all";
 
 type PlanTasksParams = { readonly view?: PlanTasksView } | undefined;
 
-const TABS: ReadonlyArray<{ readonly view: PlanTasksView; readonly label: string }> = [
+const RANGES: ReadonlyArray<{ readonly view: PlanTasksView; readonly label: string }> = [
   { view: "today", label: "Today" },
   { view: "week", label: "Week" },
   { view: "month", label: "Month" },
   { view: "year", label: "Year" },
-  { view: "all", label: "Tasks" },
+  { view: "upcoming", label: "Upcoming" },
+  { view: "all", label: "All tasks" },
 ];
 
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/** The bubble over a range chip while a task hovers it. */
+function dropLabel(view: PlanTasksView, today: string): string | null {
+  switch (view) {
+    case "today":
+      return "Move to today";
+    case "week":
+      return "Move to this week";
+    case "month":
+      return `Move to ${MONTHS[Number(today.slice(5, 7)) - 1]}`;
+    case "year":
+      return `Move to ${today.slice(0, 4)}`;
+    default:
+      return null;
+  }
+}
+
 const WIDE_LAYOUT_MIN_WIDTH = 700;
-const TAB_BAR_HEIGHT = 50;
 
 type ProjectFilter = string | "none" | null;
 
@@ -99,7 +134,13 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const showUndo = undo.show;
   const palette = useTaskPalette();
 
-  const [view, setView] = useState<PlanTasksView>(route.params?.view ?? "today");
+  const [view, setViewState] = useState<PlanTasksView>(route.params?.view ?? "today");
+  // A date inside the Week, Month or Year being browsed; null is the current one.
+  const [anchor, setAnchor] = useState<string | null>(null);
+  const [dropHover, setDropHover] = useState<string | null>(null);
+  const chipFrames = useRef(
+    new Map<string, { x: number; y: number; width: number; height: number }>(),
+  );
   const [projectFilter, setProjectFilter] = useState<ProjectFilter>(null);
   const [backlogFilter, setBacklogFilter] = useState<TaskBacklogFilter>("all");
   const [searching, setSearching] = useState(false);
@@ -108,6 +149,11 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [showCompleted, setShowCompleted] = useState(false);
+  const setView = useCallback((next: PlanTasksView) => {
+    setViewState(next);
+    setAnchor(null);
+    setExpandedId(null);
+  }, []);
 
   // Opening Tasks rechecks whether Task Sync has been switched on (at most once a minute).
   useEffect(() => {
@@ -208,6 +254,33 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     [actions],
   );
 
+  const dropTargets: TaskDropTargets = {
+    hitTest: (x, y) => {
+      for (const [target, frame] of chipFrames.current) {
+        if (dropLabel(target as PlanTasksView, today) === null) continue;
+        if (
+          x >= frame.x - 6 &&
+          x <= frame.x + frame.width + 6 &&
+          y >= frame.y - 12 &&
+          y <= frame.y + frame.height + 12
+        ) {
+          return target;
+        }
+      }
+      return null;
+    },
+    onHover: setDropHover,
+    onDrop: (task, target) => {
+      const move =
+        target === "today"
+          ? ({ kind: "today" } as const)
+          : target === "week" || target === "month" || target === "year"
+            ? ({ kind: "commit", horizon: target } as const)
+            : null;
+      if (move !== null) void actions.move(task, homeForMove(move, task.home, today));
+    },
+  };
+
   const renderList = (
     list: ReadonlyArray<Task>,
     options?: { hidePeriod?: boolean; trailing?: boolean; reorderable?: boolean },
@@ -217,6 +290,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       enabled={options?.reorderable === true && !selecting}
       onReorder={reorder}
       onDragActiveChange={setReordering}
+      dropTargets={wide ? undefined : dropTargets}
       renderRow={(task, index) => (
         <>
           {index > 0 ? <RowSeparator /> : null}
@@ -240,8 +314,20 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const openQuickAdd = (horizon: "today" | TaskHorizon | "backlog") =>
     navigation.navigate("TaskQuickAdd", {
       horizon,
+      ...(anchor !== null && horizon !== "today" && horizon !== "backlog" ? { at: anchor } : {}),
+      ...(horizon === "backlog" &&
+      (backlogFilter === "week" || backlogFilter === "month" || backlogFilter === "year")
+        ? { backlog: backlogFilter }
+        : {}),
       ...(projectFilter !== null && projectFilter !== "none" ? { projectId: projectFilter } : {}),
     });
+  /** Quick add from the header defaults to the range you are on. */
+  const quickAddHorizon: "today" | TaskHorizon | "backlog" =
+    view === "week" || view === "month" || view === "year"
+      ? view
+      : view === "all"
+        ? "backlog"
+        : "today";
 
   const addRow = (label: string, horizon: "today" | TaskHorizon | "backlog") => (
     <AddTaskRow label={label} onPress={() => openQuickAdd(horizon)} />
@@ -252,6 +338,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
 
   let title: string;
   let subtitle: string | null = null;
+  let titleAccessory: ReactNode = null;
   let content: ReactNode;
   switch (view) {
     case "today": {
@@ -274,13 +361,16 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
               <View className="pt-4">
                 <TaskCard>{addRow("Add a task", "today")}</TaskCard>
               </View>
-              <View className="items-center gap-1 pt-28">
-                <Text className="pb-3 text-[17px] text-foreground-muted">
-                  Nothing on today's plate.
-                </Text>
-                <TextLink label="View upcoming tasks" onPress={() => setView("upcoming")} />
-                <TextLink label="View all tasks" onPress={() => setView("all")} />
-              </View>
+              {/* First run shows only the add row; later, an empty day points elsewhere. */}
+              {tasks.length === 0 ? null : (
+                <View className="items-center gap-1 pt-28">
+                  <Text className="pb-3 text-[17px] text-foreground-muted">
+                    Nothing on today's plate.
+                  </Text>
+                  <TextLink label="View upcoming tasks" onPress={() => setView("upcoming")} />
+                  <TextLink label="View all tasks" onPress={() => setView("all")} />
+                </View>
+              )}
             </>
           ) : (
             <>
@@ -309,39 +399,59 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     case "week":
     case "month":
     case "year": {
-      const period = taskPeriodFor(view, today);
+      const horizon: TaskHorizon = view;
+      const at = anchor ?? today;
+      const period = taskPeriodFor(horizon, at);
+      const current = taskPeriodFor(horizon, today).startsOn === period.startsOn;
       title =
-        view === "week"
+        horizon === "week"
           ? `Week of ${formatTaskShortDate(period.startsOn)}`
-          : formatTaskPeriodTitle(view, period.startsOn);
+          : formatTaskPeriodTitle(horizon, period.startsOn);
       subtitle = formatTaskRange(period.startsOn, period.endsOn);
-      const committed = visible(committedTasks(tasks, view, today));
-      const backlog = backlogTasks(tasks, view).length;
-      const intent = taskIntentFor(intents, view, today);
+      titleAccessory = (
+        <PeriodNav
+          unit={horizon}
+          onShift={(steps) => {
+            const next = shiftTaskPeriod(horizon, at, steps);
+            setAnchor(taskPeriodFor(horizon, today).startsOn === next ? null : next);
+            setExpandedId(null);
+          }}
+        />
+      );
+      const committed = visible(committedTasks(tasks, horizon, at));
+      const backlog = backlogTasks(tasks, horizon).length;
+      const intent = taskIntentFor(intents, horizon, at);
       content = (
         <>
-          <IntentLine
-            key={`${view}:${period.startsOn}:${intent?.text ?? ""}`}
-            value={intent?.text ?? ""}
-            placeholder={`Set this ${view}'s intent`}
-            onCommit={(text) => void actions.setIntent(view, period.startsOn, text)}
-          />
+          <View className="pt-3">
+            <TaskCard>
+              <View className="px-4 pb-3 pt-2.5">
+                <Text className="pb-0.5 text-[13px] text-foreground-muted">Intent</Text>
+                <IntentLine
+                  key={`${horizon}:${period.startsOn}:${intent?.text ?? ""}`}
+                  value={intent?.text ?? ""}
+                  placeholder={
+                    current ? `Set this ${horizon}'s intent` : `Set the ${horizon}'s intent`
+                  }
+                  onCommit={(text) => void actions.setIntent(horizon, period.startsOn, text)}
+                />
+              </View>
+            </TaskCard>
+          </View>
           <SectionLabel>Committed</SectionLabel>
           <TaskCard>
             {renderList(committed, { hidePeriod: true, reorderable: true })}
             {committed.length > 0 ? <RowSeparator /> : null}
-            {addRow("Add a commitment", view)}
+            {addRow("Add a commitment", horizon)}
           </TaskCard>
-          {backlog > 0 ? (
-            <TextLink
-              label={`${view[0]!.toUpperCase()}${view.slice(1)} backlog · ${backlog}`}
-              align="left"
-              onPress={() => {
-                setBacklogFilter(view);
-                setView("all");
-              }}
-            />
-          ) : null}
+          <TextLink
+            label={`${horizon[0]!.toUpperCase()}${horizon.slice(1)} backlog · ${backlog}`}
+            align="left"
+            onPress={() => {
+              setView("all");
+              setBacklogFilter(horizon);
+            }}
+          />
         </>
       );
       break;
@@ -378,37 +488,53 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       break;
     }
     case "all": {
-      title = "Tasks";
+      title = "All tasks";
       const result = allTasks(visible(tasks), backlogFilter);
       content = (
         <>
-          <ProjectChips
-            projects={projects}
-            value={projectFilter}
-            onChange={setProjectFilter}
-            backlogFilter={backlogFilter}
-            onClearBacklog={() => setBacklogFilter("all")}
+          <ProjectChips projects={projects} value={projectFilter} onChange={setProjectFilter} />
+          <BacklogFilters
+            value={backlogFilter}
+            completed={result.completed}
+            onChange={setBacklogFilter}
           />
-          <View className="pt-1">
-            <TaskCard>
-              {addRow("Add a task", "backlog")}
-              {result.open.length > 0 ? <RowSeparator /> : null}
-              {renderList(result.open, { trailing: true, reorderable: backlogFilter !== "all" })}
-            </TaskCard>
-          </View>
-          {result.recurring.length > 0 ? (
+          {backlogFilter === "completed" ? (
+            <View className="pt-1">
+              {result.done.length > 0 ? (
+                <TaskCard>{renderList(result.done, { trailing: true })}</TaskCard>
+              ) : (
+                <Text className="px-9 pt-4 text-[15px] text-foreground-muted">
+                  Nothing completed yet.
+                </Text>
+              )}
+            </View>
+          ) : (
             <>
-              <SectionLabel>Recurring</SectionLabel>
-              <TaskCard>
-                {renderList(result.recurring, { trailing: true, reorderable: true })}
-              </TaskCard>
+              <View className="pt-1">
+                <TaskCard>
+                  {backlogFilter !== "recurring" ? addRow("Add to backlog", "backlog") : null}
+                  {result.open.length > 0 && backlogFilter !== "recurring" ? (
+                    <RowSeparator />
+                  ) : null}
+                  {renderList(result.open, {
+                    trailing: true,
+                    reorderable: backlogFilter !== "all",
+                  })}
+                  {backlogFilter === "recurring"
+                    ? renderList(result.recurring, { trailing: true, reorderable: true })
+                    : null}
+                </TaskCard>
+              </View>
+              {result.recurring.length > 0 && backlogFilter === "all" ? (
+                <>
+                  <SectionLabel>Recurring</SectionLabel>
+                  <TaskCard>
+                    {renderList(result.recurring, { trailing: true, reorderable: true })}
+                  </TaskCard>
+                </>
+              ) : null}
             </>
-          ) : null}
-          {result.completed > 0 ? (
-            <Text className="px-9 pt-5 text-[14px] text-foreground-muted">
-              Completed · {result.completed}
-            </Text>
-          ) : null}
+          )}
         </>
       );
       break;
@@ -441,6 +567,14 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     </View>
   ) : (
     <View className="min-h-11 flex-row items-center px-1">
+      <View
+        pointerEvents="none"
+        className="absolute inset-x-0 top-0 min-h-11 items-center justify-center"
+      >
+        <Text className="text-[17px] font-t3-bold text-foreground" accessibilityRole="header">
+          Tasks
+        </Text>
+      </View>
       {!usesSplitView ? (
         <Pressable
           accessibilityRole="button"
@@ -541,6 +675,19 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             type="monochrome"
           />
         </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Add a task"
+          onPress={() => openQuickAdd(quickAddHorizon)}
+          className="size-11 items-center justify-center"
+        >
+          <SymbolView
+            name={symbol("plus", "edit")}
+            size={19}
+            tintColorClassName="accent-foreground"
+            type="monochrome"
+          />
+        </Pressable>
       </View>
     </View>
   );
@@ -552,16 +699,22 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         contentContainerStyle={{
-          paddingBottom: (wide ? 24 : TAB_BAR_HEIGHT) + insets.bottom + (selecting ? 72 : 48),
+          paddingBottom: insets.bottom + (selecting ? 72 : 48),
           maxWidth: wide ? 640 : undefined,
           width: "100%",
           alignSelf: "center",
         }}
       >
         <View className="px-5 pb-1 pt-2">
-          <Text className="text-[32px] font-t3-bold text-foreground" accessibilityRole="header">
-            {title}
-          </Text>
+          <View className="flex-row items-center">
+            <Text
+              className="flex-1 text-[32px] font-t3-bold text-foreground"
+              accessibilityRole="header"
+            >
+              {title}
+            </Text>
+            {titleAccessory}
+          </View>
           {subtitle !== null ? (
             <Text className="text-[16px] text-foreground-muted">{subtitle}</Text>
           ) : null}
@@ -611,11 +764,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
           }}
         />
       ) : null}
-      <UndoBanner
-        notice={undo.notice}
-        onDismiss={undo.dismiss}
-        bottomOffset={wide || selecting ? 0 : TAB_BAR_HEIGHT}
-      />
+      <UndoBanner notice={undo.notice} onDismiss={undo.dismiss} bottomOffset={0} />
     </View>
   );
 
@@ -626,34 +775,26 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       onLayout={(event) => setPaneWidth(event.nativeEvent.layout.width)}
     >
       {header}
+      {!wide && !selecting ? (
+        <RangeChips
+          view={view}
+          counts={counts}
+          dropHover={dropHover}
+          dropLabelFor={(target) => dropLabel(target, today)}
+          frames={chipFrames.current}
+          onSelect={(next) => {
+            setView(next);
+            if (next !== "all") setBacklogFilter("all");
+          }}
+        />
+      ) : null}
       {wide ? (
         <View className="flex-1 flex-row">
-          <ViewsColumn
-            view={view}
-            counts={counts}
-            onSelect={(next) => {
-              setView(next);
-              setExpandedId(null);
-            }}
-          />
+          <ViewsColumn view={view} counts={counts} onSelect={setView} />
           {main}
         </View>
       ) : (
-        <>
-          {main}
-          {!selecting ? (
-            <TabBar
-              view={view}
-              accent={palette.accent}
-              bottomInset={insets.bottom}
-              onSelect={(next) => {
-                setView(next);
-                setExpandedId(null);
-                if (next !== "all") setBacklogFilter("all");
-              }}
-            />
-          ) : null}
-        </>
+        <>{main}</>
       )}
     </View>
   );
@@ -731,11 +872,9 @@ function ProjectChips(props: {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly value: ProjectFilter;
   readonly onChange: (value: ProjectFilter) => void;
-  readonly backlogFilter: TaskBacklogFilter;
-  readonly onClearBacklog: () => void;
 }) {
   const palette = useTaskPalette();
-  const chip = (id: ProjectFilter, label: string, leading?: ReactNode) => {
+  const chip = (id: ProjectFilter, label: string) => {
     const active = props.value === id;
     return (
       <Pressable
@@ -755,7 +894,6 @@ function ProjectChips(props: {
           backgroundColor: active ? palette.accent : palette.chip,
         })}
       >
-        {leading}
         <Text
           className={cn("text-[15px] font-t3-medium", !active && "text-foreground")}
           style={active ? { color: palette.accentForeground } : undefined}
@@ -765,98 +903,207 @@ function ProjectChips(props: {
       </Pressable>
     );
   };
-  const backlogLabel =
-    props.backlogFilter === "all"
-      ? null
-      : props.backlogFilter === "recurring"
-        ? "Recurring"
-        : `${props.backlogFilter[0]!.toUpperCase()}${props.backlogFilter.slice(1)} backlog`;
   return (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 12 }}
+      contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }}
     >
-      {chip(null, "All")}
+      {chip(null, "All projects")}
       {props.projects
         .filter((project) => project.assistant != null)
         .map((project) => chip(project.id, project.title))}
       {chip("none", "No project")}
-      {backlogLabel !== null ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Clear filter ${backlogLabel}`}
-          onPress={props.onClearBacklog}
-          style={{
-            minHeight: 40,
-            paddingHorizontal: 14,
-            borderRadius: 20,
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 6,
-            borderWidth: 1,
-            borderColor: palette.dashed,
-          }}
-        >
-          <Text className="text-[15px] text-foreground">{backlogLabel}</Text>
-          <SymbolView
-            name={symbol("xmark", "close")}
-            size={11}
-            tintColorClassName="accent-icon-muted"
-            type="monochrome"
-          />
-        </Pressable>
-      ) : null}
     </ScrollView>
   );
 }
 
-function tabIcon(view: PlanTasksView) {
-  return view === "all" ? symbol("checklist", "check") : symbol("calendar", "folder");
-}
-
-function TabBar(props: {
-  readonly view: PlanTasksView;
-  readonly accent: string;
-  readonly bottomInset: number;
-  readonly onSelect: (view: PlanTasksView) => void;
+/** All tasks filters: the backlogs, Recurring, and Completed with its count. */
+function BacklogFilters(props: {
+  readonly value: TaskBacklogFilter;
+  readonly completed: number;
+  readonly onChange: (value: TaskBacklogFilter) => void;
 }) {
+  const entries: ReadonlyArray<{ readonly value: TaskBacklogFilter; readonly label: string }> = [
+    { value: "all", label: "All" },
+    { value: "week", label: "Week backlog" },
+    { value: "month", label: "Month backlog" },
+    { value: "year", label: "Year backlog" },
+    { value: "recurring", label: "Recurring" },
+    { value: "completed", label: `Completed · ${props.completed}` },
+  ];
+  const palette = useTaskPalette();
   return (
-    <View
-      accessibilityRole="tablist"
-      className="flex-row border-t border-border bg-screen"
-      style={{ paddingBottom: Math.max(props.bottomInset, 8) }}
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingVertical: 8 }}
     >
-      {TABS.map((tab) => {
-        const active = props.view === tab.view;
+      {entries.map((entry) => {
+        const active = props.value === entry.value;
         return (
           <Pressable
-            key={tab.view}
-            accessibilityRole="tab"
-            accessibilityLabel={tab.label}
+            key={entry.value}
+            accessibilityRole="button"
+            accessibilityLabel={`Show ${entry.label}`}
             accessibilityState={{ selected: active }}
-            onPress={() => props.onSelect(tab.view)}
-            className="flex-1 items-center justify-center gap-1 pt-2"
-            style={{ minHeight: TAB_BAR_HEIGHT }}
+            onPress={() => props.onChange(entry.value)}
+            style={({ pressed }) => ({
+              opacity: pressed ? 0.7 : 1,
+              minHeight: 36,
+              paddingHorizontal: 14,
+              borderRadius: 18,
+              justifyContent: "center",
+              borderWidth: 1,
+              borderColor: active ? "transparent" : palette.dashed,
+              backgroundColor: active ? palette.chip : "transparent",
+            })}
           >
-            <SymbolView
-              name={tabIcon(tab.view)}
-              size={20}
-              tintColorClassName={active ? "accent-foreground" : "accent-icon-muted"}
-              type="monochrome"
-              weight={active ? "semibold" : "regular"}
-            />
             <Text
               className={cn(
-                "text-[11px]",
-                active ? "font-t3-bold text-foreground" : "text-foreground-muted",
+                "text-[14px]",
+                active ? "font-t3-medium text-foreground" : "text-foreground-muted",
               )}
             >
-              {tab.label}
+              {entry.label}
             </Text>
           </Pressable>
         );
       })}
+    </ScrollView>
+  );
+}
+
+/**
+ * The range switcher, the same six ranges as desktop. Today through Year are
+ * drop targets: long-press a task, drag it onto a chip, and it moves there.
+ */
+function RangeChips(props: {
+  readonly view: PlanTasksView;
+  readonly counts: ReturnType<typeof taskCounts>;
+  readonly dropHover: string | null;
+  readonly dropLabelFor: (view: PlanTasksView) => string | null;
+  readonly frames: Map<string, { x: number; y: number; width: number; height: number }>;
+  readonly onSelect: (view: PlanTasksView) => void;
+}) {
+  const palette = useTaskPalette();
+  const refs = useRef(new Map<string, View | null>());
+  const measure = () => {
+    for (const [view, node] of refs.current) {
+      node?.measureInWindow((x, y, width, height) => {
+        props.frames.set(view, { x, y, width, height });
+      });
+    }
+  };
+  const countFor = (view: PlanTasksView) =>
+    view === "today" || view === "week" || view === "month" || view === "year"
+      ? props.counts[view]
+      : 0;
+  const hoverLabel =
+    props.dropHover === null ? null : props.dropLabelFor(props.dropHover as PlanTasksView);
+  const hoverFrame = props.dropHover === null ? undefined : props.frames.get(props.dropHover);
+  return (
+    <View style={{ zIndex: 20 }}>
+      <ScrollView
+        horizontal
+        accessibilityRole="tablist"
+        showsHorizontalScrollIndicator={false}
+        onScroll={measure}
+        scrollEventThrottle={64}
+        onLayout={measure}
+        contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingTop: 4, paddingBottom: 10 }}
+      >
+        {RANGES.map((range) => {
+          const active = props.view === range.view;
+          const count = countFor(range.view);
+          const hovering = props.dropHover === range.view;
+          return (
+            <Pressable
+              key={range.view}
+              ref={(node) => {
+                refs.current.set(range.view, node);
+              }}
+              onLayout={measure}
+              accessibilityRole="tab"
+              accessibilityLabel={count > 0 ? `${range.label}, ${count}` : range.label}
+              accessibilityState={{ selected: active }}
+              onPress={() => props.onSelect(range.view)}
+              style={({ pressed }) => ({
+                opacity: pressed ? 0.7 : 1,
+                minHeight: 44,
+                paddingHorizontal: 16,
+                borderRadius: 22,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                backgroundColor: active ? palette.selectedChip : palette.card,
+                borderWidth: 1.5,
+                borderStyle: hovering ? "dashed" : "solid",
+                borderColor: hovering ? palette.accent : "transparent",
+              })}
+            >
+              <Text
+                className="text-[16px] font-t3-medium"
+                style={{ color: active ? palette.selectedChipForeground : undefined }}
+              >
+                {range.label}
+              </Text>
+              {count > 0 ? (
+                <Text
+                  className="text-[14px] tabular-nums"
+                  style={{
+                    color: active ? palette.selectedChipForeground : palette.mutedForeground,
+                    opacity: active ? 0.7 : 1,
+                  }}
+                >
+                  {count}
+                </Text>
+              ) : null}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      {hoverLabel !== null && hoverFrame !== undefined ? (
+        <View
+          pointerEvents="none"
+          className="absolute rounded-lg px-2.5 py-1.5"
+          style={{
+            top: 52,
+            left: Math.max(8, hoverFrame.x - 24),
+            backgroundColor: palette.selectedChip,
+          }}
+        >
+          <Text className="text-[13px]" style={{ color: palette.selectedChipForeground }}>
+            {hoverLabel}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function PeriodNav(props: { readonly unit: string; readonly onShift: (steps: number) => void }) {
+  const button = (steps: number, label: string, icon: "chevron.left" | "chevron.right") => (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={() => props.onShift(steps)}
+      className="size-11 items-center justify-center"
+      style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}
+    >
+      <SymbolView
+        name={icon}
+        size={17}
+        tintColorClassName="accent-foreground"
+        type="monochrome"
+        weight="semibold"
+      />
+    </Pressable>
+  );
+  return (
+    <View className="flex-row items-center">
+      {button(-1, `Previous ${props.unit}`, "chevron.left")}
+      {button(1, `Next ${props.unit}`, "chevron.right")}
     </View>
   );
 }
