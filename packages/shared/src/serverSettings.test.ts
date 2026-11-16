@@ -868,3 +868,24 @@ describe("applyServerSettingsPatch globalInstructions", () => {
     });
   });
 });
+
+describe("applyServerSettingsPatch tasks", () => {
+  it("defaults commitment rollover off", () => {
+    expect(DEFAULT_SERVER_SETTINGS.tasks).toEqual({ rollCommitmentsForward: false });
+  });
+
+  it("turns rollover on and off, and leaves it alone for unrelated patches", () => {
+    const on = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      tasks: { rollCommitmentsForward: true },
+    });
+    expect(on.tasks).toEqual({ rollCommitmentsForward: true });
+    expect(applyServerSettingsPatch(on, { tasks: {} }).tasks).toEqual({
+      rollCommitmentsForward: true,
+    });
+    expect(applyServerSettingsPatch(on, { globalInstructions: { tasks: false } }).tasks).toEqual({
+      rollCommitmentsForward: true,
+    });
+    const off = applyServerSettingsPatch(on, { tasks: { rollCommitmentsForward: false } });
+    expect(off.tasks).toEqual({ rollCommitmentsForward: false });
+  });
+});
