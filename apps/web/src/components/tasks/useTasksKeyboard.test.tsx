@@ -133,7 +133,9 @@ describe("Tasks keyboard", () => {
     expect(press("n", { metaKey: true }).stopImmediatePropagation).toHaveBeenCalledOnce();
     press("n", { ctrlKey: true });
     expect(options.onNew).toHaveBeenCalledTimes(2);
-    press("n", { metaKey: true, target: new Target(true) });
+    expect(
+      press("n", { metaKey: true, target: new Target(true) }).stopImmediatePropagation,
+    ).toHaveBeenCalledOnce();
     press("n", { metaKey: true, shiftKey: true });
     press("n", { metaKey: true, altKey: true });
     expect(options.onNew).toHaveBeenCalledTimes(2);
@@ -143,6 +145,10 @@ describe("Tasks keyboard", () => {
     press("Escape", { target: new Target(false, null, true) });
     press("Escape", { target: new Target(true) });
     expect(options.onClear).not.toHaveBeenCalled();
+    expect(
+      press("Delete", { target: new Target(false, null, true) }).preventDefault,
+    ).not.toHaveBeenCalled();
+    expect(options.onDelete).not.toHaveBeenCalled();
     options = { ...options, isBlocked: () => true };
     act(() => renderer.update(<Probe />));
     press("n", { metaKey: true });
