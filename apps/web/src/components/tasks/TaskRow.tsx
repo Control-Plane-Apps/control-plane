@@ -132,7 +132,7 @@ function LifecycleLine(props: {
         {coordinator != null ? (
           <button
             type="button"
-            className="shrink-0 cursor-pointer font-medium text-primary hover:underline"
+            className="shrink-0 cursor-pointer font-medium text-warning-foreground hover:underline"
             onClick={() => props.onOpenThread(coordinator)}
           >
             Answer
