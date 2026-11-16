@@ -15,6 +15,9 @@ export const Route = createFileRoute("/_chat/tasks/$view")({
     ...(typeof raw.filter === "string" && FILTERS.has(raw.filter)
       ? { filter: raw.filter as TasksSearch["filter"] }
       : {}),
+    ...(typeof raw.highlight === "string" && raw.highlight.length > 0
+      ? { highlight: raw.highlight }
+      : {}),
   }),
   beforeLoad: ({ params }) => {
     if (!TASK_VIEWS.includes(params.view as TasksView)) throw notFound();

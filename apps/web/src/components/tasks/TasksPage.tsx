@@ -8,7 +8,9 @@ import {
   formatTaskPeriodTitle,
   formatTaskRange,
   formatUpcomingOffset,
-  proposedTasks,
+  decodeTaskHighlight,
+  proposedTasksForView,
+  proposedTasksOnDate,
   taskCounts,
   taskIntentFor,
   todayTasks,
@@ -27,7 +29,7 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { CheckIcon, ChevronDownIcon, ListFilterIcon, PlusIcon } from "lucide-react";
-import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { isElectron } from "../../env";
@@ -323,6 +325,35 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [keybindings, navigate, projectFilter]);
 
+  // Opened from a chat's proposal block: scroll to those rows and light them
+  // up briefly, then drop the param so a reload does not replay it.
+  const highlight = search.highlight;
+  const mainRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const ids = decodeTaskHighlight(highlight);
+    const root = mainRef.current;
+    if (ids.length === 0 || root === null) return;
+    const rows = ids.flatMap((id) => [
+      ...root.querySelectorAll<HTMLElement>(`[data-task-id="${CSS.escape(id)}"]`),
+    ]);
+    rows[0]?.scrollIntoView({ block: "center", behavior: "smooth" });
+    for (const row of rows) row.dataset.highlighted = "true";
+    const timer = window.setTimeout(() => {
+      for (const row of rows) delete row.dataset.highlighted;
+      void navigate({
+        to: "/tasks/$view",
+        params: { view },
+        search: tasksSearch(search, {}),
+        replace: true,
+      });
+    }, 2400);
+    return () => {
+      window.clearTimeout(timer);
+      for (const row of rows) delete row.dataset.highlighted;
+    };
+    // Runs once per highlight request, not on every search change.
+  }, [highlight, view]);
+
   const shortcutFor = (index: number) => {
     const command = threadJumpCommandForIndex(index);
     return command === null ? null : shortcutLabelForCommand(keybindings, command);
@@ -371,7 +402,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   } else if (view === "today") {
     const open = todayTasks(tasks, today);
     const done = completedToday(tasks, today);
-    const proposals = proposedTasks(tasks);
+    const proposals = proposedTasksForView(tasks, "today", today);
     const firstRun = allTaskRecords.length === 0;
     if (firstRun) {
       body = (
@@ -437,6 +468,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     const period = taskPeriodFor(horizon, today);
     const committed = committedTasks(tasks, horizon, today);
     const backlog = backlogTasks(tasks, horizon);
+    const proposedHere = proposedTasksForView(tasks, horizon, today);
     const intent = taskIntentFor(intents, horizon, today);
     const parent: TaskHorizon | null =
       horizon === "week" ? "month" : horizon === "month" ? "year" : null;
@@ -455,6 +487,11 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
           className="pt-4 text-[15px]"
           onSave={saveIntent(horizon)}
         />
+        {proposedHere.length > 0 ? (
+          <div className="pt-5">
+            <ProposedTasks tasks={proposedHere} context={context} />
+          </div>
+        ) : null}
         <TasksSectionLabel>Committed</TasksSectionLabel>
         {list(committed, "Committed", true, true)}
         <AddTaskRow label="Add a commitment" onAdd={add({ kind: "period", horizon, ...period })} />
@@ -493,27 +530,35 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
         <h1 className="font-semibold text-2xl">Upcoming</h1>
         <p className="pt-1 text-muted-foreground text-sm">Next 7 days</p>
         <div className="flex flex-col gap-3 pt-5">
-          {groups.map((group) => (
-            <section
-              key={group.date}
-              aria-label={formatTaskDayTitle(group.date)}
-              className="overflow-hidden rounded-xl border border-border bg-card px-4 pt-3 pb-1"
-            >
-              <div className="flex items-baseline gap-2 pb-1">
-                <h2 className="font-semibold text-[15px]">{formatTaskDayTitle(group.date)}</h2>
-                <span className="text-muted-foreground text-xs">
-                  {formatUpcomingOffset(group.date, today)}
-                </span>
-                <span className="ms-auto text-muted-foreground text-xs">
-                  {group.tasks.length === 0
-                    ? ""
-                    : `${group.tasks.length} ${group.tasks.length === 1 ? "task" : "tasks"}`}
-                </span>
-              </div>
-              {list(group.tasks, formatTaskDayTitle(group.date), true, true)}
-              <AddTaskRow onAdd={add({ kind: "date", date: group.date })} />
-            </section>
-          ))}
+          {groups.map((group) => {
+            const proposedThatDay = proposedTasksOnDate(tasks, group.date);
+            return (
+              <section
+                key={group.date}
+                aria-label={formatTaskDayTitle(group.date)}
+                className="overflow-hidden rounded-xl border border-border bg-card px-4 pt-3 pb-1"
+              >
+                <div className="flex items-baseline gap-2 pb-1">
+                  <h2 className="font-semibold text-[15px]">{formatTaskDayTitle(group.date)}</h2>
+                  <span className="text-muted-foreground text-xs">
+                    {formatUpcomingOffset(group.date, today)}
+                  </span>
+                  <span className="ms-auto text-muted-foreground text-xs">
+                    {group.tasks.length === 0
+                      ? ""
+                      : `${group.tasks.length} ${group.tasks.length === 1 ? "task" : "tasks"}`}
+                  </span>
+                </div>
+                {proposedThatDay.length > 0 ? (
+                  <div className="pt-1 pb-1.5">
+                    <ProposedTasks tasks={proposedThatDay} context={context} />
+                  </div>
+                ) : null}
+                {list(group.tasks, formatTaskDayTitle(group.date), true, true)}
+                <AddTaskRow onAdd={add({ kind: "date", date: group.date })} />
+              </section>
+            );
+          })}
         </div>
       </>
     );
@@ -543,6 +588,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
       { value: "completed", label: `Completed · ${completed}` },
     ];
     const addHome = defaultHomeForView("all", search, today);
+    const proposedHere = proposedTasksForView(tasks, "all", today, filter);
     body = (
       <>
         <h1 className="font-semibold text-2xl">All tasks</h1>
@@ -582,6 +628,11 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
             )
           ) : (
             <>
+              {proposedHere.length > 0 ? (
+                <div className="pb-3">
+                  <ProposedTasks tasks={proposedHere} context={context} />
+                </div>
+              ) : null}
               {filter !== "recurring" ? (
                 <AddTaskRow label="Add to backlog" onAdd={add(addHome)} />
               ) : null}
@@ -631,7 +682,9 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
         </WorkspacePageHeader>
         <ScrollArea className="min-h-0 flex-1">
           <div className="mx-auto flex w-full max-w-5xl gap-12 px-6 pt-8 pb-16 sm:px-12">
-            <main className="min-w-0 max-w-2xl flex-1">{body}</main>
+            <main ref={mainRef} className="min-w-0 max-w-2xl flex-1">
+              {body}
+            </main>
             {aside !== null ? (
               <aside className="hidden w-52 shrink-0 flex-col gap-6 pt-1 lg:flex">{aside}</aside>
             ) : null}

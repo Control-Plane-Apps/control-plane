@@ -238,7 +238,10 @@ export function TaskRow(props: {
 
   return (
     <li
-      className={cn("group/task relative list-none", props.dimmed && "opacity-40")}
+      className={cn(
+        "group/task relative list-none rounded-lg transition-colors duration-700 data-[highlighted=true]:bg-primary/10",
+        props.dimmed && "opacity-40",
+      )}
       draggable={props.draggable === true && !expanded}
       onDragStart={props.onDragStart}
       onDragOver={props.onDragOver}

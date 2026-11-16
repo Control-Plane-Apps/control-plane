@@ -1,5 +1,6 @@
 import { ArrowUpIcon, ClockIcon, ReplyIcon } from "lucide-react";
 import { AssistantTimelineCard } from "../assistant/AssistantTimelineCards";
+import { TaskProposalBlock } from "../tasks/TaskProposalBlock";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
@@ -4925,6 +4926,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   if (workEntry.assistantCard !== undefined) {
     return <AssistantTimelineCard workEntry={workEntry} />;
   }
+  if (workEntry.taskProposal !== undefined) {
+    return <TimelineTaskProposalBlock calls={workEntry.taskProposal.calls} />;
+  }
   // Before any hooks: spawn rows render their own component.
   if (workEntry.agentSpawn) {
     return (
@@ -4945,6 +4949,13 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     />
   );
 });
+
+function TimelineTaskProposalBlock(props: {
+  calls: NonNullable<TimelineWorkEntry["taskProposal"]>["calls"];
+}) {
+  const { threadRef } = use(TimelineRowCtx);
+  return <TaskProposalBlock calls={props.calls} threadId={threadRef?.threadId ?? null} />;
+}
 
 const AgentMessageTimelineRow = memo(function AgentMessageTimelineRow({
   row,

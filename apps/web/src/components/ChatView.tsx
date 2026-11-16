@@ -10197,13 +10197,7 @@ export default function ChatView(props: ChatViewProps) {
             />
           )}
         </WorkspacePageHeader>
-        {isServerThread ? (
-          <ThreadTaskBar
-            threadId={activeThread.id}
-            project={activeProject}
-            isCoordinator={assistantRole === "coordinator"}
-          />
-        ) : null}
+        {isServerThread ? <ThreadTaskBar threadId={activeThread.id} /> : null}
 
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">

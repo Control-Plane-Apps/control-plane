@@ -1,5 +1,6 @@
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
 import {
+  addAllProposalsLabel,
   formatTaskHome,
   taskAgentState,
   type TaskLifecycleProject,
@@ -185,7 +186,7 @@ export function ProposedTasks(props: {
             className="ms-auto cursor-pointer font-medium text-foreground hover:underline"
             onClick={addAll}
           >
-            Add {tasks.length === 2 ? "both" : "all"}
+            {addAllProposalsLabel(tasks.length)}
           </button>
         ) : null}
       </div>
@@ -215,7 +216,10 @@ function ProposedTaskRow(props: {
       ? undefined
       : project?.assistant?.statuses?.find((s) => s.id === task.links!.statusId);
   return (
-    <li className="flex min-w-0 items-center gap-2.5 py-1.5">
+    <li
+      data-task-id={task.id}
+      className="flex min-w-0 items-center gap-2.5 rounded-lg py-1.5 transition-colors duration-700 data-[highlighted=true]:bg-primary/10"
+    >
       <TaskCheckbox
         checked={false}
         proposed

@@ -25,6 +25,8 @@ export const TASK_VIEW_LABEL: Record<TasksView, string> = {
 export interface TasksSearch {
   readonly project?: string | undefined;
   readonly filter?: Exclude<TaskBacklogFilter, "all"> | undefined;
+  /** Task ids to scroll to and light up briefly, comma separated. */
+  readonly highlight?: string | undefined;
 }
 
 /** Where a task dropped on a range tab lands; Upcoming and All tasks take no drops. */
