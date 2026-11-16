@@ -284,8 +284,32 @@ export function TaskReminderMenu(props: {
   readonly className?: string;
   readonly formatTime: (time: string) => string;
 }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(props.time ?? "");
+  const cancelled = useRef(false);
+  const committed = useRef(props.time ?? "");
+  const commitDraft = () => {
+    if (cancelled.current) {
+      cancelled.current = false;
+      return;
+    }
+    if (draft && draft !== committed.current) {
+      committed.current = draft;
+      props.onChange(draft);
+    }
+  };
   return (
-    <Menu>
+    <Menu
+      open={open}
+      onOpenChange={(next) => {
+        if (next) {
+          setDraft(props.time ?? "");
+          committed.current = props.time ?? "";
+          cancelled.current = false;
+        }
+        setOpen(next);
+      }}
+    >
       <MenuTrigger className={props.className} aria-label="Remind">
         {props.children}
       </MenuTrigger>
@@ -311,10 +335,20 @@ export function TaskReminderMenu(props: {
             type="time"
             aria-label="Reminder time"
             className="w-5 cursor-pointer opacity-60"
-            value={props.time ?? ""}
-            onChange={(event) => {
-              if (event.target.value) props.onChange(event.target.value);
+            value={draft}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                if (event.key === "Escape") {
+                  cancelled.current = true;
+                  setDraft(props.time ?? "");
+                } else commitDraft();
+                setOpen(false);
+              }
             }}
+            onBlur={commitDraft}
+            onChange={(event) => setDraft(event.target.value)}
           />
         </label>
         {props.time !== undefined ? (

@@ -44,20 +44,20 @@ describe("Task Sync indicator", () => {
   const status = (extra: Partial<TaskSyncStatus>) =>
     ({ state: "synced", pendingChanges: 0, ...extra }) as TaskSyncStatus;
 
-  it("reads each sync state as a header chip and a margin line", () => {
+  it("reads each sync state as a header chip and popover details", () => {
     expect(taskSyncIndicator(null).header).toBe("On this Mac");
     expect(taskSyncIndicator(status({ state: "coming-soon" }))).toMatchObject({
       header: "On this Mac",
-      margin: "Task Sync",
+      description: "Task Sync",
       action: "Coming soon",
     });
     expect(taskSyncIndicator(status({ state: "signed-out" })).action).toBe("Turn on · $5/month");
     expect(taskSyncIndicator(status({ state: "syncing" })).header).toBe("Syncing");
-    expect(taskSyncIndicator(status({ state: "synced" })).margin).toBe("Synced with cloud");
+    expect(taskSyncIndicator(status({ state: "synced" })).description).toBe("Synced with cloud");
     expect(taskSyncIndicator(status({ state: "error", pendingChanges: 3 }))).toMatchObject({
       tone: "offline",
       header: "Offline · 3 waiting",
-      margin: "Offline",
+      description: "Offline",
       detail: "3 changes waiting",
     });
   });

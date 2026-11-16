@@ -1,3 +1,4 @@
+import { useTasksKeyboard } from "./useTasksKeyboard";
 import {
   allTasks,
   backlogTasks,
@@ -21,6 +22,7 @@ import {
   type TaskLifecycleThread,
 } from "@t3tools/client-runtime/state/projects";
 import {
+  findGlobalAssistantProject,
   taskPeriodFor,
   type Task,
   type TaskHome,
@@ -65,7 +67,7 @@ import {
 } from "./TaskList";
 import { TASK_RANGE_DROP, TaskDayDropZone, TaskDragProvider } from "./taskDrag";
 import type { TaskRowContext } from "./TaskRow";
-import { TaskSyncChip, TaskSyncMarginLine, taskSyncIndicator } from "./TaskSyncIndicator";
+import { TaskSyncChip, taskSyncIndicator } from "./TaskSyncIndicator";
 import {
   defaultHomeForView,
   dropLabelForView,
@@ -76,6 +78,8 @@ import {
   type TasksView,
 } from "./tasksRange";
 import { useOptimisticTaskHomes } from "./useOptimisticTaskHomes";
+import { useTaskSelection } from "./useTaskSelection";
+import { TaskMoveMenu } from "./TaskMenus";
 import { useTaskActions } from "./useTaskActions";
 
 export { TASK_VIEWS, type TasksSearch, type TasksView } from "./tasksRange";
@@ -283,6 +287,35 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     () => filterTasksByProject(allTaskRecords, projectFilter),
     [allTaskRecords, projectFilter],
   );
+  const visibleTasks = useMemo(() => {
+    if (view === "today")
+      return [...todayTasks(tasks, today), ...(showCompleted ? completedToday(tasks, today) : [])];
+    if (view === "week" || view === "month" || view === "year")
+      return committedTasks(tasks, view, today);
+    if (view === "upcoming") return upcomingTasks(tasks, today).flatMap((group) => group.tasks);
+    const result = allTasks(tasks, search.filter ?? "all");
+    return search.filter === "completed" ? result.done : [...result.open, ...result.recurring];
+  }, [tasks, today, view, showCompleted, search.filter]);
+  const orderedIds = useMemo(() => visibleTasks.map((task) => task.id as string), [visibleTasks]);
+  const selection = useTaskSelection(orderedIds);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [moveRequest, setMoveRequest] = useState<{ id: string; sequence: number } | null>(null);
+  const selectedTasks = visibleTasks.filter((task) => selection.selectedIds.has(task.id));
+  const deleteSelection = () => {
+    for (const task of selectedTasks) void actions.delete(task);
+  };
+  useTasksKeyboard({
+    expandedId,
+    selectedIds: selectedTasks.map((task) => task.id),
+    hoveredId,
+    orderedIds,
+    isBlocked: isCommandPaletteOpen,
+    onExpand: toggle,
+    onClear: selection.clear,
+    onDelete: deleteSelection,
+    onNew: openTaskQuickAdd,
+    onMove: (id) => setMoveRequest((current) => ({ id, sequence: (current?.sequence ?? 0) + 1 })),
+  });
   const counts = taskCounts(tasks, today);
   const context: TaskRowContext = {
     today,
@@ -392,6 +425,20 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
       threads={threads}
       expandedId={expandedId}
       onToggle={toggle}
+      selectedIds={selection.selectedIds}
+      onSelectClick={(id, event) => {
+        if (
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.shiftKey &&
+          selection.selectedIds.size > 1 &&
+          selection.selectedIds.has(id)
+        )
+          return;
+        selection.handleRowClick(id, event);
+      }}
+      onHover={setHoveredId}
+      moveRequest={moveRequest}
       reorderable={reorderable}
       hidePeriod={hidePeriod}
       label={label}
@@ -401,7 +448,6 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   const weekIntent = taskIntentFor(intents, "week", today);
   const saveIntent = (horizon: TaskHorizon) => (text: string) =>
     void actions.setIntent(horizon, taskPeriodFor(horizon, today).startsOn, text);
-  const syncLine = <TaskSyncMarginLine indicator={sync} />;
 
   let body: ReactNode;
   let aside: ReactNode = null;
@@ -472,7 +518,6 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
               onSave={saveIntent("week")}
             />
           </AsideSection>
-          {syncLine}
         </>
       );
     }
@@ -533,7 +578,6 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
             {VIEW_LABEL[view]} backlog · {backlog.length}
           </Link>
         </AsideSection>
-        {syncLine}
       </>
     );
   } else if (view === "upcoming") {
@@ -587,7 +631,6 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
             onSave={saveIntent("week")}
           />
         </AsideSection>
-        {syncLine}
       </>
     );
   } else {
@@ -718,6 +761,44 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
                   </p>
                 ) : null}
                 {body}
+                {selectedTasks.length > 0 ? (
+                  <div
+                    aria-label="Selected task actions"
+                    className="sticky bottom-4 flex items-center gap-3 rounded-lg border border-border bg-card p-3 shadow-md"
+                  >
+                    <span>{selectedTasks.length} selected</span>
+                    <TaskMoveMenu
+                      home={selectedTasks[0]!.home}
+                      today={today}
+                      onMove={(target) => {
+                        for (const task of selectedTasks)
+                          void actions.move(task, homeForMove(target, task.home, today));
+                      }}
+                      onPickDate={(date) => {
+                        for (const task of selectedTasks)
+                          void actions.move(task, { kind: "date", date });
+                      }}
+                    >
+                      Move
+                    </TaskMoveMenu>
+                    <button
+                      type="button"
+                      disabled={!findGlobalAssistantProject(projects)}
+                      onClick={() => {
+                        const assistant = findGlobalAssistantProject(projects);
+                        if (assistant) void handToAgent(selectedTasks, "coordinator", assistant);
+                      }}
+                    >
+                      Hand to Assistant
+                    </button>
+                    <button type="button" onClick={deleteSelection}>
+                      Delete {selectedTasks.length}
+                    </button>
+                    <button type="button" onClick={selection.clear}>
+                      Clear selection
+                    </button>
+                  </div>
+                ) : null}
               </main>
               {aside !== null ? (
                 <aside className="hidden w-52 shrink-0 flex-col gap-6 pt-1 lg:flex">{aside}</aside>

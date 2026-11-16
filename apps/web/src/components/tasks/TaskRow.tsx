@@ -32,7 +32,8 @@ import {
 } from "lucide-react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useIsMobile } from "../../hooks/useMediaQuery";
 
 import { cn } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -204,6 +205,10 @@ export function TaskRow(props: {
   readonly state: TaskAgentState;
   readonly expanded: boolean;
   readonly onToggleExpanded: () => void;
+  readonly selected?: boolean;
+  readonly onSelectClick?: (event: MouseEvent) => void;
+  readonly onHover?: (hovered: boolean) => void;
+  readonly moveRequest?: number;
   readonly context: TaskRowContext;
   /** Open tasks drag (to reorder, or onto a range tab or the sidebar). */
   readonly draggable?: boolean;
@@ -211,8 +216,28 @@ export function TaskRow(props: {
   readonly reorderable?: boolean;
   readonly hidePeriod?: boolean;
 }) {
-  const { task, state, context, expanded } = props;
+  const { task, state, context, expanded, onToggleExpanded } = props;
   const navigate = useNavigate();
+  const mobile = useIsMobile();
+  const rowRef = useRef<HTMLLIElement>(null);
+  const handledMoveRequest = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!expanded || mobile) return;
+    const outside = (event: globalThis.MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || rowRef.current?.contains(target)) return;
+      // Base UI menus and date pickers render in portals outside the row.
+      if (target.closest('[role="menu"], [role="dialog"], [data-base-ui-portal]')) return;
+      onToggleExpanded();
+    };
+    document.addEventListener("click", outside, true);
+    return () => document.removeEventListener("click", outside, true);
+  }, [expanded, mobile, onToggleExpanded]);
+  useEffect(() => {
+    if (!expanded || !props.moveRequest || handledMoveRequest.current === props.moveRequest) return;
+    handledMoveRequest.current = props.moveRequest;
+    rowRef.current?.querySelector<HTMLButtonElement>('[aria-label^="Move task, now "]')?.click();
+  }, [expanded, props.moveRequest]);
   const project = context.projects.find((p) => p.id === task.links?.projectId) ?? null;
   const status =
     task.links?.statusId === undefined
@@ -268,8 +293,35 @@ export function TaskRow(props: {
 
   return (
     <li
-      ref={setNodeRef}
-      className="group/task relative list-none rounded-lg transition-colors duration-700 data-[highlighted=true]:bg-primary/10"
+      ref={(node) => {
+        rowRef.current = node;
+        setNodeRef(node);
+      }}
+      data-task-expanded={expanded || undefined}
+      data-selected={props.selected || undefined}
+      onMouseEnter={() => props.onHover?.(true)}
+      onMouseLeave={() => props.onHover?.(false)}
+      onClick={(event) => {
+        if (
+          mobile ||
+          expanded ||
+          (event.target instanceof Element &&
+            event.target.closest("button, input, textarea, select, a"))
+        )
+          return;
+        props.onSelectClick?.(event);
+      }}
+      onDoubleClick={(event) => {
+        if (
+          mobile ||
+          expanded ||
+          (event.target instanceof Element &&
+            event.target.closest("input, textarea, select, a, button:not([data-task-title])"))
+        )
+          return;
+        props.onToggleExpanded();
+      }}
+      className="group/task relative list-none rounded-lg transition-colors duration-700 data-[highlighted=true]:bg-primary/10 data-[selected=true]:bg-primary/10"
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
@@ -318,7 +370,13 @@ export function TaskRow(props: {
             <button
               type="button"
               className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-start outline-none"
-              onClick={props.onToggleExpanded}
+              data-task-title
+              aria-expanded={expanded}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (mobile || props.onSelectClick === undefined) props.onToggleExpanded();
+                else props.onSelectClick(event);
+              }}
             >
               {/* Long titles wrap rather than truncate. */}
               <span
@@ -386,7 +444,12 @@ export function TaskRow(props: {
 function TitleInput(props: { readonly task: Task; readonly context: TaskRowContext }) {
   // Keyed on the stored title by the caller, so a remote rename resets it.
   const [value, setValue] = useState(props.task.title);
+  const cancelled = useRef(false);
   const commit = () => {
+    if (cancelled.current) {
+      cancelled.current = false;
+      return;
+    }
     const title = value.trim();
     if (title.length === 0 || title === props.task.title) {
       setValue(props.task.title);
@@ -405,6 +468,9 @@ function TitleInput(props: { readonly task: Task; readonly context: TaskRowConte
       onKeyDown={(event) => {
         if (event.key === "Enter") event.currentTarget.blur();
         if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          cancelled.current = true;
           setValue(props.task.title);
           event.currentTarget.blur();
         }
