@@ -2018,6 +2018,8 @@ export const TaskAgentPatch = Schema.Struct({
   recurrence: Schema.optional(Schema.NullOr(TaskRecurrence)),
   /** What the task is about; null clears every link. */
   links: Schema.optional(Schema.NullOr(TaskLinks)),
+  /** The user's "Not yet" on completing it once its workstream finished; null shows the prompt again. */
+  completionPromptDismissedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
 });
 export type TaskAgentPatch = typeof TaskAgentPatch.Type;
 
@@ -2070,6 +2072,34 @@ const TaskAgentDeleteCommand = Schema.Struct({
 });
 
 /**
+ * The Assistant hands a task to a thread (or clears the handoff) from
+ * `cp_task_handoff`, like the user's Hand to agent menu. Server only.
+ */
+const TaskAgentHandoffCommand = Schema.Struct({
+  type: Schema.Literal("task.agent.handoff"),
+  commandId: CommandId,
+  taskId: TaskId,
+  actorThreadId: ThreadId,
+  handoff: Schema.NullOr(TaskHandoff),
+  createdAt: IsoDateTime,
+});
+
+/**
+ * The Assistant adds (`accept`) or dismisses a waiting proposal for the user,
+ * from `cp_task_proposal_respond`, only when the user asked. `patch` adjusts
+ * the task while adding it. Server only.
+ */
+const TaskAgentRespondCommand = Schema.Struct({
+  type: Schema.Literal("task.agent.respond"),
+  commandId: CommandId,
+  taskId: TaskId,
+  actorThreadId: ThreadId,
+  accept: Schema.Boolean,
+  patch: Schema.optional(TaskAgentPatch),
+  createdAt: IsoDateTime,
+});
+
+/**
  * The Assistant brings a deleted task back from `cp_task_restore`: `task` is
  * its last record from the event log, written again under the same id so a
  * synced task's tombstone is lifted rather than a copy made. Server only.
@@ -2103,6 +2133,8 @@ const InternalOrchestrationCommand = Schema.Union([
   TaskAgentUpdateCommand,
   TaskAgentDeleteCommand,
   TaskAgentRestoreCommand,
+  TaskAgentRespondCommand,
+  TaskAgentHandoffCommand,
   TaskSyncApplyCommand,
   ProjectStatusSetCommand,
   ProjectStatusDeadlineCommand,

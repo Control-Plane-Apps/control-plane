@@ -712,6 +712,14 @@ export const TaskListInput = Schema.Struct({
   repeating: Schema.Boolean.annotate({
     description: "true: only occurrences of repeating series; false: only one-off tasks.",
   }).pipe(Schema.optional),
+  proposed: Schema.Boolean.annotate({
+    description:
+      "true: only proposals still waiting on the user (not on their list yet); false: only tasks on the user's list.",
+  }).pipe(Schema.optional),
+  handedOff: Schema.Boolean.annotate({
+    description:
+      "true: only tasks handed to the Assistant, a coordinator or an agent (`handoff` set); false: only tasks not handed off.",
+  }).pipe(Schema.optional),
   limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: TASK_LIST_LIMIT_MAX }))
     .annotate({ description: `Page size, default ${TASK_LIST_LIMIT_DEFAULT}.` })
     .pipe(Schema.optional),
@@ -778,6 +786,10 @@ export const TaskUpdateInput = Schema.Struct({
   links: Schema.NullOr(taskLinksField)
     .annotate({ description: "Replaces the task's links; null clears them. The Assistant only." })
     .pipe(Schema.optional),
+  completionPromptDismissed: Schema.Boolean.annotate({
+    description:
+      "true answers 'Not yet' to the 'workstream done, complete this task?' prompt (hidden until the workstream changes again); false shows it again. The Assistant only.",
+  }).pipe(Schema.optional),
 }).annotate({ description: `Omitted fields keep their value. ${TASK_HOME_HELP}` });
 export type TaskUpdateInput = typeof TaskUpdateInput.Type;
 
@@ -803,6 +815,11 @@ export const TaskDeleteResult = Schema.Struct({
   synced: Schema.Boolean.annotate({
     description: "True when the delete also went to the user's synced account (as a tombstone).",
   }),
+  withdrawn: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "True when the task was a proposal still waiting on the user, now withdrawn.",
+    }),
+  ),
   next: Schema.optional(
     Task.annotate({ description: "After skipping one occurrence: the series' next one." }),
   ),
@@ -860,9 +877,16 @@ export const TaskReorderInput = Schema.Struct({
         "Instead of taskId: open tasks of one list in the order you want them at its top. Tasks of that list you leave out follow, in their current order.",
     })
     .pipe(Schema.optional),
+  ...taskHomeFields,
+  position: Schema.Literals(["top", "bottom"])
+    .annotate({
+      description:
+        "With `taskId` and a home (`when`, or `date` with optional `period`) instead of an anchor: move the task to that list and put it at its top or bottom.",
+    })
+    .pipe(Schema.optional),
 }).annotate({
   description:
-    "Reorders open tasks within one list: one day, one week / month / year commitment, or one backlog. Every task named must already be in that list; move tasks between lists with cp_task_update.",
+    "Orders open tasks the way a drag does. Within one list (a day, a week / month / year commitment, or a backlog): `taskId` with `beforeTaskId` / `afterTaskId`, or `orderedTaskIds`. Across lists in one call: `taskId` with an anchor in another list moves it into that list next to the anchor (a day keeps its reminder), or `taskId` with a home and `position` top / bottom.",
 });
 export type TaskReorderInput = typeof TaskReorderInput.Type;
 
@@ -870,6 +894,82 @@ export const TaskReorderResult = Schema.Struct({
   tasks: Schema.Array(Task).annotate({ description: "The list's open tasks in their new order." }),
 });
 export type TaskReorderResult = typeof TaskReorderResult.Type;
+
+/** One task's outcome in a call that names several. */
+export const TaskBulkItem = Schema.Struct({
+  taskId: TaskId,
+  title: Schema.optional(Schema.String),
+  ok: Schema.Boolean,
+  task: Schema.optional(
+    Schema.NullOr(Task).annotate({
+      description: "The task as saved; null once deleted or dismissed.",
+    }),
+  ),
+  error: Schema.optional(Schema.String.annotate({ description: "Why this task was not changed." })),
+});
+export type TaskBulkItem = typeof TaskBulkItem.Type;
+
+export const TaskBulkResult = Schema.Struct({
+  results: Schema.Array(TaskBulkItem).annotate({
+    description: "One entry per task, in the order given. A failure on one leaves the others done.",
+  }),
+  succeeded: Schema.Int,
+  failed: Schema.Int,
+});
+export type TaskBulkResult = typeof TaskBulkResult.Type;
+
+export const TASK_BULK_MAX = 100;
+
+const TaskIds = Schema.Array(TaskId)
+  .check(Schema.isMinLength(1), Schema.isMaxLength(TASK_BULK_MAX))
+  .annotate({ description: `The tasks' ids, from cp_task_list (1-${TASK_BULK_MAX}).` });
+
+export const TaskBulkInput = Schema.Struct({
+  taskIds: TaskIds,
+  action: Schema.Literals(["move", "complete", "cancel", "reopen", "delete", "restore"]).annotate({
+    description:
+      "move: to the home given (`when`, or `date` with optional `period`; `reminderTime` optional). complete, cancel, reopen (back to todo): as cp_task_update status. delete: as cp_task_delete (`scope` for repeating tasks; a waiting proposal is withdrawn). restore: as cp_task_restore.",
+  }),
+  ...taskHomeFields,
+  reminderTime: Schema.NullOr(Schema.String)
+    .annotate({ description: "With move: reminder HH:MM on a single day, null clears." })
+    .pipe(Schema.optional),
+  scope: Schema.Literals(["occurrence", "series"])
+    .annotate({
+      description: "With delete: as cp_task_delete, for the repeating tasks among them.",
+    })
+    .pipe(Schema.optional),
+});
+export type TaskBulkInput = typeof TaskBulkInput.Type;
+
+export const TaskProposalRespondInput = Schema.Struct({
+  taskIds: TaskIds.pipe(Schema.optional),
+  projectId: ProjectId.annotate({
+    description:
+      "Instead of taskIds: every proposal from this Project still waiting (the user's Add all / Dismiss all).",
+  }).pipe(Schema.optional),
+  accept: Schema.Boolean.annotate({
+    description: "true adds the proposals to the user's list; false dismisses (deletes) them.",
+  }),
+  ...taskHomeFields,
+  reminderTime: Schema.String.annotate({
+    description: "With accept: a reminder HH:MM, for a single day.",
+  }).pipe(Schema.optional),
+}).annotate({
+  description: `Give \`taskIds\` or \`projectId\`. With accept, an optional home places the added tasks there instead of where they were proposed. ${TASK_HOME_HELP}`,
+});
+export type TaskProposalRespondInput = typeof TaskProposalRespondInput.Type;
+
+export const TaskHandoffInput = Schema.Struct({
+  taskIds: TaskIds,
+  to: Schema.Literals(["assistant", "coordinator", "agent", "none"]).annotate({
+    description:
+      "assistant: the Assistant's own thread (the user's Hand to Assistant). coordinator: the coordinator of `projectId`, or of the task's linked Project. agent: the agent thread `threadId`. none: clear the handoff.",
+  }),
+  projectId: ProjectId.annotate({ description: "With to: coordinator." }).pipe(Schema.optional),
+  threadId: ThreadId.annotate({ description: "With to: agent." }).pipe(Schema.optional),
+});
+export type TaskHandoffInput = typeof TaskHandoffInput.Type;
 
 const AgentCreateTool = Tool.make("cp_agent_create", {
   description:
@@ -1020,7 +1120,7 @@ const StatusSetTool = Tool.make("cp_status_set", {
 
 const TaskListTool = Tool.make("cp_task_list", {
   description:
-    "Find the user's tasks. Filters: status (todo by default, completed, cancelled, any), a `date` or a `range` (today, tomorrow, overdue, this/next week/month/year, upcoming with `days`, backlog kinds), `text` in title or notes, a linked projectId / threadId / statusId, and limit / cursor paging. Each result has its id, title, notes, home, status, order key, links, recurrence and `synced` (true when it syncs with the user's Lucive account). The Assistant sees every task unless the user turned its task access off; a coordinator sees only its Project's tasks and proposals.",
+    "Find the user's tasks. Filters: status (todo by default, completed, cancelled, any), a `date` or a `range` (today, tomorrow, overdue, this/next week/month/year, upcoming with `days`, backlog kinds), `text` in title or notes, a linked projectId / threadId / statusId, `proposed` (waiting proposals only, or none), `handedOff`, and limit / cursor paging. Each result has its id, title, notes, home, status, order key, links, recurrence and `synced` (true when it syncs with the user's Lucive account). The Assistant sees every task unless the user turned its task access off; a coordinator sees only its Project's tasks and proposals.",
   parameters: TaskListInput,
   success: TaskListResult,
   failure: TaskToolError,
@@ -1034,7 +1134,7 @@ const TaskListTool = Tool.make("cp_task_list", {
 
 const TaskProposeTool = Tool.make("cp_task_propose", {
   description:
-    "Put a task on the user's own list: something only they should do. Home: `when` (today, tomorrow, this-week, next-week, this-month, next-month, this-year, next-year, week-backlog, month-backlog, year-backlog, backlog) or `date` YYYY-MM-DD (optionally `reminderTime` HH:MM, or `period` week/month/year to commit to the period containing that day). Resolve 'Monday' and similar to a date yourself. The Assistant may also pass `recurrence` (a repeating task on a day) and `links`, only when adding directly. From a coordinator it is a proposal until the user adds or dismisses it. From the Assistant it is added directly when the user's Assistant settings say 'Add directly' (and allow editing tasks), else proposed; `added` in the result says which.",
+    "Put a task on the user's own list: something only they should do. Home: `when` (today, tomorrow, this-week, next-week, this-month, next-month, this-year, next-year, week-backlog, month-backlog, year-backlog, backlog) or `date` YYYY-MM-DD (optionally `reminderTime` HH:MM, or `period` week/month/year to commit to the period containing that day). Resolve 'Monday' and similar to a date yourself. The Assistant may also pass `recurrence` (a repeating task on a day) and `links`, only when adding directly. From a coordinator it is a proposal until the user adds or dismisses it; withdraw one made by mistake with cp_task_delete. From the Assistant it is added directly when the user's Assistant settings say 'Add directly' (and allow editing tasks), else proposed; `added` in the result says which.",
   parameters: TaskProposeInput,
   success: TaskProposeResult,
   failure: TaskToolError,
@@ -1048,7 +1148,7 @@ const TaskProposeTool = Tool.make("cp_task_propose", {
 
 const TaskUpdateTool = Tool.make("cp_task_update", {
   description:
-    "Edit or move one of the user's tasks: title, notes, home (`when`, or `date` YYYY-MM-DD with optional `period`), reminder (HH:MM, null clears), status (completed; cancelled, dropped but kept in the record; todo reopens a completed or cancelled task), recurrence (set, edit the series' rule, or null to stop repeating) and links. Omitted fields keep their value. Repeating tasks, as in Lucive: edits act on this one occurrence; completing it opens the next; a repeating task moves only between days (stop the repeat first to commit it to a period or a backlog); recurrence edits apply to the whole series. Edits to a synced task reach the user's other devices. The Assistant may edit any task when its task access is 'Read and edit'; a coordinator may edit only the title, notes, home and reminder of tasks its Project proposed. Nobody but the user adds or dismisses a waiting proposal.",
+    "Edit or move one of the user's tasks: title, notes, home (`when`, or `date` YYYY-MM-DD with optional `period`), reminder (HH:MM, null clears), status (completed; cancelled, dropped but kept in the record; todo reopens a completed or cancelled task), recurrence (set, edit the series' rule, or null to stop repeating) links and completionPromptDismissed. Omitted fields keep their value. Repeating tasks, as in Lucive: edits act on this one occurrence; completing it opens the next; a repeating task moves only between days (stop the repeat first to commit it to a period or a backlog); recurrence edits apply to the whole series. Edits to a synced task reach the user's other devices. The Assistant may edit any task, including a waiting proposal's title, notes and home, when its task access is 'Read and edit'; a coordinator may edit only the title, notes, home and reminder of tasks its Project proposed. A waiting proposal's status never changes here: add or dismiss it with cp_task_proposal_respond, or withdraw it with cp_task_delete.",
   parameters: TaskUpdateInput,
   success: TaskUpdateResult,
   failure: TaskToolError,
@@ -1062,7 +1162,7 @@ const TaskUpdateTool = Tool.make("cp_task_update", {
 
 const TaskDeleteTool = Tool.make("cp_task_delete", {
   description:
-    "Delete one of the user's tasks, like the user's Delete task: it leaves every list, and a synced task is tombstoned in the user's Lucive account rather than erased. Undo with cp_task_restore. Prefer cp_task_update status cancelled when the user drops a task but may want the record. Repeating tasks: scope occurrence (default) skips this one and opens the next (`next` in the result); scope series stops repeating and deletes this pending occurrence. The Assistant only, with task access 'Read and edit'; never a proposal still waiting on the user.",
+    "Delete one of the user's tasks, like the user's Delete task: it leaves every list, and a synced task is tombstoned in the user's Lucive account rather than erased. Undo with cp_task_restore. Prefer cp_task_update status cancelled when the user drops a task but may want the record. Repeating tasks: scope occurrence (default) skips this one and opens the next (`next` in the result); scope series stops repeating and deletes this pending occurrence. On a proposal still waiting on the user it withdraws it (`withdrawn` in the result; cp_task_restore brings it back waiting). The Assistant, with task access 'Read and edit', deletes any task or proposal; a coordinator withdraws only its own Project's waiting proposals.",
   parameters: TaskDeleteInput,
   success: TaskDeleteResult,
   failure: TaskToolError,
@@ -1090,7 +1190,7 @@ const TaskRestoreTool = Tool.make("cp_task_restore", {
 
 const TaskReorderTool = Tool.make("cp_task_reorder", {
   description:
-    "Change the order of the user's open tasks within one list (a day, a week / month / year commitment, or a backlog), the same way dragging does: `taskId` with `beforeTaskId` or `afterTaskId`, or `orderedTaskIds` for several at once. Synced tasks keep the new order on the user's other devices. The Assistant only, with task access 'Read and edit'.",
+    "Change the order of the user's open tasks the same way dragging does: `taskId` with `beforeTaskId` or `afterTaskId`, or `orderedTaskIds` for several at once within one list (a day, a week / month / year commitment, or a backlog). Move and place in one call: an anchor in another list moves `taskId` into that list beside it, or give `taskId` a home (`when`, or `date` with optional `period`) and `position` top or bottom. A repeating task moves only between days. Synced tasks keep the new order on the user's other devices. The Assistant only, with task access 'Read and edit'.",
   parameters: TaskReorderInput,
   success: TaskReorderResult,
   failure: TaskToolError,
@@ -1104,13 +1204,55 @@ const TaskReorderTool = Tool.make("cp_task_reorder", {
 
 const TaskIntentSetTool = Tool.make("cp_task_intent_set", {
   description:
-    "Set or clear the user's one-line intent (focus) for a week, month or year: the line at the top of that period's plan, synced with Lucive. cp_task_list returns the intents overlapping a `date` or day range. The Assistant only, with task access 'Read and edit'.",
+    "Set or clear the user's one-line intent (focus) for a week, month or year, this or next (`when`) or the one containing any `date`: the line at the top of that period's plan, synced with Lucive. cp_task_list returns the intents overlapping a `date` or day range. The Assistant only, with task access 'Read and edit'.",
   parameters: TaskIntentSetInput,
   success: TaskIntentSetResult,
   failure: TaskToolError,
   dependencies,
 })
   .annotate(Tool.Title, "Set a period intent")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const TaskBulkTool = Tool.make("cp_task_bulk", {
+  description:
+    "Act on many of the user's tasks in one call, like selecting several in the Tasks view: move (to one home), complete, cancel, reopen, delete or restore. Each task follows the same rules as the single-task tools (cp_task_update, cp_task_delete, cp_task_restore); a task that fails is reported in `results` and the others still change. Synced tasks reach the user's other devices. The Assistant with task access 'Read and edit'; a coordinator may only move or delete (withdraw) its own Project's waiting proposals.",
+  parameters: TaskBulkInput,
+  success: TaskBulkResult,
+  failure: TaskToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Change several tasks")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+const TaskProposalRespondTool = Tool.make("cp_task_proposal_respond", {
+  description:
+    "Add (accept: true) or dismiss (accept: false) proposals still waiting on the user, by `taskIds` or every waiting one from a `projectId` (Add all / Dismiss all). Accepting may place them at a home of your choosing. Only when the user asks you to add or dismiss them: never on your own judgment, and never for a proposal another Project made unless the user asked. To take back a proposal you made by mistake, withdraw it with cp_task_delete instead. The Assistant only, with task access 'Read and edit'.",
+  parameters: TaskProposalRespondInput,
+  success: TaskBulkResult,
+  failure: TaskToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Add or dismiss proposals")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+const TaskHandoffTool = Tool.make("cp_task_handoff", {
+  description:
+    "Record who has one or more tasks, like the user's Hand to agent menu: the Assistant (Hand to Assistant), a Project's coordinator, or an agent thread; `none` clears it. It only links the task to that thread (cp_task_list shows `handoff`); send the thread the brief yourself if it should act. The Assistant only, with task access 'Read and edit'; not for waiting proposals.",
+  parameters: TaskHandoffInput,
+  success: TaskBulkResult,
+  failure: TaskToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Hand tasks off")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
@@ -1135,4 +1277,7 @@ export const AgentsToolkit = Toolkit.make(
   TaskRestoreTool,
   TaskReorderTool,
   TaskIntentSetTool,
+  TaskBulkTool,
+  TaskProposalRespondTool,
+  TaskHandoffTool,
 );

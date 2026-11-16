@@ -79,6 +79,8 @@ function commandToAggregateRef(command: OrchestrationCommand): {
     case "task.agent.update":
     case "task.agent.delete":
     case "task.agent.restore":
+    case "task.agent.respond":
+    case "task.agent.handoff":
       return { aggregateKind: "task", aggregateId: command.taskId };
     case "task.sync.apply":
       return { aggregateKind: "task", aggregateId: TASK_SYNC_AGGREGATE_ID };

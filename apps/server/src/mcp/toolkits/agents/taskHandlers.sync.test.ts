@@ -56,13 +56,17 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { AgentsToolkitHandlersLive } from "./handlers.ts";
 import {
   AgentsToolkit,
+  TaskBulkResult,
   TaskDeleteResult,
   TaskIntentSetResult,
   TaskListResult,
   TaskReorderResult,
   TaskRestoreResult,
   TaskUpdateResult,
+  type TaskBulkInput,
   type TaskDeleteInput,
+  type TaskHandoffInput,
+  type TaskProposalRespondInput,
   type TaskIntentSetInput,
   type TaskListInput,
   type TaskReorderInput,
@@ -342,6 +346,18 @@ const tools = {
     Effect.flatMap(AgentsToolkit, (toolkit) =>
       call(toolkit.handle("cp_task_reorder", params), TaskReorderResult),
     ),
+  bulk: (params: TaskBulkInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_bulk", params), TaskBulkResult),
+    ),
+  respond: (params: TaskProposalRespondInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_proposal_respond", params), TaskBulkResult),
+    ),
+  handoff: (params: TaskHandoffInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_handoff", params), TaskBulkResult),
+    ),
   intent: (params: TaskIntentSetInput) =>
     Effect.flatMap(AgentsToolkit, (toolkit) =>
       call(toolkit.handle("cp_task_intent_set", params), TaskIntentSetResult),
@@ -473,6 +489,96 @@ describe("Assistant task tools on a Lucive-synced account", () => {
         const sort = (id: string) => cloud.tasks.get(id)!.sortOrder;
         expect(sort("swim")).toBeLessThan(sort("lift"));
         expect(sort("lift")).toBeLessThan(sort("run"));
+      }),
+    ),
+  );
+
+  it.effect("bulk move, complete, delete and restore round-trip through the synced store", () =>
+    run(
+      Effect.gen(function* () {
+        const cloud = new FakeCloud();
+        for (const [index, name] of ["lift", "run", "swim"].entries()) {
+          cloud.seedTask({ id: name, title: name, scheduledDate: "2026-11-14", sortOrder: index });
+        }
+        const pump = yield* connect(cloud);
+        const ids = [id("lift"), id("run"), id("swim")];
+
+        const moved = yield* tools.bulk({ taskIds: ids, action: "move", date: "2026-11-20" });
+        expect(moved.succeeded).toBe(3);
+        yield* pump;
+        for (const name of ["lift", "run", "swim"]) {
+          expect(cloud.tasks.get(name)?.scheduledDate).toBe("2026-11-20");
+        }
+
+        yield* tools.bulk({ taskIds: ids.slice(0, 2), action: "complete" });
+        yield* pump;
+        expect(cloud.tasks.get("lift")?.status).toBe("completed");
+        expect(cloud.tasks.get("run")?.status).toBe("completed");
+        expect(cloud.tasks.get("swim")?.status).toBe("todo");
+
+        const deleted = yield* tools.bulk({ taskIds: ids, action: "delete" });
+        expect(deleted.succeeded).toBe(3);
+        yield* pump;
+        for (const name of ["lift", "run", "swim"]) {
+          expect(cloud.tasks.get(name)?.deletedAt).not.toBeNull();
+        }
+        // A later pull leaves them deleted here too.
+        yield* pump;
+        expect((yield* tools.list({ status: "any" })).tasks).toEqual([]);
+
+        const restored = yield* tools.bulk({ taskIds: ids, action: "restore" });
+        expect(restored.succeeded).toBe(3);
+        yield* pump;
+        expect(cloud.tasks.get("swim")).toMatchObject({
+          deletedAt: null,
+          status: "todo",
+          scheduledDate: "2026-11-20",
+        });
+        expect(cloud.tasks.get("lift")).toMatchObject({ deletedAt: null, status: "completed" });
+
+        // Handing off and moving across lists stay synced records.
+        yield* tools.handoff({ taskIds: [id("swim")], to: "assistant" });
+        yield* tools.reorder({ taskId: id("swim"), when: "today", position: "top" });
+        yield* pump;
+        expect(cloud.tasks.get("swim")).toMatchObject({ scheduledDate: "2026-11-13" });
+        yield* pump;
+        const swim = (yield* tools.list({ text: "swim" })).tasks[0];
+        expect(swim?.handoff?.threadId).toBe(ASSISTANT);
+        expect(swim?.synced).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("a proposal reaches the synced store only once added, and never if withdrawn", () =>
+    run(
+      Effect.gen(function* () {
+        const cloud = new FakeCloud();
+        const pump = yield* connect(cloud);
+        const propose = (taskId: string, title: string) =>
+          dispatch({
+            type: "task.propose",
+            commandId: cid(),
+            taskId: id(taskId),
+            projectId: HOME,
+            actorThreadId: ASSISTANT,
+            title,
+            home: { kind: "date", date: "2026-11-16" },
+            createdAt: NOW,
+          });
+        yield* propose("p-keep", "Call the bank");
+        yield* propose("p-drop", "Wrong idea");
+        yield* pump;
+        expect(cloud.tasks.has("p-keep")).toBe(false);
+        yield* tools.delete({ taskId: id("p-drop") });
+        const added = yield* tools.respond({ taskIds: [id("p-keep")], accept: true });
+        expect(added.succeeded).toBe(1);
+        yield* pump;
+        expect(cloud.tasks.get("p-keep")).toMatchObject({
+          title: "Call the bank",
+          scheduledDate: "2026-11-16",
+          deletedAt: null,
+        });
+        expect(cloud.tasks.has("p-drop")).toBe(false);
       }),
     ),
   );
