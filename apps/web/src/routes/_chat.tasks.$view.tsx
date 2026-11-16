@@ -7,7 +7,8 @@ import {
   type TasksView,
 } from "../components/tasks/TasksPage";
 
-const FILTERS = new Set(["week", "month", "year", "recurring"]);
+const FILTERS = new Set(["week", "month", "year", "recurring", "completed"]);
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export const Route = createFileRoute("/_chat/tasks/$view")({
   validateSearch: (raw: Record<string, unknown>): TasksSearch => ({
@@ -15,6 +16,7 @@ export const Route = createFileRoute("/_chat/tasks/$view")({
     ...(typeof raw.filter === "string" && FILTERS.has(raw.filter)
       ? { filter: raw.filter as TasksSearch["filter"] }
       : {}),
+    ...(typeof raw.at === "string" && DATE.test(raw.at) ? { at: raw.at } : {}),
   }),
   beforeLoad: ({ params }) => {
     if (!TASK_VIEWS.includes(params.view as TasksView)) throw notFound();

@@ -20,7 +20,7 @@ import {
 } from "@t3tools/contracts";
 
 export type TaskView = "today" | "week" | "month" | "year" | "upcoming" | "all";
-export type TaskBacklogFilter = "all" | "week" | "month" | "year" | "recurring";
+export type TaskBacklogFilter = "all" | "week" | "month" | "year" | "recurring" | "completed";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -293,12 +293,28 @@ function homeRank(home: TaskHome): string {
   }
 }
 
-/** The All tasks view: open one-off tasks by home, then repeating ones. */
+/**
+ * The All tasks view: open one-off tasks by home, then repeating ones. The
+ * "completed" filter lists finished tasks instead, most recent first.
+ */
 export function allTasks(
   tasks: ReadonlyArray<Task>,
   filter: TaskBacklogFilter,
-): { readonly open: Task[]; readonly recurring: Task[]; readonly completed: number } {
-  const open = listed(tasks).filter((task) => task.status === "todo");
+): {
+  readonly open: Task[];
+  readonly recurring: Task[];
+  readonly done: Task[];
+  readonly completed: number;
+} {
+  const visible = listed(tasks);
+  const finished = visible.filter((task) => task.status === "completed");
+  if (filter === "completed") {
+    const done = [...finished].sort((a, b) =>
+      (b.completedAt ?? b.updatedAt).localeCompare(a.completedAt ?? a.updatedAt),
+    );
+    return { open: [], recurring: [], done, completed: finished.length };
+  }
+  const open = visible.filter((task) => task.status === "todo");
   const matches = (task: Task) =>
     filter === "all" ||
     (filter === "recurring"
@@ -314,8 +330,26 @@ export function allTasks(
   return {
     open: filter === "recurring" ? [] : oneOff,
     recurring,
-    completed: listed(tasks).filter((task) => task.status === "completed").length,
+    done: [],
+    completed: finished.length,
   };
+}
+
+/**
+ * A date inside the period `steps` periods away from the one holding
+ * `anchor`: the previous and next arrows on Week, Month and Year.
+ */
+export function shiftTaskPeriod(horizon: TaskHorizon, anchor: string, steps: number): string {
+  let { startsOn, endsOn } = taskPeriodFor(horizon, anchor);
+  for (let index = 0; index < Math.abs(steps); index += 1) {
+    const next = taskPeriodFor(
+      horizon,
+      steps > 0 ? addTaskDays(endsOn, 1) : addTaskDays(startsOn, -1),
+    );
+    startsOn = next.startsOn;
+    endsOn = next.endsOn;
+  }
+  return startsOn;
 }
 
 export function taskIntentFor(

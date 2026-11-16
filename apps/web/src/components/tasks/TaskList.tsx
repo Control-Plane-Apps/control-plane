@@ -134,7 +134,7 @@ export function AddTaskRow(props: {
         placeholder={props.label ?? "Add a task"}
         className="min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground"
         value={value}
-        maxLength={200}
+        maxLength={120}
         disabled={busy}
         onChange={(event) => setValue(event.target.value)}
       />

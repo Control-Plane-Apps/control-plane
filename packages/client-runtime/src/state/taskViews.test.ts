@@ -13,6 +13,7 @@ import {
   homeForMove,
   parseQuickAdd,
   proposedTasks,
+  shiftTaskPeriod,
   taskAgentState,
   todayTasks,
   upcomingTasks,
@@ -176,5 +177,31 @@ describe("repeat ends", () => {
     });
     expect(withTaskRecurrenceCadence(counted, null)).toBeNull();
     expect(withTaskRecurrenceEnd(counted, { kind: "never" })).toEqual(weekly);
+  });
+});
+
+describe("range navigation and the Completed filter", () => {
+  it("steps to the previous and next week, month and year", () => {
+    // Weeks start on Monday by default: Nov 13 2026 sits in the week of Nov 9.
+    expect(shiftTaskPeriod("week", TODAY, 1)).toBe("2026-11-16");
+    expect(shiftTaskPeriod("week", TODAY, -1)).toBe("2026-11-02");
+    expect(shiftTaskPeriod("month", TODAY, 1)).toBe("2026-12-01");
+    expect(shiftTaskPeriod("month", "2026-01-31", -1)).toBe("2025-12-01");
+    expect(shiftTaskPeriod("year", TODAY, -2)).toBe("2024-01-01");
+    expect(shiftTaskPeriod("month", TODAY, 0)).toBe("2026-11-01");
+  });
+
+  it("lists completed tasks newest first under the Completed filter", () => {
+    const tasks = [
+      task("open"),
+      task("older", { status: "completed", completedAt: "2026-11-10T09:00:00.000Z" }),
+      task("newer", { status: "completed", completedAt: "2026-11-12T09:00:00.000Z" }),
+    ];
+    const completed = allTasks(tasks, "completed");
+    expect(completed.done.map((entry) => entry.id)).toEqual(["newer", "older"]);
+    expect(completed.open).toEqual([]);
+    expect(completed.completed).toBe(2);
+    expect(allTasks(tasks, "all").done).toEqual([]);
+    expect(allTasks(tasks, "all").open.map((entry) => entry.id)).toEqual(["open"]);
   });
 });

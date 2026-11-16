@@ -247,9 +247,10 @@ export function TaskRow(props: {
               className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-start outline-none"
               onClick={props.onToggleExpanded}
             >
+              {/* Long titles wrap rather than truncate. */}
               <span
                 className={cn(
-                  "min-w-0 truncate font-semibold text-[15px]",
+                  "min-w-0 break-words font-semibold text-[15px] leading-snug",
                   completed && "font-normal text-muted-foreground line-through",
                 )}
               >
@@ -326,7 +327,7 @@ function TitleInput(props: { readonly task: Task; readonly context: TaskRowConte
       aria-label="Task title"
       className="min-w-0 flex-1 bg-transparent font-semibold text-[15px] outline-none"
       value={value}
-      maxLength={200}
+      maxLength={120}
       onChange={(event) => setValue(event.target.value)}
       onBlur={commit}
       onKeyDown={(event) => {

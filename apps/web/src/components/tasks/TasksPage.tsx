@@ -9,9 +9,12 @@ import {
   formatTaskRange,
   formatUpcomingOffset,
   proposedTasks,
+  shiftTaskPeriod,
+  taskCounts,
   taskIntentFor,
   todayTasks,
   upcomingTasks,
+  homeForMove,
   type TaskBacklogFilter,
   type TaskLifecycleThread,
 } from "@t3tools/client-runtime/state/projects";
@@ -22,19 +25,40 @@ import {
   type TaskHorizon,
   type TaskIntent,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { CheckIcon, ChevronDownIcon, ListFilterIcon } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ListFilterIcon,
+  PlusIcon,
+} from "lucide-react";
+import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 
+import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { isElectron } from "../../env";
+import {
+  resolveShortcutCommand,
+  shortcutLabelForCommand,
+  threadJumpCommandForIndex,
+  threadJumpIndexFromCommand,
+} from "../../keybindings";
+import { isTerminalFocused } from "../../lib/terminalFocus";
 import { cn } from "../../lib/utils";
 import { useProjects, useThreadShells } from "../../state/entities";
+import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useTaskToday, useTasks } from "../../state/tasks";
+import { useTaskSync } from "../../state/taskSync";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
+import { Kbd } from "../ui/kbd";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useHandToAgent } from "./handToAgent";
+import { openTaskQuickAdd } from "./QuickAddDialog";
 import {
   AddTaskRow,
   ProposedTasks,
@@ -42,33 +66,20 @@ import {
   TasksSectionLabel,
   useExpandedTask,
 } from "./TaskList";
-import type { TaskRowContext } from "./TaskRow";
-import { TaskSyncCard } from "./TaskSyncCard";
+import { TASK_DRAG_TYPE, type TaskRowContext } from "./TaskRow";
+import { TaskSyncChip, TaskSyncMarginLine, taskSyncIndicator } from "./TaskSyncIndicator";
+import {
+  defaultHomeForView,
+  dropLabelForView,
+  dropTargetForView,
+  TASK_VIEW_LABEL as VIEW_LABEL,
+  TASK_VIEWS,
+  type TasksSearch,
+  type TasksView,
+} from "./tasksRange";
 import { useTaskActions } from "./useTaskActions";
 
-export type TasksView = "today" | "week" | "month" | "year" | "upcoming" | "all";
-export const TASK_VIEWS: ReadonlyArray<TasksView> = [
-  "today",
-  "week",
-  "month",
-  "year",
-  "upcoming",
-  "all",
-];
-
-const VIEW_LABEL: Record<TasksView, string> = {
-  today: "Today",
-  week: "Week",
-  month: "Month",
-  year: "Year",
-  upcoming: "Upcoming",
-  all: "All tasks",
-};
-
-export interface TasksSearch {
-  readonly project?: string | undefined;
-  readonly filter?: Exclude<TaskBacklogFilter, "all"> | undefined;
-}
+export { TASK_VIEWS, type TasksSearch, type TasksView } from "./tasksRange";
 
 /** Search params with cleared keys left out, so URLs stay short. */
 function tasksSearch(search: TasksSearch, patch: TasksSearch): TasksSearch {
@@ -76,6 +87,7 @@ function tasksSearch(search: TasksSearch, patch: TasksSearch): TasksSearch {
   return {
     ...(next.project !== undefined ? { project: next.project } : {}),
     ...(next.filter !== undefined ? { filter: next.filter } : {}),
+    ...(next.at !== undefined ? { at: next.at } : {}),
   };
 }
 
@@ -129,7 +141,7 @@ function IntentEditor(props: {
       aria-label={props.placeholder}
       placeholder={props.placeholder}
       rows={1}
-      maxLength={280}
+      maxLength={80}
       className={cn(
         "w-full resize-none bg-transparent outline-none [field-sizing:content] placeholder:text-muted-foreground/60",
         props.className,
@@ -160,15 +172,114 @@ function AsideSection(props: { readonly title?: string; readonly children: React
   );
 }
 
-function AsideLink(props: { readonly to: TasksView; readonly children: ReactNode }) {
+/**
+ * Today, Week, Month, Year, then Upcoming and All tasks: one switcher at the
+ * top of the view. The first four are drop targets, so dragging a task onto a
+ * tab moves its home; ⌘1 to ⌘6 switch while the view is open.
+ */
+function RangeTabs(props: {
+  readonly view: TasksView;
+  readonly today: string;
+  readonly counts: Readonly<Record<"today" | "week" | "month" | "year", number>>;
+  readonly shortcutFor: (index: number) => string | null;
+  readonly onSelect: (view: TasksView) => void;
+  readonly onDropTask: (event: DragEvent, view: TasksView) => void;
+}) {
+  const [dropView, setDropView] = useState<TasksView | null>(null);
   return (
-    <Link
-      to="/tasks/$view"
-      params={{ view: props.to }}
-      className="py-0.5 text-muted-foreground text-sm hover:text-foreground"
+    <div
+      role="tablist"
+      aria-label="Task ranges"
+      className="flex shrink-0 items-center gap-0.5 rounded-lg bg-muted/70 p-0.5"
     >
-      {props.children}
-    </Link>
+      {TASK_VIEWS.map((entry, index) => {
+        const selected = entry === props.view;
+        const count =
+          entry === "today" || entry === "week" || entry === "month" || entry === "year"
+            ? props.counts[entry]
+            : 0;
+        const droppable = dropTargetForView(entry) !== null;
+        const dropping = dropView === entry;
+        const shortcut = props.shortcutFor(index);
+        const tooltip = dropping
+          ? dropLabelForView(entry, props.today)
+          : shortcut !== null
+            ? `${VIEW_LABEL[entry]} ${shortcut}`
+            : null;
+        const tab = (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            className={cn(
+              "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              selected
+                ? "bg-background font-medium text-foreground shadow-xs"
+                : "text-muted-foreground hover:text-foreground",
+              dropping && "border-primary border-dashed",
+            )}
+            onClick={() => props.onSelect(entry)}
+            onDragOver={
+              droppable
+                ? (event) => {
+                    if (!event.dataTransfer.types.includes(TASK_DRAG_TYPE)) return;
+                    event.preventDefault();
+                    if (dropView !== entry) setDropView(entry);
+                  }
+                : undefined
+            }
+            onDragLeave={() => setDropView((current) => (current === entry ? null : current))}
+            onDrop={
+              droppable
+                ? (event) => {
+                    setDropView(null);
+                    props.onDropTask(event, entry);
+                  }
+                : undefined
+            }
+          >
+            {VIEW_LABEL[entry]}
+            {count > 0 ? (
+              <span className="text-muted-foreground text-xs tabular-nums">{count}</span>
+            ) : null}
+          </button>
+        );
+        return (
+          <span key={entry} className="contents">
+            {entry === "upcoming" ? (
+              <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-border" />
+            ) : null}
+            {tooltip !== null ? (
+              <Tooltip open={dropping ? true : undefined}>
+                <TooltipTrigger render={tab} />
+                <TooltipPopup side="bottom">{tooltip}</TooltipPopup>
+              </Tooltip>
+            ) : (
+              tab
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function PeriodNav(props: { readonly onShift: (steps: number) => void; readonly unit: string }) {
+  const button = (steps: number, label: string, icon: ReactNode) => (
+    <button
+      type="button"
+      aria-label={label}
+      className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+      onClick={() => props.onShift(steps)}
+    >
+      {icon}
+    </button>
+  );
+  return (
+    <span className="inline-flex items-center gap-0.5 ps-2">
+      {button(-1, `Previous ${props.unit}`, <ChevronLeftIcon aria-hidden className="size-4" />)}
+      {button(1, `Next ${props.unit}`, <ChevronRightIcon aria-hidden className="size-4" />)}
+    </span>
   );
 }
 
@@ -181,6 +292,9 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   const threads = useThreadShells() as ReadonlyArray<TaskLifecycleThread>;
   const actions = useTaskActions(environmentId);
   const handToAgent = useHandToAgent();
+  const sync = taskSyncIndicator(useTaskSync().status);
+  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const quickAddShortcut = shortcutLabelForCommand(keybindings, "tasks.quickAdd");
   const { expandedId, toggle } = useExpandedTask();
   const [showCompleted, setShowCompleted] = useState(false);
   const projectFilter = search.project ?? null;
@@ -188,6 +302,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     () => filterTasksByProject(allTaskRecords, projectFilter),
     [allTaskRecords, projectFilter],
   );
+  const counts = taskCounts(tasks, today);
   const context: TaskRowContext = {
     today,
     actions,
@@ -202,12 +317,55 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
         ? { links: { projectId: projectFilter as never } }
         : {}),
     });
+  const goTo = (next: TasksView, patch: TasksSearch = {}) =>
+    void navigate({
+      to: "/tasks/$view",
+      params: { view: next },
+      search: tasksSearch({ ...search, at: undefined, filter: undefined }, patch),
+    });
   const setFilter = (project: string | null) =>
     void navigate({
       to: "/tasks/$view",
       params: { view },
       search: tasksSearch(search, { project: project ?? undefined }),
     });
+
+  // ⌘1 to ⌘6 switch ranges while Tasks is open, using the thread-jump keys so
+  // a remapped binding still works; everywhere else they still jump threads.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || isCommandPaletteOpen()) return;
+      const command = resolveShortcutCommand(event, keybindings, {
+        context: { terminalFocus: isTerminalFocused() },
+      });
+      const index = threadJumpIndexFromCommand(command ?? "");
+      const next = index === null ? undefined : TASK_VIEWS[index];
+      if (next === undefined) return;
+      event.preventDefault();
+      event.stopPropagation();
+      void navigate({
+        to: "/tasks/$view",
+        params: { view: next },
+        search: projectFilter === null ? {} : { project: projectFilter },
+      });
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [keybindings, navigate, projectFilter]);
+
+  const shortcutFor = (index: number) => {
+    const command = threadJumpCommandForIndex(index);
+    return command === null ? null : shortcutLabelForCommand(keybindings, command);
+  };
+
+  const onDropTask = (event: DragEvent, target: TasksView) => {
+    const move = dropTargetForView(target);
+    const taskId = event.dataTransfer.getData(TASK_DRAG_TYPE);
+    const task = allTaskRecords.find((candidate) => candidate.id === taskId);
+    if (move === null || task === undefined) return;
+    event.preventDefault();
+    void actions.move(task, homeForMove(move, task.home, today));
+  };
 
   const list = (
     items: ReadonlyArray<Task>,
@@ -228,8 +386,11 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   );
 
   const weekIntent = taskIntentFor(intents, "week", today);
-  const saveIntent = (horizon: TaskHorizon) => (text: string) =>
-    void actions.setIntent(horizon, taskPeriodFor(horizon, today).startsOn, text);
+  const saveIntent =
+    (horizon: TaskHorizon, anchor = today) =>
+    (text: string) =>
+      void actions.setIntent(horizon, taskPeriodFor(horizon, anchor).startsOn, text);
+  const syncLine = <TaskSyncMarginLine indicator={sync} />;
 
   let body: ReactNode;
   let aside: ReactNode = null;
@@ -243,79 +404,111 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     const open = todayTasks(tasks, today);
     const done = completedToday(tasks, today);
     const proposals = proposedTasks(tasks);
-    body = (
-      <>
-        <h1 className="font-semibold text-2xl">{formatTaskDayTitle(today)}</h1>
-        {proposals.length > 0 ? (
-          <div className="pt-5">
-            <ProposedTasks tasks={proposals} context={context} />
+    const firstRun = allTaskRecords.length === 0;
+    if (firstRun) {
+      body = (
+        <div className="mx-auto flex max-w-sm flex-col pt-[22vh]">
+          <h1 className="font-semibold text-2xl">{formatTaskDayTitle(today)}</h1>
+          <div className="pt-4">
+            <AddTaskRow onAdd={add({ kind: "date", date: today })} />
           </div>
-        ) : null}
-        <div className="pt-4">
-          {open.length === 0 && proposals.length === 0 ? (
-            <>
-              <p className="py-6 text-muted-foreground text-sm">Nothing on today's plate.</p>
-              <div className="mb-6 rounded-xl border border-border p-4 lg:hidden">
-                <TaskSyncCard compact />
-              </div>
-            </>
-          ) : null}
-          {list(open, "Today")}
-          <AddTaskRow onAdd={add({ kind: "date", date: today })} />
-          {done.length > 0 ? (
-            <>
-              <button
-                type="button"
-                className="mt-3 cursor-pointer text-muted-foreground text-xs hover:text-foreground"
-                onClick={() => setShowCompleted((value) => !value)}
-              >
-                {showCompleted ? "Hide completed" : `Show completed · ${done.length}`}
-              </button>
-              {showCompleted ? list(done, "Completed today", false) : null}
-            </>
+          {quickAddShortcut ? (
+            <p className="flex items-center gap-2 pt-3 text-muted-foreground text-sm">
+              <Kbd>{quickAddShortcut}</Kbd> from anywhere
+            </p>
           ) : null}
         </div>
-      </>
-    );
-    aside = (
-      <>
-        <AsideSection title="This week's intent">
-          <IntentEditor
-            key={weekIntent?.text ?? ""}
-            intent={weekIntent}
-            placeholder="Set this week's intent"
-            className="text-sm"
-            onSave={saveIntent("week")}
-          />
-        </AsideSection>
-        <AsideSection>
-          <AsideLink to="upcoming">View upcoming tasks</AsideLink>
-          <AsideLink to="all">View all tasks</AsideLink>
-        </AsideSection>
-        <TaskSyncCard compact />
-      </>
-    );
+      );
+    } else {
+      body = (
+        <>
+          <h1 className="font-semibold text-2xl">{formatTaskDayTitle(today)}</h1>
+          {proposals.length > 0 ? (
+            <div className="pt-5">
+              <ProposedTasks tasks={proposals} context={context} />
+            </div>
+          ) : null}
+          <div className="pt-4">
+            {open.length === 0 && proposals.length === 0 ? (
+              <p className="py-6 text-muted-foreground text-sm">Nothing on today's plate.</p>
+            ) : null}
+            {list(open, "Today")}
+            <AddTaskRow onAdd={add({ kind: "date", date: today })} />
+            {done.length > 0 ? (
+              <>
+                <button
+                  type="button"
+                  className="mt-3 cursor-pointer text-muted-foreground text-xs hover:text-foreground"
+                  onClick={() => setShowCompleted((value) => !value)}
+                >
+                  {showCompleted ? "Hide completed" : `Show completed · ${done.length}`}
+                </button>
+                {showCompleted ? list(done, "Completed today", false) : null}
+              </>
+            ) : null}
+          </div>
+        </>
+      );
+      aside = (
+        <>
+          <AsideSection title="This week's intent">
+            <IntentEditor
+              key={weekIntent?.text ?? ""}
+              intent={weekIntent}
+              placeholder="Set this week's intent"
+              className="text-sm"
+              onSave={saveIntent("week")}
+            />
+          </AsideSection>
+          {syncLine}
+        </>
+      );
+    }
   } else if (view === "week" || view === "month" || view === "year") {
     const horizon: TaskHorizon = view;
-    const period = taskPeriodFor(horizon, today);
-    const committed = committedTasks(tasks, horizon, today);
+    const anchor = search.at ?? today;
+    const period = taskPeriodFor(horizon, anchor);
+    const current = taskPeriodFor(horizon, today).startsOn === period.startsOn;
+    const committed = committedTasks(tasks, horizon, anchor);
     const backlog = backlogTasks(tasks, horizon);
+    const intent = taskIntentFor(intents, horizon, anchor);
     const parent: TaskHorizon | null =
       horizon === "week" ? "month" : horizon === "month" ? "year" : null;
+    const shift = (steps: number) => {
+      const next = shiftTaskPeriod(horizon, anchor, steps);
+      const isCurrent = taskPeriodFor(horizon, today).startsOn === next;
+      void navigate({
+        to: "/tasks/$view",
+        params: { view },
+        search: tasksSearch(search, { at: isCurrent ? undefined : next }),
+      });
+    };
     body = (
       <>
-        <h1 className="font-semibold text-2xl">
-          {formatTaskPeriodTitle(horizon, period.startsOn)}
-        </h1>
+        <div className="flex items-center">
+          <h1 className="font-semibold text-2xl">
+            {formatTaskPeriodTitle(horizon, period.startsOn)}
+          </h1>
+          <PeriodNav unit={horizon} onShift={shift} />
+          {!current ? (
+            <button
+              type="button"
+              className="ms-2 cursor-pointer text-muted-foreground text-xs hover:text-foreground"
+              onClick={() => goTo(view, projectFilter === null ? {} : { project: projectFilter })}
+            >
+              This {horizon}
+            </button>
+          ) : null}
+        </div>
         <p className="pt-1 text-muted-foreground text-sm">
           {formatTaskRange(period.startsOn, period.endsOn)}
         </p>
         <IntentEditor
-          key={taskIntentFor(intents, horizon, today)?.text ?? ""}
-          intent={taskIntentFor(intents, horizon, today)}
-          placeholder={`Set this ${horizon}'s intent`}
+          key={`${period.startsOn}:${intent?.text ?? ""}`}
+          intent={intent}
+          placeholder={current ? `Set this ${horizon}'s intent` : `Set the ${horizon}'s intent`}
           className="pt-4 text-[15px]"
-          onSave={saveIntent(horizon)}
+          onSave={saveIntent(horizon, anchor)}
         />
         <TasksSectionLabel>Committed</TasksSectionLabel>
         {list(committed, "Committed", true, true)}
@@ -344,7 +537,6 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
           >
             {VIEW_LABEL[view]} backlog · {backlog.length}
           </Link>
-          <AsideLink to="all">View all tasks</AsideLink>
         </AsideSection>
       </>
     );
@@ -359,7 +551,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
             <section
               key={group.date}
               aria-label={formatTaskDayTitle(group.date)}
-              className="overflow-hidden rounded-xl border border-border bg-card px-6 pt-3 pb-1"
+              className="overflow-hidden rounded-xl border border-border bg-card px-4 pt-3 pb-1"
             >
               <div className="flex items-baseline gap-2 pb-1">
                 <h2 className="font-semibold text-[15px]">{formatTaskDayTitle(group.date)}</h2>
@@ -390,29 +582,24 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
             onSave={saveIntent("week")}
           />
         </AsideSection>
-        <AsideSection>
-          <AsideLink to="today">View today</AsideLink>
-          <AsideLink to="all">View all tasks</AsideLink>
-        </AsideSection>
+        {syncLine}
       </>
     );
   } else {
-    const filter = search.filter ?? "all";
-    const { open, recurring, completed } = allTasks(tasks, filter);
+    const filter: TaskBacklogFilter = search.filter ?? "all";
+    const { open, recurring, done, completed } = allTasks(tasks, filter);
     const filters: ReadonlyArray<{ readonly value: TaskBacklogFilter; readonly label: string }> = [
       { value: "all", label: "All" },
       { value: "week", label: "Week backlog" },
       { value: "month", label: "Month backlog" },
       { value: "year", label: "Year backlog" },
       { value: "recurring", label: "Recurring" },
+      { value: "completed", label: `Completed · ${completed}` },
     ];
-    const addHome: TaskHome =
-      filter === "week" || filter === "month" || filter === "year"
-        ? { kind: "backlog", horizon: filter }
-        : { kind: "backlog", horizon: null };
+    const addHome = defaultHomeForView("all", search, today);
     body = (
       <>
-        <h1 className="font-semibold text-2xl">Tasks</h1>
+        <h1 className="font-semibold text-2xl">All tasks</h1>
         <div role="tablist" aria-label="Backlog filter" className="flex flex-wrap gap-1.5 pt-4">
           {filters.map((entry) => (
             <button
@@ -441,17 +628,26 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
           ))}
         </div>
         <div className="pt-3">
-          {filter !== "recurring" ? <AddTaskRow onAdd={add(addHome)} /> : null}
-          {list(open, "Tasks", filter !== "all")}
-          {recurring.length > 0 ? (
+          {filter === "completed" ? (
+            done.length === 0 ? (
+              <p className="py-6 text-muted-foreground text-sm">Nothing completed yet.</p>
+            ) : (
+              list(done, "Completed", false)
+            )
+          ) : (
             <>
-              <TasksSectionLabel>Recurring</TasksSectionLabel>
-              {list(recurring, "Recurring")}
+              {filter !== "recurring" ? (
+                <AddTaskRow label="Add to backlog" onAdd={add(addHome)} />
+              ) : null}
+              {list(open, "Tasks", filter !== "all")}
+              {recurring.length > 0 ? (
+                <>
+                  {filter === "all" ? <TasksSectionLabel>Recurring</TasksSectionLabel> : null}
+                  {list(recurring, "Recurring")}
+                </>
+              ) : null}
             </>
-          ) : null}
-          {completed > 0 ? (
-            <p className="pt-4 text-muted-foreground text-xs">Completed · {completed}</p>
-          ) : null}
+          )}
         </div>
       </>
     );
@@ -461,21 +657,30 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         <WorkspacePageHeader electron={isElectron} className="border-b border-border">
-          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
-            <Link
-              to="/tasks/$view"
-              params={{ view: "today" }}
-              className="text-muted-foreground hover:text-foreground"
-            >
-              Tasks
-            </Link>
-            <span aria-hidden className="text-muted-foreground">
-              /
-            </span>
-            <span className="font-medium">{VIEW_LABEL[view]}</span>
-          </nav>
-          <div className="ms-auto">
+          <RangeTabs
+            view={view}
+            today={today}
+            counts={counts}
+            shortcutFor={shortcutFor}
+            onSelect={(next) =>
+              goTo(next, projectFilter === null ? {} : { project: projectFilter })
+            }
+            onDropTask={onDropTask}
+          />
+          <div className="ms-auto flex items-center gap-2">
+            {environmentId !== null ? <TaskSyncChip indicator={sync} /> : null}
             <ProjectFilterMenu value={projectFilter} onChange={setFilter} />
+            <button
+              type="button"
+              className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => openTaskQuickAdd()}
+            >
+              <PlusIcon aria-hidden className="size-4" />
+              Add task
+              {quickAddShortcut ? (
+                <span className="text-muted-foreground text-xs">{quickAddShortcut}</span>
+              ) : null}
+            </button>
           </div>
         </WorkspacePageHeader>
         <ScrollArea className="min-h-0 flex-1">
