@@ -118,19 +118,29 @@ the Project's menu or the command palette. A count on the button and on the Proj
 shows how many workstreams need you, and the same rows appear above the coordinator's composer.
 
 - When only you can decide something, the row asks the question and offers the recommended
-  answer as a button. It sends the coordinator's full recommendation as your answer. **Reply** adds
+  answer as a button, such as **Answer: Pilot with 5**, marked "Recommended · not answered yet".
+  It sends the coordinator's full recommendation as your answer. Once you answer, the row says
+  "You answered: Pilot with 5" (or "You replied") until the coordinator acts on it. **Reply** adds
   a "Re:" tag to the composer so you can answer in your own words; your draft stays.
 - A question can have a deadline. When it passes, the coordinator is reminded and keeps waiting:
   no reply never counts as yes. To let it go ahead anyway, expand the row and turn on **Go with
   the recommendation if I don't reply** for that question. Any change to the question,
   recommendation, its button label or the deadline turns it back off.
-- A row the coordinator has not updated for a day is marked **Stale**. Expand it and choose **Ask
-  for update** to start a reply asking for one.
+- Every row shows how long ago it was updated. One the coordinator has not touched for a day
+  shows that age in amber (stale).
+- A row that says it is working while none of its agents is running is marked **Stalled**, with
+  the reason ("No agent running for 2h"), at the top of **In progress**. A working row with no
+  agents linked is marked Stalled once it goes without an update. The default is 15 minutes
+  (`statusStallMinutes` in the server settings; 0 turns it off). The coordinator gets one message
+  asking it to update or close the row, and is also reminded whenever an agent on a row finishes,
+  fails, or is stopped or settled.
+- On a stale or stalled row, expand it and choose **Ask for update** to start a reply asking for
+  one.
 - Check off a **Done** row with the check button beside it to hide it. **Undo** in the
   confirmation brings it back. The thread and its history stay as they are, and the row shows
   again if the coordinator moves that workstream back into progress.
 
-Status is not shown on phone and iPad yet.
+Status also shows on phone and iPad, from the coordinator thread.
 
 ## Memory
 

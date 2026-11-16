@@ -4,11 +4,12 @@ import {
   type AssistantNeedsYouItem,
   assistantWorkingOn,
   collectNeedsYou,
+  pendingAskCards,
 } from "@t3tools/client-runtime/state/assistant-home";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { ProjectStatus, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -19,6 +20,8 @@ import { formatStatusAge, recommendationButtonLabel } from "../status/projectSta
 import { statusReplyTagFor, useStatusReplyStore } from "../status/statusReplyStore";
 import { useMinuteNow } from "../status/ProjectStatusPanel";
 import { Button } from "../ui/button";
+import { useAssistantRailStore } from "./assistantRailStore";
+import { AssistantTodayTasks } from "./AssistantTodayTasks";
 import { recommendationTextFor, useSendToThread } from "./useAssistant";
 
 // Fork-owned. The Assistant's right rail: what needs the user across every
@@ -41,15 +44,17 @@ export function AssistantRail(props: AssistantRailProps) {
     [props.projects, props.reach],
   );
   const now = useMinuteNow();
+  const dismissedAskIds = useAssistantRailStore((state) => state.dismissedAskIds);
+  const dismissAsk = useAssistantRailStore((state) => state.dismissAsk);
   const working = useMemo(() => {
     const own = assistantWorkingOn(props.assistant).map((status) => ({
       key: `status:${status.id}`,
       title: status.title,
       detail: status.summary,
       tone: status.state === "queued" ? ("idle" as const) : ("working" as const),
+      askId: null,
     }));
-    const waiting = props.asks
-      .filter((ask) => ask.answeredCount < ask.targets.length)
+    const waiting = pendingAskCards(props.asks, new Set(dismissedAskIds))
       .toReversed()
       .map((ask) => {
         const pending = ask.targets.filter((target) => target.answer === null);
@@ -59,18 +64,19 @@ export function AssistantRail(props: AssistantRailProps) {
             : `${pending.length} coordinators`;
         return {
           key: `ask:${ask.askId}`,
-          title: ask.question,
+          title: ask.title,
           detail: `Asked ${who} · ${formatStatusAge(ask.createdAt, now)}`,
           tone: "working" as const,
+          askId: ask.askId,
         };
       });
     return [...waiting, ...own];
-  }, [now, props.asks, props.assistant]);
+  }, [dismissedAskIds, now, props.asks, props.assistant]);
 
   return (
     <aside
       aria-label="Across your work"
-      className="flex w-80 shrink-0 flex-col gap-2.5 overflow-y-auto border-l border-border bg-sidebar px-4 pt-4 pb-4 xl:w-96"
+      className="flex w-80 shrink-0 flex-col gap-2.5 overflow-y-auto border-l border-border bg-sidebar px-4 pt-4 pb-4 xl:w-96 [&>*]:shrink-0"
       data-testid="assistant-rail"
     >
       <h3 className="flex items-center gap-1.5 text-xs font-medium text-warning-foreground">
@@ -104,7 +110,10 @@ export function AssistantRail(props: AssistantRailProps) {
           {working.map((entry, index) => (
             <li
               key={entry.key}
-              className={cn("flex gap-2.5 px-3.5 py-2.5", index > 0 && "border-t border-border")}
+              className={cn(
+                "group/working flex gap-2.5 px-3.5 py-2.5",
+                index > 0 && "border-t border-border",
+              )}
             >
               <span
                 aria-hidden
@@ -113,31 +122,31 @@ export function AssistantRail(props: AssistantRailProps) {
                   entry.tone === "working" ? "bg-info" : "bg-muted-foreground/45",
                 )}
               />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-foreground">{entry.title}</p>
                 <p className="truncate text-xs text-muted-foreground">{entry.detail}</p>
               </div>
+              {entry.askId !== null ? (
+                // An ask that will never hear back (a coordinator archived, or
+                // an answer lost) can be cleared by hand; the card in the
+                // conversation keeps its history.
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  className="-me-1.5 shrink-0 text-muted-foreground opacity-0 group-hover/working:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+                  aria-label={`Dismiss "${entry.title}" from Working on`}
+                  onClick={() => dismissAsk(entry.askId!)}
+                >
+                  <XIcon />
+                </Button>
+              ) : null}
             </li>
           ))}
         </ul>
       )}
 
-      {props.tasksToday ? (
-        <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">Today</span>
-          <span className="tabular-nums">
-            {props.tasksToday.count} {props.tasksToday.count === 1 ? "task" : "tasks"}
-          </span>
-          <span className="flex-1" />
-          <button
-            type="button"
-            className="cursor-pointer font-medium hover:text-foreground"
-            onClick={props.tasksToday.onOpen}
-          >
-            Open Tasks
-          </button>
-        </div>
-      ) : null}
+      {props.tasksToday ? <AssistantTodayTasks onOpenTasks={props.tasksToday.onOpen} /> : null}
     </aside>
   );
 }
@@ -199,14 +208,26 @@ function NeedsYouRow({
       </div>
       <p className="mt-1.5 mb-2 text-sm leading-snug text-foreground">{status.decision.question}</p>
       <div className="flex flex-wrap items-center gap-1.5">
-        <Button size="sm" disabled={sent} onClick={() => void accept()}>
-          <CheckIcon aria-hidden />
-          {sent ? "Sent" : recommendationButtonLabel(status.decision)}
+        {/* An action for an open question; the check appears only once the user sent it. */}
+        <Button
+          size="sm"
+          disabled={sent}
+          aria-label={
+            sent
+              ? `Answer sent to ${status.title}`
+              : `${recommendationButtonLabel(status.decision)}, the recommended answer to ${status.title}`
+          }
+          onClick={() => void accept()}
+        >
+          {sent ? <CheckIcon aria-hidden /> : null}
+          {sent ? "You answered" : recommendationButtonLabel(status.decision)}
         </Button>
         <Button size="sm" variant="outline" onClick={() => openCoordinator(status)}>
           Reply
         </Button>
-        <span className="text-xs text-muted-foreground">Recommended</span>
+        {sent ? null : (
+          <span className="text-xs text-muted-foreground">Recommended · not answered yet</span>
+        )}
       </div>
     </li>
   );

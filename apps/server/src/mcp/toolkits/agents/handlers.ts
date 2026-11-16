@@ -63,6 +63,10 @@ import {
 } from "./agentScope.ts";
 import { makeScheduleHandlers } from "./scheduleHandlers.ts";
 import { makeStatusHandlers } from "./statusHandlers.ts";
+import {
+  agentStatusReminder,
+  type AgentLifecycleEvent,
+} from "../../../orchestration/statusFreshness.ts";
 import { OrchestrationEventStoreLive } from "../../../persistence/Layers/OrchestrationEventStore.ts";
 import { makeTaskHandlers } from "./taskHandlers.ts";
 import {
@@ -92,6 +96,13 @@ const readFailed = (cause: unknown) =>
   new AgentToolFailedError({ detail: "Could not read this Project's threads.", cause });
 
 const START_FAILED = "Could not start the agent.";
+
+/** The coordinator's prompt to update rows listing this agent; standing agents keep no Status. */
+const statusReminderFor = (manager: Manager, agentId: string, event: AgentLifecycleEvent) => {
+  if (manager.role !== "coordinator") return {};
+  const reminder = agentStatusReminder(manager.project.assistant?.statuses, agentId, event);
+  return reminder === undefined ? {} : { statusReminder: reminder };
+};
 const isPreviouslyRejected = Schema.is(OrchestrationCommandPreviouslyRejectedError);
 const isSettleBlocked = Schema.is(OrchestrationThreadSettleBlockedError);
 
@@ -725,7 +736,11 @@ const make = Effect.gen(function* () {
           const stopped = yield* remote
             .stop(target.record, { archive: input.archive === true })
             .pipe(Effect.mapError(toolFailed));
-          return { threadId: ThreadId.make(target.record.threadId), ...stopped };
+          return {
+            threadId: ThreadId.make(target.record.threadId),
+            ...stopped,
+            ...statusReminderFor(manager, target.record.threadId, "stopped"),
+          };
         }
         const agent = target.thread;
         const createdAt = yield* nowIso;
@@ -823,6 +838,7 @@ const make = Effect.gen(function* () {
           threadId: agent.id,
           stopped: working || held.length > 0,
           archived: input.archive === true,
+          ...statusReminderFor(manager, agent.id, "stopped"),
         };
       }),
 
@@ -846,6 +862,7 @@ const make = Effect.gen(function* () {
             threadId: ThreadId.make(record.threadId),
             settled: true as const,
             archived: settled.archived,
+            ...statusReminderFor(manager, record.threadId, "settled"),
           };
         }
         const agent = target.thread;
@@ -897,7 +914,12 @@ const make = Effect.gen(function* () {
             "Settled the agent, but could not archive it.",
           );
         }
-        return { threadId: agent.id, settled: true as const, archived: input.archive === true };
+        return {
+          threadId: agent.id,
+          settled: true as const,
+          archived: input.archive === true,
+          ...statusReminderFor(manager, agent.id, "settled"),
+        };
       }),
   });
 });

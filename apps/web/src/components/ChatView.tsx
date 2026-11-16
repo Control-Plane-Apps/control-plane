@@ -1,5 +1,6 @@
 import { prepareImageForAttachment } from "../lib/imageCompression";
 import { useAssistantChatChrome } from "./assistant/useAssistantChatChrome";
+import { useAssistantRailStore } from "./assistant/assistantRailStore";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -3602,6 +3603,7 @@ export default function ChatView(props: ChatViewProps) {
     rightPanelOpen,
   });
   const assistantHiddenMessageIds = globalAssistantChrome?.hiddenMessageIds ?? null;
+  const assistantRailAvailable = globalAssistantChrome !== null;
   const visibleTimelineMessages = useMemo(
     () =>
       assistantHiddenMessageIds === null || assistantHiddenMessageIds.size === 0
@@ -7048,6 +7050,15 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
+      if (command === "assistant.toggleRail") {
+        // Only the Assistant has a rail; elsewhere the shortcut does nothing.
+        if (!assistantRailAvailable) return;
+        event.preventDefault();
+        event.stopPropagation();
+        useAssistantRailStore.getState().toggleCollapsed();
+        return;
+      }
+
       if (command === "rightPanel.toggleMaximized") {
         event.preventDefault();
         event.stopPropagation();
@@ -7201,6 +7212,7 @@ export default function ChatView(props: ChatViewProps) {
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   }, [
+    assistantRailAvailable,
     activeProject,
     activeRightPanelSurface,
     activeProjectScripts,

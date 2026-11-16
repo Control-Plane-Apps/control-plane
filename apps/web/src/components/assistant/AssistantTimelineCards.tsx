@@ -59,9 +59,7 @@ function AskCard({ card, value }: { card: AssistantAskCard; value: AssistantTime
                   <ProjectFavicon project={project} className="size-3.5 shrink-0" />
                 ) : null}
                 <span className="shrink-0 font-medium text-foreground">{target.title}</span>
-                <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                  {card.question}
-                </span>
+                <span className="min-w-0 flex-1 truncate text-muted-foreground">{card.title}</span>
                 {target.answer === null ? (
                   <span className="shrink-0 text-xs text-info-foreground">Waiting</span>
                 ) : null}

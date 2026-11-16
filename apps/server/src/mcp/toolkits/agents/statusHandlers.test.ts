@@ -10,8 +10,10 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  recommendationReplyText,
   statusReminderMessageId,
   statusReplyText,
+  statusStallMessageId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
   type ProjectAssistant,
@@ -48,7 +50,7 @@ import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerR
 import { HostTimeZoneSource } from "../../../schedules/hostZone.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { AgentsToolkitHandlersLive } from "./handlers.ts";
-import { AgentsToolkit, StatusListResult, StatusSetResult } from "./tools.ts";
+import { AgentSettleResult, AgentsToolkit, StatusListResult, StatusSetResult } from "./tools.ts";
 
 const PROJECT_ID = ProjectId.make("project-acme");
 const OTHER_PROJECT_ID = ProjectId.make("project-other");
@@ -186,6 +188,8 @@ const statusTools = Effect.gen(function* () {
     ) => run(toolkit.handle("cp_status_list", {}), StatusListResult, caller, capabilities),
     set: (caller: ThreadId, params: Parameters<typeof toolkit.handle<"cp_status_set">>[1]) =>
       run(toolkit.handle("cp_status_set", params), StatusSetResult, caller, ["agents"]),
+    settle: (caller: ThreadId, params: Parameters<typeof toolkit.handle<"cp_agent_settle">>[1]) =>
+      run(toolkit.handle("cp_agent_settle", params), AgentSettleResult, caller, ["agents"]),
   };
 });
 
@@ -992,6 +996,179 @@ describe("checking off finished workstreams", () => {
         expect(ids).not.toContain("w3");
         expect(ids).toContain("w1");
         expect(ids).toContain("next");
+      }),
+    ),
+  );
+});
+
+describe("Stalled rows", () => {
+  const MINUTE = 60_000;
+  const at = (minutes: number) => TestClock.setTime(Date.parse(NOW) + minutes * MINUTE);
+  const nudges = Effect.map(messagesOf(COORDINATOR), (messages) =>
+    messages.filter((message) => message.messageId.includes(":stalled:")),
+  );
+  const PDF_ROW = {
+    id: "pdf",
+    title: "Report PDF export",
+    summary: "Photo grids still break across pages.",
+    state: "working",
+    agents: [PDF],
+  } as const;
+
+  it.effect("nudges the coordinator once when no linked agent has run for 15 minutes", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+        yield* tools.set(COORDINATOR, PDF_ROW);
+
+        yield* at(14);
+        yield* reactor.sweep;
+        expect(yield* nudges).toHaveLength(0);
+
+        yield* at(15);
+        yield* reactor.sweep;
+        yield* reactor.sweep;
+        yield* at(90);
+        yield* reactor.sweep;
+        const sent = yield* nudges;
+        expect(sent.map((message) => message.messageId)).toEqual([
+          statusStallMessageId(PROJECT_ID, "pdf", Date.parse(NOW)),
+        ]);
+        expect(sent[0]?.source).toEqual({ kind: "agent", threadTitle: "Status" });
+        expect(sent[0]?.text).toContain('"Report PDF export" [status:pdf]');
+        expect(sent[0]?.text).toContain("No agent running for 15m");
+        expect(sent[0]?.text).toContain("cp_status_set");
+        // Delivered like a deadline reminder: it starts a turn once the coordinator is idle.
+        const deliveries = yield* makeAgentPushQueries(yield* SqlClient.SqlClient).listDeliveries(
+          PROJECT_ID,
+        );
+        expect(deliveries.map((delivery) => delivery.messageId)).toContain(sent[0]?.messageId);
+      }),
+    ),
+  );
+
+  it.effect("starts a new clock when the row is updated, and nudges again only after it", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+        yield* tools.set(COORDINATOR, PDF_ROW);
+        yield* at(20);
+        yield* reactor.sweep;
+        expect(yield* nudges).toHaveLength(1);
+
+        yield* at(30);
+        yield* tools.set(COORDINATOR, { id: "pdf", summary: "Waiting on a font fix upstream." });
+        yield* at(44);
+        yield* reactor.sweep;
+        expect(yield* nudges).toHaveLength(1);
+        yield* at(45);
+        yield* reactor.sweep;
+        expect(yield* nudges).toHaveLength(2);
+
+        // Closing the row ends it: done rows never stall.
+        yield* tools.set(COORDINATOR, { id: "pdf", state: "done", summary: "Shipped." });
+        yield* at(600);
+        yield* reactor.sweep;
+        expect(yield* nudges).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("uses time since the last update for a working row with no agents", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const reactor = yield* StatusDeadlineReactor.StatusDeadlineReactor;
+        yield* tools.set(COORDINATOR, { id: "copy", title: "Copy", summary: "Drafting." });
+        yield* tools.set(COORDINATOR, {
+          id: "later",
+          title: "Later",
+          summary: "After copy.",
+          state: "queued",
+        });
+        yield* at(45);
+        yield* reactor.sweep;
+        const sent = yield* nudges;
+        // The queued row with no agents is waiting, not stalled.
+        expect(sent).toHaveLength(1);
+        expect(sent[0]?.text).toContain("no agent is linked");
+        expect(sent[0]?.text).toContain("No update for 45m");
+        const listed = yield* tools.list(COORDINATOR);
+        expect(listed.stalled).toEqual([{ id: "copy", reason: "No update for 45m" }]);
+      }),
+    ),
+  );
+
+  it.effect("warns on a write that claims work no agent is running", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const linked = yield* tools.set(COORDINATOR, PDF_ROW);
+        expect(linked.warning).toContain("none of its agents is running");
+        const bare = yield* tools.set(COORDINATOR, {
+          id: "copy",
+          title: "Copy",
+          summary: "Drafting.",
+        });
+        expect(bare.warning).toContain("no agent linked");
+        const done = yield* tools.set(COORDINATOR, { id: "pdf", state: "done", summary: "Done." });
+        expect(done.warning).toBeUndefined();
+        const queued = yield* tools.set(COORDINATOR, {
+          id: "copy",
+          state: "queued",
+        });
+        expect(queued.warning).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("asks the coordinator to update rows listing an agent it settles", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, PDF_ROW);
+        const settled = yield* tools.settle(COORDINATOR, { agent: PDF });
+        expect(settled.statusReminder).toContain('"Report PDF export" [status:pdf] (working)');
+        expect(settled.statusReminder).toContain("cp_status_set");
+      }),
+    ),
+  );
+
+  it.effect("records whether the user answered with the recommendation or a reply", () =>
+    withSeededEngine(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const saved = yield* tools.set(COORDINATOR, PAYOUTS);
+        const decision = saved.status!.decision!;
+        const send = (text: string) =>
+          dispatch({
+            type: "thread.message.user.append",
+            commandId: nextCommandId(),
+            threadId: COORDINATOR,
+            message: { messageId: MessageId.make(`m-${commandCounter}`), text, attachments: [] },
+            createdAt: NOW,
+          });
+        yield* send(recommendationReplyText(saved.status!, decision));
+        expect(statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.answeredWith).toBe(
+          "recommendation",
+        );
+
+        const asked = yield* tools.set(COORDINATOR, {
+          id: "payouts",
+          question: "Which three?",
+          answer: "These three",
+        });
+        yield* send(
+          statusReplyText("Payouts", "Pick the Austin ones.", {
+            statusId: "payouts",
+            openedAt: asked.status!.decision!.openedAt,
+          }),
+        );
+        expect(statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.answeredWith).toBe(
+          "reply",
+        );
       }),
     ),
   );

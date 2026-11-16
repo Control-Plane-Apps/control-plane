@@ -11,9 +11,14 @@ import {
   agentManagerRole,
   CommandId,
   countStatusesNeedingUser,
+  isStatusAgentLive,
   type ProjectId,
+  type ProjectStatus,
   type ProjectStatusChange,
   sortProjectStatuses,
+  type StatusAgentShell,
+  statusStallMinutesOf,
+  statusStallOf,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -28,6 +33,7 @@ import { OrchestrationCommandInvariantError } from "../../../orchestration/Error
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionProjectRepository } from "../../../persistence/Services/ProjectionProjects.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   type AgentsToolkit,
@@ -56,6 +62,27 @@ const changeFailed = <E>(cause: Cause.Cause<E>): Effect.Effect<never, AgentToolF
       : "Could not save the status.";
   return Effect.fail(new AgentToolFailedError({ detail, cause }));
 };
+
+/**
+ * The warning a write earns when the saved row claims work no agent is doing,
+ * or undefined. `agents` holds the linked threads' shells, null when gone.
+ */
+export function statusWriteWarning(
+  status: ProjectStatus | null,
+  agents: ReadonlyArray<StatusAgentShell | null>,
+  stallMinutes: number,
+): string | undefined {
+  if (status === null || stallMinutes <= 0 || status.dismissedAt !== undefined) return undefined;
+  const linked = (status.agents?.length ?? 0) > 0;
+  if (linked && (status.state === "working" || status.state === "queued")) {
+    if (agents.some(isStatusAgentLive)) return undefined;
+    return `This row says ${status.state}, but none of its agents is running. If nobody is on it now, set it to queued, done or needs-you, or link the agent that is. Left as is, the user sees it as Stalled after ${stallMinutes} minutes.`;
+  }
+  if (!linked && status.state === "working") {
+    return `This row says working with no agent linked. Link the agent doing it (agents), or the user sees it as Stalled once it goes ${stallMinutes} minutes without an update.`;
+  }
+  return undefined;
+}
 
 /** Tool input to the command's change. Flat on the wire because OpenCode stringifies nested unions. */
 export function statusChangeOf(input: StatusSetInput): ProjectStatusChange | string {
@@ -98,6 +125,21 @@ export const makeStatusHandlers = Effect.gen(function* () {
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const projects = yield* ProjectionProjectRepository;
   const crypto = yield* Crypto.Crypto;
+  const settings = yield* ServerSettings.ServerSettingsService;
+
+  const stallMinutes = settings.getSettings.pipe(
+    Effect.map((current) => statusStallMinutesOf(current.statusStallMinutes)),
+    Effect.orElseSucceed(() => statusStallMinutesOf(undefined)),
+  );
+
+  /** Linked agents' shells; an unreadable one counts as gone. */
+  const agentShells = (status: ProjectStatus) =>
+    Effect.forEach(status.agents ?? [], (threadId) =>
+      snapshots.getThreadShellById(threadId).pipe(
+        Effect.map(Option.getOrNull),
+        Effect.orElseSucceed(() => null),
+      ),
+    );
 
   /** The role is checked live, so a replaced coordinator, or one whose Project was archived, is refused. */
   const requireCoordinator = Effect.fn("StatusTools.requireCoordinator")(function* () {
@@ -125,7 +167,18 @@ export const makeStatusHandlers = Effect.gen(function* () {
     cp_status_list: () =>
       Effect.gen(function* () {
         const { projectId } = yield* requireCoordinator();
-        return { statuses: sortProjectStatuses(yield* readStatuses(projectId)) };
+        const statuses = sortProjectStatuses(yield* readStatuses(projectId));
+        const minutes = yield* stallMinutes;
+        const nowMs = Date.parse(DateTime.formatIso(yield* DateTime.now));
+        const stalled = yield* Effect.forEach(statuses, (status) =>
+          agentShells(status).pipe(
+            Effect.map((agents) => {
+              const stall = statusStallOf(status, agents, nowMs, minutes);
+              return stall === null ? [] : [{ id: status.id, reason: stall.reason }];
+            }),
+          ),
+        ).pipe(Effect.map((rows) => rows.flat()));
+        return { statuses, ...(stalled.length > 0 ? { stalled } : {}) };
       }),
 
     cp_status_set: (input) =>
@@ -145,10 +198,16 @@ export const makeStatusHandlers = Effect.gen(function* () {
           })
           .pipe(Effect.catchCause(changeFailed));
         const statuses = yield* readStatuses(projectId);
+        const saved = statuses.find((status) => status.id === input.id) ?? null;
+        const warning =
+          saved === null
+            ? undefined
+            : statusWriteWarning(saved, yield* agentShells(saved), yield* stallMinutes);
         return {
           id: input.id,
-          status: statuses.find((status) => status.id === input.id) ?? null,
+          status: saved,
           needsYou: countStatusesNeedingUser(statuses),
+          ...(warning !== undefined ? { warning } : {}),
         };
       }),
   } satisfies StatusHandlers;

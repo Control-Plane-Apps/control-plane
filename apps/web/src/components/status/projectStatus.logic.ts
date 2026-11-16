@@ -4,8 +4,12 @@ import {
   STATUS_RECOMMENDATION_BODY_PREFIX,
   isAutoAcceptArmed,
   parseStatusReply,
+  recommendedAnswerLabel,
   sortProjectStatuses,
+  statusStallOf,
   visibleProjectStatuses,
+  type StatusAgentShell,
+  type StatusStall,
   type OrchestrationThreadShell,
   type ProjectStatus,
   type ProjectStatusDecision,
@@ -50,23 +54,67 @@ export function statusGroupOf(status: Pick<ProjectStatus, "state" | "decision">)
 
 /**
  * Non-empty groups in panel order, each keeping the coordinator's order.
- * Finished rows the user checked off are left out.
+ * Finished rows the user checked off are left out. Stalled rows (by id) sit
+ * at the top of In progress, whatever state they claim, so they are seen.
  */
 export function groupProjectStatuses<
-  T extends Pick<ProjectStatus, "state" | "decision" | "dismissedAt">,
+  T extends Pick<ProjectStatus, "id" | "state" | "decision" | "dismissedAt">,
 >(
   statuses: ReadonlyArray<T>,
+  stalledIds: ReadonlySet<string> = new Set(),
 ): ReadonlyArray<{ readonly group: StatusGroup; readonly statuses: ReadonlyArray<T> }> {
   const sorted = sortProjectStatuses(visibleProjectStatuses(statuses));
+  const groupOf = (status: T) =>
+    stalledIds.has(status.id) ? "in-progress" : statusGroupOf(status);
   return STATUS_GROUP_ORDER.flatMap((group) => {
-    const members = sorted.filter((status) => statusGroupOf(status) === group);
-    return members.length === 0 ? [] : [{ group, statuses: members }];
+    const members = sorted.filter((status) => groupOf(status) === group);
+    const ordered =
+      group === "in-progress"
+        ? [
+            ...members.filter((status) => stalledIds.has(status.id)),
+            ...members.filter((status) => !stalledIds.has(status.id)),
+          ]
+        : members;
+    return ordered.length === 0 ? [] : [{ group, statuses: ordered }];
   });
 }
 
-/** The primary button: the coordinator's short answer, or the old wording for records without one. */
+/**
+ * A row's stall, from its linked agents' live shells (absent ones count as
+ * gone). Null when it is not stalled or stall detection is off.
+ */
+export function statusStallFor(
+  status: Pick<ProjectStatus, "state" | "updatedAt" | "agents" | "dismissedAt">,
+  shellsById: ReadonlyMap<string, StatusAgentShell>,
+  nowMs: number,
+  stallMinutes: number,
+): StatusStall | null {
+  return statusStallOf(
+    status,
+    (status.agents ?? []).map((id) => shellsById.get(id) ?? null),
+    nowMs,
+    stallMinutes,
+  );
+}
+
+/**
+ * The primary button for an unanswered question: an action ("Answer: Pilot
+ * with 5"), never a done state, so it cannot read as already answered.
+ */
 export function recommendationButtonLabel(decision: Pick<ProjectStatusDecision, "answer">): string {
-  return decision.answer ?? "Go with recommendation";
+  return recommendedAnswerLabel(decision);
+}
+
+/** "now", "12m", "3h", "2d": the collapsed row's freshness. */
+export function formatStatusAgeShort(updatedAt: string, nowMs: number): string {
+  const at = Date.parse(updatedAt);
+  if (!Number.isFinite(at)) return "";
+  const minutes = Math.floor((nowMs - at) / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 /**

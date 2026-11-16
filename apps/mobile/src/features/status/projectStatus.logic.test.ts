@@ -11,6 +11,7 @@ import {
   recommendationReplyText,
   statusReplyPlacement,
   statusReplyTagFor,
+  statusStallFor,
 } from "./projectStatus.logic";
 
 const NOW = Date.parse("2026-11-13T18:00:00.000Z");
@@ -118,5 +119,30 @@ describe("time labels", () => {
     expect(
       describeDecisionDeadline({ ...decision, deadline: "2026-11-13T17:30:00.000Z" }, NOW)?.tone,
     ).toBe("overdue");
+  });
+});
+
+describe("stalled rows", () => {
+  it("groups a stalled row first under In progress", () => {
+    const groups = groupProjectStatuses(
+      [
+        status({ id: "a", state: "working" }),
+        status({ id: "b", state: "working" }),
+        status({ id: "q", state: "queued" }),
+      ],
+      new Set(["b", "q"]),
+    );
+    expect(groups.map((group) => [group.group, group.statuses.map((s) => s.id)])).toEqual([
+      ["in-progress", ["b", "q", "a"]],
+    ]);
+  });
+
+  it("stalls a working row with no agents by its last update", () => {
+    const stale = {
+      state: "working" as const,
+      updatedAt: new Date(NOW - 45 * 60_000).toISOString(),
+    };
+    expect(statusStallFor(stale, new Map(), NOW, 15)?.reason).toBe("No update for 45m");
+    expect(statusStallFor(stale, new Map(), NOW, 0)).toBeNull();
   });
 });

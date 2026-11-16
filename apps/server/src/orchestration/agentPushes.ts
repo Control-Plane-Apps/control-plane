@@ -19,6 +19,8 @@ import {
   STATUS_MESSAGE_PREFIX,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -144,13 +146,16 @@ function toRepositoryError(operation: string) {
       : toPersistenceSqlError(`agentPushes.${operation}:query`)(cause);
 }
 
+/** How far back a folded request (answered inside another turn) is still owed its result. */
+export const FOLDED_RESULT_WINDOW_MS = 6 * 60 * 60 * 1000;
+
 export function makeAgentPushQueries(sql: SqlClient.SqlClient) {
   // Receipts are keyed by `agentPushId` and `agentStopId`; the concatenations
   // below build the same ids.
   const findOwedResults = SqlSchema.findAll({
-    Request: Schema.Struct({ projectId: Schema.String }),
+    Request: Schema.Struct({ projectId: Schema.String, foldedSince: Schema.String }),
     Result: OwedResultRow,
-    execute: ({ projectId }) => sql`
+    execute: ({ projectId, foldedSince }) => sql`
       SELECT m.thread_id AS "agentThreadId", m.message_id AS "requestId",
              json_extract(m.source_json, '$.replyTo') AS "replyTo"
       FROM projection_thread_messages m
@@ -180,6 +185,30 @@ export function makeAgentPushQueries(sql: SqlClient.SqlClient) {
             SELECT 1 FROM projection_thread_activities f
             WHERE f.thread_id = m.thread_id AND f.kind = 'provider.turn.start.failed'
               AND json_extract(f.payload_json, '$.requestId') = m.message_id
+          )
+          OR (
+            -- Folded: the request's start was accepted, but another message
+            -- (often the user's, a few ms later) took the pending turn, so
+            -- the agent answered the request inside that turn. Its first
+            -- later turn has ended, so that turn's reply is the result.
+            -- Recent requests only, so an upgrade never replays old ones.
+            m.created_at >= ${foldedSince}
+            AND EXISTS (
+              SELECT 1 FROM orchestration_command_receipts c
+              WHERE c.command_id = ${AGENT_DELIVERY_START_PREFIX} || m.message_id
+                AND c.status = 'accepted'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM projection_turns t
+              WHERE t.thread_id = m.thread_id AND t.pending_message_id = m.message_id
+            )
+            AND EXISTS (
+              SELECT 1 FROM projection_turns later
+              JOIN projection_thread_messages lm ON lm.message_id = later.pending_message_id
+              WHERE later.thread_id = m.thread_id AND lm.rowid > m.rowid
+                AND later.turn_id IS NOT NULL
+                AND later.state IN ('completed', 'error', 'interrupted')
+            )
           )
           OR (
             -- A start no turn adopted: a restart settled the starting session,
@@ -322,7 +351,7 @@ export function makeAgentPushQueries(sql: SqlClient.SqlClient) {
     Request: Schema.Struct({ agentThreadId: Schema.String, requestId: Schema.String }),
     Result: AgentResultRow,
     execute: ({ agentThreadId, requestId }) => sql`
-      WITH request AS (
+      WITH own AS (
         SELECT rowid AS message_row,
                (
                  SELECT t.row_id FROM projection_turns t
@@ -330,9 +359,33 @@ export function makeAgentPushQueries(sql: SqlClient.SqlClient) {
                    AND t.turn_id IS NOT NULL
                  ORDER BY t.row_id DESC
                  LIMIT 1
-               ) AS turn_row
+               ) AS own_row
         FROM projection_thread_messages
         WHERE message_id = ${requestId} AND thread_id = ${agentThreadId}
+      ),
+      folded AS (
+        -- No turn of its own: the first later turn took it in (see findOwedResults).
+        SELECT own.message_row, own.own_row,
+               (
+                 SELECT t.turn_id FROM projection_turns t
+                 JOIN projection_thread_messages lm ON lm.message_id = t.pending_message_id
+                 WHERE own.own_row IS NULL AND t.thread_id = ${agentThreadId}
+                   AND t.turn_id IS NOT NULL AND lm.rowid > own.message_row
+                 ORDER BY lm.rowid ASC
+                 LIMIT 1
+               ) AS folded_turn
+        FROM own
+      ),
+      request AS (
+        SELECT folded.message_row, folded.folded_turn,
+               COALESCE(
+                 folded.own_row,
+                 (
+                   SELECT t.row_id FROM projection_turns t
+                   WHERE t.thread_id = ${agentThreadId} AND t.turn_id = folded.folded_turn
+                 )
+               ) AS turn_row
+        FROM folded
       )
       SELECT
         (
@@ -367,6 +420,7 @@ export function makeAgentPushQueries(sql: SqlClient.SqlClient) {
             AND am.thread_id = ${agentThreadId} AND am.role = 'assistant'
             AND am.is_streaming = 0 AND length(trim(am.text)) > 0
             AND am.rowid > request.message_row
+            AND (request.folded_turn IS NULL OR am.turn_id = request.folded_turn)
             AND NOT EXISTS (
               SELECT 1 FROM projection_turns earlier
               WHERE earlier.thread_id = am.thread_id AND earlier.turn_id = am.turn_id
@@ -501,10 +555,19 @@ export function makeAgentPushQueries(sql: SqlClient.SqlClient) {
     `,
   });
 
+  /**
+   * Requests owed a result. `foldedSince` bounds recovery of folded requests
+   * (see findOwedResults) to recent ones.
+   */
   const listOwedResults = (
     projectId: ProjectId,
   ): Effect.Effect<ReadonlyArray<OwedResult>, ProjectionRepositoryError> =>
-    findOwedResults({ projectId }).pipe(Effect.mapError(toRepositoryError("listOwedResults")));
+    Effect.flatMap(Clock.currentTimeMillis, (nowMs) =>
+      findOwedResults({
+        projectId,
+        foldedSince: DateTime.formatIso(DateTime.makeUnsafe(nowMs - FOLDED_RESULT_WINDOW_MS)),
+      }),
+    ).pipe(Effect.mapError(toRepositoryError("listOwedResults")));
 
   /** Owed for a reply that came in a turn no message started; see `findOwedContinuations`. */
   const listOwedContinuations = (
@@ -621,6 +684,8 @@ export function formatAgentResult(input: {
   readonly outcome: AgentResultOutcome;
   readonly text: string | null;
   readonly questions: ReadonlyArray<string>;
+  /** A prompt to update the Status rows that list this agent, for its coordinator. */
+  readonly statusNote?: string | undefined;
 }): string {
   const header = `Result from agent "${input.agentTitle}" (threadId ${input.agentThreadId}): ${outcomeLabel(input.outcome)}`;
   const reply = input.text?.trim() ?? "";
@@ -635,6 +700,7 @@ export function formatAgentResult(input: {
       ["Questions for the user:", ...input.questions.map((question) => `- ${question}`)].join("\n"),
     );
   }
+  if (input.statusNote !== undefined) parts.push(`Status: ${input.statusNote}`);
   return parts.join("\n\n");
 }
 

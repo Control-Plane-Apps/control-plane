@@ -11,6 +11,7 @@
  */
 import {
   ASSISTANT_ASK_ACTIVITY_KIND,
+  assistantAskTitle,
   ASSISTANT_PING_ACTIVITY_KIND,
   type AssistantPingPayload,
   assistantAskMessageText,
@@ -176,6 +177,7 @@ const make = Effect.gen(function* () {
 
   const ask = Effect.fn("AssistantTools.ask")(function* (input: {
     readonly question: string;
+    readonly title?: string | undefined;
     readonly projectIds?: ReadonlyArray<string> | undefined;
   }) {
     const { caller, snapshot, settings } = yield* requireAssistant();
@@ -238,6 +240,8 @@ const make = Effect.gen(function* () {
       const payload: AssistantAskActivityPayload = {
         askId,
         question: input.question,
+        // Stored once, paths and URLs stripped, so every list shows the same short title.
+        title: assistantAskTitle(input.question, input.title),
         targets: asked.map((target) => ({
           projectId: target.projectId,
           title: target.title,

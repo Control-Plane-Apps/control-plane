@@ -15,6 +15,7 @@ import {
   type ProjectStatus,
   type ProjectStatusDecision,
   sortProjectStatuses,
+  assistantAskTitle,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -125,6 +126,8 @@ export interface AssistantAskCard {
   readonly askId: string;
   readonly activityId: string;
   readonly question: string;
+  /** Short and path-free, for lists; derived from the question for older asks. */
+  readonly title: string;
   readonly createdAt: string;
   readonly targets: ReadonlyArray<AssistantAskTargetView>;
   readonly answeredCount: number;
@@ -168,12 +171,26 @@ export function collectAskCards(
       askId: payload.value.askId,
       activityId: activity.id,
       question: payload.value.question,
+      title: assistantAskTitle(payload.value.question, payload.value.title),
       createdAt: activity.createdAt,
       targets,
       answeredCount: targets.filter((target) => target.answer !== null).length,
     });
   }
   return cards;
+}
+
+/**
+ * Asks still waiting on a coordinator, for "Working on": an ask leaves once
+ * every asked coordinator replied, or once the user dismissed it.
+ */
+export function pendingAskCards(
+  asks: ReadonlyArray<AssistantAskCard>,
+  dismissedAskIds: ReadonlySet<string> = new Set(),
+): AssistantAskCard[] {
+  return asks.filter(
+    (ask) => ask.answeredCount < ask.targets.length && !dismissedAskIds.has(ask.askId),
+  );
 }
 
 /** Message ids of answers already shown inside an ask card, which the timeline can hide. */

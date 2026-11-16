@@ -23,8 +23,8 @@ const decision = {
 };
 
 describe("needsYouAnswerLabel", () => {
-  it("uses the short answer, else the generic label", () => {
-    expect(needsYouAnswerLabel({ answer: "Retry 3 times" })).toBe("Retry 3 times");
+  it("labels the short answer as an action, else the generic label", () => {
+    expect(needsYouAnswerLabel({ answer: "Retry 3 times" })).toBe("Answer: Retry 3 times");
     expect(needsYouAnswerLabel({})).toBe("Go with recommendation");
   });
 });

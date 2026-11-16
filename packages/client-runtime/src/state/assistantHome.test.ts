@@ -18,6 +18,7 @@ import {
   collectMoving,
   collectNeedsYou,
   collectPings,
+  pendingAskCards,
   withoutGlobalAssistant,
 } from "./assistantHome.ts";
 
@@ -152,6 +153,24 @@ describe("collectAskCards", () => {
     expect(card?.targets[1]?.answer).toBeNull();
     expect([...askAnswerMessageIds([card!])]).toEqual([pushId]);
     expect(assistantAskIdOf(pushId)).toBe(askId);
+  });
+
+  it("keeps an ask in Working on until every coordinator replied, or it is dismissed", () => {
+    const partly = collectAskCards(activities, messages);
+    expect(pendingAskCards(partly).map((card) => card.askId)).toEqual([askId]);
+    expect(pendingAskCards(partly, new Set([askId]))).toEqual([]);
+    const both = collectAskCards(activities, [
+      ...messages,
+      {
+        id: MessageId.make(`cp-push:b-coord:cp-send:b-coord:ask:${askId}:uuid`),
+        role: "user" as const,
+        text: 'Result from agent "B" (threadId b-coord): completed\n\nNothing.',
+        createdAt: AT,
+        source: { kind: "agent" as const, threadId: ThreadId.make("b-coord") },
+      },
+    ]);
+    expect(both[0]?.answeredCount).toBe(2);
+    expect(pendingAskCards(both)).toEqual([]);
   });
 
   it("reads pings", () => {

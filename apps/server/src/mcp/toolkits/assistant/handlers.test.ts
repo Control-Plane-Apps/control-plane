@@ -155,9 +155,13 @@ const overview = (caller: ThreadId) =>
     lastResult(toolkit.handle("cp_assistant_overview", {}), AssistantOverviewResult, caller),
   );
 
-const ask = (caller: ThreadId, question: string) =>
+const ask = (caller: ThreadId, question: string, title?: string) =>
   Effect.flatMap(AssistantToolkit, (toolkit) =>
-    lastResult(toolkit.handle("cp_assistant_ask", { question }), AssistantAskResult, caller),
+    lastResult(
+      toolkit.handle("cp_assistant_ask", { question, ...(title !== undefined ? { title } : {}) }),
+      AssistantAskResult,
+      caller,
+    ),
   );
 
 const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -198,6 +202,29 @@ describe("cp_assistant_*", () => {
         expect(activities.some((activity) => activity.kind === ASSISTANT_ASK_ACTIVITY_KIND)).toBe(
           true,
         );
+      }),
+    ),
+  );
+
+  it.effect("stores a short, path-free title on the ask", () =>
+    run(
+      Effect.gen(function* () {
+        settings = DEFAULT_SERVER_SETTINGS;
+        yield* ask(
+          ASSISTANT,
+          "Review /Users/n/.t3/attachments/x.png and fix it.",
+          "Collapsible panel",
+        );
+        yield* ask(
+          ASSISTANT,
+          "From Nick, with a screenshot at /Users/n/.t3/attachments/y.png: collapse the panel.",
+        );
+        const titles = (yield* (yield* ProjectionThreadActivityRepository).listByThreadId({
+          threadId: ASSISTANT,
+        }))
+          .filter((activity) => activity.kind === ASSISTANT_ASK_ACTIVITY_KIND)
+          .map((activity) => (activity.payload as { title?: string }).title);
+        expect(titles).toEqual(["Collapsible panel", "Collapse the panel"]);
       }),
     ),
   );

@@ -5,9 +5,12 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  answeredLabel,
   isAutoAcceptArmed,
   PROJECT_STATUS_QUESTION_MAX,
   type ProjectStatus,
+  statusStallMinutesOf,
+  type StatusStall,
   type ThreadId,
 } from "@t3tools/contracts";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -18,7 +21,7 @@ import { AppText as Text } from "../../components/AppText";
 import { ThemedSwitch } from "../../components/ThemedSwitch";
 import { cn } from "../../lib/cn";
 import { scopedThreadKey } from "../../lib/scopedEntities";
-import { useThreadShells } from "../../state/entities";
+import { useServerConfigs, useThreadShells } from "../../state/entities";
 import { projectEnvironment } from "../../state/projects";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useThreadOutboxMessages } from "../../state/use-thread-outbox";
@@ -39,8 +42,10 @@ import {
   describeDecisionDeadline,
   describeLiveAgent,
   formatDeadlineShort,
+  formatElapsed,
   formatStatusAge,
   groupProjectStatuses,
+  isStatusStale,
   isRecommendationPending,
   recommendationButtonLabel,
   recommendationKey,
@@ -48,6 +53,7 @@ import {
   showsFullRecommendation,
   statusReplyPlacement,
   statusReplyTagFor,
+  statusStallFor,
   type StatusGroup,
   type StatusReplyTag,
 } from "./projectStatus.logic";
@@ -81,11 +87,26 @@ export function ProjectStatusPanel(props: ProjectStatusPanelProps) {
   const palette = useTaskPalette();
   const now = useMinuteNow();
   const statuses = project.assistant?.statuses ?? [];
-  const groups = useMemo(() => groupProjectStatuses(statuses), [statuses]);
   const hiddenCount = statuses.filter((status) => status.dismissedAt !== undefined).length;
   const coordinatorThreadId = project.assistant?.coordinatorThreadId ?? null;
   const threads = useThreadShells();
   const threadsById = useMemo(() => new Map(threads.map((t) => [t.id, t])), [threads]);
+  const stallMinutes = statusStallMinutesOf(
+    useServerConfigs().get(project.environmentId)?.settings?.statusStallMinutes,
+  );
+  // Rows claiming work no agent is doing, by id, as of this minute.
+  const stalls = useMemo(() => {
+    const byId = new Map<string, StatusStall>();
+    for (const status of statuses) {
+      const stall = statusStallFor(status, threadsById, now, stallMinutes);
+      if (stall !== null) byId.set(status.id, stall);
+    }
+    return byId;
+  }, [now, stallMinutes, statuses, threadsById]);
+  const groups = useMemo(
+    () => groupProjectStatuses(statuses, new Set(stalls.keys())),
+    [stalls, statuses],
+  );
   const { tasks } = useMobileTasks();
   const outbox = useThreadOutboxMessages();
   const queuedTexts = useMemo(
@@ -244,6 +265,7 @@ export function ProjectStatusPanel(props: ProjectStatusPanelProps) {
                       status={status}
                       group={group}
                       now={now}
+                      stall={stalls.get(status.id) ?? null}
                       expanded={expanded.has(status.id)}
                       onToggle={() => toggle(status.id)}
                       linkedTasks={tasksForStatus(tasks, project.id, status.id).map((t) => t.title)}
@@ -294,6 +316,7 @@ function StatusRow(props: {
   readonly status: ProjectStatus;
   readonly group: StatusGroup;
   readonly now: number;
+  readonly stall: StatusStall | null;
   readonly expanded: boolean;
   readonly onToggle: () => void;
   readonly linkedTasks: ReadonlyArray<string>;
@@ -312,8 +335,12 @@ function StatusRow(props: {
   readonly onCheckOff: () => void;
   readonly onOpenThread: (threadId: ThreadId) => void;
 }) {
-  const { status, group, now, expanded } = props;
+  const { status, group, now, stall, expanded } = props;
   const palette = useTaskPalette();
+  // Stale only means something for work still expected to move.
+  const stale =
+    (group === "needs-you" || group === "in-progress") && isStatusStale(status.updatedAt, now);
+  const age = formatElapsed(status.updatedAt, now);
   const decision = status.decision;
   const placement = statusReplyPlacement(status, group);
   const asking = placement === "question" && decision !== undefined;
@@ -328,7 +355,7 @@ function StatusRow(props: {
       <View className="flex-row items-start">
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${status.title}. ${status.summary}`}
+          accessibilityLabel={`${status.title}.${stall !== null ? ` Stalled: ${stall.reason}.` : ""} ${status.summary}. Updated ${formatStatusAge(status.updatedAt, now)}${stale ? ", stale" : ""}.`}
           accessibilityHint={expanded ? "Collapses the details" : "Shows the details"}
           accessibilityState={{ expanded }}
           onPress={props.onToggle}
@@ -336,19 +363,41 @@ function StatusRow(props: {
           style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
         >
           <View className="flex-row items-center gap-2.5">
-            <View
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: 3.5,
-                backgroundColor: dotColor(group, palette),
-              }}
-            />
+            {stall !== null ? (
+              <View
+                className="bg-danger-foreground"
+                style={{ width: 7, height: 7, borderRadius: 3.5 }}
+              />
+            ) : (
+              <View
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: 3.5,
+                  backgroundColor: dotColor(group, palette),
+                }}
+              />
+            )}
             <Text
               className="flex-1 text-[17px] font-t3-bold text-foreground"
               numberOfLines={expanded ? undefined : 1}
             >
               {status.title}
+            </Text>
+            {stall !== null ? (
+              <View className="rounded-[5px] bg-danger px-1.5 py-px">
+                <Text className="text-[12px] font-t3-semibold text-danger-foreground">Stalled</Text>
+              </View>
+            ) : null}
+            {/* Freshness, subtle; a row not touched for a day reads as stale. */}
+            <Text
+              className={cn(
+                "text-[13px] tabular-nums",
+                stale ? "font-t3-medium" : "text-foreground-tertiary",
+              )}
+              style={stale ? { color: palette.warningText } : undefined}
+            >
+              {age === "just now" ? "now" : age}
             </Text>
             <SymbolView
               name={symbol(
@@ -367,6 +416,14 @@ function StatusRow(props: {
           >
             {status.summary}
           </Text>
+          {stall !== null ? (
+            <Text
+              className="pl-[17px] pt-0.5 text-[13px] text-danger-foreground"
+              numberOfLines={expanded ? undefined : 1}
+            >
+              {stall.reason}. The coordinator was asked to update it.
+            </Text>
+          ) : null}
           {props.linkedTasks.map((title) => (
             <View key={title} className="flex-row items-center gap-1.5 pl-[17px] pt-1">
               <SymbolView
@@ -486,12 +543,12 @@ function StatusRow(props: {
             {decision.question}
           </Text>
           <View className="flex-row flex-wrap items-center gap-2">
+            {/* An action for an open question: no check mark, no past tense. */}
             <PillButton
               label={props.sending ? "Sending..." : recommendationButtonLabel(decision)}
               tone="primary"
-              icon="checkmark"
               disabled={props.sending}
-              accessibilityLabel={`${recommendationButtonLabel(decision)}, recommended answer to ${status.title}`}
+              accessibilityLabel={`${recommendationButtonLabel(decision)}, the recommended answer to ${status.title}`}
               onPress={props.onGoWithRecommendation}
             />
             <PillButton
@@ -500,7 +557,9 @@ function StatusRow(props: {
               accessibilityLabel={`Reply to ${status.title}`}
               onPress={() => props.onReply(true)}
             />
-            <Text className="text-[13px] text-foreground-muted">Recommended</Text>
+            <Text className="text-[13px] text-foreground-muted">
+              Recommended · not answered yet
+            </Text>
           </View>
         </View>
       ) : answered !== undefined ? (
@@ -508,7 +567,8 @@ function StatusRow(props: {
           <Text className="text-[17px] text-foreground-muted">{answered.question}</Text>
           <View className="flex-row flex-wrap items-center gap-2">
             <Text className={cn("flex-1 text-[14px] text-foreground-muted")}>
-              You replied {formatStatusAge(answered.answeredAt!, now)}. Waiting on the coordinator.
+              <Text className="font-t3-semibold text-foreground">{answeredLabel(answered)}</Text>{" "}
+              {formatStatusAge(answered.answeredAt!, now)}. Waiting on the coordinator.
             </Text>
             <PillButton
               label="Reply"

@@ -12,6 +12,13 @@
  * new. The append is delivered like a schedule run: it starts a turn once the
  * coordinator is idle.
  *
+ * The same sweep watches for stalled rows: a workstream that says `working`
+ * while none of its agents has run for the server's `statusStallMinutes` (or,
+ * with no agents linked, has not been updated for that long). Its coordinator
+ * gets one nudge per stall, keyed by the row and when the stall began, so a
+ * restart or a repeat sweep never sends it twice. Any write to the row, or an
+ * agent running again, starts a new clock.
+ *
  * @module StatusDeadlineReactor
  */
 import {
@@ -23,8 +30,14 @@ import {
   type ProjectId,
   type ProjectStatus,
   type ProjectStatusDeadlineOutcome,
+  type StatusAgentShell,
+  type StatusStall,
   statusReminderMessageId,
   statusReplyText,
+  statusStallMessageId,
+  statusStallMinutesOf,
+  statusStallOf,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
@@ -41,6 +54,8 @@ import * as Stream from "effect/Stream";
 
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 import { forkParked } from "../serverActivation.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
 import {
   isOrchestrationCommandRejection,
   OrchestrationCommandIdConflictError,
@@ -159,9 +174,89 @@ export function statusDeadlineText(
   ].join("\n");
 }
 
+export interface StalledStatus {
+  readonly projectId: ProjectId;
+  readonly coordinatorThreadId: ProjectAssistant["coordinatorThreadId"];
+  readonly status: ProjectStatus;
+  readonly stall: StatusStall;
+}
+
+/** Live Projects' rows that can stall, for the sweep to read their agents. */
+function stallCandidates(rows: Parameters<typeof dueDeadlines>[0]) {
+  return rows.flatMap((project) => {
+    const assistant = project.assistant;
+    if (project.deletedAt !== null || assistant == null || assistant.archivedAt != null) return [];
+    return (assistant.statuses ?? [])
+      .filter(
+        (status) =>
+          status.dismissedAt === undefined &&
+          (status.state === "working" ||
+            (status.state === "queued" && (status.agents?.length ?? 0) > 0)),
+      )
+      .map((status) => ({
+        projectId: project.projectId,
+        coordinatorThreadId: assistant.coordinatorThreadId,
+        status,
+      }));
+  });
+}
+
+/**
+ * Rows stalled at `nowMs`, and when the next one could stall (or null). A row
+ * with a live agent has no predictable time, so it asks for a recheck after
+ * `stallMinutes`; agent events also mark the sweep dirty.
+ */
+export function stalledStatuses(
+  rows: Parameters<typeof dueDeadlines>[0],
+  shells: ReadonlyMap<string, StatusAgentShell | null>,
+  nowMs: number,
+  stallMinutes: number,
+): { readonly stalled: StalledStatus[]; readonly nextAtMs: number | null } {
+  const stalled: StalledStatus[] = [];
+  let nextAtMs: number | null = null;
+  if (stallMinutes <= 0) return { stalled, nextAtMs };
+  const stallMs = stallMinutes * 60_000;
+  const later = (at: number) => {
+    if (nextAtMs === null || at < nextAtMs) nextAtMs = at;
+  };
+  for (const entry of stallCandidates(rows)) {
+    const agents = (entry.status.agents ?? []).map((id) => shells.get(id) ?? null);
+    const stall = statusStallOf(entry.status, agents, nowMs, stallMinutes);
+    if (stall !== null) {
+      stalled.push({ ...entry, stall });
+      continue;
+    }
+    // Not yet: find when it would be, assuming nothing changes.
+    const probe = statusStallOf(entry.status, agents, Number.MAX_SAFE_INTEGER, stallMinutes);
+    later(probe === null ? nowMs + stallMs : probe.sinceMs + stallMs);
+  }
+  return { stalled, nextAtMs };
+}
+
+/** The one nudge a stalled row's coordinator receives. */
+export function statusStallText(status: ProjectStatus, stall: StatusStall): string {
+  const ref = `"${status.title}" [status:${status.id}]`;
+  const what =
+    stall.kind === "agents-stopped"
+      ? `still says ${status.state}, but none of its agents is running. ${stall.reason}.`
+      : `still says ${status.state}, but no agent is linked to it. ${stall.reason}.`;
+  return [
+    `Status check: ${ref} ${what} The user sees it marked Stalled.`,
+    "",
+    "Update the row with cp_status_set now: mark it done, queued or needs-you, link the agent that is on it, or start one. Keep a row working only while an agent is actually working on it.",
+    "",
+    "This is the only reminder for this stall. Any update to the row clears it.",
+  ].join("\n");
+}
+
 export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const projects = yield* ProjectionProjectRepository;
+  const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const settings = yield* ServerSettings.ServerSettingsService;
+  // Nudges sent (or settled) this run, so a stall is dispatched once; the
+  // message id dedupes across restarts.
+  const nudged = new Set<string>();
   // Earliest pending deadline from the last sweep. The minute tick reads the
   // projects table only once it has passed or a status write invalidated it.
   let nextAtMs: number | null = null;
@@ -269,6 +364,60 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const sendStallNudge = (entry: StalledStatus, createdAt: string) => {
+    const messageId = statusStallMessageId(entry.projectId, entry.status.id, entry.stall.sinceMs);
+    if (nudged.has(messageId)) return Effect.void;
+    return engine
+      .dispatch({
+        type: "thread.message.user.append",
+        commandId: CommandId.make(messageId),
+        threadId: entry.coordinatorThreadId,
+        message: {
+          messageId: MessageId.make(messageId),
+          text: statusStallText(entry.status, entry.stall),
+          attachments: [],
+          source: { kind: "agent", threadTitle: "Status" },
+        },
+        createdAt,
+      })
+      .pipe(
+        Effect.tap(() => Effect.sync(() => nudged.add(messageId))),
+        Effect.asVoid,
+        Effect.catchIf(isOrchestrationCommandRejection, (error) =>
+          Effect.sync(() => nudged.add(messageId)).pipe(
+            Effect.andThen(
+              logRejected("stall nudge", {
+                projectId: entry.projectId,
+                statusId: entry.status.id,
+              })(error),
+            ),
+          ),
+        ),
+      );
+  };
+
+  /** Each linked agent's shell, null for one that is gone. */
+  const agentShells = Effect.fn("StatusDeadlineReactor.agentShells")(function* (
+    rows: Parameters<typeof dueDeadlines>[0],
+  ) {
+    const ids = new Set<ThreadId>();
+    for (const entry of stallCandidates(rows)) {
+      for (const id of entry.status.agents ?? []) ids.add(id);
+    }
+    const shells = new Map<string, StatusAgentShell | null>();
+    yield* Effect.forEach(
+      ids,
+      (id) =>
+        snapshots.getThreadShellById(id).pipe(
+          Effect.map((shell) => shells.set(id, Option.getOrNull(shell))),
+          // An unreadable agent counts as gone for this sweep only.
+          Effect.catch(() => Effect.sync(() => shells.set(id, null))),
+        ),
+      { discard: true },
+    );
+    return shells;
+  });
+
   const sweepOnce = Effect.fn("StatusDeadlineReactor.sweep")(function* (force: boolean) {
     const nowMs = yield* Clock.currentTimeMillis;
     if (!force && !dirty && (nextAtMs === null || nextAtMs > nowMs)) return;
@@ -282,10 +431,23 @@ export const make = Effect.gen(function* () {
       { discard: true },
     );
     const result = dueDeadlines(rows, nowMs);
-    nextAtMs = result.nextAtMs;
     yield* Effect.forEach(result.due, (entry) => isolated(entry, handleDeadline(entry)), {
       discard: true,
     });
+    const stallMinutes = statusStallMinutesOf((yield* settings.getSettings).statusStallMinutes);
+    const stalls = stalledStatuses(rows, yield* agentShells(rows), nowMs, stallMinutes);
+    const createdAt = DateTime.formatIso(yield* DateTime.now);
+    yield* Effect.forEach(
+      stalls.stalled,
+      (entry) => isolated(entry, sendStallNudge(entry, createdAt)),
+      { discard: true },
+    );
+    nextAtMs =
+      result.nextAtMs === null
+        ? stalls.nextAtMs
+        : stalls.nextAtMs === null
+          ? result.nextAtMs
+          : Math.min(result.nextAtMs, stalls.nextAtMs);
   });
 
   const runSweep = (force: boolean) =>
@@ -309,6 +471,14 @@ export const make = Effect.gen(function* () {
       case "project.deleted":
         dirty = true;
         return worker.enqueue(false);
+      // An agent starting or stopping moves a stall clock; the minute tick
+      // picks it up, so frequent turn events never sweep on their own.
+      case "thread.session-set":
+      case "thread.settled":
+      case "thread.archived":
+      case "thread.deleted":
+        dirty = true;
+        return Effect.void;
       default:
         return Effect.void;
     }

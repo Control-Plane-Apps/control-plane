@@ -1237,6 +1237,39 @@ describe("AgentCompletionReactor", () => {
   );
 
   test(
+    "returns a result for a request folded into the user's turn that took its start",
+    Effect.gen(function* () {
+      const f = yield* makeFixture;
+      yield* f.createProject;
+      const agent = A("agent-folded");
+      yield* f.createThread(agent, "Folded", { createdBy: COORDINATOR });
+      const ask = M(agentSendId(agent, "ask:abc123def:uuid-1"));
+
+      yield* f.withReactor((drain) =>
+        Effect.gen(function* () {
+          // The request is started for the idle agent...
+          yield* f.holdSend(agent, ask, COORDINATOR, "How close is the release?");
+          yield* drain;
+          assert.include(yield* f.receipts("cp-start:"), `accepted cp-start:${ask}`);
+          // ...and the user's own message lands before any turn adopts it,
+          // so one turn answers both and no turn carries the request's id.
+          yield* f.startTurn(agent, M("user-says-hi"));
+          yield* f.finishTurn(agent, T("turn-both"), "Release goes out at 5:30.");
+          yield* drain;
+        }),
+      );
+
+      const texts = new Map(
+        (yield* f.userMessages(COORDINATOR)).map((message) => [message.id, message.text]),
+      );
+      assert.strictEqual(
+        texts.get(pushIdOf(agent, ask)),
+        resultText("Folded", agent, "finished", "Release goes out at 5:30."),
+      );
+    }),
+  );
+
+  test(
     "reports no earlier reply for a held request whose start failed",
     Effect.gen(function* () {
       const f = yield* makeFixture;
