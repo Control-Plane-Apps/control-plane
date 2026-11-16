@@ -1,6 +1,6 @@
 import type { Task } from "@t3tools/contracts";
 import * as Haptics from "expo-haptics";
-import { type ReactNode, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, {
   ReduceMotion,
@@ -27,7 +27,15 @@ export interface TaskDropTargets {
   readonly hitTest: (x: number, y: number, task: Task) => string | null;
   readonly onHover: (target: string | null) => void;
   readonly onDrop: (task: Task, target: string) => void;
+  /**
+   * Called on a short timer while a row is lifted, with the finger's window y.
+   * Scrolls the page when the finger is near an edge and returns how far it
+   * moved (signed, points), so the lifted row can stay under the finger.
+   */
+  readonly autoScroll?: (y: number) => number;
 }
+
+const AUTO_SCROLL_TICK_MS = 16;
 
 interface Drag {
   readonly from: number;
@@ -42,12 +50,17 @@ export function ReorderableTaskRows(props: {
   readonly renderRow: (task: Task, index: number) => ReactNode;
   /** The drop, in the list's own indices. */
   readonly onReorder: (tasks: ReadonlyArray<Task>, from: number, to: number) => void;
-  readonly onDragActiveChange?: (active: boolean) => void;
+  readonly onDragActiveChange?: (active: boolean, task: Task | null) => void;
   readonly dropTargets?: TaskDropTargets;
 }) {
   const frames = useRef<Array<ReorderFrame | undefined>>([]);
   const translation = useSharedValue(0);
   const translationX = useSharedValue(0);
+  // How far the page auto-scrolled since the lift: the row keeps its place
+  // under the finger and the slot maths follows the scrolled content.
+  const scrolled = useSharedValue(0);
+  const lastPointer = useRef({ dx: 0, dy: 0, x: 0, y: 0 });
+  const scrollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const hovered = useRef<string | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   // Hold the dropped order until the store's own order catches up, so rows
@@ -78,16 +91,34 @@ export function ReorderableTaskRows(props: {
   const start = (index: number) => {
     translation.value = 0;
     translationX.value = 0;
+    scrolled.value = 0;
     hovered.current = null;
     const next = { from: index, to: index, height: frames.current[index]?.height ?? 0 };
     latest.current.drag = next;
     setDrag(next);
-    latest.current.props.onDragActiveChange?.(true);
+    latest.current.props.onDragActiveChange?.(true, latest.current.tasks[index] ?? null);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
+    stopAutoScroll();
+    if (latest.current.props.dropTargets?.autoScroll !== undefined) {
+      scrollTimer.current = setInterval(() => {
+        const delta = latest.current.props.dropTargets?.autoScroll?.(lastPointer.current.y) ?? 0;
+        if (delta === 0) return;
+        scrolled.value += delta;
+        // The content moved under a still finger: find the slot and target again.
+        const { dx, dy, x, y } = lastPointer.current;
+        move(dy, dx, x, y);
+      }, AUTO_SCROLL_TICK_MS);
+    }
+  };
+  const stopAutoScroll = () => {
+    if (scrollTimer.current === null) return;
+    clearInterval(scrollTimer.current);
+    scrollTimer.current = null;
   };
   const move = (dy: number, dx: number, x: number, y: number) => {
     const current = latest.current.drag;
     if (current === null) return;
+    lastPointer.current = { dx, dy, x, y };
     translation.value = dy;
     const lifted = latest.current.tasks[current.from];
     const target =
@@ -98,7 +129,7 @@ export function ReorderableTaskRows(props: {
     // Follow the finger sideways only while it is over a drop target.
     translationX.value = target === null ? 0 : dx;
     if (target !== null) return;
-    const to = reorderTargetIndex(frames.current, current.from, dy);
+    const to = reorderTargetIndex(frames.current, current.from, dy + scrolled.value);
     if (to === current.to) return;
     const next = { ...current, to };
     latest.current.drag = next;
@@ -111,11 +142,13 @@ export function ReorderableTaskRows(props: {
     if (current === null) return;
     latest.current.drag = null;
     setDrag(null);
+    stopAutoScroll();
     translation.value = 0;
     translationX.value = 0;
+    scrolled.value = 0;
     const target = hovered.current;
     setHovered(null);
-    latest.current.props.onDragActiveChange?.(false);
+    latest.current.props.onDragActiveChange?.(false, null);
     const list = latest.current.tasks;
     const lifted = list[current.from];
     if (commit && target !== null && lifted !== undefined) {
@@ -135,6 +168,7 @@ export function ReorderableTaskRows(props: {
   };
   const handlers = useRef({ start, move, end });
   handlers.current = { start, move, end };
+  useEffect(() => stopAutoScroll, []);
 
   return tasks.map((task, index) => (
     <ReorderItem
@@ -146,6 +180,7 @@ export function ReorderableTaskRows(props: {
       shift={drag === null ? 0 : reorderShift(index, drag.from, drag.to, drag.height)}
       translation={translation}
       translationX={translationX}
+      scrolled={scrolled}
       onLayout={(frame) => {
         frames.current[index] = frame;
         frames.current.length = tasks.length;
@@ -165,6 +200,7 @@ function ReorderItem(props: {
   readonly shift: number;
   readonly translation: SharedValue<number>;
   readonly translationX: SharedValue<number>;
+  readonly scrolled: SharedValue<number>;
   readonly onLayout: (frame: ReorderFrame) => void;
   readonly handlers: {
     readonly current: {
@@ -175,7 +211,7 @@ function ReorderItem(props: {
   };
   readonly children: ReactNode;
 }) {
-  const { index, handlers, lifted, dragging, shift, translation, translationX } = props;
+  const { index, handlers, lifted, dragging, shift, translation, translationX, scrolled } = props;
   const gesture = useMemo(() => {
     // The lifted row follows the finger on the UI thread, so the drag stays
     // smooth while the JS side works out the slot and any range under it.
@@ -208,7 +244,7 @@ function ReorderItem(props: {
       { translateX: lifted ? translationX.value : 0 },
       {
         translateY: lifted
-          ? translation.value
+          ? translation.value + scrolled.value
           : dragging
             ? withSpring(shift, {
                 damping: 26,

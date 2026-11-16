@@ -50,7 +50,7 @@ import { sendThreadMessage } from "../status/statusReplyStore";
 import { PlanTaskRow, type PlanTaskRowContext } from "./PlanTaskRow";
 import { ReorderableTaskRows, type TaskDropTargets } from "./ReorderableTaskRows";
 import { CHECK_OFF_LINGER_MS, withLingeringTasks } from "./taskCheckOff";
-import { dayDropTarget, planTaskReorder } from "./taskReorder";
+import { autoScrollDelta, dayDropTarget, planTaskReorder } from "./taskReorder";
 import { ProposedTasks } from "./ProposedTasks";
 import { useOptimisticTaskHomes } from "./useOptimisticTaskHomes";
 import { projectForTask, useHandToAgent } from "./taskHandoff";
@@ -318,14 +318,42 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   );
 
   const [reordering, setReordering] = useState(false);
+  // The day whose row is lifted: its section is raised above the others so the
+  // row stays visible as it travels over them.
+  const [liftedDate, setLiftedDate] = useState<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollMetrics = useRef({ offset: 0, content: 0, viewport: 0, top: 0 });
+  const measureScroll = useCallback(() => {
+    (scrollRef.current as unknown as View | null)?.measureInWindow((_x, y, _w, height) => {
+      scrollMetrics.current.top = y;
+      scrollMetrics.current.viewport = height;
+    });
+  }, []);
   const setDragActive = useCallback(
-    (active: boolean) => {
+    (active: boolean, task: Task | null) => {
       setReordering(active);
+      setLiftedDate(active && task?.home.kind === "date" ? task.home.date : null);
       // The page can have scrolled since the cards last reported their frames.
-      if (active) measureDays();
+      if (active) {
+        measureDays();
+        measureScroll();
+      }
     },
-    [measureDays],
+    [measureDays, measureScroll],
   );
+  /** Scrolls while a lifted row's finger is near the top or bottom edge. */
+  const autoScroll = useCallback((y: number) => {
+    const metrics = scrollMetrics.current;
+    const delta = autoScrollDelta({ y, ...metrics });
+    if (delta === 0) return 0;
+    metrics.offset += delta;
+    scrollRef.current?.scrollTo({ y: metrics.offset, animated: false });
+    // The day cards moved with the content; keep their frames in step.
+    for (const [date, frame] of dayFrames.current) {
+      dayFrames.current.set(date, { ...frame, y: frame.y - delta });
+    }
+    return delta;
+  }, []);
   const reorder = useCallback(
     (list: ReadonlyArray<Task>, from: number, to: number) => {
       for (const assignment of planTaskReorder(list, from, to)) {
@@ -357,6 +385,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       return null;
     },
     onHover: setDropHover,
+    autoScroll: view === "upcoming" ? autoScroll : undefined,
     onDrop: (task, target) => {
       if (target.startsWith(DAY_TARGET_PREFIX)) {
         const home = dayDropHome(task, target.slice(DAY_TARGET_PREFIX.length), today);
@@ -375,7 +404,13 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
 
   const renderList = (
     list: ReadonlyArray<Task>,
-    options?: { hidePeriod?: boolean; trailing?: boolean; reorderable?: boolean },
+    options?: {
+      hidePeriod?: boolean;
+      /** Rows already sit under their day's label (Upcoming). */
+      hideDay?: boolean;
+      trailing?: boolean;
+      reorderable?: boolean;
+    },
   ) => (
     <ReorderableTaskRows
       tasks={list}
@@ -399,6 +434,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
               selected={selectedIds.has(task.id)}
               onToggleSelected={toggleSelected}
               hidePeriod={options?.hidePeriod}
+              hideDay={options?.hideDay}
               metaPlacement={options?.trailing ? "trailing" : "below"}
               highlighted={highlightIds.has(task.id)}
             />
@@ -560,6 +596,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
               key={group.date}
               date={group.date}
               hovering={dropHover === `${DAY_TARGET_PREFIX}${group.date}`}
+              lifted={liftedDate === group.date}
               refs={dayRefs.current}
               onMeasure={measureDays}
             >
@@ -580,7 +617,9 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
                 highlightIds={highlightIds}
               />
               {group.tasks.length > 0 ? (
-                <TaskCard>{renderList(group.tasks, { reorderable: true })}</TaskCard>
+                <TaskCard style={reordering ? { overflow: "visible" } : undefined}>
+                  {renderList(group.tasks, { reorderable: true, hideDay: true })}
+                </TaskCard>
               ) : group.proposals.length > 0 ? null : (
                 <Text className="px-9 text-[14px] text-foreground-tertiary">Nothing yet</Text>
               )}
@@ -787,9 +826,17 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const main = (
     <View className="flex-1">
       <ScrollView
+        ref={scrollRef}
         scrollEnabled={!reordering}
-        onScroll={view === "upcoming" ? measureDays : undefined}
-        scrollEventThrottle={64}
+        onScroll={(event) => {
+          scrollMetrics.current.offset = event.nativeEvent.contentOffset.y;
+          if (view === "upcoming") measureDays();
+        }}
+        onContentSizeChange={(_width, height) => {
+          scrollMetrics.current.content = height;
+        }}
+        onLayout={measureScroll}
+        scrollEventThrottle={16}
         refreshControl={
           selecting ? undefined : (
             <RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} />
@@ -1016,6 +1063,8 @@ function BacklogFilters(props: {
 function DayDropZone(props: {
   readonly date: string;
   readonly hovering: boolean;
+  /** A row of this day is lifted: stack above the other days. */
+  readonly lifted: boolean;
   readonly refs: Map<string, View | null>;
   readonly onMeasure: () => void;
   readonly children: ReactNode;
@@ -1031,6 +1080,7 @@ function DayDropZone(props: {
       className="rounded-3xl pb-1"
       style={{
         marginHorizontal: 4,
+        zIndex: props.lifted ? 50 : 0,
         borderWidth: 1.5,
         borderStyle: props.hovering ? "dashed" : "solid",
         borderColor: props.hovering ? palette.accent : "transparent",

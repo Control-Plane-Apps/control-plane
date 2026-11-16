@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  autoScrollDelta,
   dayDropTarget,
   moveItem,
   planTaskReorder,
@@ -103,5 +104,36 @@ describe("dayDropTarget", () => {
     } as const;
     expect(dayDropTarget(days, 200, 150, committed)).toBe("2026-11-18");
     expect(dayDropTarget(days, 200, 300, { ...gym, status: "completed" })).toBeNull();
+  });
+});
+
+describe("autoScrollDelta", () => {
+  // A page whose visible area is y 100 to 800, scrolled 200 into 2000 of content.
+  const page = { top: 100, viewport: 700, offset: 200, content: 2000 };
+
+  it("does nothing in the middle of the page", () => {
+    expect(autoScrollDelta({ ...page, y: 450 })).toBe(0);
+  });
+
+  it("scrolls up near the top edge and down near the bottom, faster closer in", () => {
+    const nearTop = autoScrollDelta({ ...page, y: 150 });
+    const atTop = autoScrollDelta({ ...page, y: 100 });
+    expect(nearTop).toBeLessThan(0);
+    expect(atTop).toBeLessThan(nearTop);
+    const nearBottom = autoScrollDelta({ ...page, y: 750 });
+    const atBottom = autoScrollDelta({ ...page, y: 800 });
+    expect(nearBottom).toBeGreaterThan(0);
+    expect(atBottom).toBeGreaterThan(nearBottom);
+  });
+
+  it("stops at the ends of the content", () => {
+    expect(autoScrollDelta({ ...page, offset: 0, y: 100 })).toBe(0);
+    expect(autoScrollDelta({ ...page, offset: 1300, y: 800 })).toBe(0);
+    expect(autoScrollDelta({ ...page, offset: 1295, y: 800 })).toBe(5);
+    expect(autoScrollDelta({ ...page, offset: 5, y: 100 })).toBe(-5);
+  });
+
+  it("does not scroll a page that fits", () => {
+    expect(autoScrollDelta({ top: 100, viewport: 700, offset: 0, content: 500, y: 790 })).toBe(0);
   });
 });

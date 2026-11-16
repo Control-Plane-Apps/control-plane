@@ -94,3 +94,34 @@ export function dayDropTarget(
   }
   return null;
 }
+
+export const AUTO_SCROLL_EDGE_PT = 90;
+export const AUTO_SCROLL_MAX_STEP = 14;
+
+/**
+ * How far to scroll this tick for a finger at window y, over a page whose
+ * visible area starts at `top` and is `viewport` tall: negative near the top
+ * edge, positive near the bottom, faster the closer to the edge, and never past
+ * the content (`offset` is the current scroll, `content` the content height).
+ */
+export function autoScrollDelta(input: {
+  readonly y: number;
+  readonly top: number;
+  readonly viewport: number;
+  readonly offset: number;
+  readonly content: number;
+}): number {
+  const bottom = input.top + input.viewport;
+  let step = 0;
+  if (input.y < input.top + AUTO_SCROLL_EDGE_PT) {
+    const depth = Math.min(1, (input.top + AUTO_SCROLL_EDGE_PT - input.y) / AUTO_SCROLL_EDGE_PT);
+    step = -AUTO_SCROLL_MAX_STEP * depth;
+  } else if (input.y > bottom - AUTO_SCROLL_EDGE_PT) {
+    const depth = Math.min(1, (input.y - (bottom - AUTO_SCROLL_EDGE_PT)) / AUTO_SCROLL_EDGE_PT);
+    step = AUTO_SCROLL_MAX_STEP * depth;
+  }
+  if (step === 0) return 0;
+  const max = Math.max(0, input.content - input.viewport);
+  const next = Math.min(max, Math.max(0, input.offset + step));
+  return next - input.offset;
+}
