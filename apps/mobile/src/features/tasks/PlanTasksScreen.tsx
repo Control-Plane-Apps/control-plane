@@ -15,7 +15,6 @@ import {
   formatTaskDayTitle,
   homeForMove,
   proposedTasks,
-  shiftTaskPeriod,
   taskAgentState,
   taskCounts,
   taskIntentFor,
@@ -134,23 +133,18 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const showUndo = undo.show;
 
   const [view, setViewState] = useState<PlanTasksView>(route.params?.view ?? "today");
-  // A date inside the Week, Month or Year being browsed; null is the current one.
-  const [anchor, setAnchor] = useState<string | null>(null);
   const [dropHover, setDropHover] = useState<string | null>(null);
   const chipFrames = useRef(
     new Map<string, { x: number; y: number; width: number; height: number }>(),
   );
   const [projectFilter, setProjectFilter] = useState<ProjectFilter>(null);
   const [backlogFilter, setBacklogFilter] = useState<TaskBacklogFilter>("all");
-  const [searching, setSearching] = useState(false);
-  const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [showCompleted, setShowCompleted] = useState(false);
   const setView = useCallback((next: PlanTasksView) => {
     setViewState(next);
-    setAnchor(null);
     setExpandedId(null);
   }, []);
 
@@ -212,18 +206,8 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
 
   const lifecycleProjects = projects as ReadonlyArray<TaskLifecycleProject>;
   const visible = useCallback(
-    (list: ReadonlyArray<Task>) => {
-      const scoped = filterTasksByProject(list, projectFilter);
-      const needle = query.trim().toLowerCase();
-      return needle.length === 0
-        ? scoped
-        : scoped.filter(
-            (task) =>
-              task.title.toLowerCase().includes(needle) ||
-              (task.notes ?? "").toLowerCase().includes(needle),
-          );
-    },
-    [projectFilter, query],
+    (list: ReadonlyArray<Task>) => filterTasksByProject(list, projectFilter),
+    [projectFilter],
   );
 
   const toggleExpanded = useCallback(
@@ -313,7 +297,6 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const openQuickAdd = (horizon: "today" | TaskHorizon | "backlog") =>
     navigation.navigate("TaskQuickAdd", {
       horizon,
-      ...(anchor !== null && horizon !== "today" && horizon !== "backlog" ? { at: anchor } : {}),
       ...(horizon === "backlog" &&
       (backlogFilter === "week" || backlogFilter === "month" || backlogFilter === "year")
         ? { backlog: backlogFilter }
@@ -337,7 +320,6 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
 
   let title: string;
   let subtitle: string | null = null;
-  let titleAccessory: ReactNode = null;
   let content: ReactNode;
   switch (view) {
     case "today": {
@@ -399,27 +381,15 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     case "month":
     case "year": {
       const horizon: TaskHorizon = view;
-      const at = anchor ?? today;
-      const period = taskPeriodFor(horizon, at);
-      const current = taskPeriodFor(horizon, today).startsOn === period.startsOn;
+      const period = taskPeriodFor(horizon, today);
       title =
         horizon === "week"
           ? `Week of ${formatTaskShortDate(period.startsOn)}`
           : formatTaskPeriodTitle(horizon, period.startsOn);
       subtitle = formatTaskRange(period.startsOn, period.endsOn);
-      titleAccessory = (
-        <PeriodNav
-          unit={horizon}
-          onShift={(steps) => {
-            const next = shiftTaskPeriod(horizon, at, steps);
-            setAnchor(taskPeriodFor(horizon, today).startsOn === next ? null : next);
-            setExpandedId(null);
-          }}
-        />
-      );
-      const committed = visible(committedTasks(tasks, horizon, at));
+      const committed = visible(committedTasks(tasks, horizon, today));
       const backlog = backlogTasks(tasks, horizon).length;
-      const intent = taskIntentFor(intents, horizon, at);
+      const intent = taskIntentFor(intents, horizon, today);
       content = (
         <>
           <View className="pt-3">
@@ -429,9 +399,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
                 <IntentLine
                   key={`${horizon}:${period.startsOn}:${intent?.text ?? ""}`}
                   value={intent?.text ?? ""}
-                  placeholder={
-                    current ? `Set this ${horizon}'s intent` : `Set the ${horizon}'s intent`
-                  }
+                  placeholder={`Set this ${horizon}'s intent`}
                   onCommit={(text) => void actions.setIntent(horizon, period.startsOn, text)}
                 />
               </View>
@@ -491,7 +459,6 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       const result = allTasks(visible(tasks), backlogFilter);
       content = (
         <>
-          <ProjectChips projects={projects} value={projectFilter} onChange={setProjectFilter} />
           <BacklogFilters
             value={backlogFilter}
             completed={result.completed}
@@ -612,68 +579,50 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
         </Pressable>
       )}
       <View className="ml-auto flex-row items-center">
-        {view !== "all" ? (
-          <ControlPillMenu
-            title={filterLabel}
-            actions={[
-              {
-                id: "all",
-                title: "All projects",
-                state: projectFilter === null ? "on" : undefined,
-              },
-              ...projects
-                .filter((project) => project.assistant != null)
-                .map((project) => ({
-                  id: project.id,
-                  title: project.title,
-                  state: projectFilter === project.id ? ("on" as const) : undefined,
-                })),
-              {
-                id: "none",
-                title: "No project",
-                state: projectFilter === "none" ? "on" : undefined,
-              },
-            ]}
-            onPressAction={({ nativeEvent }) =>
-              setProjectFilter(nativeEvent.event === "all" ? null : nativeEvent.event)
-            }
-          >
-            <View
-              accessible
-              accessibilityRole="button"
-              accessibilityLabel={`Filter by project, ${filterLabel}`}
-              className="size-11 items-center justify-center"
-            >
-              <SymbolView
-                name={symbol(
-                  projectFilter === null
-                    ? "line.3.horizontal.decrease"
-                    : "line.3.horizontal.decrease.circle.fill",
-                  "visibility",
-                )}
-                size={19}
-                tintColorClassName="accent-foreground"
-                type="monochrome"
-              />
-            </View>
-          </ControlPillMenu>
-        ) : null}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={searching ? "Close search" : "Search tasks"}
-          onPress={() => {
-            setSearching((open) => !open);
-            setQuery("");
-          }}
-          className="size-11 items-center justify-center"
+        <ControlPillMenu
+          title={filterLabel}
+          actions={[
+            {
+              id: "all",
+              title: "All projects",
+              state: projectFilter === null ? "on" : undefined,
+            },
+            ...projects
+              .filter((project) => project.assistant != null)
+              .map((project) => ({
+                id: project.id,
+                title: project.title,
+                state: projectFilter === project.id ? ("on" as const) : undefined,
+              })),
+            {
+              id: "none",
+              title: "No project",
+              state: projectFilter === "none" ? "on" : undefined,
+            },
+          ]}
+          onPressAction={({ nativeEvent }) =>
+            setProjectFilter(nativeEvent.event === "all" ? null : nativeEvent.event)
+          }
         >
-          <SymbolView
-            name={symbol(searching ? "xmark" : "magnifyingglass", "close")}
-            size={18}
-            tintColorClassName="accent-foreground"
-            type="monochrome"
-          />
-        </Pressable>
+          <View
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel={`Filter by project, ${filterLabel}`}
+            className="size-11 items-center justify-center"
+          >
+            <SymbolView
+              name={symbol(
+                projectFilter === null
+                  ? "line.3.horizontal.decrease"
+                  : "line.3.horizontal.decrease.circle.fill",
+                "visibility",
+              )}
+              size={19}
+              tintColorClassName="accent-foreground"
+              type="monochrome"
+            />
+          </View>
+        </ControlPillMenu>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Add a task"
@@ -712,25 +661,11 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             >
               {title}
             </Text>
-            {titleAccessory}
           </View>
           {subtitle !== null ? (
             <Text className="text-[16px] text-foreground-muted">{subtitle}</Text>
           ) : null}
         </View>
-        {searching ? (
-          <View className="px-4 pt-2">
-            <AppTextInput
-              accessibilityLabel="Search tasks"
-              autoFocus
-              className="min-h-11 rounded-full border-0 bg-card px-4 py-2 text-[16px]"
-              placeholder="Search tasks"
-              returnKeyType="search"
-              value={query}
-              onChangeText={setQuery}
-            />
-          </View>
-        ) : null}
         {!available ? (
           <View className="items-center gap-1 px-6 pt-24">
             <Text className="text-center text-[17px] text-foreground-muted">
@@ -867,56 +802,6 @@ function IntentLine(props: {
   );
 }
 
-function ProjectChips(props: {
-  readonly projects: ReadonlyArray<EnvironmentProject>;
-  readonly value: ProjectFilter;
-  readonly onChange: (value: ProjectFilter) => void;
-}) {
-  const palette = useTaskPalette();
-  const chip = (id: ProjectFilter, label: string) => {
-    const active = props.value === id;
-    return (
-      <Pressable
-        key={id ?? "all"}
-        accessibilityRole="button"
-        accessibilityLabel={`Show ${label}`}
-        accessibilityState={{ selected: active }}
-        onPress={() => props.onChange(id)}
-        style={({ pressed }) => ({
-          opacity: pressed ? 0.7 : 1,
-          minHeight: 40,
-          paddingHorizontal: 16,
-          borderRadius: 20,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 6,
-          backgroundColor: active ? palette.accent : palette.chip,
-        })}
-      >
-        <Text
-          className={cn("text-[15px] font-t3-medium", !active && "text-foreground")}
-          style={active ? { color: palette.accentForeground } : undefined}
-        >
-          {label}
-        </Text>
-      </Pressable>
-    );
-  };
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={{ gap: 8, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }}
-    >
-      {chip(null, "All projects")}
-      {props.projects
-        .filter((project) => project.assistant != null)
-        .map((project) => chip(project.id, project.title))}
-      {chip("none", "No project")}
-    </ScrollView>
-  );
-}
-
 /** All tasks filters: the backlogs, Recurring, and Completed with its count. */
 function BacklogFilters(props: {
   readonly value: TaskBacklogFilter;
@@ -994,10 +879,8 @@ function RangeChips(props: {
       });
     }
   };
-  const countFor = (view: PlanTasksView) =>
-    view === "today" || view === "week" || view === "month" || view === "year"
-      ? props.counts[view]
-      : 0;
+  // Only Today carries a count; the periods stay quiet.
+  const countFor = (view: PlanTasksView) => (view === "today" ? props.counts.today : 0);
   const hoverLabel =
     props.dropHover === null ? null : props.dropLabelFor(props.dropHover as PlanTasksView);
   const hoverFrame = props.dropHover === null ? undefined : props.frames.get(props.dropHover);
@@ -1077,32 +960,6 @@ function RangeChips(props: {
           </Text>
         </View>
       ) : null}
-    </View>
-  );
-}
-
-function PeriodNav(props: { readonly unit: string; readonly onShift: (steps: number) => void }) {
-  const button = (steps: number, label: string, icon: "chevron.left" | "chevron.right") => (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      onPress={() => props.onShift(steps)}
-      className="size-11 items-center justify-center"
-      style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}
-    >
-      <SymbolView
-        name={icon}
-        size={17}
-        tintColorClassName="accent-foreground"
-        type="monochrome"
-        weight="semibold"
-      />
-    </Pressable>
-  );
-  return (
-    <View className="flex-row items-center">
-      {button(-1, `Previous ${props.unit}`, "chevron.left")}
-      {button(1, `Next ${props.unit}`, "chevron.right")}
     </View>
   );
 }

@@ -118,9 +118,7 @@ function ProposedTaskRow(props: {
         />
       </View>
       <View className="min-w-0 flex-1 pt-[9px]">
-        <Text className="text-[17px] font-t3-bold text-foreground" numberOfLines={card ? 2 : 1}>
-          {task.title}
-        </Text>
+        <Text className="text-[17px] font-t3-bold text-foreground">{task.title}</Text>
         <View className="flex-row items-center gap-1 pb-1 pt-0.5">
           {card ? (
             <SymbolView

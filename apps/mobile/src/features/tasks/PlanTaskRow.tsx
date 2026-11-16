@@ -136,7 +136,6 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
                   "shrink text-[17px] font-t3-bold text-foreground",
                   completed && "font-t3 text-foreground-muted line-through",
                 )}
-                numberOfLines={1}
               >
                 {task.title}
               </Text>
