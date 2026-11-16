@@ -8,6 +8,7 @@ import {
   findGlobalAssistantProject,
   isAgentPushMessageId,
   isGlobalAssistant,
+  isStatusNeedingUser,
   type OrchestrationMessage,
   type OrchestrationProjectShell,
   type OrchestrationThreadActivity,
@@ -49,6 +50,7 @@ function isLiveProject(project: OrchestrationProjectShell): boolean {
 
 /**
  * Open questions across every live Project, deadlines first, then newest.
+ * A question the user already answered, or a record off `needs-you`, is not one.
  * `projectIds` limits it to the Assistant's reach; null is every Project.
  */
 export function collectNeedsYou<P extends OrchestrationProjectShell>(
@@ -60,8 +62,9 @@ export function collectNeedsYou<P extends OrchestrationProjectShell>(
     if (!isLiveProject(project)) continue;
     if (projectIds !== null && !projectIds.includes(project.id)) continue;
     for (const status of project.assistant?.statuses ?? []) {
+      // Same rule as the Status board: an answered question waits on the coordinator.
       const decision = status.decision;
-      if (decision === undefined || decision.answeredAt !== undefined) continue;
+      if (decision === undefined || !isStatusNeedingUser(status)) continue;
       items.push({ project, status: { ...status, decision } });
     }
   }

@@ -24,6 +24,18 @@ export interface TaskSyncClientInfo {
   readonly returnTo: "desktop" | "mobile";
   /** 16 random bytes; defaults to Web Crypto, which React Native may lack. */
   readonly randomBytes?: (length: number) => Uint8Array;
+  /** This device's IANA time zone; defaults to the runtime's zone. */
+  readonly timeZone?: () => string | undefined;
+}
+
+/** The runtime's IANA time zone, or undefined when it cannot say. */
+export function deviceTimeZone(): string | undefined {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof zone === "string" && zone.length > 0 ? zone : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const DESKTOP_CLIENT: TaskSyncClientInfo = { platform: "macos", returnTo: "desktop" };
@@ -132,11 +144,20 @@ export function makeTaskSyncCloudClient(
 
   const call = async (
     path: string,
-    init: RequestInit & { readonly bearer?: string; readonly appClient?: boolean } = {},
+    init: RequestInit & {
+      readonly bearer?: string;
+      readonly appClient?: boolean;
+      readonly zoned?: boolean;
+    } = {},
   ): Promise<Record<string, unknown>> => {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (init.bearer !== undefined) headers.authorization = `Bearer ${init.bearer}`;
     if (init.appClient === true) headers["x-lucive-client"] = await appClientToken();
+    if (init.zoned === true) {
+      // Planning sync tells the account which zone "today" is in on this device.
+      const zone = (client.timeZone ?? deviceTimeZone)();
+      if (zone !== undefined && zone.length > 0) headers["x-lucive-time-zone"] = zone;
+    }
     let response: Response;
     try {
       response = await fetchImpl(`${config.baseUrl}${path}`, { ...init, headers });
@@ -217,11 +238,13 @@ export function makeTaskSyncCloudClient(
       (await call(`/api/planning/changes?since=${since}&limit=500`, {
         method: "GET",
         bearer: token,
+        zoned: true,
       })) as unknown as ChangesPage,
     push: async (token, batch) =>
       (await call("/api/planning/push", {
         method: "POST",
         bearer: token,
+        zoned: true,
         body: JSON.stringify(batch),
       })) as PushResult,
     subscription: async (token) => {

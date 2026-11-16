@@ -8,7 +8,13 @@ import {
   isTaskOverdue,
   type TaskAgentState,
 } from "@t3tools/client-runtime/state/projects";
-import { isProposedTask, type Task, type ThreadId } from "@t3tools/contracts";
+import {
+  findGlobalAssistantProject,
+  isGlobalAssistant,
+  isProposedTask,
+  type Task,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import {
   BellIcon,
@@ -24,16 +30,17 @@ import {
   RepeatIcon,
   XIcon,
 } from "lucide-react";
-import { useState, type DragEvent, type ReactNode } from "react";
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import { TASK_DRAG_TRANSITION, usePrefersReducedMotion } from "./taskDrag";
 import { TaskMoveMenu, TaskReminderMenu, TaskRepeatMenu } from "./TaskMenus";
 import type { TaskActions } from "./useTaskActions";
-
-export const TASK_DRAG_TYPE = "application/x-cplane-task";
 
 export interface TaskRowContext {
   readonly today: string;
@@ -54,6 +61,22 @@ function chipClass(active = false) {
   );
 }
 
+/**
+ * Check-off, matching Lucive desktop (lucive/src/components/planning):
+ * - PlanTaskRow.tsx:276-292 handleCheckbox: the box fills and the title
+ *   strikes through at once, then after 350ms the completion is written and
+ *   the row leaves the list. Clicks during those 350ms are ignored (no
+ *   cancel). Reopening a completed task writes immediately.
+ * - planning.css:404 checkbox `transition: all 0.2s ease`; :413-415
+ *   `--completing` scales it to 1.1 for the beat.
+ * - planning.css:429 title `transition: all 0.3s ease`; :432-435 done is
+ *   secondary color + line-through; :437-439 `--fading` is opacity 0.5.
+ * - No exit animation: Lucive removes the row outright (no fade-out or height
+ *   collapse; PlanTaskList.tsx re-renders without it).
+ * Reduced motion drops the transitions; the 350ms timing stays.
+ */
+export const CHECK_OFF_DELAY_MS = 350;
+
 /** The square checkbox; dashed while the task is still a proposal. */
 export function TaskCheckbox(props: {
   readonly checked: boolean;
@@ -61,6 +84,8 @@ export function TaskCheckbox(props: {
   readonly label: string;
   readonly onToggle: () => void;
   readonly disabled?: boolean;
+  /** The 350ms beat between checking off and the write: scaled up 1.1. */
+  readonly completing?: boolean;
 }) {
   return (
     <button
@@ -72,6 +97,8 @@ export function TaskCheckbox(props: {
       className={cn(
         "inline-flex size-[18px] shrink-0 cursor-pointer items-center justify-center rounded-[5px] border-[1.5px] outline-none",
         "focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
+        "transition-all duration-200 ease-[ease] motion-reduce:transition-none",
+        props.completing && "scale-110",
         props.proposed
           ? "border-dashed border-muted-foreground/60"
           : props.checked
@@ -178,12 +205,10 @@ export function TaskRow(props: {
   readonly expanded: boolean;
   readonly onToggleExpanded: () => void;
   readonly context: TaskRowContext;
+  /** Open tasks drag (to reorder, or onto a range tab or the sidebar). */
   readonly draggable?: boolean;
-  readonly onDragStart?: (event: DragEvent<HTMLLIElement>) => void;
-  readonly onDragOver?: (event: DragEvent<HTMLLIElement>) => void;
-  readonly onDrop?: (event: DragEvent<HTMLLIElement>) => void;
-  readonly dropIndicator?: "before" | "after" | null;
-  readonly dimmed?: boolean;
+  /** Whether the list it sits in takes reorders. */
+  readonly reorderable?: boolean;
   readonly hidePeriod?: boolean;
 }) {
   const { task, state, context, expanded } = props;
@@ -193,7 +218,38 @@ export function TaskRow(props: {
     task.links?.statusId === undefined
       ? undefined
       : project?.assistant?.statuses?.find((s) => s.id === task.links!.statusId);
-  const completed = task.status === "completed";
+  const reducedMotion = usePrefersReducedMotion();
+  const dragEnabled = props.draggable === true && !expanded;
+  const {
+    setNodeRef,
+    setActivatorNodeRef,
+    attributes,
+    listeners,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: task.id,
+    disabled: !dragEnabled,
+    data: { reorderable: props.reorderable === true },
+    transition: reducedMotion ? null : TASK_DRAG_TRANSITION,
+  });
+  // Lucive's check-off beat (see CHECK_OFF_DELAY_MS): the write fires after
+  // the delay even if the row unmounts, and clicks during it are ignored.
+  const [completing, setCompleting] = useState(false);
+  const completed = task.status === "completed" || completing;
+  const toggleCompleted = () => {
+    if (completing) return;
+    if (task.status === "completed") {
+      void context.actions.setCompleted(task, false);
+      return;
+    }
+    setCompleting(true);
+    setTimeout(() => {
+      void context.actions.setCompleted(task, true);
+      setCompleting(false);
+    }, CHECK_OFF_DELAY_MS);
+  };
   const overdue = isTaskOverdue(task, context.today);
   const meta = rowMeta(task, context.today, props.hidePeriod === true);
   const agentActive = state.kind === "agent-working" || state.kind === "handed-off";
@@ -209,16 +265,17 @@ export function TaskRow(props: {
 
   return (
     <li
-      className={cn("group/task relative list-none", props.dimmed && "opacity-40")}
-      draggable={props.draggable === true && !expanded}
-      onDragStart={props.onDragStart}
-      onDragOver={props.onDragOver}
-      onDrop={props.onDrop}
+      ref={setNodeRef}
+      className="group/task relative list-none rounded-lg transition-colors duration-700 data-[highlighted=true]:bg-primary/10"
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        // Lucive PlanTaskRow.tsx:315-316: the lifted row at half opacity, on top.
+        opacity: isDragging ? 0.5 : undefined,
+        zIndex: isDragging ? 10 : undefined,
+      }}
       data-task-id={task.id}
     >
-      {props.dropIndicator === "before" ? (
-        <span aria-hidden className="absolute inset-x-6 -top-px h-0.5 rounded-full bg-primary" />
-      ) : null}
       <div
         className={cn(
           "relative -mx-6 flex flex-col rounded-lg px-6",
@@ -229,15 +286,28 @@ export function TaskRow(props: {
       >
         <div className="flex min-w-0 items-center gap-2.5">
           {props.draggable ? (
-            <GripVerticalIcon
-              aria-hidden
-              className="absolute left-1.5 size-3.5 cursor-grab text-muted-foreground/60 opacity-0 group-hover/task:opacity-100"
-            />
+            <button
+              type="button"
+              ref={setActivatorNodeRef}
+              {...attributes}
+              {...(dragEnabled ? listeners : {})}
+              aria-label={`Reorder ${task.title}`}
+              disabled={!dragEnabled}
+              className={cn(
+                "absolute left-1 inline-flex size-4.5 cursor-grab items-center justify-center rounded text-muted-foreground/60 opacity-0 outline-none",
+                "group-hover/task:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
+                (expanded || isDragging) && "opacity-100",
+              )}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <GripVerticalIcon aria-hidden className="size-3.5" />
+            </button>
           ) : null}
           <TaskCheckbox
             checked={completed}
+            completing={completing}
             label={completed ? `Reopen ${task.title}` : `Complete ${task.title}`}
-            onToggle={() => void context.actions.setCompleted(task, !completed)}
+            onToggle={toggleCompleted}
           />
           {expanded ? (
             <TitleInput key={task.title} task={task} context={context} />
@@ -247,10 +317,13 @@ export function TaskRow(props: {
               className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-start outline-none"
               onClick={props.onToggleExpanded}
             >
+              {/* Long titles wrap rather than truncate. */}
               <span
                 className={cn(
-                  "min-w-0 truncate font-semibold text-[15px]",
+                  "min-w-0 break-words font-semibold text-[15px] leading-snug",
+                  "transition-all duration-300 ease-[ease] motion-reduce:transition-none",
                   completed && "font-normal text-muted-foreground line-through",
+                  completing && "opacity-50",
                 )}
               >
                 {task.title}
@@ -303,9 +376,6 @@ export function TaskRow(props: {
           </div>
         ) : null}
       </div>
-      {props.dropIndicator === "after" ? (
-        <span aria-hidden className="absolute inset-x-6 -bottom-px h-0.5 rounded-full bg-primary" />
-      ) : null}
     </li>
   );
 }
@@ -326,7 +396,7 @@ function TitleInput(props: { readonly task: Task; readonly context: TaskRowConte
       aria-label="Task title"
       className="min-w-0 flex-1 bg-transparent font-semibold text-[15px] outline-none"
       value={value}
-      maxLength={200}
+      maxLength={120}
       onChange={(event) => setValue(event.target.value)}
       onBlur={commit}
       onKeyDown={(event) => {
@@ -494,7 +564,9 @@ function ExpandedTask(props: {
           {task.recurrence !== undefined ? formatTaskRecurrence(task.recurrence) : "Repeat"}
         </TaskRepeatMenu>
       </div>
-      {project !== null && project.assistant != null && !isProposedTask(task) ? (
+      {!isProposedTask(task) &&
+      ((project !== null && project.assistant != null) ||
+        findGlobalAssistantProject(context.projects) !== undefined) ? (
         <HandToAgentMenu task={task} project={project} context={context} />
       ) : null}
     </div>
@@ -503,11 +575,21 @@ function ExpandedTask(props: {
 
 function HandToAgentMenu(props: {
   readonly task: Task;
-  readonly project: EnvironmentProject;
+  readonly project: EnvironmentProject | null;
   readonly context: TaskRowContext;
 }) {
-  const { task, project, context } = props;
+  const { task, context } = props;
+  // The task's own Project when it has a coordinator; the Assistant is always offered.
+  const project =
+    props.project !== null && props.project.assistant != null && !isGlobalAssistant(props.project)
+      ? props.project
+      : null;
+  const assistant = findGlobalAssistantProject(context.projects) ?? null;
   const handedTo = task.handoff;
+  const handedToAssistant =
+    handedTo !== undefined &&
+    assistant !== null &&
+    handedTo.threadId === assistant.assistant?.coordinatorThreadId;
   return (
     <div className="flex items-center gap-2">
       <Menu>
@@ -522,19 +604,34 @@ function HandToAgentMenu(props: {
           <ChevronDownIcon aria-hidden className="size-3 opacity-60" />
         </MenuTrigger>
         <MenuPopup align="start" className="w-60">
-          <MenuItem onClick={() => context.onHandToAgent(task, "coordinator", project)}>
-            <MessageCircleIcon aria-hidden className="size-3.5" />
-            Ask {project.title} coordinator
-          </MenuItem>
-          <MenuItem onClick={() => context.onHandToAgent(task, "agent", project)}>
-            <BotIcon aria-hidden className="size-3.5" />
-            Start an agent in {project.title}
-          </MenuItem>
+          {assistant !== null ? (
+            <MenuItem onClick={() => context.onHandToAgent(task, "coordinator", assistant)}>
+              <MessageCircleIcon aria-hidden className="size-3.5" />
+              Hand to Assistant
+            </MenuItem>
+          ) : null}
+          {project !== null ? (
+            <>
+              {assistant !== null ? <MenuSeparator /> : null}
+              <MenuItem onClick={() => context.onHandToAgent(task, "coordinator", project)}>
+                <MessageCircleIcon aria-hidden className="size-3.5" />
+                Ask {project.title} coordinator
+              </MenuItem>
+              <MenuItem onClick={() => context.onHandToAgent(task, "agent", project)}>
+                <BotIcon aria-hidden className="size-3.5" />
+                Start an agent in {project.title}
+              </MenuItem>
+            </>
+          ) : null}
         </MenuPopup>
       </Menu>
       {handedTo !== undefined ? (
         <span className="text-muted-foreground text-xs">
-          {handedTo.kind === "coordinator" ? `With ${project.title} coordinator` : "With an agent"}
+          {handedToAssistant
+            ? "With the Assistant"
+            : handedTo.kind === "coordinator"
+              ? `With ${project?.title ?? "the"} coordinator`
+              : "With an agent"}
         </span>
       ) : null}
     </div>

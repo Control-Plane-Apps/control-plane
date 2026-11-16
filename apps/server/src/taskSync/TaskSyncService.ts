@@ -22,6 +22,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
@@ -36,6 +37,7 @@ import {
   emptyTaskSyncState,
   TaskSyncEngine,
   type TaskSyncPersistedState,
+  type TaskSyncRolloverResult,
 } from "@t3tools/shared/taskSync/engine";
 
 const TOKEN_SECRET = "task-sync-device-token";
@@ -62,6 +64,10 @@ export class TaskSyncService extends Context.Service<
     readonly syncedTaskIds: Effect.Effect<ReadonlySet<string>>;
     /** Local pre-launch preview of Task Sync for this install (see setPreview on the engine). */
     readonly setPreview: (enabled: boolean) => Effect.Effect<TaskSyncStatus, TaskSyncError>;
+    /** Rolls the synced account's expired commitments (see the engine). */
+    readonly rollExpiredCommitments: (today: string) => Effect.Effect<TaskSyncRolloverResult>;
+    /** Emits after a sync applied pulled records or first heard the week start. */
+    readonly applied: Stream.Stream<void>;
   }
 >()("t3/taskSync/TaskSyncService") {}
 
@@ -78,6 +84,8 @@ const make = Effect.gen(function* () {
   const hostPlatform = yield* HostProcessPlatform;
   const context = yield* Effect.context<never>();
   const runPromise = Effect.runPromiseWith(context);
+  // Only "something changed" matters, so one pending signal is enough.
+  const appliedSignals = yield* PubSub.sliding<void>(1);
 
   const statePath = NodePath.join(config.stateDir, "task-sync", "state.json");
   const syncConfig = readTaskSyncConfig();
@@ -96,6 +104,9 @@ const make = Effect.gen(function* () {
     now: () => new Date(Date.now()),
     newId: () => NodeCrypto.randomUUID(),
     onWeekStart: setTaskWeekStartsOn,
+    onApplied: () => {
+      PubSub.publishUnsafe(appliedSignals, undefined);
+    },
     log: (message, detail) =>
       void runPromise(Effect.logWarning(message, { detail: String(detail) })),
     loadState: async () => {
@@ -238,6 +249,16 @@ const make = Effect.gen(function* () {
     syncedTaskIds: Effect.promise(() => engine.syncedTaskIds()).pipe(
       Effect.catchCause(() => Effect.succeed(new Set<string>())),
     ),
+    rollExpiredCommitments: (today) =>
+      Effect.promise(() => engine.rollExpiredCommitments(today)).pipe(
+        // Unknown state: move nothing this time.
+        Effect.catchCause((cause) =>
+          Effect.logWarning("task sync rollover failed", { cause: Cause.pretty(cause) }).pipe(
+            Effect.as<TaskSyncRolloverResult>({ state: "waiting" }),
+          ),
+        ),
+      ),
+    applied: Stream.fromPubSub(appliedSignals),
     syncNow: attempt(async () => {
       if (!(await engine.refreshAvailability(0))) return engine.status();
       await engine.refreshSubscription().catch(() => undefined);
@@ -264,4 +285,6 @@ export const layerUnavailable = Layer.succeed(TaskSyncService, {
   syncNow: unavailable,
   setPreview: () => unavailable,
   syncedTaskIds: Effect.succeed(new Set<string>()),
+  rollExpiredCommitments: () => Effect.succeed({ state: "local" as const }),
+  applied: Stream.empty,
 });

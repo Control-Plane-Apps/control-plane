@@ -81,6 +81,22 @@ describe("collectNeedsYou", () => {
     expect(collectMoving(projects).map((item) => item.status.id)).toEqual(["w"]);
   });
 
+  it("agrees with the Status board: answered, dismissed or off needs-you never need the user", () => {
+    const open = question("open", AT);
+    const answered = question("answered", AT);
+    const dismissed = question("dismissed", AT);
+    const moved = question("moved", AT);
+    const projects = [
+      project("a", [
+        open,
+        { ...answered, decision: { ...answered.decision!, answeredAt: AT } },
+        { ...dismissed, dismissedAt: AT },
+        { ...moved, state: "working" },
+      ]),
+    ];
+    expect(collectNeedsYou(projects).map((item) => item.status.id)).toEqual(["open"]);
+  });
+
   it("drops the Assistant from Projects lists", () => {
     expect(
       withoutGlobalAssistant([project("a", []), project("x", [], "global")]).map((p) => p.id),

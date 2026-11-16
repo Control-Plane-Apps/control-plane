@@ -11,6 +11,7 @@ import {
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  localTaskDate,
   ProjectId,
   ProviderInstanceId,
   TaskId,
@@ -40,6 +41,7 @@ import { OrchestrationProjectionPipelineLive } from "../../../orchestration/Laye
 import { OrchestrationProjectionSnapshotQueryLive } from "../../../orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { TaskCommitmentRollover } from "../../../orchestration/TaskCommitmentRollover.ts";
 import * as ThreadBackgroundLiveness from "../../../orchestration/ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../../../orchestration/ThreadPlanProgress.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -158,6 +160,14 @@ const TestLayer = AgentsToolkitHandlersLive.pipe(
         ...DEFAULT_SERVER_SETTINGS,
         assistant: { ...DEFAULT_SERVER_SETTINGS.assistant, tasks: "edit" as const },
       })),
+    }),
+  ),
+  // Rollover as Task Sync runs it for a synced account, before each list.
+  Layer.provideMerge(
+    Layer.mock(TaskCommitmentRollover)({
+      beforeRead: Effect.promise(async () => {
+        if (engine !== null) await engine.rollExpiredCommitments(localTaskDate(Date.parse(NOW)));
+      }),
     }),
   ),
   Layer.provideMerge(
@@ -516,6 +526,67 @@ describe("Assistant task tools on a Lucive-synced account", () => {
           (period) => period.horizon === "week" && period.startsOn === "2026-11-09",
         );
         expect(week?.focus).toBe("Rest the knee");
+      }),
+    ),
+  );
+
+  it.effect("cp_task_list rolls an expired commitment first, without touching the task", () =>
+    run(
+      Effect.gen(function* () {
+        const cloud = new FakeCloud();
+        cloud.seedTask({ id: "late", title: "Write the report", sortOrder: 30 });
+        cloud.seq += 1;
+        cloud.periods.set("old-week", {
+          id: "old-week",
+          horizon: "week",
+          anchorDate: "2026-11-02",
+          startsOn: "2026-11-02",
+          endsOn: "2026-11-08",
+          title: null,
+          focus: null,
+          state: "open",
+          revision: 1,
+          createdAt: T0,
+          updatedAt: T0,
+          deletedAt: null,
+          seq: cloud.seq,
+        });
+        cloud.seq += 1;
+        cloud.memberships.set("old-commitment", {
+          id: "old-commitment",
+          periodId: "old-week",
+          taskId: "late",
+          role: "commitment",
+          sortOrder: 3,
+          revision: 1,
+          createdAt: T0,
+          updatedAt: T0,
+          deletedAt: null,
+          seq: cloud.seq,
+        });
+        const pump = yield* connect(cloud);
+        const taskBefore = structuredClone(cloud.tasks.get("late"));
+
+        const listed = yield* tools.list({ range: "this-week" });
+        expect(listed.tasks.map((task) => [task.id, task.home])).toEqual([
+          [
+            "late",
+            { kind: "period", horizon: "week", startsOn: "2026-11-09", endsOn: "2026-11-15" },
+          ],
+        ]);
+        yield* pump;
+        // The task row never went up again: no echo of the rollover as an edit.
+        expect(cloud.tasks.get("late")).toEqual(taskBefore);
+        expect(cloud.memberships.get("old-commitment")).toMatchObject({ revision: 2 });
+        expect(cloud.memberships.get("old-commitment")?.deletedAt).not.toBeNull();
+        const live = [...cloud.memberships.values()].filter((m) => m.deletedAt === null);
+        expect(live).toHaveLength(1);
+        expect(cloud.periods.get(live[0]!.periodId)).toMatchObject({
+          horizon: "week",
+          startsOn: "2026-11-09",
+          endsOn: "2026-11-15",
+        });
+        expect(live[0]).toMatchObject({ taskId: "late", role: "commitment", sortOrder: 0 });
       }),
     ),
   );

@@ -139,6 +139,7 @@ import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import { readWorkflowScript } from "./orchestration/workflowScriptQuery.ts";
 import { ScheduleService } from "./schedules/ScheduleService.ts";
 import { TaskSyncService } from "./taskSync/TaskSyncService.ts";
+import { TaskCommitmentRollover } from "./orchestration/TaskCommitmentRollover.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
@@ -638,6 +639,7 @@ const makeWsRpcLayer = (
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const scheduleService = yield* ScheduleService;
       const taskSync = yield* TaskSyncService;
+      const commitmentRollover = yield* Effect.serviceOption(TaskCommitmentRollover);
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -2096,6 +2098,10 @@ const makeWsRpcLayer = (
                 coalesceShellLiveInputs(items.map((item) => item.value)).pipe(
                   Effect.flatMap((output) => liveBudget.replace(items, output)),
                 );
+              // Range views read tasks from this shell: roll expired commitments
+              // first. The live buffer is attached, so a pass that outlasts the
+              // short wait still reaches the client as task updates.
+              if (Option.isSome(commitmentRollover)) yield* commitmentRollover.value.beforeRead;
               const bufferedLiveStream = Stream.fromQueue(liveBuffer).pipe(
                 Stream.groupedWithin(SHELL_COALESCE_MAX_CHUNK, SHELL_COALESCE_WINDOW),
                 Stream.mapEffect(coalesceRetainedInputs),

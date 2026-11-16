@@ -169,19 +169,36 @@ export function visibleProjectStatuses<T extends { readonly dismissedAt?: string
   return statuses.filter((status) => status.dismissedAt === undefined);
 }
 
+/**
+ * Whether a workstream waits on the user: in `needs-you`, its question not yet
+ * answered (an answered one waits on the coordinator), and not checked off.
+ * Every "Needs you" surface (Status board, counts, badges, the Assistant's
+ * list and overview tool) uses this one rule.
+ */
+export function isStatusNeedingUser(status: {
+  readonly state: ProjectStatusState;
+  readonly decision?: { readonly answeredAt?: string | undefined } | undefined;
+  readonly dismissedAt?: string | undefined;
+}): boolean {
+  return (
+    status.state === "needs-you" &&
+    status.decision?.answeredAt === undefined &&
+    status.dismissedAt === undefined
+  );
+}
+
 /** Workstreams waiting on the user. A question they already answered waits on the coordinator. */
 export function countStatusesNeedingUser(
   statuses:
     | ReadonlyArray<{
         readonly state: ProjectStatusState;
         readonly decision?: { readonly answeredAt?: string | undefined } | undefined;
+        readonly dismissedAt?: string | undefined;
       }>
     | null
     | undefined,
 ): number {
-  return (statuses ?? []).filter(
-    (status) => status.state === "needs-you" && status.decision?.answeredAt === undefined,
-  ).length;
+  return (statuses ?? []).filter(isStatusNeedingUser).length;
 }
 
 /** Which workstream, and which version of its question, a reply answers. */

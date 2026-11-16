@@ -7,6 +7,7 @@ import {
   addTaskDays,
   compareTaskOrder,
   countStatusesNeedingUser,
+  isStatusNeedingUser,
   isProposedTask,
   taskPeriodFor,
   taskDaysBetween,
@@ -20,7 +21,7 @@ import {
 } from "@t3tools/contracts";
 
 export type TaskView = "today" | "week" | "month" | "year" | "upcoming" | "all";
-export type TaskBacklogFilter = "all" | "week" | "month" | "year" | "recurring";
+export type TaskBacklogFilter = "all" | "week" | "month" | "year" | "recurring" | "completed";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -293,12 +294,28 @@ function homeRank(home: TaskHome): string {
   }
 }
 
-/** The All tasks view: open one-off tasks by home, then repeating ones. */
+/**
+ * The All tasks view: open one-off tasks by home, then repeating ones. The
+ * "completed" filter lists finished tasks instead, most recent first.
+ */
 export function allTasks(
   tasks: ReadonlyArray<Task>,
   filter: TaskBacklogFilter,
-): { readonly open: Task[]; readonly recurring: Task[]; readonly completed: number } {
-  const open = listed(tasks).filter((task) => task.status === "todo");
+): {
+  readonly open: Task[];
+  readonly recurring: Task[];
+  readonly done: Task[];
+  readonly completed: number;
+} {
+  const visible = listed(tasks);
+  const finished = visible.filter((task) => task.status === "completed");
+  if (filter === "completed") {
+    const done = [...finished].sort((a, b) =>
+      (b.completedAt ?? b.updatedAt).localeCompare(a.completedAt ?? a.updatedAt),
+    );
+    return { open: [], recurring: [], done, completed: finished.length };
+  }
+  const open = visible.filter((task) => task.status === "todo");
   const matches = (task: Task) =>
     filter === "all" ||
     (filter === "recurring"
@@ -314,7 +331,8 @@ export function allTasks(
   return {
     open: filter === "recurring" ? [] : oneOff,
     recurring,
-    completed: listed(tasks).filter((task) => task.status === "completed").length,
+    done: [],
+    completed: finished.length,
   };
 }
 
@@ -385,7 +403,7 @@ export function taskAgentState(
   if (task.status !== "todo") return { kind: "completed" };
   const status = linkedStatusOf(task, projects);
   if (status !== undefined) {
-    if (status.state === "needs-you" && status.decision?.answeredAt === undefined) {
+    if (isStatusNeedingUser(status)) {
       return { kind: "needs-you", status };
     }
     if (status.state === "done") {
@@ -437,6 +455,23 @@ export function taskForThread(tasks: ReadonlyArray<Task>, threadId: string): Tas
 /** Proposals from one Project, for the coordinator thread. */
 export function proposedTasksForProject(tasks: ReadonlyArray<Task>, projectId: string): Task[] {
   return proposedTasks(tasks).filter((task) => task.proposal?.projectId === projectId);
+}
+
+/**
+ * The proposals a chat shows as its block: the ones this thread proposed
+ * (the Assistant, an agent or a coordinator), plus, on a coordinator, every
+ * proposal for its Project.
+ */
+export function proposedTasksForThread(
+  tasks: ReadonlyArray<Task>,
+  threadId: string,
+  coordinatorProjectId: string | null,
+): Task[] {
+  return proposedTasks(tasks).filter(
+    (task) =>
+      task.proposal?.threadId === threadId ||
+      (coordinatorProjectId !== null && task.proposal?.projectId === coordinatorProjectId),
+  );
 }
 
 /** Needs-you count across one Project's board, for rows outside the thread. */

@@ -1282,6 +1282,14 @@ export const ServerSettings = Schema.Struct({
   globalInstructions: GlobalInstructionsScopes.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   /** The cross-Project Assistant: what it reaches and may do. Fork-owned. */
   assistant: AssistantSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /**
+   * When a week, month or year ends, move its unfinished commitments into the
+   * current period of the same horizon. Fork-owned. Off until Lucive ships
+   * the same rule: both apps sync the same tasks and must apply one rule.
+   */
+  taskRolloverToCurrentPeriod: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -1563,6 +1571,7 @@ export const ServerSettingsPatch = Schema.Struct({
   agentPlacement: Schema.optionalKey(AgentPlacementSettingsPatch),
   globalInstructions: Schema.optionalKey(GlobalInstructionsScopesPatch),
   assistant: Schema.optionalKey(AssistantSettingsPatch),
+  taskRolloverToCurrentPeriod: Schema.optionalKey(Schema.Boolean),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

@@ -13,6 +13,7 @@ import {
   homeForMove,
   parseQuickAdd,
   proposedTasks,
+  proposedTasksForThread,
   taskAgentState,
   todayTasks,
   upcomingTasks,
@@ -176,5 +177,45 @@ describe("repeat ends", () => {
     });
     expect(withTaskRecurrenceCadence(counted, null)).toBeNull();
     expect(withTaskRecurrenceEnd(counted, { kind: "never" })).toEqual(weekly);
+  });
+});
+
+describe("the Completed filter", () => {
+  it("lists completed tasks newest first under the Completed filter", () => {
+    const tasks = [
+      task("open"),
+      task("older", { status: "completed", completedAt: "2026-11-10T09:00:00.000Z" }),
+      task("newer", { status: "completed", completedAt: "2026-11-12T09:00:00.000Z" }),
+    ];
+    const completed = allTasks(tasks, "completed");
+    expect(completed.done.map((entry) => entry.id)).toEqual(["newer", "older"]);
+    expect(completed.open).toEqual([]);
+    expect(completed.completed).toBe(2);
+    expect(allTasks(tasks, "all").done).toEqual([]);
+    expect(allTasks(tasks, "all").open.map((entry) => entry.id)).toEqual(["open"]);
+  });
+});
+
+describe("proposedTasksForThread", () => {
+  const proposal = (projectId: string, threadId: string) => ({
+    status: "todo" as const,
+    proposal: { projectId, threadId, proposedAt: AT },
+  });
+  const tasks = [
+    task("from-assistant", proposal("assistant-project", "assistant-thread") as Partial<Task>),
+    task("from-coordinator", proposal("hometrace", "coordinator-thread") as Partial<Task>),
+    task("from-agent", proposal("hometrace", "agent-thread") as Partial<Task>),
+  ];
+
+  it("shows a thread its own proposals, and a coordinator its Project's", () => {
+    expect(proposedTasksForThread(tasks, "assistant-thread", null).map((t) => t.id)).toEqual([
+      "from-assistant",
+    ]);
+    expect(proposedTasksForThread(tasks, "agent-thread", null).map((t) => t.id)).toEqual([
+      "from-agent",
+    ]);
+    expect(
+      proposedTasksForThread(tasks, "coordinator-thread", "hometrace").map((t) => t.id),
+    ).toEqual(["from-coordinator", "from-agent"]);
   });
 });
