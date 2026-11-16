@@ -82,6 +82,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -245,7 +246,12 @@ import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
-import { SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
+import {
+  isSidebarSearchFieldVisible,
+  SidebarThreadHeader,
+  SidebarTitlebarActions,
+  sidebarActionTooltip,
+} from "./sidebar/SidebarThreadHeader";
 import {
   SidebarAssistantsEmptyRow,
   SidebarAssistantsSection,
@@ -2955,8 +2961,10 @@ export default function Sidebar() {
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
+  const [threadSearchOpen, setThreadSearchOpen] = useState(false);
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
+  const threadSearchFieldVisible = isSidebarSearchFieldVisible(threadSearchOpen, threadSearchQuery);
   const searchableThreads = useMemo(() => {
     const workspaceSearchThreads = [
       ...pinnedThreads,
@@ -3438,6 +3446,12 @@ export default function Sidebar() {
         clearThreadSearch();
         return;
       }
+      if (event.key === "Escape" && threadSearchQuery.length === 0) {
+        event.preventDefault();
+        event.stopPropagation();
+        setThreadSearchOpen(false);
+        return;
+      }
       if (threadSearchResults.length === 0) return;
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -3462,9 +3476,25 @@ export default function Sidebar() {
       clearThreadSearch,
       isSearchingThreads,
       selectThreadSearchResult,
+      threadSearchQuery,
       threadSearchResults,
     ],
   );
+  const toggleThreadSearch = useCallback(() => {
+    if (threadSearchFieldVisible) {
+      clearThreadSearch();
+      setThreadSearchOpen(false);
+      return;
+    }
+    setThreadSearchOpen(true);
+    requestAnimationFrame(() => threadSearchInputRef.current?.focus());
+  }, [clearThreadSearch, threadSearchFieldVisible]);
+  const handleThreadSearchBlur = useCallback((event: ReactFocusEvent<HTMLInputElement>) => {
+    // The Search icon toggles the field itself; closing here would reopen it on click.
+    const next = event.relatedTarget;
+    if (next instanceof HTMLElement && next.closest('[data-testid="sidebar-search"]')) return;
+    if (event.currentTarget.value.length === 0) setThreadSearchOpen(false);
+  }, []);
 
   const [renamingThreadKey, setRenamingThreadKey] = useState<string | null>(null);
   const [renamingTitle, setRenamingTitle] = useState("");
@@ -5172,35 +5202,68 @@ export default function Sidebar() {
   const newThreadShortcutLabel =
     shortcutLabelForCommand(keybindings, "chat.new") ??
     shortcutLabelForCommand(keybindings, "chat.newLocal");
-  const newThreadLabel = newThreadShortcutLabel
-    ? `New Chat (${newThreadShortcutLabel})`
-    : "New Chat";
+  const newThreadLabel = sidebarActionTooltip("New Chat", newThreadShortcutLabel);
+  // The Assistant and Tasks rows stay pinned above the scrolling list.
+  const showPinnedRows = !settledViewOpen && !isSearchingThreads;
   return (
     <>
-      <SidebarChromeHeader isElectron={isElectron} />
+      <SidebarChromeHeader
+        isElectron={isElectron}
+        actions={
+          <SidebarTitlebarActions
+            onNewChat={handleNewThreadClick}
+            newChatDisabled={projects.length === 0}
+            newChatTooltip={newThreadLabel}
+            searchOpen={threadSearchFieldVisible}
+            onToggleSearch={toggleThreadSearch}
+            searchTooltip={sidebarActionTooltip("Search", null)}
+          />
+        }
+      />
       <SidebarContent
         className="gap-0 min-h-full"
         fixedHeader={
-          // Lifted above the stage backdrop, whose fade bleeds below the
-          // header and would otherwise paint across the search row's outline.
-          <SidebarGroup className="relative z-[1] p-[var(--sidebar-content-inset)] pt-1">
-            <SidebarThreadHeader
-              searchInputRef={threadSearchInputRef}
-              searchQuery={threadSearchQuery}
-              onSearchQueryChange={(value) => {
-                setThreadSearchQuery(value);
-                setActiveSearchResultIndex(0);
-              }}
-              onSearchKeyDown={handleThreadSearchKeyDown}
-              isSearching={isSearchingThreads}
-              searchResultCount={threadSearchResults.length}
-              activeSearchResultIndex={activeSearchResultIndex}
-              onClearSearch={clearThreadSearch}
-              onNewChat={handleNewThreadClick}
-              newChatDisabled={projects.length === 0}
-              newChatTooltip={newThreadLabel}
-            />
-          </SidebarGroup>
+          threadSearchFieldVisible || showPinnedRows ? (
+            // Lifted above the stage backdrop, whose fade bleeds below the
+            // header and would otherwise paint across the search row's outline.
+            <SidebarGroup className="relative z-[1] p-[var(--sidebar-content-inset)] pt-1 pb-0">
+              {threadSearchFieldVisible ? (
+                <SidebarThreadHeader
+                  searchInputRef={threadSearchInputRef}
+                  searchQuery={threadSearchQuery}
+                  onSearchQueryChange={(value) => {
+                    setThreadSearchQuery(value);
+                    setActiveSearchResultIndex(0);
+                  }}
+                  onSearchKeyDown={handleThreadSearchKeyDown}
+                  onSearchBlur={handleThreadSearchBlur}
+                  isSearching={isSearchingThreads}
+                  searchResultCount={threadSearchResults.length}
+                  activeSearchResultIndex={activeSearchResultIndex}
+                  onClearSearch={clearThreadSearch}
+                />
+              ) : null}
+              {showPinnedRows ? (
+                <ul role="list" className={cn("flex flex-col", threadSearchFieldVisible && "mt-1")}>
+                  {showAssistantsSection ? (
+                    <SidebarAssistantRow
+                      isActive={
+                        assistantPartition.globalAssistant != null &&
+                        routeThreadRef !== null &&
+                        threads.some(
+                          (thread) =>
+                            thread.id === routeThreadRef.threadId &&
+                            thread.environmentId === routeThreadRef.environmentId &&
+                            thread.projectId === assistantPartition.globalAssistant?.project.id,
+                        )
+                      }
+                    />
+                  ) : null}
+                  <SidebarTasksSection />
+                </ul>
+              ) : null}
+            </SidebarGroup>
+          ) : null
         }
       >
         <SidebarGroup className="flex-1 px-[var(--sidebar-content-inset)] pb-1 pt-3">
@@ -5474,26 +5537,7 @@ export default function Sidebar() {
                       const folders = settledViewOpen ? settledProjectFolders : projectFolders;
                       const items: ReactNode[] = [];
                       if (!settledViewOpen) {
-                        // Design order: the Assistant leads, then Tasks, Projects, Workspaces.
-                        if (showAssistantsSection) {
-                          items.push(
-                            <SidebarAssistantRow
-                              key="global-assistant"
-                              isActive={
-                                assistantPartition.globalAssistant != null &&
-                                routeThreadRef !== null &&
-                                threads.some(
-                                  (thread) =>
-                                    thread.id === routeThreadRef.threadId &&
-                                    thread.environmentId === routeThreadRef.environmentId &&
-                                    thread.projectId ===
-                                      assistantPartition.globalAssistant?.project.id,
-                                )
-                              }
-                            />,
-                          );
-                        }
-                        items.push(<SidebarTasksSection key="tasks-section" />);
+                        // The Assistant and Tasks rows are pinned above; Projects, then Workspaces.
                         if (showAssistantsSection) {
                           items.push(
                             <SidebarListSectionHeader
