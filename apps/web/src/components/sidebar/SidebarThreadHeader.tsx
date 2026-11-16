@@ -45,7 +45,7 @@ export function SidebarTitlebarActions({
   searchTooltip: string;
 }) {
   return (
-    <div className="flex items-center gap-0.5">
+    <div className="flex items-center gap-[var(--workspace-titlebar-icon-gap)]">
       <SidebarHeaderIconButton
         label="New Chat"
         tooltip={newChatTooltip}

@@ -16,6 +16,18 @@ describe("task dates", () => {
     expect(taskWeekday("2026-11-13")).toBe(5);
   });
 
+  it("starts weeks on the day given, Monday by default", () => {
+    // 2026-11-16 is a Monday, 2026-11-15 the Sunday before it.
+    expect(taskPeriodFor("week", "2026-11-16", 1).startsOn).toBe("2026-11-16");
+    expect(taskPeriodFor("week", "2026-11-16", 0)).toEqual({
+      startsOn: "2026-11-15",
+      endsOn: "2026-11-21",
+    });
+    expect(taskPeriodFor("week", "2026-11-15", 0).startsOn).toBe("2026-11-15");
+    expect(taskPeriodFor("week", "2026-11-15", 1).startsOn).toBe("2026-11-09");
+    expect(taskPeriodFor("week", "2026-11-18")).toEqual(taskPeriodFor("week", "2026-11-18", 1));
+  });
+
   it("finds Monday-to-Sunday weeks, months and years", () => {
     expect(taskPeriodFor("week", "2026-11-13")).toEqual({
       startsOn: "2026-11-09",

@@ -38,6 +38,18 @@ describe("sidebar interactive cursors", () => {
     expect(html).toContain('data-sidebar-state="collapsed"');
   });
 
+  it("places title bar actions one icon gap past the toggle", () => {
+    const html = renderToStaticMarkup(
+      <SidebarProvider>
+        <div />
+      </SidebarProvider>,
+    );
+
+    expect(html).toContain(
+      "--workspace-titlebar-actions-left:calc(var(--workspace-controls-left) + 1px + var(--workspace-titlebar-control-size) + var(--workspace-titlebar-icon-gap))",
+    );
+  });
+
   it("keeps the sidebar trigger interactive inside Electron drag regions", () => {
     const html = renderToStaticMarkup(
       <SidebarProvider>

@@ -336,12 +336,18 @@ export function allTasks(
   };
 }
 
+/**
+ * The intent for the period containing `today`. Weeks start on the synced
+ * account's day (`weekStartsOn`, defaulting to the shared setting), the same
+ * day the tools, Task Sync and rollover key a week's intent by.
+ */
 export function taskIntentFor(
   intents: ReadonlyArray<TaskIntent> | undefined,
   horizon: TaskHorizon,
   today: string,
+  weekStartsOn?: number,
 ): TaskIntent | undefined {
-  const { startsOn } = taskPeriodFor(horizon, today);
+  const { startsOn } = taskPeriodFor(horizon, today, weekStartsOn);
   return intents?.find((intent) => intent.horizon === horizon && intent.startsOn === startsOn);
 }
 

@@ -1,5 +1,10 @@
-import type { ProjectStatus, Task } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import {
+  setTaskWeekStartsOn,
+  type ProjectStatus,
+  type Task,
+  type TaskIntent,
+} from "@t3tools/contracts";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
   formatTaskRecurrence,
@@ -15,6 +20,7 @@ import {
   proposedTasks,
   proposedTasksForThread,
   taskAgentState,
+  taskIntentFor,
   todayTasks,
   upcomingTasks,
 } from "./taskViews.ts";
@@ -217,5 +223,39 @@ describe("proposedTasksForThread", () => {
     expect(
       proposedTasksForThread(tasks, "coordinator-thread", "hometrace").map((t) => t.id),
     ).toEqual(["from-coordinator", "from-agent"]);
+  });
+});
+
+describe("taskIntentFor", () => {
+  afterEach(() => setTaskWeekStartsOn(1));
+  // The Assistant's intent for the week of Monday 2026-11-16, and a Sunday-keyed twin.
+  const mondayWeek: TaskIntent = {
+    horizon: "week",
+    startsOn: "2026-11-16",
+    text: "Get ISN live",
+    updatedAt: AT,
+  };
+  const sundayWeek: TaskIntent = { ...mondayWeek, startsOn: "2026-11-15" };
+
+  it("finds the Monday-start week's intent for any day in that week", () => {
+    setTaskWeekStartsOn(1);
+    for (const day of ["2026-11-16", "2026-11-19", "2026-11-22"]) {
+      expect(taskIntentFor([mondayWeek], "week", day)).toBe(mondayWeek);
+    }
+    expect(taskIntentFor([sundayWeek], "week", "2026-11-16")).toBeUndefined();
+  });
+
+  it("finds the Sunday-start week's intent for any day in that week", () => {
+    setTaskWeekStartsOn(0);
+    for (const day of ["2026-11-15", "2026-11-16", "2026-11-21"]) {
+      expect(taskIntentFor([sundayWeek], "week", day)).toBe(sundayWeek);
+    }
+    expect(taskIntentFor([mondayWeek], "week", "2026-11-16")).toBeUndefined();
+  });
+
+  it("takes the week start from the caller when given, ahead of the shared setting", () => {
+    setTaskWeekStartsOn(1);
+    expect(taskIntentFor([sundayWeek], "week", "2026-11-16", 0)).toBe(sundayWeek);
+    expect(taskIntentFor([mondayWeek], "week", "2026-11-16", 1)).toBe(mondayWeek);
   });
 });
