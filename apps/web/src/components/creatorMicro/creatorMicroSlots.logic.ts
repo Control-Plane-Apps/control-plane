@@ -1,5 +1,6 @@
 // Fork-owned. Which chats the Creator Micro 2 agent keys show: the targets of
-// Cmd+1..Cmd+6 in the sidebar's default view, with each chat's row status.
+// the first six thread jumps (Cmd+3..Cmd+8) in the sidebar's default view,
+// with each chat's row status.
 
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -20,8 +21,8 @@ type SlotThread = Pick<
 >;
 
 /**
- * Slot n is the chat Cmd+(n+1) opens, so the keys follow pins, unpins and
- * reorders exactly as the shortcuts do. Fewer than six chats leaves the
+ * Slot n is the chat thread jump n+1 opens (Cmd+(n+3)), so the keys follow
+ * pins, unpins and reorders exactly as the shortcuts do. Fewer than six chats leaves the
  * remaining slots null (the key goes dark).
  */
 export function buildCreatorMicroSlots(

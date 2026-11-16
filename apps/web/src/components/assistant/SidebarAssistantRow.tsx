@@ -1,5 +1,5 @@
 import { collectNeedsYou } from "@t3tools/client-runtime/state/assistant-home";
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { usePrimaryEnvironment } from "~/state/environments";
@@ -10,13 +10,20 @@ import { useOpenAssistant } from "./useAssistant";
 // Fork-owned. The sidebar's first row: the cross-Project Assistant, with how
 // many Status questions wait on the user across every Project in its reach.
 
-export function SidebarAssistantRow({ isActive }: { readonly isActive: boolean }) {
+export function SidebarAssistantRow({
+  isActive,
+  hint,
+}: {
+  readonly isActive: boolean;
+  /** The shortcut badge shown while the jump modifier is held. */
+  readonly hint?: ReactNode;
+}) {
   const { open, opening } = useOpenAssistant();
   const projects = useProjects();
   const reach = usePrimaryEnvironment()?.serverConfig?.settings.assistant?.projects ?? null;
   const needsYou = useMemo(() => collectNeedsYou(projects, reach).length, [projects, reach]);
   return (
-    <li className="mb-1.5 list-none" data-testid="sidebar-global-assistant">
+    <li className="relative mb-1.5 list-none" data-testid="sidebar-global-assistant">
       <button
         type="button"
         aria-current={isActive ? "page" : undefined}
@@ -38,6 +45,7 @@ export function SidebarAssistantRow({ isActive }: { readonly isActive: boolean }
           </span>
         ) : null}
       </button>
+      {hint}
     </li>
   );
 }

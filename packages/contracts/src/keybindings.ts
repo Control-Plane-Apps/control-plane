@@ -20,6 +20,17 @@ export const THREAD_JUMP_KEYBINDING_COMMANDS = [
 ] as const;
 export type ThreadJumpKeybindingCommand = (typeof THREAD_JUMP_KEYBINDING_COMMANDS)[number];
 
+/** The Tasks page's range tabs, in tab order. Fork-owned. */
+export const TASK_RANGE_KEYBINDING_COMMANDS = [
+  "tasks.range.today",
+  "tasks.range.week",
+  "tasks.range.month",
+  "tasks.range.year",
+  "tasks.range.upcoming",
+  "tasks.range.all",
+] as const;
+export type TaskRangeKeybindingCommand = (typeof TASK_RANGE_KEYBINDING_COMMANDS)[number];
+
 export const MODEL_PICKER_JUMP_KEYBINDING_COMMANDS = [
   "modelPicker.jump.1",
   "modelPicker.jump.2",
@@ -59,6 +70,9 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "settled.toggle",
   "usage.toggle",
   "tasks.quickAdd",
+  "assistant.open",
+  "tasks.open",
+  ...TASK_RANGE_KEYBINDING_COMMANDS,
   "pullRequests.toggle",
   "terminal.toggle",
   "terminal.split",

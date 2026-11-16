@@ -25,6 +25,8 @@ import {
   shortcutLabelForCommand,
 } from "../keybindings";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { isModelPickerOpen } from "../modelPickerVisibility";
+import { useOpenAssistant } from "./assistant/useAssistant";
 import { isMacPlatform } from "../lib/utils";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { useLegacySidebarEnabled } from "../hooks/useSettings";
@@ -223,6 +225,7 @@ function WorkspaceViewShortcuts() {
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const setSettledOpen = useSidebarSettledViewStore((store) => store.setOpen);
+  const { open: openAssistant } = useOpenAssistant();
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -235,8 +238,17 @@ function WorkspaceViewShortcuts() {
       }
       if (isCommandPaletteOpen()) return;
       const command = resolveShortcutCommand(event, keybindings, {
-        context: { terminalFocus: isTerminalFocused() },
+        context: { terminalFocus: isTerminalFocused(), modelPickerOpen: isModelPickerOpen() },
       });
+      // Cmd+1 and Cmd+2 from anywhere: the Assistant, and Tasks.
+      if (command === "assistant.open" || command === "tasks.open") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isMobile) setOpenMobile(false);
+        if (command === "assistant.open") void openAssistant();
+        else void navigate({ to: "/tasks/$view", params: { view: "today" } });
+        return;
+      }
       if (
         command !== "usage.toggle" &&
         command !== "pullRequests.toggle" &&
@@ -279,7 +291,16 @@ function WorkspaceViewShortcuts() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [canGoBack, isMobile, keybindings, navigate, pathname, setOpenMobile, setSettledOpen]);
+  }, [
+    canGoBack,
+    isMobile,
+    keybindings,
+    navigate,
+    openAssistant,
+    pathname,
+    setOpenMobile,
+    setSettledOpen,
+  ]);
 
   return null;
 }

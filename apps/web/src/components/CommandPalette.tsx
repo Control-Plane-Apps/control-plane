@@ -48,6 +48,7 @@ import {
   ChartNoAxesColumnIcon,
   CircleCheckIcon,
   ListPlusIcon,
+  ListTodoIcon,
   ClockIcon,
   ListChecksIcon,
   CornerLeftUpIcon,
@@ -165,6 +166,8 @@ import { CommandPaletteResults } from "./CommandPaletteResults";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon, ForgejoIcon } from "./Icons";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { AssistantMark } from "./assistant/AssistantMark";
+import { useOpenAssistant } from "./assistant/useAssistant";
 import { AssistantRollupBadge } from "./assistants/AssistantStatusDot";
 import { openConvertToProject, openNewProject } from "./assistants/assistantDialogStore";
 import { ProjectFilePicker } from "./files/ProjectFilePicker";
@@ -632,6 +635,7 @@ function OpenCommandPaletteDialog(props: {
 }) {
   const composerHandleRef = useComposerHandleContext();
   const navigate = useNavigate();
+  const { open: openAssistant } = useOpenAssistant();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { clearOpenIntent, openIntent, openOverlayMode, setOpen } = props;
   const [query, setQuery] = useState(openIntent?.kind === "search" ? openIntent.query : "");
@@ -1917,6 +1921,30 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push({
     kind: "action",
+    value: "action:open-assistant",
+    searchTerms: ["assistant", "open assistant", "chat", "status"],
+    title: "Open Assistant",
+    icon: <AssistantMark className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "assistant.open",
+    run: async () => {
+      await openAssistant();
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:open-tasks",
+    searchTerms: ["tasks", "open tasks", "todo", "plan", "today"],
+    title: "Open Tasks",
+    icon: <ListTodoIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "tasks.open",
+    run: async () => {
+      await navigate({ to: "/tasks/$view", params: { view: "today" } });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
     value: "action:add-task",
     searchTerms: ["task", "todo", "quick add", "add task", "new task"],
     title: "Add a task",
@@ -2709,7 +2737,11 @@ function OpenCommandPaletteDialog(props: {
       platform: navigator.platform,
       context: { modelPickerOpen: false },
     });
-    if (threadJumpIndexFromCommand(command ?? "") !== null) {
+    if (
+      threadJumpIndexFromCommand(command ?? "") !== null ||
+      command === "assistant.open" ||
+      command === "tasks.open"
+    ) {
       event.preventDefault();
       event.stopPropagation();
       const matchingItem = displayedGroups

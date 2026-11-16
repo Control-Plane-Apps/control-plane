@@ -28,6 +28,8 @@ import {
   shouldShowThreadJumpHintsForModifiers,
   shortcutLabelForCommand,
   terminalDeleteShortcutData,
+  taskRangeCommandForIndex,
+  taskRangeIndexFromCommand,
   terminalNavigationShortcutData,
   threadJumpCommandForIndex,
   threadJumpIndexFromCommand,
@@ -611,7 +613,8 @@ describe("thread navigation helpers", () => {
   });
 
   it("keeps default thread jumps off the web so the browser can switch tabs", () => {
-    const input = event({ key: "1", metaKey: true });
+    // Cmd+1 and Cmd+2 are the Assistant and Tasks; thread N is Cmd+(N+2).
+    const input = event({ key: "3", metaKey: true });
     assert.isNull(
       resolveShortcutCommand(input, DEFAULT_RESOLVED_KEYBINDINGS, {
         platform: "MacIntel",
@@ -678,8 +681,85 @@ describe("model picker navigation helpers", () => {
         platform: "MacIntel",
         context: { isDesktop: true, modelPickerOpen: false },
       }),
-      "thread.jump.3",
+      "thread.jump.1",
     );
+  });
+});
+
+describe("assistant, tasks and task range shortcuts", () => {
+  const mac = { platform: "MacIntel", context: { isDesktop: true } } as const;
+  const win = { platform: "Win32", context: { isDesktop: true } } as const;
+  const resolve = (input: ReturnType<typeof event>, options: typeof mac | typeof win) =>
+    resolveShortcutCommand(input, DEFAULT_RESOLVED_KEYBINDINGS, options);
+
+  it("opens the Assistant on Cmd+1 and Tasks on Cmd+2, on desktop only", () => {
+    assert.strictEqual(resolve(event({ key: "1", metaKey: true }), mac), "assistant.open");
+    assert.strictEqual(resolve(event({ key: "2", metaKey: true }), mac), "tasks.open");
+    assert.isNull(
+      resolveShortcutCommand(event({ key: "1", metaKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { isDesktop: false },
+      }),
+    );
+  });
+
+  it("leaves Cmd+1 and Cmd+2 to the model picker while it is open", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "1", metaKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        context: { isDesktop: true, modelPickerOpen: true },
+      }),
+      "modelPicker.jump.1",
+    );
+  });
+
+  it("jumps to the first seven threads on Cmd+3 to Cmd+9, and nothing past that", () => {
+    for (let thread = 1; thread <= 7; thread += 1) {
+      assert.strictEqual(
+        resolve(event({ key: String(thread + 2), metaKey: true }), mac),
+        `thread.jump.${thread}`,
+      );
+    }
+    assert.isNull(resolve(event({ key: "0", metaKey: true }), mac));
+    assert.isFalse(
+      DEFAULT_RESOLVED_KEYBINDINGS.some((binding) => binding.command === "thread.jump.8"),
+      "jump 8 has no default key",
+    );
+  });
+
+  it("switches Tasks ranges on Ctrl+1 to Ctrl+6 on a Mac", () => {
+    const ranges = ["today", "week", "month", "year", "upcoming", "all"];
+    ranges.forEach((range, index) => {
+      assert.strictEqual(
+        resolve(event({ key: String(index + 1), ctrlKey: true }), mac),
+        `tasks.range.${range}`,
+      );
+    });
+    assert.isNull(resolve(event({ key: "7", ctrlKey: true }), mac));
+  });
+
+  it("uses Alt for the range tabs off a Mac, where Ctrl+1 is the Assistant", () => {
+    assert.strictEqual(resolve(event({ key: "1", ctrlKey: true }), win), "assistant.open");
+    assert.strictEqual(resolve(event({ key: "2", altKey: true }), win), "tasks.range.week");
+    assert.isNull(resolve(event({ key: "2", altKey: true }), mac));
+  });
+
+  it("shows the range shortcut for a tab's tooltip", () => {
+    assert.strictEqual(
+      shortcutLabelForCommand(DEFAULT_RESOLVED_KEYBINDINGS, taskRangeCommandForIndex(0), {
+        platform: "MacIntel",
+        context: { isDesktop: true },
+      }),
+      "\u23031",
+    );
+  });
+
+  it("maps range commands to tab indices", () => {
+    assert.strictEqual(taskRangeCommandForIndex(0), "tasks.range.today");
+    assert.strictEqual(taskRangeCommandForIndex(5), "tasks.range.all");
+    assert.isNull(taskRangeCommandForIndex(6));
+    assert.strictEqual(taskRangeIndexFromCommand("tasks.range.upcoming"), 4);
+    assert.isNull(taskRangeIndexFromCommand("thread.jump.1"));
   });
 });
 

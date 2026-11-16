@@ -1,6 +1,7 @@
 import { taskCounts } from "@t3tools/client-runtime/state/projects";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { ListTodoIcon, WifiOffIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { useTaskEnvironmentStatus, useTaskToday, useTasks } from "../../state/tasks";
@@ -12,7 +13,10 @@ import { useTaskSidebarDropHover } from "./taskDrag";
  * on the row moves it to today: the Tasks page's drag context hit-tests this
  * row (data-task-drop-today, TASK_SIDEBAR_DROP_ATTR) and does the move.
  */
-export function SidebarTasksSection() {
+export function SidebarTasksSection(props: {
+  /** The shortcut badge shown while the jump modifier is held. */
+  readonly hint?: ReactNode;
+}) {
   const { environmentId, tasks } = useTasks();
   const today = useTaskToday();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -28,7 +32,7 @@ export function SidebarTasksSection() {
   const active = pathname.startsWith("/tasks/");
 
   return (
-    <li className="mb-1.5 list-none" data-testid="sidebar-section-tasks">
+    <li className="relative mb-1.5 list-none" data-testid="sidebar-section-tasks">
       <Link
         to="/tasks/$view"
         params={{ view: "today" }}
@@ -60,6 +64,7 @@ export function SidebarTasksSection() {
           </span>
         ) : null}
       </Link>
+      {props.hint}
     </li>
   );
 }

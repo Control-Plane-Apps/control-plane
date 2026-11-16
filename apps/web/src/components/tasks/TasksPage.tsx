@@ -15,6 +15,7 @@ import {
   taskIntentFor,
   todayTasks,
   upcomingTasks,
+  dayDropHome,
   homeForMove,
   type TaskBacklogFilter,
   type TaskLifecycleThread,
@@ -37,8 +38,8 @@ import { isElectron } from "../../env";
 import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
-  threadJumpCommandForIndex,
-  threadJumpIndexFromCommand,
+  taskRangeCommandForIndex,
+  taskRangeIndexFromCommand,
 } from "../../keybindings";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import { cn } from "../../lib/utils";
@@ -62,7 +63,7 @@ import {
   TasksSectionLabel,
   useExpandedTask,
 } from "./TaskList";
-import { TASK_RANGE_DROP, TaskDragProvider } from "./taskDrag";
+import { TASK_RANGE_DROP, TaskDayDropZone, TaskDragProvider } from "./taskDrag";
 import type { TaskRowContext } from "./TaskRow";
 import { TaskSyncChip, TaskSyncMarginLine, taskSyncIndicator } from "./TaskSyncIndicator";
 import {
@@ -74,6 +75,7 @@ import {
   type TasksSearch,
   type TasksView,
 } from "./tasksRange";
+import { useOptimisticTaskHomes } from "./useOptimisticTaskHomes";
 import { useTaskActions } from "./useTaskActions";
 
 export { TASK_VIEWS, type TasksSearch, type TasksView } from "./tasksRange";
@@ -171,7 +173,7 @@ function AsideSection(props: { readonly title?: string; readonly children: React
 /**
  * Today, Week, Month, Year, then Upcoming and All tasks: one switcher at the
  * top of the view. The first four are drop targets, so dragging a task onto a
- * tab moves its home; ⌘1 to ⌘6 switch while the view is open.
+ * tab moves its home; Ctrl+1 to Ctrl+6 switch while the view is open.
  */
 function RangeTabs(props: {
   readonly view: TasksView;
@@ -261,11 +263,15 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   const { view, search } = props;
   const navigate = useNavigate();
   const today = useTaskToday();
-  const { environmentId, tasks: allTaskRecords, intents } = useTasks();
+  const { environmentId, tasks: serverTaskRecords, intents } = useTasks();
   const taskEnvironmentStatus = useTaskEnvironmentStatus();
   const projects = useProjects();
   const threads = useThreadShells() as ReadonlyArray<TaskLifecycleThread>;
   const actions = useTaskActions(environmentId);
+  const { tasks: allTaskRecords, move: moveTask } = useOptimisticTaskHomes(
+    serverTaskRecords,
+    actions,
+  );
   const handToAgent = useHandToAgent();
   const sync = taskSyncIndicator(useTaskSync().status);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -305,15 +311,16 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
       search: tasksSearch(search, { project: project ?? undefined }),
     });
 
-  // ⌘1 to ⌘6 switch ranges while Tasks is open, using the thread-jump keys so
-  // a remapped binding still works; everywhere else they still jump threads.
+  // Ctrl+1 to Ctrl+6 (Alt elsewhere than a Mac) switch ranges while Tasks is
+  // open. They are their own commands, so a remapped binding still works and
+  // Cmd+1 and Cmd+2 stay the global Assistant and Tasks shortcuts.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || isCommandPaletteOpen()) return;
       const command = resolveShortcutCommand(event, keybindings, {
         context: { terminalFocus: isTerminalFocused() },
       });
-      const index = threadJumpIndexFromCommand(command ?? "");
+      const index = taskRangeIndexFromCommand(command ?? "");
       const next = index === null ? undefined : TASK_VIEWS[index];
       if (next === undefined) return;
       event.preventDefault();
@@ -358,14 +365,19 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   }, [highlight, view]);
 
   const shortcutFor = (index: number) => {
-    const command = threadJumpCommandForIndex(index);
+    const command = taskRangeCommandForIndex(index);
     return command === null ? null : shortcutLabelForCommand(keybindings, command);
   };
 
   const onDropOnRange = (task: Task, target: string) => {
     const move = dropTargetForView(target as TasksView);
     if (move === null) return;
-    void actions.move(task, homeForMove(move, task.home, today));
+    void moveTask(task, homeForMove(move, task.home, today));
+  };
+
+  const onDropOnDay = (task: Task, date: string) => {
+    const home = dayDropHome(task, date, today);
+    if (home !== null) void moveTask(task, home);
   };
 
   const list = (
@@ -534,10 +546,11 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
           {groups.map((group) => {
             const proposedThatDay = proposedTasksOnDate(tasks, group.date);
             return (
-              <section
+              <TaskDayDropZone
                 key={group.date}
-                aria-label={formatTaskDayTitle(group.date)}
-                className="overflow-hidden rounded-xl border border-border bg-card px-4 pt-3 pb-1"
+                date={group.date}
+                label={formatTaskDayTitle(group.date)}
+                className="overflow-hidden rounded-xl border border-border bg-card px-4 pt-3 pb-1 transition-colors data-[day-drop-over=true]:border-primary data-[day-drop-over=true]:border-dashed data-[day-drop-over=true]:bg-primary/5"
               >
                 <div className="flex items-baseline gap-2 pb-1">
                   <h2 className="font-semibold text-[15px]">{formatTaskDayTitle(group.date)}</h2>
@@ -557,7 +570,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
                 ) : null}
                 {list(group.tasks, formatTaskDayTitle(group.date), true, true)}
                 <AddTaskRow onAdd={add({ kind: "date", date: group.date })} />
-              </section>
+              </TaskDayDropZone>
             );
           })}
         </div>
@@ -657,8 +670,9 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
         <TaskDragProvider
           tasks={allTaskRecords}
           onDropOnRange={onDropOnRange}
+          onDropOnDay={onDropOnDay}
           onDropOnSidebar={(task) =>
-            void actions.move(task, homeForMove({ kind: "today" }, task.home, today))
+            void moveTask(task, homeForMove({ kind: "today" }, task.home, today))
           }
           renderOverlay={(task) => <TaskDragPreview task={task} />}
         >

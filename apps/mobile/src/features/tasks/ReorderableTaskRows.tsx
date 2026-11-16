@@ -23,7 +23,8 @@ const LONG_PRESS_MS = 300;
 
 /** Places outside the list a lifted row can be dropped on, in window coordinates. */
 export interface TaskDropTargets {
-  readonly hitTest: (x: number, y: number) => string | null;
+  /** The target under the finger, for the lifted task (its own day is never one). */
+  readonly hitTest: (x: number, y: number, task: Task) => string | null;
   readonly onHover: (target: string | null) => void;
   readonly onDrop: (task: Task, target: string) => void;
 }
@@ -88,7 +89,11 @@ export function ReorderableTaskRows(props: {
     const current = latest.current.drag;
     if (current === null) return;
     translation.value = dy;
-    const target = latest.current.props.dropTargets?.hitTest(x, y) ?? null;
+    const lifted = latest.current.tasks[current.from];
+    const target =
+      lifted === undefined
+        ? null
+        : (latest.current.props.dropTargets?.hitTest(x, y, lifted) ?? null);
     setHovered(target);
     // Follow the finger sideways only while it is over a drop target.
     translationX.value = target === null ? 0 : dx;

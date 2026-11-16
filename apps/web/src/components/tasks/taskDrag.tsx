@@ -5,6 +5,7 @@ import {
   KeyboardSensor,
   PointerSensor,
   pointerWithin,
+  useDroppable,
   useSensor,
   useSensors,
   type CollisionDetection,
@@ -43,6 +44,8 @@ const TASK_DROP_ANIMATION: DropAnimation = { duration: 250, easing: "ease" };
 
 /** The kind of droppable a range tab registers. */
 export const TASK_RANGE_DROP = "task-range";
+/** The kind of droppable a day's card registers (Upcoming). */
+export const TASK_DAY_DROP = "task-day";
 /** Marks the sidebar Tasks row, which lives outside the Tasks page's DndContext. */
 export const TASK_SIDEBAR_DROP_ATTR = "data-task-drop-today";
 
@@ -98,16 +101,31 @@ function isRangeDrop(data: unknown): boolean {
   return (data as { type?: unknown } | undefined)?.type === TASK_RANGE_DROP;
 }
 
+function dayDropDate(data: unknown): string | null {
+  const zone = data as { type?: unknown; date?: unknown } | undefined;
+  return zone?.type === TASK_DAY_DROP && typeof zone.date === "string" ? zone.date : null;
+}
+
 /**
- * Range tabs win when the pointer is on one; otherwise closestCenter among the
- * rows of the dragged row's own list (lists do not trade rows), and nothing at
- * all for a list whose order is not the user's.
+ * Range tabs win when the pointer is on one, then another day's card (a drop
+ * there moves the task to that day); otherwise closestCenter among the rows of
+ * the dragged row's own list (lists do not trade rows), and nothing at all for
+ * a list whose order is not the user's. The task's own day is not a target, so
+ * dragging inside it still reorders.
  */
-const taskCollisions: CollisionDetection = (args) => {
+export const taskCollisions: CollisionDetection = (args) => {
   const tabs = args.droppableContainers.filter((entry) => isRangeDrop(entry.data.current));
   const onTab = pointerWithin({ ...args, droppableContainers: tabs });
   if (onTab.length > 0) return onTab;
-  const activeData = args.active.data.current as { reorderable?: boolean } | undefined;
+  const activeData = args.active.data.current as
+    | { reorderable?: boolean; homeDate?: string | null }
+    | undefined;
+  const otherDays = args.droppableContainers.filter((entry) => {
+    const date = dayDropDate(entry.data.current);
+    return date !== null && date !== (activeData?.homeDate ?? null);
+  });
+  const onDay = pointerWithin({ ...args, droppableContainers: otherDays });
+  if (onDay.length > 0) return onDay;
   if (activeData?.reorderable !== true) return [];
   const container = sortableContainerOf(activeData);
   const rows = args.droppableContainers.filter(
@@ -146,6 +164,32 @@ function overSidebarTasks(point: { x: number; y: number } | null): boolean {
 }
 
 /**
+ * One day's card as a drop target: a task dropped anywhere on it moves to that
+ * day. The card outlines while a task from another day hovers it.
+ */
+export function TaskDayDropZone(props: {
+  readonly date: string;
+  readonly label: string;
+  readonly className?: string;
+  readonly children: ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `${TASK_DAY_DROP}:${props.date}`,
+    data: { type: TASK_DAY_DROP, date: props.date },
+  });
+  return (
+    <section
+      ref={setNodeRef}
+      aria-label={props.label}
+      data-day-drop-over={isOver ? "true" : undefined}
+      className={props.className}
+    >
+      {props.children}
+    </section>
+  );
+}
+
+/**
  * One drag context for the whole Tasks page: every list's sortable rows and
  * the range tabs. Lists handle their own reorders (useDndMonitor); this
  * handles drops on a range tab or the sidebar Tasks row.
@@ -153,6 +197,7 @@ function overSidebarTasks(point: { x: number; y: number } | null): boolean {
 export function TaskDragProvider(props: {
   readonly tasks: ReadonlyArray<Task>;
   readonly onDropOnRange: (task: Task, view: string) => void;
+  readonly onDropOnDay: (task: Task, date: string) => void;
   readonly onDropOnSidebar: (task: Task) => void;
   readonly renderOverlay: (task: Task) => ReactNode;
   readonly children: ReactNode;
@@ -194,6 +239,11 @@ export function TaskDragProvider(props: {
         } else if (isRangeDrop(overData) && typeof overData?.view === "string") {
           setDroppedAway(true);
           props.onDropOnRange(task, overData.view);
+        } else if (dayDropDate(overData) !== null) {
+          // The task shows in its new card at once (useOptimisticTaskHomes),
+          // so the overlay has nothing to settle back into.
+          setDroppedAway(true);
+          props.onDropOnDay(task, dayDropDate(overData)!);
         }
       }}
     >

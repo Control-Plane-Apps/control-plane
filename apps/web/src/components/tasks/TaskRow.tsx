@@ -231,7 +231,10 @@ export function TaskRow(props: {
   } = useSortable({
     id: task.id,
     disabled: !dragEnabled,
-    data: { reorderable: props.reorderable === true },
+    data: {
+      reorderable: props.reorderable === true,
+      homeDate: task.home.kind === "date" ? task.home.date : null,
+    },
     transition: reducedMotion ? null : TASK_DRAG_TRANSITION,
   });
   // Lucive's check-off beat (see CHECK_OFF_DELAY_MS): the write fires after

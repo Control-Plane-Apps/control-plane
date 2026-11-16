@@ -66,3 +66,31 @@ export function planTaskReorder(
     keysById: new Map(tasks.map((task) => [task.id as string, task.orderKey ?? null])),
   });
 }
+
+export interface DropFrame {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * The day card (by date) under the finger while a task is lifted, in window
+ * coordinates. The task's own day is never a target, so dragging inside it
+ * still reorders; a task that is not open has none.
+ */
+export function dayDropTarget(
+  frames: ReadonlyMap<string, DropFrame>,
+  x: number,
+  y: number,
+  lifted: Pick<Task, "home" | "status">,
+): string | null {
+  if (lifted.status !== "todo") return null;
+  for (const [date, frame] of frames) {
+    if (lifted.home.kind === "date" && lifted.home.date === date) continue;
+    if (x >= frame.x && x <= frame.x + frame.width && y >= frame.y && y <= frame.y + frame.height) {
+      return date;
+    }
+  }
+  return null;
+}

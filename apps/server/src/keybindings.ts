@@ -49,6 +49,7 @@ import {
   compileResolvedKeybindingRule,
   compileResolvedKeybindingsConfig,
   parseKeybindingShortcut,
+  THREAD_JUMP_DEFAULT_KEY_COUNT,
 } from "@t3tools/shared/keybindings";
 
 export {
@@ -124,7 +125,7 @@ function hasSameShortcutContext(left: KeybindingRule, right: KeybindingRule): bo
  * moves to the new one, so existing keybinding files pick up the change; a
  * rule the user rebound is left alone.
  */
-const MOVED_DEFAULT_KEYBINDINGS: ReadonlyArray<{
+const MOVED_DEFAULT_KEYBINDINGS: Array<{
   readonly command: KeybindingRule["command"];
   readonly from: string;
   readonly to: string;
@@ -134,10 +135,43 @@ const MOVED_DEFAULT_KEYBINDINGS: ReadonlyArray<{
   { command: "tasks.quickAdd", from: "mod+alt+t", to: "mod+shift+t" },
 ];
 
-export function migrateMovedDefaultKeybindings(config: ReadonlyArray<KeybindingRule>): {
+// Cmd+1 and Cmd+2 now open the Assistant and Tasks, so thread N jumps on
+// Cmd+(N+2) (the first seven threads). Jumps 8 and 9 have no default key now.
+for (let thread = 1; thread <= THREAD_JUMP_DEFAULT_KEY_COUNT; thread += 1) {
+  MOVED_DEFAULT_KEYBINDINGS.push({
+    command: `thread.jump.${thread}` as KeybindingRule["command"],
+    from: `mod+${thread}`,
+    to: `mod+${thread + 2}`,
+  });
+}
+
+/** Defaults dropped outright. A persisted rule still on the old key is removed. */
+const REMOVED_DEFAULT_KEYBINDINGS: ReadonlyArray<{
+  readonly command: KeybindingRule["command"];
+  readonly key: string;
+}> = [
+  { command: "thread.jump.8", key: "mod+8" },
+  { command: "thread.jump.9", key: "mod+9" },
+];
+
+export function migrateMovedDefaultKeybindings(persisted: ReadonlyArray<KeybindingRule>): {
   readonly config: ReadonlyArray<KeybindingRule>;
   readonly moved: ReadonlyArray<KeybindingRule["command"]>;
+  readonly removed: ReadonlyArray<KeybindingRule["command"]>;
 } {
+  const removed = persisted
+    .filter((rule) =>
+      REMOVED_DEFAULT_KEYBINDINGS.some(
+        (drop) => drop.command === rule.command && drop.key === rule.key,
+      ),
+    )
+    .map((rule) => rule.command);
+  const config = persisted.filter(
+    (rule) =>
+      !REMOVED_DEFAULT_KEYBINDINGS.some(
+        (drop) => drop.command === rule.command && drop.key === rule.key,
+      ),
+  );
   // Apply every move at once (two defaults may swap keys), then undo any move
   // that lands on a key another rule still holds.
   const targets = new Map<number, string>();
@@ -170,6 +204,7 @@ export function migrateMovedDefaultKeybindings(config: ReadonlyArray<KeybindingR
       return key === undefined ? rule : { ...rule, key };
     }),
     moved: [...targets.keys()].map((index) => config[index]!.command),
+    removed,
   };
 }
 
@@ -530,6 +565,12 @@ const make = Effect.gen(function* () {
           commands: migration.moved,
         });
       }
+      if (migration.removed.length > 0) {
+        yield* Effect.logInfo("removed default keybindings that no longer have a default key", {
+          path: keybindingsConfigPath,
+          commands: migration.removed,
+        });
+      }
       const customConfig = migration.config;
       const existingCommands = new Set(customConfig.map((entry) => entry.command));
       const missingDefaults: KeybindingRule[] = [];
@@ -568,7 +609,9 @@ const make = Effect.gen(function* () {
         });
       }
       if (missingDefaults.length === 0) {
-        if (migration.moved.length > 0) yield* writeConfigAtomically(customConfig);
+        if (migration.moved.length + migration.removed.length > 0) {
+          yield* writeConfigAtomically(customConfig);
+        }
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
@@ -598,7 +641,9 @@ const make = Effect.gen(function* () {
         });
       }
       if (defaultsToAppend.length === 0) {
-        if (migration.moved.length > 0) yield* writeConfigAtomically(customConfig);
+        if (migration.moved.length + migration.removed.length > 0) {
+          yield* writeConfigAtomically(customConfig);
+        }
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }

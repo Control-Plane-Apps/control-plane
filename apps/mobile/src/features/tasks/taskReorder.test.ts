@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  dayDropTarget,
   moveItem,
   planTaskReorder,
   reorderShift,
   reorderTargetIndex,
+  type DropFrame,
   type ReorderFrame,
 } from "./taskReorder";
 
@@ -69,5 +71,37 @@ describe("planTaskReorder", () => {
     expect(plan).toHaveLength(1);
     expect(plan[0]?.id).toBe("a");
     expect(plan[0]!.orderKey > keys.get("c")!).toBe(true);
+  });
+});
+
+describe("dayDropTarget", () => {
+  const days = new Map<string, DropFrame>([
+    ["2026-11-18", { x: 0, y: 100, width: 400, height: 120 }],
+    ["2026-11-19", { x: 0, y: 230, width: 400, height: 160 }],
+    ["2026-11-20", { x: 0, y: 400, width: 400, height: 60 }],
+  ]);
+  const gym = { status: "todo", home: { kind: "date", date: "2026-11-18" } } as const;
+
+  it("finds the other day's card under the finger", () => {
+    expect(dayDropTarget(days, 200, 300, gym)).toBe("2026-11-19");
+    expect(dayDropTarget(days, 200, 420, gym)).toBe("2026-11-20");
+  });
+
+  it("never targets the task's own day, so dragging inside it reorders", () => {
+    expect(dayDropTarget(days, 200, 150, gym)).toBeNull();
+  });
+
+  it("finds nothing in the gaps between cards or outside them", () => {
+    expect(dayDropTarget(days, 200, 225, gym)).toBeNull();
+    expect(dayDropTarget(days, 500, 300, gym)).toBeNull();
+  });
+
+  it("lets a committed or backlog task drop on any day, but not a closed one", () => {
+    const committed = {
+      status: "todo",
+      home: { kind: "period", horizon: "week", startsOn: "2026-11-16", endsOn: "2026-11-22" },
+    } as const;
+    expect(dayDropTarget(days, 200, 150, committed)).toBe("2026-11-18");
+    expect(dayDropTarget(days, 200, 300, { ...gym, status: "completed" })).toBeNull();
   });
 });

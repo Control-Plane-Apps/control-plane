@@ -1,4 +1,9 @@
-import { KeybindingCommand, KeybindingRule, KeybindingsConfig } from "@t3tools/contracts";
+import {
+  KeybindingCommand,
+  KeybindingRule,
+  KeybindingsConfig,
+  THREAD_JUMP_KEYBINDING_COMMANDS,
+} from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertFailure } from "@effect/vitest/utils";
@@ -303,6 +308,67 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       assert.equal(byCommand.get("tasks.quickAdd")?.key, "mod+shift+t");
       assert.equal(byCommand.get("script.run-tests.run")?.key, "mod+shift+r");
     }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
+  const oldJumpDefaults: KeybindingRule[] = Array.from({ length: 9 }, (_, index) => ({
+    key: `mod+${index + 1}`,
+    command: THREAD_JUMP_KEYBINDING_COMMANDS[index]!,
+    when: "isDesktop",
+  }));
+
+  it("shifts the old thread jump defaults to Cmd+3 to Cmd+9 and drops jumps 8 and 9", () => {
+    const migrated = Keybindings.migrateMovedDefaultKeybindings(oldJumpDefaults);
+    assert.deepEqual(
+      migrated.config.map((rule) => [rule.command, rule.key]),
+      [1, 2, 3, 4, 5, 6, 7].map((thread) => [`thread.jump.${thread}`, `mod+${thread + 2}`]),
+    );
+    assert.deepEqual(migrated.removed, ["thread.jump.8", "thread.jump.9"]);
+  });
+
+  it("leaves a rebound thread jump alone while moving the rest", () => {
+    const migrated = Keybindings.migrateMovedDefaultKeybindings([
+      { key: "mod+alt+1", command: "thread.jump.1", when: "isDesktop" },
+      { key: "mod+2", command: "thread.jump.2", when: "isDesktop" },
+    ]);
+    assert.deepEqual(
+      migrated.config.map((rule) => [rule.command, rule.key]),
+      [
+        ["thread.jump.1", "mod+alt+1"],
+        ["thread.jump.2", "mod+4"],
+      ],
+    );
+  });
+
+  it.effect(
+    "migrates an old keybindings file so Cmd+1 and Cmd+2 open the Assistant and Tasks",
+    () =>
+      Effect.gen(function* () {
+        const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+        yield* writeKeybindingsConfig(keybindingsConfigPath, [
+          ...oldJumpDefaults,
+          { key: "mod+shift+r", command: "script.run-tests.run" },
+        ]);
+
+        yield* Effect.gen(function* () {
+          const keybindings = yield* Keybindings.Keybindings;
+          yield* keybindings.syncDefaultKeybindingsOnStartup;
+        });
+
+        const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+        const keyOf = (command: string) =>
+          persisted.find((entry) => entry.command === command)?.key;
+        assert.equal(keyOf("assistant.open"), "mod+1");
+        assert.equal(keyOf("tasks.open"), "mod+2");
+        assert.equal(keyOf("thread.jump.1"), "mod+3");
+        assert.equal(keyOf("thread.jump.7"), "mod+9");
+        assert.isUndefined(keyOf("thread.jump.8"));
+        assert.isUndefined(keyOf("thread.jump.9"));
+        assert.equal(keyOf("tasks.range.today"), "ctrl+1");
+        assert.equal(keyOf("script.run-tests.run"), "mod+shift+r");
+        // No two rules claim the same key in the same context.
+        const claims = persisted.map((entry) => `${entry.key}\u0000${entry.when ?? ""}`);
+        assert.equal(new Set(claims).size, claims.length);
+      }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
   it("swaps both moved defaults together and leaves rebound shortcuts alone", () => {
