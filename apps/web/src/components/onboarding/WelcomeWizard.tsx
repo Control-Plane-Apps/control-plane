@@ -105,19 +105,22 @@ export function WelcomeWizard({
   const [step, setStep] = useState<WizardStep>("connection");
   const { environments } = useEnvironments();
   const [selection, setSelection] = useState<ReadonlySet<EnvironmentId> | null>(null);
-  const autoSelectedComputers = useRef(new Set<EnvironmentId>());
+  const registeredEnvironmentsSeen = useRef(new Set<EnvironmentId>());
   const [setupIds, setSetupIds] = useState<readonly EnvironmentId[]>([]);
   const [isImporting, setIsImporting] = useState(false);
   const finishingPromiseRef = useRef<Promise<boolean> | null>(null);
   const completionErrorToastIdRef = useRef<ReturnType<typeof toastManager.add> | null>(null);
   const primaryEnvironment = usePrimaryEnvironment();
+  // Computers already registered on this client (its own server, earlier
+  // pairings, ones the user just ticked) start selected for setup. This only
+  // picks what the next steps configure; it never registers anything.
   useEffect(() => {
     const newComputers = environments.filter(
-      (environment) => !autoSelectedComputers.current.has(environment.environmentId),
+      (environment) => !registeredEnvironmentsSeen.current.has(environment.environmentId),
     );
     if (newComputers.length === 0) return;
     for (const environment of newComputers) {
-      autoSelectedComputers.current.add(environment.environmentId);
+      registeredEnvironmentsSeen.current.add(environment.environmentId);
     }
     setSelection(
       (current) =>
@@ -214,7 +217,6 @@ export function WelcomeWizard({
             <ConnectionStep
               expandPairingInitially={!localAvailable && !hasCloudPublicConfig()}
               selectedIds={selectedIds}
-              autoSelectedComputers={autoSelectedComputers.current}
               onSelectionChange={setSelection}
               onToggleEnvironment={(environmentId, checked) =>
                 setSelection((current) => {
@@ -254,7 +256,6 @@ export function WelcomeWizard({
 // ── Step 1: connection choice ────────────────────────────────
 
 function ConnectionStep({
-  autoSelectedComputers,
   expandPairingInitially,
   selectedIds,
   onSelectionChange,
@@ -262,7 +263,6 @@ function ConnectionStep({
   onContinue,
   onPaired,
 }: {
-  readonly autoSelectedComputers: Set<EnvironmentId>;
   readonly expandPairingInitially: boolean;
   readonly selectedIds: ReadonlySet<EnvironmentId>;
   readonly onSelectionChange: (ids: ReadonlySet<EnvironmentId>) => void;
@@ -343,7 +343,6 @@ function ConnectionStep({
       <div className="mt-4 space-y-2">
         {cloudEnabled ? (
           <ConnectAccountOption
-            autoSelectedComputers={autoSelectedComputers}
             disabled={isPairing}
             selectedIds={selectedIds}
             onToggleEnvironment={onToggleEnvironment}
@@ -400,17 +399,16 @@ function ConnectionStep({
 }
 
 function ConnectAccountOption({
-  autoSelectedComputers,
   disabled,
   selectedIds,
   onToggleEnvironment,
 }: {
-  readonly autoSelectedComputers: Set<EnvironmentId>;
   readonly disabled: boolean;
   readonly selectedIds: ReadonlySet<EnvironmentId>;
   readonly onToggleEnvironment: (environmentId: EnvironmentId, checked: boolean) => void;
 }) {
   const { environments } = useEnvironments();
+  const primaryEnvironment = usePrimaryEnvironment();
   const { isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
   const { openAuthPrompt } = useT3ConnectAuthPrompt();
   const [expanded, setExpanded] = useState(true);
@@ -456,27 +454,34 @@ function ConnectAccountOption({
       </CollapsibleTrigger>
       <CollapsiblePanel keepMounted>
         <div className="px-3 pb-3">
+          {isSignedIn ? (
+            <p className="mb-3 text-sm text-muted-foreground" data-testid="connect-opt-in-copy">
+              {primaryEnvironment
+                ? "This computer keeps its own server. Tick any other computers on your account to add them as remotes; their Projects and agents stay on those machines."
+                : "Tick the computers on your account you want to use. Their Projects and agents stay on those machines."}
+            </p>
+          ) : null}
           <div className="mb-3 space-y-1.5">
             {isSignedIn ? (
               <CloudEnvironmentConnectRows
-                primaryEnvironmentId={null}
+                primaryEnvironmentId={primaryEnvironment?.environmentId ?? null}
                 savedEnvironments={environments}
                 showSavedEnvironments
                 onDiscoveryReady={onDiscoveryReady}
-                selection={{ selectedIds, onChange: onToggleEnvironment, autoSelectedComputers }}
+                selection={{ selectedIds, onChange: onToggleEnvironment }}
                 refreshWhileEmpty
                 empty={
-                  <p className="py-3 text-sm text-muted-foreground">No computers linked yet.</p>
+                  <p className="py-3 text-sm text-muted-foreground">
+                    No other computers linked yet.
+                  </p>
                 }
               />
             ) : null}
           </div>
-          <p className="text-sm text-muted-foreground">
-            Run this on each computer you want to connect.
-          </p>
+          <p className="text-sm text-muted-foreground">To link another computer, run this on it.</p>
           <CommandBlock command="npx t3 connect" className="mt-3" />
           <p className="mt-3 text-xs text-muted-foreground">
-            Keep Control Plane running. Select the computers you want to set up above.
+            Nothing is added until you tick it. You can add or remove computers later in Settings.
           </p>
         </div>
       </CollapsiblePanel>
