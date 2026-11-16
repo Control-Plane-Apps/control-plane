@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import type { Task } from "@t3tools/contracts";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
@@ -25,7 +25,10 @@ import { useHandToAgent } from "./handToAgent";
 let renderer: ReactTestRenderer;
 let handToAgent: ReturnType<typeof useHandToAgent>;
 function Probe() {
-  handToAgent = useHandToAgent();
+  const action = useHandToAgent();
+  useEffect(() => {
+    handToAgent = action;
+  }, [action]);
   return null;
 }
 beforeEach(() => {

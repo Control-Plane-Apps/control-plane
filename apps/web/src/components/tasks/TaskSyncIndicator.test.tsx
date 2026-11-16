@@ -9,11 +9,9 @@ vi.mock("../ui/popover", async () => {
   return {
     Popover: ({ children }: { children: ReactNode }) => {
       const [open, setOpen] = React.useState(false);
-      return (
-        <Context.Provider value={{ open, toggle: () => setOpen(!open) }}>
-          {children}
-        </Context.Provider>
-      );
+      const toggle = React.useCallback(() => setOpen((current) => !current), []);
+      const value = React.useMemo(() => ({ open, toggle }), [open, toggle]);
+      return <Context.Provider value={value}>{children}</Context.Provider>;
     },
     PopoverTrigger: ({ children, ...props }: ComponentProps<"button">) => {
       const context = React.useContext(Context);

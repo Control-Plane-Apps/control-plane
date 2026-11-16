@@ -1,4 +1,6 @@
 import { act } from "react";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { resolveShortcutCommand } from "../../keybindings";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { useTasksKeyboard, type TasksKeyboardOptions } from "./useTasksKeyboard";
@@ -78,6 +80,36 @@ afterEach(() => {
 });
 
 describe("Tasks keyboard", () => {
+  it("leaves the global and range shortcuts to their existing handlers", () => {
+    const shortcuts = [
+      { key: "1", metaKey: true, command: "assistant.open" },
+      { key: "2", metaKey: true, command: "tasks.open" },
+      ...["today", "week", "month", "year", "upcoming", "all"].map((range, index) => ({
+        key: String(index + 1),
+        ctrlKey: true,
+        command: `tasks.range.${range}`,
+      })),
+      ...Array.from({ length: 7 }, (_, index) => ({
+        key: String(index + 3),
+        metaKey: true,
+        command: `thread.jump.${index + 1}`,
+      })),
+      { key: "t", metaKey: true, shiftKey: true, command: "tasks.quickAdd" },
+    ];
+    for (const { key, command, ...modifiers } of shortcuts) {
+      const event = press(key, modifiers);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(
+        resolveShortcutCommand(event, DEFAULT_RESOLVED_KEYBINDINGS, {
+          platform: "MacIntel",
+          context: { isDesktop: true },
+        }),
+      ).toBe(command);
+    }
+    expect(options.onNew).not.toHaveBeenCalled();
+    expect(options.onMove).not.toHaveBeenCalled();
+  });
+
   it("collapses on Escape before clearing selection on a second Escape", () => {
     options = { ...options, expandedId: "a" };
     act(() => renderer.update(<Probe />));
