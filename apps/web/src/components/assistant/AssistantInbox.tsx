@@ -13,7 +13,10 @@ export function AssistantInbox(props: {
 }) {
   const now = useMinuteNow();
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-7 pb-6" data-testid="assistant-inbox">
+    <div
+      className="max-h-[min(480px,65vh)] overflow-y-auto px-4 pt-3 pb-4"
+      data-testid="assistant-inbox"
+    >
       <div className="mx-auto flex max-w-[680px] flex-col gap-3">
         {props.pings.length === 0 ? (
           <div className="mt-16 flex flex-col items-center gap-2 text-center">
