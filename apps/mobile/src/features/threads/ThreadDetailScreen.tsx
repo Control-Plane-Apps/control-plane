@@ -92,6 +92,7 @@ import {
   FloatingWorkingControl,
 } from "./floating-working-control";
 import { connectionFloatingStatus, type FloatingWorkingStatus } from "./floating-working-status";
+import { useStatusReplyTag } from "../status/statusReplyStore";
 import {
   derivePendingUserInputMaxHeight,
   ESTIMATED_KEYBOARD_HEIGHT,
@@ -310,6 +311,16 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const agentLabel = `${props.selectedThread.modelSelection.instanceId} agent`;
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
+  // Reply on a Status row lands here with a "Re:" chip; open the keyboard so
+  // the answer can be typed straight away.
+  const statusReplyTag = useStatusReplyTag(selectedThreadKey);
+  const statusReplyLabel =
+    statusReplyTag === null ? null : `${statusReplyTag.title}:${statusReplyTag.openedAt ?? ""}`;
+  useEffect(() => {
+    if (statusReplyLabel === null) return;
+    const timer = setTimeout(() => composerEditorRef.current?.focus(), 350);
+    return () => clearTimeout(timer);
+  }, [statusReplyLabel]);
   const draftMessageRef = useRef(props.draftMessage);
   draftMessageRef.current = props.draftMessage;
   const composerOverlayRef = useRef<View>(null);
