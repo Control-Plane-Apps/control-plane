@@ -90,7 +90,9 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
     <View
       className={cn(
         "rounded-lg bg-card",
-        !expanded && (selected || props.highlighted === true) && "bg-secondary",
+        // Desktop's selection color (bg-accent, #efe9e0 in light). bg-secondary
+        // is the card color in light, so a selected row looked unselected.
+        !expanded && (selected || props.highlighted === true) && "bg-subtle-strong",
       )}
       style={{
         marginHorizontal: 8,

@@ -78,7 +78,10 @@ function ProposedTaskRow(props: {
   const { task, actions } = props;
   return (
     <View
-      className={cn("flex-row items-start py-1 pl-1.5 pr-2", props.highlighted && "bg-secondary")}
+      className={cn(
+        "flex-row items-start py-1 pl-1.5 pr-2",
+        props.highlighted && "bg-subtle-strong",
+      )}
     >
       <TaskCheckbox
         checked={false}
