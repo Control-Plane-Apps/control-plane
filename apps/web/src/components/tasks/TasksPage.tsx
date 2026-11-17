@@ -56,6 +56,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useHandToAssistant } from "./handToAssistant";
+import { TaskBulkBar } from "./TaskBulkBar";
 import { openTaskQuickAdd } from "./QuickAddDialog";
 import {
   AddTaskRow,
@@ -79,7 +80,6 @@ import {
 } from "./tasksRange";
 import { useOptimisticTaskHomes } from "./useOptimisticTaskHomes";
 import { useTaskSelection } from "./useTaskSelection";
-import { TaskMoveMenu } from "./TaskMenus";
 import { useTaskActions } from "./useTaskActions";
 
 export { TASK_VIEWS, type TasksSearch, type TasksView } from "./tasksRange";
@@ -752,64 +752,59 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
               </button>
             </div>
           </WorkspacePageHeader>
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="mx-auto flex w-full max-w-5xl gap-12 px-6 pt-8 pb-16 sm:px-12">
-              <main ref={mainRef} className="min-w-0 max-w-2xl flex-1">
-                {environmentId !== null &&
-                !taskEnvironmentStatus.connected &&
-                taskEnvironmentStatus.phase !== null ? (
-                  <p
-                    role="status"
-                    data-testid="tasks-reconnecting"
-                    className="mb-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-sm"
-                  >
-                    {taskEnvironmentStatus.remoteLabel ?? "This Mac's server"} is reconnecting.
-                    Showing the last synced Tasks; changes will fail until it is back.
-                  </p>
-                ) : null}
-                {body}
-                {selectedTasks.length > 0 ? (
-                  <div
-                    aria-label="Selected task actions"
-                    className="sticky bottom-4 flex items-center gap-3 rounded-lg border border-border bg-card p-3 shadow-md"
-                  >
-                    <span>{selectedTasks.length} selected</span>
-                    <TaskMoveMenu
-                      home={selectedTasks[0]!.home}
-                      openRequest={bulkMoveRequest}
-                      today={today}
-                      onMove={(target) => {
-                        for (const task of selectedTasks)
-                          void actions.move(task, homeForMove(target, task.home, today));
-                      }}
-                      onPickDate={(date) => {
-                        for (const task of selectedTasks)
-                          void actions.move(task, { kind: "date", date });
-                      }}
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <ScrollArea className="min-h-0 flex-1">
+              <div
+                className={cn(
+                  "mx-auto flex w-full max-w-5xl gap-12 px-6 pt-8 sm:px-12",
+                  selectedTasks.length > 0 ? "pb-28" : "pb-16",
+                )}
+              >
+                <main ref={mainRef} className="min-w-0 max-w-2xl flex-1">
+                  {environmentId !== null &&
+                  !taskEnvironmentStatus.connected &&
+                  taskEnvironmentStatus.phase !== null ? (
+                    <p
+                      role="status"
+                      data-testid="tasks-reconnecting"
+                      className="mb-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-sm"
                     >
-                      Move
-                    </TaskMoveMenu>
-                    <button
-                      type="button"
-                      disabled={!findGlobalAssistantProject(projects)}
-                      onClick={() => void handToAssistant(selectedTasks)}
-                    >
-                      Hand to Assistant
-                    </button>
-                    <button type="button" onClick={deleteSelection}>
-                      Delete {selectedTasks.length}
-                    </button>
-                    <button type="button" onClick={selection.clear}>
-                      Clear selection
-                    </button>
-                  </div>
+                      {taskEnvironmentStatus.remoteLabel ?? "This Mac's server"} is reconnecting.
+                      Showing the last synced Tasks; changes will fail until it is back.
+                    </p>
+                  ) : null}
+                  {body}
+                </main>
+                {aside !== null ? (
+                  <aside className="hidden w-52 shrink-0 flex-col gap-6 pt-1 lg:flex">
+                    {aside}
+                  </aside>
                 ) : null}
-              </main>
-              {aside !== null ? (
-                <aside className="hidden w-52 shrink-0 flex-col gap-6 pt-1 lg:flex">{aside}</aside>
-              ) : null}
-            </div>
-          </ScrollArea>
+              </div>
+            </ScrollArea>
+            {selectedTasks.length > 0 ? (
+              <TaskBulkBar
+                count={selectedTasks.length}
+                moveProps={{
+                  home: selectedTasks[0]!.home,
+                  openRequest: bulkMoveRequest,
+                  today,
+                  onMove: (target) => {
+                    for (const task of selectedTasks)
+                      void actions.move(task, homeForMove(target, task.home, today));
+                  },
+                  onPickDate: (date) => {
+                    for (const task of selectedTasks)
+                      void actions.move(task, { kind: "date", date });
+                  },
+                }}
+                canHandToAssistant={Boolean(findGlobalAssistantProject(projects))}
+                onHandToAssistant={() => void handToAssistant(selectedTasks)}
+                onDelete={deleteSelection}
+                onClear={selection.clear}
+              />
+            ) : null}
+          </div>
         </TaskDragProvider>
       </div>
     </SidebarInset>
