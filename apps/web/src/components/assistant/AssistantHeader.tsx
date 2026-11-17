@@ -10,12 +10,14 @@ import {
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../ui/popover";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AssistantMark } from "./AssistantMark";
 
 // Fork-owned. Assistant identity and Inbox, Memory and Schedules actions.
 
 export interface AssistantHeaderProps {
-  readonly subtitle: string;
+  /** What this thread is. Shown as a tooltip on the title, not as a second line. */
+  readonly description: string;
   readonly inboxCount: number;
   readonly inbox: ReactNode;
   readonly onInboxOpenChange: (open: boolean) => void;
@@ -75,16 +77,27 @@ export function AssistantHeader(props: AssistantHeaderProps) {
       )}
       data-testid="assistant-header"
     >
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <AssistantMark className="size-5 text-attention-foreground" />
-        {/* The design's 17px and 14px lines: the two rows sit centred with
-            room above and below instead of filling the 52px bar. */}
-        <div className="flex min-w-0 flex-col">
-          <span className="text-sm leading-[17px] font-semibold text-foreground">Assistant</span>
-          <span className="truncate text-xs leading-[14px] text-muted-foreground">
-            {props.subtitle}
-          </span>
-        </div>
+      <div className="flex min-w-0 flex-1 items-center">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <div
+                className="flex min-w-0 items-center gap-2"
+                data-testid="assistant-header-title"
+              />
+            }
+          >
+            <AssistantMark className="size-5 shrink-0 text-attention-foreground" />
+            <span className="truncate text-sm leading-[17px] font-semibold text-foreground">
+              Assistant
+            </span>
+          </TooltipTrigger>
+          {props.description !== "" ? (
+            <TooltipPopup side="bottom" align="start">
+              {props.description}
+            </TooltipPopup>
+          ) : null}
+        </Tooltip>
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <Popover onOpenChange={props.onInboxOpenChange}>

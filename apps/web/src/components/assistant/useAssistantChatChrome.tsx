@@ -175,7 +175,7 @@ export function useAssistantChatChrome(input: {
       (schedule.target === threadId ||
         (schedule.target === "coordinator" && threadId === coordinatorId)),
   );
-  const subtitle =
+  const description =
     threadId === coordinatorId
       ? "Talks to every Project coordinator and workspace"
       : channelSchedule
@@ -192,7 +192,7 @@ export function useAssistantChatChrome(input: {
     header: (
       <AssistantHeader
         key={inboxKey}
-        subtitle={subtitle}
+        description={description}
         inboxCount={unreadCount}
         inbox={<AssistantInbox pings={pings} onReply={replyHere} />}
         onInboxOpenChange={onOpenChange}

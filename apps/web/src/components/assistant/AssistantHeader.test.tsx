@@ -1,8 +1,16 @@
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import { AssistantHeader } from "./AssistantHeader";
+// Base UI's tooltip reads `window` on mount, which the node test environment lacks.
+vi.mock("../ui/tooltip", () => ({
+  Tooltip: (props: { children: React.ReactNode }) => <>{props.children}</>,
+  TooltipTrigger: (props: { render: React.ReactElement; children: React.ReactNode }) => (
+    <props.render.type {...(props.render.props as object)}>{props.children}</props.render.type>
+  ),
+  TooltipPopup: () => null,
+}));
+const { AssistantHeader } = await import("./AssistantHeader");
 
 const noop = () => undefined;
 
@@ -18,7 +26,7 @@ describe("AssistantHeader", () => {
     await act(async () => {
       renderer = create(
         <AssistantHeader
-          subtitle="Talks to every Project coordinator and workspace"
+          description="Talks to every Project coordinator and workspace"
           inboxCount={count as number}
           inbox={<div>Example ping</div>}
           onInboxOpenChange={noop}
@@ -47,7 +55,7 @@ describe("AssistantHeader", () => {
     await act(async () => {
       renderer = create(
         <AssistantHeader
-          subtitle=""
+          description=""
           inboxCount={0}
           inbox={null}
           onInboxOpenChange={noop}
@@ -74,7 +82,7 @@ describe("AssistantHeader", () => {
       await act(async () => {
         renderer = create(
           <AssistantHeader
-            subtitle=""
+            description=""
             inboxCount={0}
             inbox={null}
             onInboxOpenChange={noop}
@@ -103,4 +111,30 @@ describe("AssistantHeader", () => {
       await act(async () => renderer.unmount());
     },
   );
+
+  it("is single-line: the description is not rendered as text under the title", async () => {
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <AssistantHeader
+          description="Talks to every Project coordinator and workspace"
+          inboxCount={0}
+          inbox={null}
+          onInboxOpenChange={noop}
+          onOpenMemory={noop}
+          rightPanelOpen
+        />,
+      );
+    });
+    const title = renderer.root.findByProps({ "data-testid": "assistant-header-title" });
+    const text = (node: { children: ReadonlyArray<unknown> }): string =>
+      node.children
+        .map((child) =>
+          typeof child === "string" ? child : text(child as { children: ReadonlyArray<unknown> }),
+        )
+        .join("");
+    expect(text(title)).toBe("Assistant");
+    expect(JSON.stringify(renderer.toJSON())).not.toContain("Talks to every");
+    await act(async () => renderer.unmount());
+  });
 });
