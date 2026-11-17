@@ -1779,6 +1779,11 @@ const resolveMacDmgNotarytoolAuth = Effect.fn("resolveMacDmgNotarytoolAuth")(fun
   const apiIssuer = Option.getOrUndefined(config.appleApiIssuer)?.trim();
   if (apiKey && apiKeyId && apiIssuer) {
     const fs = yield* FileSystem.FileSystem;
+    // electron-builder reads APPLE_API_KEY as a path to the .p8 file, so
+    // accept a path here too instead of only the key's contents.
+    if (!apiKey.includes("PRIVATE KEY") && (yield* fs.exists(apiKey))) {
+      return ["--key", apiKey, "--key-id", apiKeyId, "--issuer", apiIssuer] as const;
+    }
     const keyPath = yield* fs.makeTempFileScoped({ prefix: "AuthKey-", suffix: ".p8" });
     yield* fs.writeFileString(keyPath, apiKey);
     return ["--key", keyPath, "--key-id", apiKeyId, "--issuer", apiIssuer] as const;
