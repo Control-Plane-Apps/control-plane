@@ -13,7 +13,7 @@ import { useProjects, useThreadShells } from "../../state/entities";
 import { useTaskToday, useTasks } from "../../state/tasks";
 import { useHandToAssistant } from "../tasks/handToAssistant";
 import { useExpandedTask } from "../tasks/TaskList";
-import { TaskMoveMenu } from "../tasks/TaskMenus";
+import { TaskBulkBar } from "../tasks/TaskBulkBar";
 import { TaskRow, type TaskRowContext } from "../tasks/TaskRow";
 import { useTaskActions } from "../tasks/useTaskActions";
 import { useTaskSelection } from "../tasks/useTaskSelection";
@@ -128,38 +128,28 @@ export function AssistantTodayTasks(props: { readonly onOpenTasks: () => void })
             })}
           </ul>
           {selectedTasks.length > 0 ? (
-            <div
-              aria-label="Selected task actions"
-              className="flex items-center gap-2 px-2 py-1 text-xs"
-            >
-              <span>{selectedTasks.length} selected</span>
-              <TaskMoveMenu
-                home={selectedTasks[0]!.home}
-                today={today}
-                openRequest={bulkMoveRequest}
-                onMove={(target) => {
+            <TaskBulkBar
+              className="sticky inset-x-auto bottom-2 px-0 pt-1"
+              hideEscHint
+              count={selectedTasks.length}
+              moveProps={{
+                home: selectedTasks[0]!.home,
+                today,
+                openRequest: bulkMoveRequest,
+                onMove: (target) => {
                   for (const task of selectedTasks)
                     void actions.move(task, homeForMove(target, task.home, today));
-                }}
-                onPickDate={(date) => {
+                },
+                onPickDate: (date) => {
                   for (const task of selectedTasks)
                     void actions.move(task, homeForMove({ kind: "date", date }, task.home, today));
-                }}
-              >
-                Move
-              </TaskMoveMenu>
-              <button
-                type="button"
-                onClick={() => {
-                  for (const task of selectedTasks) void actions.delete(task);
-                }}
-              >
-                Delete
-              </button>
-              <button type="button" onClick={selection.clear}>
-                Clear selection
-              </button>
-            </div>
+                },
+              }}
+              onDelete={() => {
+                for (const task of selectedTasks) void actions.delete(task);
+              }}
+              onClear={selection.clear}
+            />
           ) : null}
           {more > 0 ? (
             <button

@@ -15,13 +15,23 @@ const ghostAction = cn(buttonVariants({ variant: "ghost", size: "compact" }), "t
 export function TaskBulkBar(props: {
   readonly count: number;
   readonly moveProps: Omit<ComponentProps<typeof TaskMoveMenu>, "children" | "className">;
-  readonly canHandToAssistant: boolean;
-  readonly onHandToAssistant: () => void;
+  /** Omit where the Assistant is already the audience (its own rail). */
+  readonly onHandToAssistant?: (() => void) | undefined;
+  readonly canHandToAssistant?: boolean | undefined;
   readonly onDelete: () => void;
   readonly onClear: () => void;
+  /** Positioning of the wrapper; the default overlays the bottom of a `relative` pane. */
+  readonly className?: string | undefined;
+  /** Drops the Esc hint where the pane is too narrow for it. */
+  readonly hideEscHint?: boolean | undefined;
 }) {
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
+    <div
+      className={cn(
+        "pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4",
+        props.className,
+      )}
+    >
       <div
         role="toolbar"
         aria-label="Selected task actions"
@@ -32,15 +42,17 @@ export function TaskBulkBar(props: {
         <TaskMoveMenu {...props.moveProps} className={ghostAction}>
           Move
         </TaskMoveMenu>
-        <Button
-          variant="ghost"
-          size="compact"
-          className="text-[13px]"
-          disabled={!props.canHandToAssistant}
-          onClick={props.onHandToAssistant}
-        >
-          Hand to Assistant
-        </Button>
+        {props.onHandToAssistant ? (
+          <Button
+            variant="ghost"
+            size="compact"
+            className="text-[13px]"
+            disabled={props.canHandToAssistant === false}
+            onClick={props.onHandToAssistant}
+          >
+            Hand to Assistant
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="compact"
@@ -58,9 +70,11 @@ export function TaskBulkBar(props: {
         >
           <XIcon aria-hidden />
         </Button>
-        <Kbd aria-hidden className="me-1">
-          Esc
-        </Kbd>
+        {props.hideEscHint ? null : (
+          <Kbd aria-hidden className="me-1">
+            Esc
+          </Kbd>
+        )}
       </div>
     </div>
   );
