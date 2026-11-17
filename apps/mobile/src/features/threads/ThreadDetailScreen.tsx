@@ -93,6 +93,7 @@ import {
 } from "./floating-working-control";
 import { connectionFloatingStatus, type FloatingWorkingStatus } from "./floating-working-status";
 import { useStatusReplyTag } from "../status/statusReplyStore";
+import { useQuoteReply } from "./quoteReplyStore";
 import {
   derivePendingUserInputMaxHeight,
   ESTIMATED_KEYBOARD_HEIGHT,
@@ -321,6 +322,14 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     const timer = setTimeout(() => composerEditorRef.current?.focus(), 350);
     return () => clearTimeout(timer);
   }, [statusReplyLabel]);
+  // Starting a quote-reply (swipe or the message menu) opens the keyboard too.
+  const quoteReply = useQuoteReply(selectedThreadKey);
+  const quoteReplyKey = quoteReply === null ? null : `${quoteReply.messageId}:${quoteReply.text}`;
+  useEffect(() => {
+    if (quoteReplyKey === null) return;
+    const timer = setTimeout(() => composerEditorRef.current?.focus(), 120);
+    return () => clearTimeout(timer);
+  }, [quoteReplyKey]);
   const draftMessageRef = useRef(props.draftMessage);
   draftMessageRef.current = props.draftMessage;
   const composerOverlayRef = useRef<View>(null);

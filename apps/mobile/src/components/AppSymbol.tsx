@@ -133,6 +133,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "arrow.up.right": IconArrowUpRight,
   "arrow.up.right.circle": IconArrowUpRightCircle,
   "arrow.uturn.backward": IconArrowBackUp,
+  "arrowshape.turn.up.left": IconArrowBackUp,
   "arrow.uturn.forward": IconArrowForwardUp,
   archivebox: IconArchive,
   "archivebox.fill": IconArchive,

@@ -246,6 +246,18 @@ import {
   useStatusReplyStore,
   useStatusReplyTag,
 } from "./status/statusReplyStore";
+import { QuoteReplyChip } from "./chat/QuoteReply";
+import { latestReplyableAssistantMessage } from "./chat/quoteReply.logic";
+import {
+  applyQuoteReply,
+  quoteReplyDisplayLabelFromStored,
+  quoteReplyDraftFor,
+  readQuoteReplyDraft,
+  restoreQuoteReplyPrompts,
+  useQuoteReplyDraft,
+  useQuoteReplyStore,
+} from "./chat/quoteReplyStore";
+import type { QuoteReplyRequest } from "./chat/MessagesTimeline";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
@@ -4878,6 +4890,32 @@ export default function ChatView(props: ChatViewProps) {
       ),
     [clearStatusReply, projectStatuses, statusReplyTag],
   );
+  const quoteReplyDraft = useQuoteReplyDraft(activeThreadKey ?? null);
+  const clearQuoteReply = useCallback(() => {
+    if (activeThreadKey) useQuoteReplyStore.getState().clearDraft(activeThreadKey);
+  }, [activeThreadKey]);
+  const startQuoteReply = useCallback(
+    (request: QuoteReplyRequest) => {
+      if (!activeThreadKey) return;
+      const draft = quoteReplyDraftFor(request);
+      if (draft === null) return;
+      useQuoteReplyStore.getState().setDraft(activeThreadKey, draft);
+      composerRef.current?.focusAtEnd();
+    },
+    [activeThreadKey],
+  );
+  const composerReplyChips = useMemo(
+    () =>
+      statusReplyChip === null && quoteReplyDraft === null ? null : (
+        <>
+          {statusReplyChip}
+          {quoteReplyDraft !== null ? (
+            <QuoteReplyChip draft={quoteReplyDraft} onRemove={clearQuoteReply} />
+          ) : null}
+        </>
+      ),
+    [clearQuoteReply, quoteReplyDraft, statusReplyChip],
+  );
   // Handoff links can outlive their thread, since rows re-read the shell only
   // when they render.
   const openLinkedThread = useCallback(
@@ -7180,6 +7218,23 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
+      if (command === "thread.replyToLatest") {
+        const latest = latestReplyableAssistantMessage(timelineEntries);
+        if (!latest || latest.kind !== "message") return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        startQuoteReply({
+          messageId: latest.message.id,
+          messageText: latest.message.text,
+          author: {
+            kind: "assistant",
+            displayLabel: assistantRole === "coordinator" ? "Coordinator" : "Assistant",
+          },
+        });
+        return;
+      }
+
       if (command === "thread.steerQueuedMessage") {
         const message = activeThreadKey
           ? useQueuedMessageStore.getState().queuesByThreadKey[activeThreadKey]?.[0]
@@ -7251,6 +7306,9 @@ export default function ChatView(props: ChatViewProps) {
     toggleRightPanelMaximized,
     toggleTerminalVisibility,
     composerRef,
+    timelineEntries,
+    startQuoteReply,
+    assistantRole,
   ]);
 
   // Paste-to-focus: the resting composer blurs on a click into the timeline,
@@ -7524,7 +7582,20 @@ export default function ChatView(props: ChatViewProps) {
     if (restoredReplies.tag !== null && activeThreadKey) {
       useStatusReplyStore.getState().setTag(activeThreadKey, restoredReplies.tag);
     }
-    const prompts = [promptRef.current, ...restoredReplies.prompts]
+    // A queued quote reply's header goes back to being the composer's chip.
+    const restoredQuotes = restoreQuoteReplyPrompts(
+      restoredReplies.prompts,
+      readQuoteReplyDraft(activeThreadKey ?? null),
+      (reply) =>
+        quoteReplyDisplayLabelFromStored(
+          reply.label,
+          assistantRole === "coordinator" ? "Coordinator" : "Assistant",
+        ),
+    );
+    if (restoredQuotes.draft !== null && activeThreadKey) {
+      useQuoteReplyStore.getState().setDraft(activeThreadKey, restoredQuotes.draft);
+    }
+    const prompts = [promptRef.current, ...restoredQuotes.prompts]
       .map((prompt) => prompt.trim())
       .filter((prompt) => prompt.length > 0);
     const nextPrompt = prompts.join("\n\n");
@@ -7843,6 +7914,24 @@ export default function ChatView(props: ChatViewProps) {
       !queuedMessage && !directAnnotation && statusBoardEnabled && activeThreadKey
         ? (useStatusReplyStore.getState().tagsByThreadKey[activeThreadKey] ?? null)
         : null;
+    // So does the quote-reply chip. The quote header sits inside the Re: header.
+    const quoteReplyDraftForSend =
+      !queuedMessage && !directAnnotation ? readQuoteReplyDraft(activeThreadKey ?? null) : null;
+    const withReplyHeaders = (text: string) =>
+      applyStatusReplyTag(applyQuoteReply(text, quoteReplyDraftForSend), statusReplyTagForSend);
+    const clearReplyHeaders = () => {
+      if (statusReplyTagForSend !== null) clearStatusReply();
+      if (quoteReplyDraftForSend !== null) clearQuoteReply();
+    };
+    const restoreReplyHeaders = () => {
+      if (!activeThreadKey) return;
+      if (statusReplyTagForSend !== null) {
+        useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTagForSend);
+      }
+      if (quoteReplyDraftForSend !== null) {
+        useQuoteReplyStore.getState().setDraft(activeThreadKey, quoteReplyDraftForSend);
+      }
+    };
     if (
       !directAnnotation &&
       !queuedMessage &&
@@ -7858,7 +7947,7 @@ export default function ChatView(props: ChatViewProps) {
       });
       const followUp = {
         ...resolvedFollowUp,
-        text: applyStatusReplyTag(resolvedFollowUp.text.trim(), statusReplyTagForSend),
+        text: withReplyHeaders(resolvedFollowUp.text.trim()),
       };
       const outgoingFollowUpText = formatOutgoingPrompt({
         provider: ctxSelectedProvider,
@@ -7880,7 +7969,7 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      if (statusReplyTagForSend !== null) clearStatusReply();
+      clearReplyHeaders();
       const followUpSent = await onSubmitPlanFollowUp({
         text: followUp.text,
         context: buildMessageContext({
@@ -7892,9 +7981,7 @@ export default function ChatView(props: ChatViewProps) {
       });
       if (!followUpSent) {
         promptRef.current = followUpPromptSnapshot;
-        if (statusReplyTagForSend !== null && activeThreadKey) {
-          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTagForSend);
-        }
+        restoreReplyHeaders();
         composerTerminalContextsRef.current = [...followUpTerminalContexts];
         restorePlanFollowUpComposer({
           snapshot: {
@@ -7971,11 +8058,11 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadKey &&
       (settings.followUpBehavior === "queue") !== (submissionIntent === "alternate")
     ) {
-      const queuedPrompt = applyStatusReplyTag(promptForSend, statusReplyTagForSend);
+      const queuedPrompt = withReplyHeaders(promptForSend);
       if (composerRef.current?.validateProviderInput(queuedPrompt) === false) {
         return;
       }
-      if (statusReplyTagForSend !== null) clearStatusReply();
+      clearReplyHeaders();
       useQueuedMessageStore.getState().enqueue(activeThreadKey, {
         prompt: queuedPrompt,
         images: [...composerImages],
@@ -8050,10 +8137,7 @@ export default function ChatView(props: ChatViewProps) {
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: applyStatusReplyTag(
-        messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
-        statusReplyTagForSend,
-      ),
+      text: withReplyHeaders(messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT),
     });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       // A queued message that no longer fits is held at the head for the
@@ -8608,7 +8692,7 @@ export default function ChatView(props: ChatViewProps) {
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
-      if (statusReplyTagForSend !== null) clearStatusReply();
+      clearReplyHeaders();
     }
 
     let firstComposerImageName: string | null = null;
@@ -8885,9 +8969,7 @@ export default function ChatView(props: ChatViewProps) {
           return next.length === existing.length ? existing : next;
         });
         promptRef.current = messageTextForSend;
-        if (statusReplyTagForSend !== null && activeThreadKey) {
-          useStatusReplyStore.getState().setTag(activeThreadKey, statusReplyTagForSend);
-        }
+        restoreReplyHeaders();
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
         composerFilesRef.current = composerFilesSnapshot;
@@ -10352,6 +10434,12 @@ export default function ChatView(props: ChatViewProps) {
                     { context: { terminalFocus: false } },
                   )}
                   onRemoveQueuedMessage={onRemoveQueuedMessage}
+                  onReplyToMessage={
+                    paintOnlyDisplayedTimeline || !activeThreadKey ? null : startQuoteReply
+                  }
+                  replyShortcutLabel={shortcutLabelForCommand(keybindings, "thread.replyToLatest", {
+                    context: { terminalFocus: false },
+                  })}
                 />,
               )}
 
@@ -10476,7 +10564,7 @@ export default function ChatView(props: ChatViewProps) {
                             }
                             isPreparingWorktree={isPreparingWorktree}
                             bannerItems={composerBannerItems}
-                            leadingContent={statusReplyChip}
+                            leadingContent={composerReplyChips}
                             // With attachments or contexts aboard the pick just inserts the
                             // text, so it sends as a prompt like the typed path would.
                             onUsageLimitsCommand={

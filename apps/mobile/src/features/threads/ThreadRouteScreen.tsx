@@ -109,6 +109,7 @@ import {
   useAssistantThreadHeader,
 } from "../projects/useAssistantThreadView";
 import { ThreadTasksFooter, StatusReplyChip } from "../tasks/ThreadTaskAccessories";
+import { QuoteReplyChip } from "./QuoteReplyChip";
 import { useThreadTaskProposalAccessory } from "../tasks/ThreadTaskProposals";
 import { ProjectStatusInspector } from "../status/ProjectStatusInspector";
 
@@ -1162,6 +1163,10 @@ function ThreadRouteContent(
             <>
               {assistantScreen?.composerAccessory ?? null}
               <StatusReplyChip
+                environmentId={selectedThread.environmentId}
+                threadId={selectedThread.id}
+              />
+              <QuoteReplyChip
                 environmentId={selectedThread.environmentId}
                 threadId={selectedThread.id}
               />

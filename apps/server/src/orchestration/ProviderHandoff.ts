@@ -5,6 +5,7 @@ import {
   type OrchestrationMessage,
   type OrchestrationThreadActivity,
   type ProviderDriverKind,
+  quoteReplyForProvider,
 } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
@@ -119,7 +120,7 @@ export function formatProviderHandoff(input: {
     const text = (
       message.role === "user"
         ? projectComposerContextForProvider({
-            text: message.text,
+            text: quoteReplyForProvider(message.text),
             records: message.context?.records ?? [],
           })
         : assistantCitationsToPlainText(message.text)

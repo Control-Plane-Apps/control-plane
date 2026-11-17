@@ -20,6 +20,8 @@ export function ProposedTasks(props: {
   readonly actions: TaskActions;
   /** Rows lit up briefly when opened from a chat's proposal block. */
   readonly highlightIds?: ReadonlySet<string>;
+  /** Already inside a card (an Upcoming day): rows only, no card of their own. */
+  readonly inline?: boolean;
 }) {
   const { tasks, projects, today, actions } = props;
   if (tasks.length === 0) return null;
@@ -31,6 +33,17 @@ export function ProposedTasks(props: {
       ? `Proposed by ${sourceProject.title} coordinator`
       : "Proposed by coordinators";
   const addAllLabel = addAllProposalsLabel(tasks.length);
+  const rows = tasks.map((task, index) => (
+    <View key={task.id}>
+      {index > 0 ? <RowSeparator inset={52} /> : null}
+      <ProposedTaskRow
+        task={task}
+        meta={formatTaskHome(task.home, today)}
+        actions={actions}
+        highlighted={props.highlightIds?.has(task.id) === true}
+      />
+    </View>
+  ));
   return (
     <View>
       <View className="flex-row items-center gap-1.5 pl-9 pr-5 pt-3">
@@ -51,19 +64,7 @@ export function ProposedTasks(props: {
           </Pressable>
         ) : null}
       </View>
-      <TaskCard>
-        {tasks.map((task, index) => (
-          <View key={task.id}>
-            {index > 0 ? <RowSeparator inset={52} /> : null}
-            <ProposedTaskRow
-              task={task}
-              meta={formatTaskHome(task.home, today)}
-              actions={actions}
-              highlighted={props.highlightIds?.has(task.id) === true}
-            />
-          </View>
-        ))}
-      </TaskCard>
+      {props.inline === true ? rows : <TaskCard>{rows}</TaskCard>}
     </View>
   );
 }

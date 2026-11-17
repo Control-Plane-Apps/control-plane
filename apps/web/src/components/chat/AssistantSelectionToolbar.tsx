@@ -4,8 +4,14 @@ import {
   type AssistantCitation,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { QuoteIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { QuoteIcon, ReplyIcon } from "lucide-react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   captureAssistantTextSelection,
@@ -22,17 +28,22 @@ export function AssistantSelectionToolbar({
   viewport,
   threadRef,
   onCite,
+  onReply,
 }: {
   viewport: HTMLElement | null;
   threadRef: ScopedThreadRef;
-  onCite: (citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => boolean;
+  onCite?:
+    | ((citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => boolean)
+    | undefined;
+  /** Starts a quote reply on just the selected excerpt. */
+  onReply?: ((messageId: MessageId, excerpt: string) => boolean) | undefined;
 }) {
   const [selection, setSelection] = useState<{
     citation: AssistantCitation;
     position: SelectionActionPoint;
     sourceAnchor: AssistantCitationSourceAnchor;
   } | null>(null);
-  const toolbarRef = useRef<HTMLButtonElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<ReturnType<typeof observeSelectionActions> | null>(null);
 
   useLayoutEffect(() => {
@@ -99,10 +110,11 @@ export function AssistantSelectionToolbar({
       ) {
         return;
       }
-      if (toolbar.disabled) return;
+      const firstAction = toolbar.querySelector<HTMLButtonElement>("button:not(:disabled)");
+      if (!firstAction) return;
       event.preventDefault();
       event.stopPropagation();
-      toolbar.focus({ preventScroll: true });
+      firstAction.focus({ preventScroll: true });
     };
     document.addEventListener("keydown", focusActions, true);
     document.addEventListener("selectionchange", actions.selectionChanged);
@@ -121,34 +133,63 @@ export function AssistantSelectionToolbar({
     setSelection(null);
   };
   const cite = () => {
-    if (tooLong || !onCite(selection.citation, selection.sourceAnchor)) return false;
+    if (tooLong || !onCite?.(selection.citation, selection.sourceAnchor)) return false;
     window.getSelection()?.removeAllRanges();
     dismiss();
     return true;
   };
+  const reply = () => {
+    if (!onReply?.(selection.citation.messageId, selection.citation.text)) return false;
+    window.getSelection()?.removeAllRanges();
+    dismiss();
+    return true;
+  };
+  const onActionKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      dismiss();
+    }
+  };
   return createPortal(
-    <Button
+    <div
       ref={toolbarRef}
-      type="button"
-      size="xs"
-      variant="glass"
-      disabled={tooLong}
-      aria-label={tooLong ? "Selection is too long to cite" : "Cite selection in composer"}
-      className="fixed z-50 max-w-[calc(100vw-1rem)] rounded-full px-2.5"
+      role="toolbar"
+      aria-label="Selection actions"
+      className="fixed z-50 flex max-w-[calc(100vw-1rem)] items-center gap-1"
       style={{ left: selection.position.x, top: selection.position.y }}
       onPointerDown={(event) => event.preventDefault()}
-      onClick={cite}
-      onKeyDown={(event) => {
-        event.stopPropagation();
-        if (event.key === "Escape" && !event.nativeEvent.isComposing) {
-          event.preventDefault();
-          dismiss();
-        }
-      }}
     >
-      <QuoteIcon aria-hidden="true" className="size-3.5" />
-      {tooLong ? "Shorten selection" : "Cite"}
-    </Button>,
+      {onCite ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="glass"
+          disabled={tooLong}
+          aria-label={tooLong ? "Selection is too long to cite" : "Cite selection in composer"}
+          className="rounded-full px-2.5"
+          onClick={cite}
+          onKeyDown={onActionKeyDown}
+        >
+          <QuoteIcon aria-hidden="true" className="size-3.5" />
+          {tooLong ? "Shorten selection" : "Cite"}
+        </Button>
+      ) : null}
+      {onReply ? (
+        <Button
+          type="button"
+          size="xs"
+          variant="glass"
+          aria-label="Reply to selection"
+          className="rounded-full px-2.5"
+          onClick={reply}
+          onKeyDown={onActionKeyDown}
+        >
+          <ReplyIcon aria-hidden="true" className="size-3.5" />
+          Reply
+        </Button>
+      ) : null}
+    </div>,
     document.body,
   );
 }
