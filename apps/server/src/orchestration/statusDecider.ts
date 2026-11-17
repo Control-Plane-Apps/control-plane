@@ -20,6 +20,7 @@ import {
   PROJECT_STATUS_TITLE_MAX,
   PROJECT_STATUS_WHY_MAX,
   agentManagerRole,
+  isAssistantChannel,
   type OrchestrationCommand,
   type OrchestrationReadModel,
   type ProjectAssistant,
@@ -276,13 +277,29 @@ export const decideStatusSet = Effect.fn("decideStatusSet")(function* (
   }
   const actor = readModel.threads.find((thread) => thread.id === command.actorThreadId);
   // The status tool checks this too; the decider keeps it true for any caller.
+  // The user's Assistant (the global Assistant Project's coordinator or a
+  // pinned channel) also writes any Project's board; the tool holds it to the
+  // Projects in its reach. Only commands the user's own client sends (dismiss,
+  // automate) can check a row off or opt in to a recommendation.
+  const actorProject =
+    actor === undefined
+      ? undefined
+      : readModel.projects.find((entry) => entry.id === actor.projectId);
   if (
     actor === undefined ||
     actor.deletedAt !== null ||
     actor.archivedAt !== null ||
-    agentManagerRole(project, actor) !== "coordinator"
+    (agentManagerRole(project, actor) !== "coordinator" &&
+      !(
+        actorProject !== undefined &&
+        actorProject.deletedAt === null &&
+        isAssistantChannel(actorProject, actor)
+      ))
   ) {
-    return yield* invariant(command.type, "Only the Project's coordinator can write Status.");
+    return yield* invariant(
+      command.type,
+      "Only the Project's coordinator or the user's Assistant can write Status.",
+    );
   }
   const statuses = project.assistant.statuses ?? [];
   const { change } = command;
