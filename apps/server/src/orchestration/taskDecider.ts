@@ -5,10 +5,12 @@
  * Every write emits the whole record (`task.updated`), like Status. Client
  * commands create, edit and accept tasks. A coordinator proposes through
  * `cp_task_propose` and edits only its own Project's proposals through
- * `cp_task_update`; the Assistant may also add tasks directly, and edit,
- * cancel, reorder, delete and restore any task (its settings are checked by
- * the tool, which this pure decider cannot read). Only the user adds or
- * dismisses a proposal.
+ * `cp_task_update`, and withdraws them through `cp_task_delete`; the
+ * Assistant may also add tasks directly, edit, cancel, reorder, delete and
+ * restore any task, withdraw any proposal, and add or dismiss a proposal for
+ * the user (`task.agent.respond`; its settings, and that the user asked, are
+ * the tool's to check, which this pure decider cannot read). A coordinator
+ * never adds or dismisses a proposal.
  */
 import {
   TASK_INTENT_MAX,
@@ -23,6 +25,9 @@ import {
   followingTaskOccurrence,
   withTaskOccurrence,
   taskIntentKey,
+  taskHandoffMessage,
+  isTaskHandoffDeliveryId,
+  MessageId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
   type ProjectId,
@@ -52,6 +57,8 @@ type TaskAgentCreateCommand = Extract<OrchestrationCommand, { type: "task.agent.
 type TaskAgentUpdateCommand = Extract<OrchestrationCommand, { type: "task.agent.update" }>;
 type TaskAgentDeleteCommand = Extract<OrchestrationCommand, { type: "task.agent.delete" }>;
 type TaskAgentRestoreCommand = Extract<OrchestrationCommand, { type: "task.agent.restore" }>;
+type TaskAgentRespondCommand = Extract<OrchestrationCommand, { type: "task.agent.respond" }>;
+type TaskAgentHandoffCommand = Extract<OrchestrationCommand, { type: "task.agent.handoff" }>;
 type TaskCommand =
   | TaskCreateCommand
   | TaskUpdateCommand
@@ -63,7 +70,9 @@ type TaskCommand =
   | TaskAgentCreateCommand
   | TaskAgentUpdateCommand
   | TaskAgentDeleteCommand
-  | TaskAgentRestoreCommand;
+  | TaskAgentRestoreCommand
+  | TaskAgentRespondCommand
+  | TaskAgentHandoffCommand;
 
 type Decided = Effect.fn.Return<
   PlannedOrchestrationEvent | ReadonlyArray<PlannedOrchestrationEvent>,
@@ -402,10 +411,34 @@ export const decideTaskDelete = Effect.fn("decideTaskDelete")(function* (
   return yield* deleteEvents(command, stored);
 });
 
-/** `task.proposal.respond`: only the user adds or dismisses a proposal. */
+/** `task.proposal.respond`: the user adds or dismisses a proposal. */
 export const decideTaskProposalRespond = Effect.fn("decideTaskProposalRespond")(function* (
   readModel: OrchestrationReadModel,
   command: TaskProposalRespondCommand,
+): Decided {
+  return yield* respondToProposal(readModel, command);
+});
+
+/**
+ * `task.agent.respond`: the Assistant adds or dismisses a waiting proposal on
+ * the user's behalf (the tool allows it only when the user asked).
+ */
+export const decideTaskAgentRespond = Effect.fn("decideTaskAgentRespond")(function* (
+  readModel: OrchestrationReadModel,
+  command: TaskAgentRespondCommand,
+): Decided {
+  if (assistantActor(readModel, command.actorThreadId) === undefined) {
+    return yield* invariant(
+      command.type,
+      "Only the user and the Assistant add or dismiss a proposal.",
+    );
+  }
+  return yield* respondToProposal(readModel, command);
+});
+
+const respondToProposal = Effect.fn("respondToProposal")(function* (
+  readModel: OrchestrationReadModel,
+  command: TaskProposalRespondCommand | TaskAgentRespondCommand,
 ): Decided {
   const stored = findTask(readModel, command.taskId);
   if (stored === undefined || !isProposedTask(stored)) {
@@ -429,6 +462,24 @@ export const decideTaskProposalRespond = Effect.fn("decideTaskProposalRespond")(
 export const decideTaskHandoff = Effect.fn("decideTaskHandoff")(function* (
   readModel: OrchestrationReadModel,
   command: TaskHandoffCommand,
+): Decided {
+  return yield* handOff(readModel, command);
+});
+
+/** `task.agent.handoff`: the Assistant hands a task to a thread, or clears it. */
+export const decideTaskAgentHandoff = Effect.fn("decideTaskAgentHandoff")(function* (
+  readModel: OrchestrationReadModel,
+  command: TaskAgentHandoffCommand,
+): Decided {
+  if (assistantActor(readModel, command.actorThreadId) === undefined) {
+    return yield* invariant(command.type, "Only the user and the Assistant hand tasks off.");
+  }
+  return yield* handOff(readModel, command);
+});
+
+const handOff = Effect.fn("handOff")(function* (
+  readModel: OrchestrationReadModel,
+  command: TaskHandoffCommand | TaskAgentHandoffCommand,
 ): Decided {
   const stored = findTask(readModel, command.taskId);
   if (stored === undefined) return yield* invariant(command.type, "That task no longer exists.");
@@ -596,6 +647,9 @@ export const decideTaskAgentUpdate = Effect.fn("decideTaskAgentUpdate")(function
         "Only the user and the Assistant change a task's repeat or links.",
       );
     }
+    if (command.patch.completionPromptDismissedAt !== undefined) {
+      return yield* invariant(command.type, "Only the user and the Assistant answer that prompt.");
+    }
   }
   if (
     isProposedTask(stored) &&
@@ -604,7 +658,7 @@ export const decideTaskAgentUpdate = Effect.fn("decideTaskAgentUpdate")(function
   ) {
     return yield* invariant(
       command.type,
-      "That task is still a proposal. Only the user adds or dismisses it.",
+      "That task is still a proposal: add or dismiss it (cp_task_proposal_respond), or withdraw it (cp_task_delete), instead of changing its status.",
     );
   }
   const next = applyPatch(readModel, stored, command.patch, command.createdAt);
@@ -621,7 +675,8 @@ function assistantActor(readModel: OrchestrationReadModel, threadId: string) {
 /**
  * `task.agent.delete`: the Assistant deletes a task the same way the user's
  * Delete does, so Task Sync tombstones a synced record instead of losing it.
- * A waiting proposal is the user's to dismiss.
+ * Deleting a waiting proposal withdraws it: the Assistant may withdraw any,
+ * a coordinator only its own Project's.
  */
 export const decideTaskAgentDelete = Effect.fn("decideTaskAgentDelete")(function* (
   readModel: OrchestrationReadModel,
@@ -629,14 +684,23 @@ export const decideTaskAgentDelete = Effect.fn("decideTaskAgentDelete")(function
 ): Decided {
   const stored = findTask(readModel, command.taskId);
   if (stored === undefined) return yield* invariant(command.type, "That task no longer exists.");
-  if (assistantActor(readModel, command.actorThreadId) === undefined) {
-    return yield* invariant(command.type, "Only the Assistant can delete tasks.");
-  }
+  const actor = liveActor(readModel, command.actorThreadId);
+  const assistant = actor !== undefined && isAssistantChannel(actor.project, actor.thread);
   if (isProposedTask(stored)) {
-    return yield* invariant(
-      command.type,
-      "That task is still a proposal. Only the user adds or dismisses it.",
-    );
+    const ownCoordinator =
+      actor !== undefined &&
+      agentManagerRole(actor.project, actor.thread) === "coordinator" &&
+      stored.proposal?.projectId === actor.project.id;
+    if (!assistant && !ownCoordinator) {
+      return yield* invariant(command.type, "You can only withdraw proposals this Project made.");
+    }
+    if (command.scope !== undefined) {
+      return yield* invariant(command.type, "A proposal does not repeat.");
+    }
+    return yield* taskEvent(command, stored.id, null);
+  }
+  if (!assistant) {
+    return yield* invariant(command.type, "Only the Assistant can delete tasks.");
   }
   return yield* deleteEvents(command, stored);
 });
@@ -661,7 +725,20 @@ export const decideTaskAgentRestore = Effect.fn("decideTaskAgentRestore")(functi
     return yield* invariant(command.type, "That task was not deleted.");
   }
   if (isProposedTask(record)) {
-    return yield* invariant(command.type, "A dismissed proposal cannot be restored.");
+    // A withdrawn proposal comes back waiting, within its Project's limit.
+    const owner = readModel.projects.find((entry) => entry.id === record.proposal!.projectId);
+    if (owner === undefined || owner.deletedAt !== null) {
+      return yield* invariant(command.type, "The Project that proposed it is gone.");
+    }
+    const waiting = (readModel.tasks ?? []).filter(
+      (task) => isProposedTask(task) && task.proposal?.projectId === record.proposal!.projectId,
+    );
+    if (waiting.length >= TASK_PROPOSALS_PER_PROJECT_MAX) {
+      return yield* invariant(
+        command.type,
+        `At most ${TASK_PROPOSALS_PER_PROJECT_MAX} proposed tasks wait at once for that Project.`,
+      );
+    }
   }
   const source = record.importSource;
   if (
@@ -817,4 +894,63 @@ function intentEvent(
       payload: { horizon, startsOn, intent },
     }),
   );
+}
+
+/**
+ * The `thread.message.user.append` a handoff with `deliver` sends: one held
+ * message to the receiving thread naming every task in the batch, started by
+ * the AgentCompletionReactor once that thread is idle. Or why it is refused.
+ */
+export function handoffDeliveryCommand(
+  readModel: OrchestrationReadModel,
+  command: TaskHandoffCommand | TaskAgentHandoffCommand,
+): Extract<OrchestrationCommand, { type: "thread.message.user.append" }> | string | null {
+  if (command.deliver === undefined) return null;
+  if (command.handoff === null) return "Only a handoff to a thread sends a message.";
+  const ids = command.deliver.taskIds;
+  if (!ids.includes(command.taskId)) return "The handoff message must include this task.";
+  if (new Set(ids).size !== ids.length) return "Each task may appear only once.";
+  const tasks: Task[] = [];
+  for (const id of ids) {
+    const task = findTask(readModel, id);
+    if (task === undefined) return `There is no task '${id}'.`;
+    if (isProposedTask(task)) return `'${task.title}' is still a proposal.`;
+    tasks.push(task);
+  }
+  const threadId = command.handoff.threadId;
+  const live = (id: string) =>
+    readModel.threads.find((thread) => thread.id === id && thread.deletedAt === null);
+  if (live(threadId) === undefined) return `'${threadId}' is not a thread.`;
+  if (!isTaskHandoffDeliveryId(command.commandId, threadId)) {
+    return "A handoff that sends a message needs a task-handoff command id for that thread.";
+  }
+  const projectOf = (id: string) =>
+    readModel.projects.find((project) => project.id === id && project.deletedAt === null);
+  const text = taskHandoffMessage(tasks, {
+    project: (id) => projectOf(id)?.title,
+    thread: (id) => live(id)?.title,
+    workstream: (projectId, statusId) =>
+      projectOf(projectId)?.assistant?.statuses?.find((status) => status.id === statusId)?.title,
+  });
+  const actor = command.type === "task.agent.handoff" ? live(command.actorThreadId) : undefined;
+  return {
+    type: "thread.message.user.append",
+    commandId: command.commandId,
+    threadId,
+    message: {
+      messageId: MessageId.make(command.commandId),
+      text,
+      attachments: [],
+      ...(actor !== undefined
+        ? {
+            source: {
+              kind: "agent" as const,
+              threadId: actor.id,
+              ...(actor.title.trim().length > 0 ? { threadTitle: actor.title } : {}),
+            },
+          }
+        : {}),
+    },
+    createdAt: command.createdAt,
+  };
 }

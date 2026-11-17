@@ -4,8 +4,10 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  TaskId,
   ThreadId,
   TurnId,
+  taskHandoffDeliveryId,
   type OrchestrationAgentMessageSource,
   type OrchestrationCommand,
   type OrchestrationSessionStatus,
@@ -1726,6 +1728,51 @@ describe("AgentCompletionReactor with scheduled prompts", () => {
         (yield* f.userMessages(COORDINATOR)).map((message) => message.id),
         [pushIdOf(agent, M("request-1"))],
       );
+    }),
+  );
+
+  test(
+    "a task handed to the Assistant from Tasks waits while it is busy, then starts",
+    Effect.gen(function* () {
+      const f = yield* makeFixture;
+      yield* f.createProject;
+      yield* f.dispatch({
+        type: "task.create",
+        commandId: CommandId.make(f.nextId("task")),
+        taskId: TaskId.make("renew"),
+        title: "Renew passport",
+        notes: "Form DS-82",
+        home: { kind: "date", date: "2026-09-30" },
+        createdAt: yield* f.now,
+      });
+      const delivery = taskHandoffDeliveryId(COORDINATOR, "u1");
+
+      yield* f.withReactor((drain) =>
+        Effect.gen(function* () {
+          yield* f.beginTurn(COORDINATOR, T("turn-busy"));
+          yield* f.dispatch({
+            type: "task.handoff",
+            commandId: CommandId.make(delivery),
+            taskId: TaskId.make("renew"),
+            handoff: { kind: "coordinator", threadId: COORDINATOR, at: NOW },
+            deliver: { taskIds: [TaskId.make("renew")] },
+            createdAt: yield* f.now,
+          });
+          yield* drain;
+          // Held: the Assistant is mid-turn.
+          assert.strictEqual(yield* f.turnStartsOf(delivery), 0);
+          yield* f.endTurn(COORDINATOR, T("turn-busy"), "Done.");
+          yield* drain;
+        }),
+      );
+
+      const message = (yield* f.userMessages(COORDINATOR)).find((entry) => entry.id === delivery);
+      assert.include(message?.text ?? "", "Renew passport (task renew)");
+      assert.include(message?.text ?? "", "Notes: Form DS-82");
+      assert.deepStrictEqual(yield* f.receipts(`cp-start:${delivery}`), [
+        `accepted cp-start:${delivery}`,
+      ]);
+      assert.strictEqual(yield* f.turnStartsOf(delivery), 1);
     }),
   );
 });

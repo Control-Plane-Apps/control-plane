@@ -51,7 +51,6 @@ import {
 } from "./threadSidebarWidth";
 import { Sidebar, SidebarProvider, SidebarRail, SidebarTrigger, useSidebar } from "./ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import { TaskHandoffCoordinator } from "./tasks/handToAgent";
 import { TaskQuickAddHost } from "./tasks/QuickAddDialog";
 import { TaskReminderCoordinator } from "./tasks/TaskReminderCoordinator";
 
@@ -400,7 +399,6 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       >
         <ProjectProjectionRetention />
         <TaskQuickAddHost />
-        <TaskHandoffCoordinator />
         <TaskReminderCoordinator />
         <Sidebar
           side="left"

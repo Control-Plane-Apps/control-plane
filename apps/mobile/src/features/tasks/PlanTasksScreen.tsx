@@ -27,6 +27,7 @@ import {
   type TaskLifecycleProject,
 } from "@t3tools/client-runtime/state/projects";
 import {
+  findGlobalAssistantProject,
   taskPeriodFor,
   TASK_INTENT_MAX,
   type ProjectStatus,
@@ -53,7 +54,7 @@ import { CHECK_OFF_LINGER_MS, withLingeringTasks } from "./taskCheckOff";
 import { autoScrollDelta, dayDropTarget, planTaskReorder } from "./taskReorder";
 import { ProposedTasks } from "./ProposedTasks";
 import { useOptimisticTaskHomes } from "./useOptimisticTaskHomes";
-import { projectForTask, useHandToAgent } from "./taskHandoff";
+import { useHandToAssistant } from "./taskHandoff";
 import {
   RowSeparator,
   SectionLabel,
@@ -145,7 +146,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const { tasks: storeTasks, intents, projects, actions, available, source } = useMobileTaskStore();
   const { tasks, move: moveTask } = useOptimisticTaskHomes(storeTasks, actions.move);
   const threads = useThreadShells();
-  const handToAgent = useHandToAgent();
+  const handToAssistant = useHandToAssistant();
   const undo = useUndoNotice();
   const showUndo = undo.show;
 
@@ -271,8 +272,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
         setSelecting(true);
         setSelectedIds(new Set([task.id]));
       },
-      onHandToAgent: (task: Task, kind: "coordinator" | "agent", project: EnvironmentProject) =>
-        void handToAgent([task], kind, project),
+      onHandToAssistant: (task: Task) => void handToAssistant([task]),
       onOpenStatus: (project: EnvironmentProject) =>
         navigation.navigate("ProjectStatus", {
           environmentId: String(project.environmentId),
@@ -293,7 +293,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       },
       onOpenThread: openThread,
     }),
-    [actions, handToAgent, linger, navigation, openThread, projects, showUndo, today],
+    [actions, handToAssistant, linger, navigation, openThread, projects, showUndo, today],
   );
 
   const lifecycleProjects = projects as ReadonlyArray<TaskLifecycleProject>;
@@ -884,8 +884,8 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
           projects={projects}
           selectedTasks={selectedTasks}
           onMove={() => navigation.navigate("TaskMove", { taskIds: [...selectedIds].join(",") })}
-          onHandToAgent={(kind, project) => {
-            void handToAgent(selectedTasks, kind, project);
+          onHandToAssistant={() => {
+            void handToAssistant(selectedTasks);
             setSelecting(false);
             setSelectedIds(new Set());
           }}
@@ -1249,19 +1249,11 @@ function SelectionBar(props: {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly selectedTasks: ReadonlyArray<Task>;
   readonly onMove: () => void;
-  readonly onHandToAgent: (kind: "coordinator" | "agent", project: EnvironmentProject) => void;
+  readonly onHandToAssistant: () => void;
   readonly onDelete: () => void;
 }) {
   const palette = useTaskPalette();
-  const owners = new Set(
-    props.selectedTasks.map((task) => projectForTask(task, props.projects)?.id ?? null),
-  );
-  const project =
-    owners.size === 1 ? projectForTask(props.selectedTasks[0]!, props.projects) : null;
-  const handOffProjects =
-    project !== null && project.assistant != null
-      ? [project]
-      : props.projects.filter((candidate) => candidate.assistant != null);
+  const hasAssistant = findGlobalAssistantProject(props.projects) !== undefined;
   const disabled = props.count === 0;
   return (
     <View
@@ -1269,21 +1261,13 @@ function SelectionBar(props: {
       style={{ paddingBottom: Math.max(props.bottomInset, 12) }}
     >
       <BarButton label="Move" icon="calendar" disabled={disabled} onPress={props.onMove} />
-      <ControlPillMenu
-        actions={handOffProjects.flatMap((candidate) => [
-          { id: `coordinator:${candidate.id}`, title: `Ask ${candidate.title} coordinator` },
-          { id: `agent:${candidate.id}`, title: `Start an agent in ${candidate.title}` },
-        ])}
-        onPressAction={({ nativeEvent }) => {
-          const [kind, id] = nativeEvent.event.split(":");
-          const target = props.projects.find((candidate) => candidate.id === id);
-          if (target !== undefined && !disabled) {
-            props.onHandToAgent(kind === "agent" ? "agent" : "coordinator", target);
-          }
-        }}
-      >
-        <BarButton label="Hand to agent" icon="cpu" disabled={disabled} />
-      </ControlPillMenu>
+      {hasAssistant ? (
+        <BarButton
+          label="Hand to Assistant"
+          disabled={disabled}
+          onPress={props.onHandToAssistant}
+        />
+      ) : null}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Delete ${props.count}`}
@@ -1302,7 +1286,7 @@ function SelectionBar(props: {
 
 function BarButton(props: {
   readonly label: string;
-  readonly icon: Parameters<typeof symbol>[0];
+  readonly icon?: Parameters<typeof symbol>[0];
   readonly disabled?: boolean;
   readonly onPress?: () => void;
 }) {
@@ -1324,12 +1308,14 @@ function BarButton(props: {
         backgroundColor: palette.chip,
       })}
     >
-      <SymbolView
-        name={symbol(props.icon, "build")}
-        size={15}
-        tintColorClassName="accent-foreground"
-        type="monochrome"
-      />
+      {props.icon !== undefined ? (
+        <SymbolView
+          name={symbol(props.icon, "build")}
+          size={15}
+          tintColorClassName="accent-foreground"
+          type="monochrome"
+        />
+      ) : null}
       <Text className="text-[16px] font-t3-medium text-foreground">{props.label}</Text>
     </Pressable>
   );

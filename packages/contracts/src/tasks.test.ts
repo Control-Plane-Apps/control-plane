@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  describeTaskHome,
+  isTaskHandoffDeliveryId,
+  taskHandoffDeliveryId,
+  taskHandoffMessage,
   addTaskDays,
   followingTaskOccurrence,
   nextTaskOccurrence,
@@ -98,5 +102,56 @@ describe("repeat end conditions", () => {
     expect(
       followingTaskOccurrence("2026-11-14", { ...weekly, endAfterDate: "2026-11-20" }),
     ).toBeNull();
+  });
+});
+
+describe("task handoff messages", () => {
+  it("names each task's id, title, home, links and notes", () => {
+    const text = taskHandoffMessage(
+      [
+        {
+          id: "t1" as never,
+          title: "Book flights",
+          notes: "Window seat\nAisle is fine",
+          home: { kind: "date", date: "2026-11-20", reminderTime: "09:00" },
+          links: { projectId: "acme" as never, threadId: "th" as never, statusId: "ws" as never },
+        },
+        { id: "t2" as never, title: "Pick hotel", home: { kind: "backlog", horizon: "month" } },
+      ],
+      {
+        project: (id) => (id === "acme" ? "Acme" : undefined),
+        thread: () => "Travel",
+        workstream: () => "Offsite",
+      },
+    );
+    expect(text).toContain("these 2 tasks");
+    expect(text).toContain("- Book flights (task t1)");
+    expect(text).toContain("Home: 2026-11-20, reminder 09:00");
+    expect(text).toContain(
+      "Links: Project Acme (acme); thread Travel (th); workstream Offsite (ws)",
+    );
+    expect(text).toContain("Notes: Window seat / Aisle is fine");
+    expect(text).toContain("- Pick hotel (task t2)");
+    expect(text).toContain("Home: the month backlog");
+  });
+
+  it("describes every kind of home", () => {
+    expect(describeTaskHome({ kind: "date", date: "2026-11-20" })).toBe("2026-11-20");
+    expect(
+      describeTaskHome({
+        kind: "period",
+        horizon: "week",
+        startsOn: "2026-11-16",
+        endsOn: "2026-11-22",
+      }),
+    ).toBe("the week 2026-11-16 to 2026-11-22");
+    expect(describeTaskHome({ kind: "backlog", horizon: null })).toBe("the general backlog");
+  });
+
+  it("builds delivery ids in the held-send namespace for one thread", () => {
+    const id = taskHandoffDeliveryId("assistant", "u1");
+    expect(id).toBe("cp-send:assistant:task-handoff:u1");
+    expect(isTaskHandoffDeliveryId(id, "assistant")).toBe(true);
+    expect(isTaskHandoffDeliveryId(id, "other")).toBe(false);
   });
 });

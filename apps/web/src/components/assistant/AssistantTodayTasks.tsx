@@ -9,7 +9,7 @@ import { useMemo } from "react";
 
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useTaskToday, useTasks } from "../../state/tasks";
-import { useHandToAgent } from "../tasks/handToAgent";
+import { useHandToAssistant } from "../tasks/handToAssistant";
 import { useExpandedTask } from "../tasks/TaskList";
 import { TaskMoveMenu } from "../tasks/TaskMenus";
 import { TaskRow, type TaskRowContext } from "../tasks/TaskRow";
@@ -28,7 +28,7 @@ export function AssistantTodayTasks(props: { readonly onOpenTasks: () => void })
   const projects = useProjects();
   const threads = useThreadShells() as ReadonlyArray<TaskLifecycleThread>;
   const actions = useTaskActions(environmentId);
-  const handToAgent = useHandToAgent();
+  const handToAssistant = useHandToAssistant();
   const { expandedId, toggle } = useExpandedTask();
   const { shown, more, total } = useMemo(() => railTodayTasks(tasks, today), [tasks, today]);
   // The Tasks click model: a click selects, a double-click opens. Selection is
@@ -40,7 +40,7 @@ export function AssistantTodayTasks(props: { readonly onOpenTasks: () => void })
     today,
     actions,
     projects,
-    onHandToAgent: (task, kind, project) => void handToAgent(task, kind, project),
+    onHandToAssistant: (task) => void handToAssistant(task),
   };
   const lifecycleProjects = projects as ReadonlyArray<TaskLifecycleProject>;
 

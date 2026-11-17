@@ -7,6 +7,9 @@ import {
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  handoffLabel,
+  planDeliveredHandoff,
+  sendDeliveredHandoff,
   formatTaskRecurrence,
   taskRecurrenceEnd,
   withTaskRecurrenceCadence,
@@ -367,5 +370,57 @@ describe("optimistic task moves", () => {
     expect(
       sameTaskHome({ kind: "date", date: "2026-11-18" }, { kind: "backlog", horizon: null }),
     ).toBe(false);
+  });
+});
+
+describe("delivered handoffs", () => {
+  const ASSISTANT = "assistant-today" as never;
+  it("plans one link per task and one delivery on the last, deduplicated", () => {
+    const plan = planDeliveredHandoff(
+      [{ id: "a" }, { id: "b" }, { id: "a" }] as never,
+      ASSISTANT,
+      "2026-11-16T10:00:00.000Z",
+      "u1",
+    );
+    expect(plan.map((step) => step.taskId)).toEqual(["a", "b"]);
+    expect(plan[0]!.delivery).toBeUndefined();
+    expect(plan[1]!.delivery).toEqual({
+      commandId: "cp-send:assistant-today:task-handoff:u1",
+      taskIds: ["a", "b"],
+    });
+    expect(plan[1]!.handoff).toEqual({
+      kind: "coordinator",
+      threadId: ASSISTANT,
+      at: "2026-11-16T10:00:00.000Z",
+    });
+  });
+
+  it("stops before the delivery when a link fails, and sends nothing for no tasks", async () => {
+    const seen: string[] = [];
+    const ok = await sendDeliveredHandoff(
+      [{ id: "a" }, { id: "b" }] as never,
+      ASSISTANT,
+      "2026-11-16T10:00:00.000Z",
+      "u2",
+      async (task: { id: string }, _handoff, delivery) => {
+        seen.push(delivery === undefined ? task.id : `${task.id}+message`);
+        return false;
+      },
+    );
+    expect(ok).toBe(false);
+    expect(seen).toEqual(["a"]);
+    expect(await sendDeliveredHandoff([], ASSISTANT, "x", "u3", async () => true)).toBe(false);
+  });
+
+  it("labels the Assistant, a coordinator and an agent", () => {
+    expect(handoffLabel({ kind: "coordinator", threadId: ASSISTANT }, ASSISTANT, "Acme")).toBe(
+      "Handed to Assistant",
+    );
+    expect(handoffLabel({ kind: "coordinator", threadId: "c" as never }, ASSISTANT, "Acme")).toBe(
+      "With Acme coordinator",
+    );
+    expect(handoffLabel({ kind: "agent", threadId: "c" as never }, ASSISTANT, undefined)).toBe(
+      "With an agent",
+    );
   });
 });
