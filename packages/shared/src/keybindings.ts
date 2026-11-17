@@ -71,6 +71,7 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+shift+c", command: "thread.copyReference", when: "!terminalFocus" },
   { key: "mod+shift+s", command: "thread.settle", when: "!terminalFocus" },
   { key: "mod+shift+p", command: "thread.pin", when: "!terminalFocus" },
+  { key: "mod+alt+r", command: "thread.replyToLatest", when: "!terminalFocus" },
   // Cmd+1 and Cmd+2 open the Assistant and Tasks, so the thread jumps start at
   // Cmd+3: thread N is Cmd+(N+2), for the first seven threads. Jumps 8 and 9
   // stay available commands with no default key.

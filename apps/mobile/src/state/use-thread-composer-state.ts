@@ -70,8 +70,9 @@ import { useThreadSelection } from "../state/use-thread-selection";
 import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-thread-outbox";
 import { threadEnvironment } from "./threads";
-import { applyStatusReplyTag } from "../features/status/projectStatus.logic";
 import { clearStatusReplyTag, readStatusReplyTag } from "../features/status/statusReplyStore";
+import { composeReplyText } from "../features/threads/quoteReply.logic";
+import { clearQuoteReply, readQuoteReply } from "../features/threads/quoteReplyStore";
 import { useAtomCommand } from "./use-atom-command";
 import {
   composerAttachmentUploadBlockReason,
@@ -441,12 +442,15 @@ export function useThreadComposerState() {
     // A Status "Re:" chip names the workstream (and question version) this
     // message answers; the coordinator reads it from the header.
     const replyTag = readStatusReplyTag(threadKey);
+    // A quote-reply chip wraps the text in a "> Replying to ..." header; the
+    // Status header, when both are set, goes outside it.
+    const quote = readQuoteReply(threadKey);
     const enqueuePromise = enqueueThreadOutboxMessage({
       environmentId: selectedThreadShell.environmentId,
       threadId: selectedThreadShell.id,
       messageId,
       commandId: CommandId.make(metadata.commandId),
-      text: applyStatusReplyTag(text, replyTag),
+      text: composeReplyText(text, quote, replyTag),
       attachments,
       context: draft.context,
       modelSelection,
@@ -461,6 +465,10 @@ export function useThreadComposerState() {
     enqueuePromise.then(
       () => {
         if (replyTag !== null) clearStatusReplyTag(threadKey);
+        // Only the quote this send carried: a reply started while the write was
+        // in flight stays. On failure the quote is never cleared, so it is
+        // still there when the text is merged back into the draft.
+        if (quote !== null && readQuoteReply(threadKey) === quote) clearQuoteReply(threadKey);
         // The queued message owns the files now; the sweep sees that and
         // spares them. Deferred to here so a failed write cannot roll the
         // message out of the queue mid-sweep and lose the bytes.

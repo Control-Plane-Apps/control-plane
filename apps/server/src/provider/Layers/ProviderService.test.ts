@@ -26,6 +26,9 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionStartInput,
+  QUOTE_REPLY_ASSISTANT_LABEL,
+  quoteReplyText,
+  statusReplyText,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -3649,6 +3652,45 @@ citations.layer("ProviderServiceLive assistant citations", (it) => {
       yield* provider.stopSession({ threadId });
     }),
   );
+});
+
+const quoteReplies = makeProviderServiceLayer();
+quoteReplies.layer("ProviderServiceLive quote replies", (it) => {
+  for (const [driver, adapter] of [
+    [CODEX_DRIVER, quoteReplies.codex],
+    [CLAUDE_AGENT_DRIVER, quoteReplies.claude],
+    [CURSOR_DRIVER, quoteReplies.cursor],
+  ] as const) {
+    it.effect(`sends the quoted text without the UI id tag for ${driver}`, () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const threadId = asThreadId(`thread-quote-reply-${driver}`);
+        yield* provider.startSession(threadId, {
+          provider: driver,
+          providerInstanceId: ProviderInstanceId.make(driver),
+          threadId,
+          runtimeMode: "full-access",
+        });
+        const reply = quoteReplyText(
+          {
+            messageId: "assistant:item-7",
+            label: QUOTE_REPLY_ASSISTANT_LABEL,
+            text: "Option B keeps the old index.",
+          },
+          "Go with B.",
+        );
+        const input = statusReplyText("Search", reply, { statusId: "search" });
+        adapter.sendTurn.mockClear();
+        yield* provider.sendTurn({ threadId, input });
+
+        assert.equal(
+          adapter.sendTurn.mock.calls[0]?.[0].input,
+          "Re: Search [status:search]\n\n> Replying to your earlier message:\n> Option B keeps the old index.\n\nGo with B.",
+        );
+        yield* provider.stopSession({ threadId });
+      }),
+    );
+  }
 });
 
 const recordedTurnAnalytics = makeRecordingAnalytics();
