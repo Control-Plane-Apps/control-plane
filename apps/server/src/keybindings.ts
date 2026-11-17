@@ -152,6 +152,8 @@ const REMOVED_DEFAULT_KEYBINDINGS: ReadonlyArray<{
 }> = [
   { command: "thread.jump.8", key: "mod+8" },
   { command: "thread.jump.9", key: "mod+9" },
+  // The Assistant rail became the Overview right-panel tab.
+  { command: "assistant.toggleRail", key: "mod+alt+s" },
 ];
 
 export function migrateMovedDefaultKeybindings(persisted: ReadonlyArray<KeybindingRule>): {

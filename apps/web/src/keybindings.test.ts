@@ -95,11 +95,6 @@ const DEFAULT_BINDINGS = compile([
   { shortcut: modShortcut("j"), command: "terminal.toggle" },
   { shortcut: modShortcut("b", { altKey: true }), command: "rightPanel.toggle" },
   {
-    shortcut: modShortcut("s", { altKey: true }),
-    command: "assistant.toggleRail",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
-  },
-  {
     shortcut: modShortcut("d"),
     command: "terminal.split",
     whenAst: whenIdentifier("terminalFocus"),
@@ -1113,27 +1108,6 @@ describe("resolveShortcutCommand", () => {
         { platform: "MacIntel" },
       ),
       "rightPanel.toggle",
-    );
-  });
-
-  it("toggles the Assistant rail with Option-Command-S, outside the terminal", () => {
-    assert.strictEqual(
-      resolveShortcutCommand(
-        event({ key: "ß", code: "KeyS", metaKey: true, altKey: true }),
-        DEFAULT_BINDINGS,
-        { platform: "MacIntel", context: { terminalFocus: false } },
-      ),
-      "assistant.toggleRail",
-    );
-    assert.deepInclude(DEFAULT_KEYBINDINGS, {
-      key: "mod+alt+s",
-      command: "assistant.toggleRail",
-      when: "!terminalFocus",
-    });
-    // Nothing else claims the same chord.
-    assert.lengthOf(
-      DEFAULT_KEYBINDINGS.filter((rule) => rule.key === "mod+alt+s"),
-      1,
     );
   });
 

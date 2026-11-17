@@ -20,19 +20,15 @@ import { describeCadence } from "@t3tools/shared/schedules";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useMemo } from "react";
 
-import { useAtomValue } from "@effect/atom-react";
-
-import { shortcutLabelForCommand } from "~/keybindings";
 import { usePrimaryEnvironment } from "~/state/environments";
-import { primaryServerKeybindingsAtom } from "~/state/server";
 import { useProjects, useThreadShellsForProjectRefs } from "~/state/entities";
 import { useTaskToday, useTasks } from "~/state/tasks";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { AssistantHeader } from "./AssistantHeader";
 import { AssistantInbox } from "./AssistantInbox";
 import { useAssistantInboxState } from "./useAssistantInboxState";
-import { AssistantRail } from "./AssistantRail";
-import { useAssistantRailStore } from "./assistantRailStore";
+import { AssistantOverview } from "./AssistantOverview";
+import { AssistantStatusBoard } from "./AssistantStatusBoard";
 import { AssistantTodayEmpty } from "./AssistantTodayEmpty";
 import {
   AssistantTimelineCardsContext,
@@ -45,7 +41,10 @@ import { useSendToThread } from "./useAssistant";
 
 export interface AssistantChatChrome {
   readonly header: ReactNode;
-  readonly rail: ReactNode;
+  /** The Overview right-panel tab: Needs you, Working on and Today. */
+  readonly overview: ReactNode;
+  /** The Status right-panel tab: one Project's board at a time. */
+  readonly statusBoard: ReactNode;
   /** Replaces the timeline while the Inbox is selected. */
   readonly inbox: ReactNode | null;
   /** Shown in place of the empty timeline before a channel has messages. */
@@ -74,10 +73,6 @@ export function useAssistantChatChrome(input: {
   const projects = useProjects();
   const send = useSendToThread();
   const inboxKey = `${environmentId}:${threadId}`;
-  const railCollapsed = useAssistantRailStore((state) => state.collapsed);
-  const toggleRail = useAssistantRailStore((state) => state.toggleCollapsed);
-  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
-  const railShortcutLabel = shortcutLabelForCommand(keybindings, "assistant.toggleRail");
   const assistantSettings = usePrimaryEnvironment()?.serverConfig?.settings.assistant ?? null;
   const reach = assistantSettings?.projects ?? null;
   const { tasks } = useTasks();
@@ -119,15 +114,13 @@ export function useAssistantChatChrome(input: {
     [environmentId, projects],
   );
 
+  const environmentProjects = useMemo(
+    () => projects.filter((candidate) => candidate.environmentId === environmentId),
+    [environmentId, projects],
+  );
   const needsYouCount = useMemo(
-    () =>
-      enabled
-        ? collectNeedsYou(
-            projects.filter((candidate) => candidate.environmentId === environmentId),
-            reach,
-          ).length
-        : 0,
-    [enabled, environmentId, projects, reach],
+    () => (enabled ? collectNeedsYou(environmentProjects, reach).length : 0),
+    [enabled, environmentProjects, reach],
   );
 
   const goToThread = useCallback(
@@ -199,21 +192,26 @@ export function useAssistantChatChrome(input: {
         onOpenMemory={input.onOpenMemory}
         onOpenSchedules={input.onOpenSchedules}
         rightPanelOpen={input.rightPanelOpen}
-        rail={{
-          collapsed: railCollapsed,
-          needsYouCount,
-          shortcutLabel: railShortcutLabel,
-          onToggle: toggleRail,
-        }}
       />
     ),
-    rail: railCollapsed ? null : (
-      <AssistantRail
+    overview: (
+      <AssistantOverview
         assistant={project}
-        projects={projects.filter((candidate) => candidate.environmentId === environmentId)}
+        projects={environmentProjects}
         reach={reach}
         asks={asks}
         tasksToday={tasksReach === "off" ? null : { count: tasksTodayCount, onOpen: openTasks }}
+      />
+    ),
+    statusBoard: (
+      <AssistantStatusBoard
+        projects={environmentProjects.filter(
+          (candidate) =>
+            candidate.assistant != null &&
+            candidate.assistant.archivedAt == null &&
+            !isGlobalAssistant(candidate) &&
+            (reach === null || reach.includes(candidate.id)),
+        )}
       />
     ),
     emptyTimeline: (

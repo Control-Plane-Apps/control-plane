@@ -31,6 +31,7 @@ const RIGHT_PANEL_KINDS = [
   "agents",
   "schedules",
   "status",
+  "overview",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -91,7 +92,9 @@ export type RightPanelSurface =
   /** A Project's schedules, opened beside its coordinator. */
   | { id: "schedules"; kind: "schedules" }
   /** A Project's Status board, opened beside its coordinator. */
-  | { id: "status"; kind: "status" };
+  | { id: "status"; kind: "status" }
+  /** The Assistant's Needs you / Working on / Today overview. */
+  | { id: "overview"; kind: "overview" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v9 removed the "plan" surface kind (plans render inline in the transcript).
@@ -201,6 +204,8 @@ const singletonSurface = (
       return { id: "schedules", kind };
     case "status":
       return { id: "status", kind };
+    case "overview":
+      return { id: "overview", kind };
     case "device":
       return { id: "device", kind };
   }

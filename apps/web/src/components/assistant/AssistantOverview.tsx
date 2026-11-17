@@ -20,15 +20,15 @@ import { formatStatusAge, recommendationButtonLabel } from "../status/projectSta
 import { statusReplyTagFor, useStatusReplyStore } from "../status/statusReplyStore";
 import { useMinuteNow } from "../status/ProjectStatusPanel";
 import { Button } from "../ui/button";
-import { useAssistantRailStore } from "./assistantRailStore";
+import { useAssistantOverviewStore } from "./assistantOverviewStore";
 import { AssistantTodayTasks } from "./AssistantTodayTasks";
 import { recommendationTextFor, useSendToThread } from "./useAssistant";
 
-// Fork-owned. The Assistant's right rail: what needs the user across every
-// Project, what the Assistant is working on, and today's tasks. Computed on
-// the client from the shell stream, so it costs no model run.
+// Fork-owned. The Assistant's Overview right-panel tab: what needs the user
+// across every Project, what the Assistant is working on, and today's tasks.
+// Computed on the client from the shell stream, so it costs no model run.
 
-export interface AssistantRailProps {
+export interface AssistantOverviewProps {
   readonly assistant: EnvironmentProject;
   readonly projects: ReadonlyArray<EnvironmentProject>;
   /** Null reaches every Project. */
@@ -38,14 +38,14 @@ export interface AssistantRailProps {
   readonly tasksToday?: { readonly count: number; readonly onOpen: () => void } | null;
 }
 
-export function AssistantRail(props: AssistantRailProps) {
+export function AssistantOverview(props: AssistantOverviewProps) {
   const needsYou = useMemo(
     () => collectNeedsYou(props.projects, props.reach),
     [props.projects, props.reach],
   );
   const now = useMinuteNow();
-  const dismissedAskIds = useAssistantRailStore((state) => state.dismissedAskIds);
-  const dismissAsk = useAssistantRailStore((state) => state.dismissAsk);
+  const dismissedAskIds = useAssistantOverviewStore((state) => state.dismissedAskIds);
+  const dismissAsk = useAssistantOverviewStore((state) => state.dismissAsk);
   const working = useMemo(() => {
     const own = assistantWorkingOn(props.assistant).map((status) => ({
       key: `status:${status.id}`,
@@ -74,10 +74,10 @@ export function AssistantRail(props: AssistantRailProps) {
   }, [dismissedAskIds, now, props.asks, props.assistant]);
 
   return (
-    <aside
-      aria-label="Across your work"
-      className="flex w-80 shrink-0 flex-col gap-2.5 overflow-y-auto border-l border-border bg-sidebar px-4 pt-4 pb-4 xl:w-96 [&>*]:shrink-0"
-      data-testid="assistant-rail"
+    <section
+      aria-label="Overview"
+      className="flex h-full min-h-0 flex-col gap-2.5 overflow-y-auto bg-sidebar px-4 pt-4 pb-4 [&>*]:shrink-0"
+      data-testid="assistant-overview"
     >
       <h3 className="flex items-center gap-1.5 text-xs font-medium text-warning-foreground">
         Needs you<span className="font-normal opacity-80 tabular-nums">{needsYou.length}</span>
@@ -147,7 +147,7 @@ export function AssistantRail(props: AssistantRailProps) {
       )}
 
       {props.tasksToday ? <AssistantTodayTasks onOpenTasks={props.tasksToday.onOpen} /> : null}
-    </aside>
+    </section>
   );
 }
 
