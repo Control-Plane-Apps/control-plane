@@ -368,7 +368,11 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const dropTargets: TaskDropTargets = {
     hitTest: (x, y, lifted) => {
       if (view === "upcoming") {
-        const date = dayDropTarget(dayFrames.current, x, y, lifted);
+        const { top, viewport } = scrollMetrics.current;
+        const date = dayDropTarget(dayFrames.current, x, y, lifted, {
+          top,
+          bottom: top + viewport,
+        });
         if (date !== null) return `${DAY_TARGET_PREFIX}${date}`;
       }
       for (const [target, frame] of chipFrames.current) {
