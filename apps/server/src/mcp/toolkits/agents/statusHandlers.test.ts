@@ -21,6 +21,7 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -50,7 +51,13 @@ import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerR
 import { HostTimeZoneSource } from "../../../schedules/hostZone.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { AgentsToolkitHandlersLive } from "./handlers.ts";
-import { AgentSettleResult, AgentsToolkit, StatusListResult, StatusSetResult } from "./tools.ts";
+import {
+  AgentSettleResult,
+  AgentsToolkit,
+  StatusListResult,
+  StatusSetInput,
+  StatusSetResult,
+} from "./tools.ts";
 
 const PROJECT_ID = ProjectId.make("project-acme");
 const OTHER_PROJECT_ID = ProjectId.make("project-other");
@@ -185,7 +192,8 @@ const statusTools = Effect.gen(function* () {
     list: (
       caller: ThreadId,
       capabilities: ReadonlyArray<McpInvocationContext.McpCapability> = ["agents"],
-    ) => run(toolkit.handle("cp_status_list", {}), StatusListResult, caller, capabilities),
+      params: Parameters<typeof toolkit.handle<"cp_status_list">>[1] = {},
+    ) => run(toolkit.handle("cp_status_list", params), StatusListResult, caller, capabilities),
     set: (caller: ThreadId, params: Parameters<typeof toolkit.handle<"cp_status_set">>[1]) =>
       run(toolkit.handle("cp_status_set", params), StatusSetResult, caller, ["agents"]),
     settle: (caller: ThreadId, params: Parameters<typeof toolkit.handle<"cp_agent_settle">>[1]) =>
@@ -200,6 +208,42 @@ const withSeededEngine = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.provide(TestLayer),
     Effect.provideService(HostTimeZoneSource, () => ({ zone: "UTC", processZone: "UTC" })),
   );
+
+const ASSISTANT_HOME = ProjectId.make("project-assistant");
+const ASSISTANT = ThreadId.make("thread-assistant");
+const ASSISTANT_CHANNEL = ThreadId.make("thread-assistant-channel");
+
+/** The global Assistant Project: its coordinator ("Today") and one pinned channel. */
+const seedAssistant = Effect.gen(function* () {
+  yield* dispatch({
+    type: "project.create",
+    commandId: nextCommandId(),
+    projectId: ASSISTANT_HOME,
+    title: "Assistant",
+    workspaceRoot: "/tmp/assistant",
+    createdAt: SEEDED_AT,
+  });
+  yield* createThread(ASSISTANT, ASSISTANT_HOME, "Today");
+  yield* createThread(ASSISTANT_CHANNEL, ASSISTANT_HOME, "Channel");
+  yield* dispatch({ type: "thread.pin", commandId: nextCommandId(), threadId: ASSISTANT_CHANNEL });
+  yield* dispatch({
+    type: "project.meta.update",
+    commandId: nextCommandId(),
+    projectId: ASSISTANT_HOME,
+    assistant: { coordinatorThreadId: ASSISTANT, scope: "global" },
+  });
+});
+
+const setAssistantSettings = (patch: {
+  readonly projects?: ReadonlyArray<string> | null;
+  readonly messageCoordinators?: boolean;
+}) =>
+  Effect.flatMap(ServerSettings.ServerSettingsService, (service) =>
+    service.updateSettings({ assistant: patch }),
+  );
+
+const assistantTest = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  withSeededEngine(Effect.andThen(seedAssistant, effect));
 
 const PAYOUTS = {
   id: "payouts",
@@ -395,6 +439,344 @@ describe("cp_status_set", () => {
         expect(statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.question).toBe(
           PAYOUTS.question,
         );
+      }),
+    ),
+  );
+});
+
+describe("the Assistant's access to every Project's board", () => {
+  it.effect("lists and edits any Project's board, every field", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, { ...PAYOUTS, agents: [SALES, PDF] });
+        const listed = yield* tools.list(ASSISTANT, ["agents"], { projectId: PROJECT_ID });
+        expect(listed.statuses.map((status) => status.id)).toEqual(["payouts"]);
+
+        const moved = yield* tools.set(ASSISTANT, {
+          projectId: PROJECT_ID,
+          id: "payouts",
+          state: "queued",
+          summary: "Parked until the pilot ends.",
+          detail: "Nothing is running.",
+          agents: [],
+          clearDecision: true,
+        });
+        expect(moved.status).toMatchObject({
+          state: "queued",
+          summary: "Parked until the pilot ends.",
+          detail: "Nothing is running.",
+        });
+        expect(moved.status?.agents).toBeUndefined();
+        expect(moved.status?.decision).toBeUndefined();
+
+        for (const state of ["working", "done", "needs-you"] as const) {
+          const extra =
+            state === "needs-you"
+              ? { question: "Ship it?", recommendation: "Ship it.", answer: "Ship" }
+              : {};
+          const saved = yield* tools.set(ASSISTANT, {
+            projectId: PROJECT_ID,
+            id: "payouts",
+            state,
+            ...extra,
+          });
+          expect(saved.status?.state).toBe(state);
+        }
+
+        const removed = yield* tools.set(ASSISTANT, {
+          projectId: PROJECT_ID,
+          id: "payouts",
+          remove: true,
+        });
+        expect(removed).toMatchObject({ id: "payouts", status: null });
+        expect((yield* readMarker(PROJECT_ID)).statuses).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("removes a stale In progress row whose agents are still linked", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(OTHER_COORDINATOR, {
+          id: "launch",
+          title: "Launch",
+          summary: "Shipping.",
+          state: "working",
+        });
+        yield* tools.set(ASSISTANT, { projectId: OTHER_PROJECT_ID, id: "launch", remove: true });
+        expect((yield* tools.list(OTHER_COORDINATOR)).statuses).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("keeps every coordinator rule: limits, titles, labels, deadline, unknown rows", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        const refuse = (params: Parameters<typeof tools.set>[1]) =>
+          tools.set(ASSISTANT, { projectId: PROJECT_ID, ...params }).pipe(Effect.flip);
+        expect(
+          (yield* refuse({ id: "x", title: "X", summary: "s".repeat(200) })).message,
+        ).toContain("at most");
+        expect(
+          (yield* refuse({
+            id: "x",
+            title: "X",
+            summary: "ok",
+            question: "Q?",
+            recommendation: "Do it.",
+          })).message,
+        ).toContain("button label");
+        expect((yield* refuse({ id: "ghost", remove: true })).message).toContain("no workstream");
+        expect(
+          (yield* refuse({ id: "x", title: "X", summary: "ok", deadline: "nope" })).message,
+        ).toContain("ISO");
+        for (let index = 0; index < PROJECT_STATUS_LIMIT; index += 1) {
+          yield* tools.set(ASSISTANT, {
+            projectId: PROJECT_ID,
+            id: `row-${index}`,
+            title: `Row ${index}`,
+            summary: "s",
+          });
+        }
+        expect(
+          (yield* refuse({ id: "one-more", title: "One more", summary: "s" })).message,
+        ).toContain("at most");
+      }),
+    ),
+  );
+
+  it.effect("never checks off a row or opts in to a recommendation for the user", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, { ...PAYOUTS });
+        const saved = yield* tools.set(ASSISTANT, {
+          projectId: PROJECT_ID,
+          id: "payouts",
+          state: "done",
+          clearDecision: true,
+        });
+        expect(saved.status?.dismissedAt).toBeUndefined();
+        const fresh = yield* tools.set(ASSISTANT, {
+          projectId: PROJECT_ID,
+          id: "payouts",
+          state: "needs-you",
+          question: "Pilot or all?",
+          recommendation: "Pilot.",
+          answer: "Pilot",
+          deadline: THURSDAY,
+        });
+        expect(fresh.status?.decision?.autoAccept).toBeUndefined();
+        // Only the user's own client sends these commands, which the tool cannot reach.
+        const input = Object.keys(StatusSetInput.fields);
+        expect(input).not.toContain("dismissed");
+        expect(input).not.toContain("automate");
+      }),
+    ),
+  );
+
+  it.effect("refuses Projects outside its reach, other Assistants, and unknown ids", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* setAssistantSettings({ projects: [OTHER_PROJECT_ID] });
+        const denied = yield* tools
+          .set(ASSISTANT, { projectId: PROJECT_ID, id: "a", title: "A", summary: "s" })
+          .pipe(Effect.flip);
+        expect(denied.message).toContain("not a Project in your reach");
+        expect((yield* readMarker(PROJECT_ID)).statuses).toBeUndefined();
+        const listDenied = yield* tools
+          .list(ASSISTANT, ["agents"], { projectId: PROJECT_ID })
+          .pipe(Effect.flip);
+        expect(listDenied.message).toContain("not a Project in your reach");
+        yield* tools.set(ASSISTANT, {
+          projectId: OTHER_PROJECT_ID,
+          id: "a",
+          title: "A",
+          summary: "s",
+        });
+        const unknown = yield* tools
+          .list(ASSISTANT, ["agents"], { projectId: "project-nope" })
+          .pipe(Effect.flip);
+        expect(unknown.message).toContain("not a Project in your reach");
+      }),
+    ),
+  );
+
+  it.effect(
+    "uses its own board when projectId is omitted or its own, from a pinned channel too",
+    () =>
+      assistantTest(
+        Effect.gen(function* () {
+          const tools = yield* statusTools;
+          yield* tools.set(ASSISTANT, { id: "brief", title: "Brief", summary: "Mine." });
+          yield* tools.set(ASSISTANT_CHANNEL, {
+            projectId: ASSISTANT_HOME,
+            id: "chan",
+            title: "Chan",
+            summary: "Mine too.",
+          });
+          expect(
+            (yield* tools.list(ASSISTANT)).statuses.map((status) => status.id).toSorted(),
+          ).toEqual(["brief", "chan"]);
+          expect((yield* readMarker(PROJECT_ID)).statuses).toBeUndefined();
+          // A pinned channel reaches other Projects like the coordinator does.
+          yield* tools.set(ASSISTANT_CHANNEL, {
+            projectId: PROJECT_ID,
+            id: "x",
+            title: "X",
+            summary: "s",
+          });
+          expect(statusOf(yield* readMarker(PROJECT_ID), "x").title).toBe("X");
+        }),
+      ),
+  );
+});
+
+describe("who else can touch a board", () => {
+  it.effect("lets a coordinator remove and change state on its own board only", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, {
+          id: "payouts",
+          title: "Payouts",
+          summary: "Running.",
+          state: "working",
+          agents: [PDF],
+        });
+        const done = yield* tools.set(COORDINATOR, { id: "payouts", state: "done" });
+        expect(done.status?.state).toBe("done");
+        // Removing a row whose agent is still linked (and running) is allowed.
+        yield* tools.set(COORDINATOR, { id: "payouts", state: "working" });
+        const removed = yield* tools.set(COORDINATOR, { id: "payouts", remove: true });
+        expect(removed.status).toBeNull();
+        expect((yield* readMarker(PROJECT_ID)).statuses).toBeUndefined();
+
+        yield* tools.set(OTHER_COORDINATOR, { id: "launch", title: "Launch", summary: "s" });
+        const write = yield* tools
+          .set(COORDINATOR, { projectId: OTHER_PROJECT_ID, id: "launch", remove: true })
+          .pipe(Effect.flip);
+        expect(write._tag).toBe("StatusOtherProjectError");
+        const read = yield* tools
+          .list(COORDINATOR, ["agents"], { projectId: OTHER_PROJECT_ID })
+          .pipe(Effect.flip);
+        expect(read._tag).toBe("StatusOtherProjectError");
+        expect(statusOf(yield* readMarker(OTHER_PROJECT_ID), "launch").title).toBe("Launch");
+        // Naming its own Project is fine.
+        expect(
+          (yield* tools.list(COORDINATOR, ["agents"], { projectId: PROJECT_ID })).statuses,
+        ).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect(
+    "gives agents nothing: a standing agent in any Project, a thread without the capability",
+    () =>
+      assistantTest(
+        Effect.gen(function* () {
+          const tools = yield* statusTools;
+          yield* tools.set(OTHER_COORDINATOR, { id: "launch", title: "Launch", summary: "s" });
+          for (const params of [{}, { projectId: OTHER_PROJECT_ID }]) {
+            const set = yield* tools
+              .set(SALES, { ...params, id: "launch", remove: true })
+              .pipe(Effect.flip);
+            expect(set._tag).toBe("StatusCoordinatorOnlyError");
+            const list = yield* tools.list(SALES, ["agents"], params).pipe(Effect.flip);
+            expect(list._tag).toBe("StatusCoordinatorOnlyError");
+          }
+          const noCapability = yield* tools
+            .list(ASSISTANT, [], { projectId: OTHER_PROJECT_ID })
+            .pipe(Effect.flip);
+          expect(noCapability._tag).toBe("McpCapabilityUnavailableError");
+          expect(statusOf(yield* readMarker(OTHER_PROJECT_ID), "launch").title).toBe("Launch");
+        }),
+      ),
+  );
+
+  it.effect("keeps the decider closed to a plain thread of another Project", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const error = yield* dispatch({
+          type: "project.status.set",
+          commandId: nextCommandId(),
+          projectId: PROJECT_ID,
+          actorThreadId: OTHER_COORDINATOR,
+          change: { kind: "remove", id: "payouts" },
+          createdAt: NOW,
+        }).pipe(Effect.flip);
+        expect(String(error)).toContain("coordinator or the user's Assistant");
+      }),
+    ),
+  );
+});
+
+describe("the coordinator note", () => {
+  const notesFor = (threadId: ThreadId) =>
+    Effect.map(messagesOf(threadId), (messages) =>
+      messages.filter((message) => message.text.includes("Assistant just edited your Status")),
+    );
+
+  it.effect("tells the owning coordinator once per window, however many rows change", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, { id: "a", title: "A", summary: "s" });
+        yield* tools.set(COORDINATOR, { id: "b", title: "B", summary: "s" });
+        yield* tools.set(ASSISTANT, { projectId: PROJECT_ID, id: "a", remove: true });
+        yield* tools.set(ASSISTANT, { projectId: PROJECT_ID, id: "b", state: "done" });
+        const notes = yield* notesFor(COORDINATOR);
+        expect(notes).toHaveLength(1);
+        expect(notes[0]?.text).toContain("[status:a]");
+        expect(notes[0]?.text).toContain("No reply needed");
+        expect(notes[0]?.source).toMatchObject({ kind: "agent", threadId: ASSISTANT });
+        // Only the owning coordinator hears it.
+        expect(yield* notesFor(OTHER_COORDINATOR)).toHaveLength(0);
+        expect(yield* notesFor(ASSISTANT)).toHaveLength(0);
+      }),
+    ),
+  );
+
+  it.effect("notes again in a later window, and separately per Project", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(COORDINATOR, { id: "a", title: "A", summary: "s" });
+        yield* tools.set(OTHER_COORDINATOR, { id: "b", title: "B", summary: "s" });
+        yield* tools.set(ASSISTANT, { projectId: PROJECT_ID, id: "a", state: "done" });
+        yield* tools.set(ASSISTANT, { projectId: OTHER_PROJECT_ID, id: "b", state: "done" });
+        yield* TestClock.adjust(Duration.minutes(11));
+        yield* tools.set(ASSISTANT, { projectId: PROJECT_ID, id: "a", state: "queued" });
+        expect(yield* notesFor(COORDINATOR)).toHaveLength(2);
+        expect(yield* notesFor(OTHER_COORDINATOR)).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("stays quiet for the Assistant's own board, a refused edit, and messaging off", () =>
+    assistantTest(
+      Effect.gen(function* () {
+        const tools = yield* statusTools;
+        yield* tools.set(ASSISTANT, { id: "mine", title: "Mine", summary: "s" });
+        yield* tools
+          .set(ASSISTANT, { projectId: PROJECT_ID, id: "ghost", remove: true })
+          .pipe(Effect.flip);
+        yield* setAssistantSettings({ messageCoordinators: false });
+        yield* tools.set(ASSISTANT, {
+          projectId: PROJECT_ID,
+          id: "quiet",
+          title: "Quiet",
+          summary: "s",
+        });
+        expect(yield* notesFor(COORDINATOR)).toHaveLength(0);
+        expect(yield* notesFor(ASSISTANT)).toHaveLength(0);
+        // A coordinator's own edits never note anyone.
+        yield* tools.set(COORDINATOR, { id: "own", title: "Own", summary: "s" });
+        expect(yield* notesFor(COORDINATOR)).toHaveLength(0);
       }),
     ),
   );

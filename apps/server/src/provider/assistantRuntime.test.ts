@@ -534,6 +534,27 @@ describe("the global Assistant", () => {
     }
   });
 
+  it("tells the Assistant to keep every Project's Status board current, and coordinators about it", () => {
+    const block = buildAssistantRuntimeBlock({
+      project: globalProject(),
+      thread: makeThread("coordinator", { title: "Assistant" }),
+      memory: "",
+      roleFile: "",
+    });
+    expect(block?.inline).toContain("cp_status_set take a projectId");
+    expect(block?.inline).toContain("stale");
+    expect(block?.inline).toContain("remove: true");
+    expect(block?.inline).toContain("Never check a row off");
+    const coordinator = buildAssistantRuntimeBlock({
+      project: makeProject(),
+      thread: makeThread("coordinator", { title: "Acme Ops" }),
+      memory: "",
+      roleFile: "",
+    });
+    expect(coordinator?.inline).toContain("Assistant can also edit your board");
+    expect(coordinator?.inline).toContain("only touch your own Project");
+  });
+
   it("keys the Assistant apart from an ordinary coordinator, so a marker change restarts it", () => {
     const project = globalProject();
     const thread = makeThread("coordinator", { title: "Assistant" });

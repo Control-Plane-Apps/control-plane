@@ -212,9 +212,20 @@ export class StatusCoordinatorOnlyError extends Schema.TaggedError<StatusCoordin
   }
 }
 
+/** A coordinator named a Project other than its own; only the Assistant crosses Projects. */
+export class StatusOtherProjectError extends Schema.TaggedError<StatusOtherProjectError>()(
+  "StatusOtherProjectError",
+  {},
+) {
+  override get message(): string {
+    return "Only the user's Assistant can read or write another Project's Status. Omit projectId to use this Project's board.";
+  }
+}
+
 export const StatusToolError = Schema.Union([
   McpCapabilityUnavailableError,
   StatusCoordinatorOnlyError,
+  StatusOtherProjectError,
   AgentToolFailedError,
 ]);
 export type StatusToolError = typeof StatusToolError.Type;
@@ -474,7 +485,18 @@ export const ScheduleDeleteResult = Schema.Struct({
 });
 export type ScheduleDeleteResult = typeof ScheduleDeleteResult.Type;
 
+const StatusProjectId = Schema.optional(
+  Schema.String.annotate({
+    description:
+      "Assistant only: the Project whose board to use, from cp_assistant_overview. Omit for your own board. A coordinator cannot name another Project.",
+  }),
+);
+
+export const StatusListInput = Schema.Struct({ projectId: StatusProjectId });
+export type StatusListInput = typeof StatusListInput.Type;
+
 export const StatusSetInput = Schema.Struct({
+  projectId: StatusProjectId,
   id: ProjectStatusId.annotate({
     description:
       'The workstream\'s stable id: 1-40 lowercase letters, digits or hyphens, such as "payouts". Reuse it for every update.',
@@ -1099,7 +1121,9 @@ const ScheduleDeleteTool = Tool.make("cp_schedule_delete", {
   .annotate(Tool.OpenWorld, false);
 
 const StatusListTool = Tool.make("cp_status_list", {
-  description: "List this Project's Status board: one record per workstream.",
+  description:
+    "List this Project's Status board: one record per workstream. The Assistant can pass projectId to list any Project in its reach.",
+  parameters: StatusListInput,
   success: StatusListResult,
   failure: StatusToolError,
   dependencies,
@@ -1112,7 +1136,7 @@ const StatusListTool = Tool.make("cp_status_list", {
 
 const StatusSetTool = Tool.make("cp_status_set", {
   description:
-    "Create, update or remove one workstream on the Project's Status board, which the user reads to see where everything stands and what needs them. Omitted fields keep their value; every call marks the record fresh. Keep a row working only while an agent is on it (list it in agents); the result warns when none is running. Put a decision only the user can make on the workstream it blocks, with your recommendation; clear it once they answer.",
+    "Create, update or remove one workstream on the Project's Status board, which the user reads to see where everything stands and what needs them. Omitted fields keep their value; every call marks the record fresh. Keep a row working only while an agent is on it (list it in agents); the result warns when none is running. Put a decision only the user can make on the workstream it blocks, with your recommendation; clear it once they answer. Remove a workstream (remove: true) once it is done or no longer true, even while agents are still linked. The Assistant can pass projectId to edit any Project in its reach (change state, rewrite summary or detail, relink agents, clear a decision, remove a row); that Project's coordinator is told. It cannot check rows off or opt in to a recommendation for the user.",
   parameters: StatusSetInput,
   success: StatusSetResult,
   failure: StatusToolError,
