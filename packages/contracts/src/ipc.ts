@@ -770,7 +770,12 @@ export const DesktopPreviewNavStatusSchema = Schema.Union([
 
 export interface DesktopPreviewPointerEvent {
   tabId: string;
-  phase: "move" | "click";
+  /**
+   * `release` follows every agent click once its mouse events were dispatched,
+   * whether or not they succeeded, so the host can hand back any focus the
+   * click pulled into the guest.
+   */
+  phase: "move" | "click" | "release";
   x: number;
   y: number;
   sequence: number;

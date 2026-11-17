@@ -3979,19 +3979,39 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       createdAt: clickCreatedAt,
     });
     yield* Effect.sleep(AGENT_CURSOR_CLICK_LEAD_MS);
-    yield* expectAgentInput(tabId, { kind: "pointer", ...point, button: 0 });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      ...point,
-      button: "left",
-      clickCount: 1,
-    });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      ...point,
-      button: "left",
-      clickCount: 1,
-    });
+    // A dispatched mouse press makes Chromium focus the guest, which pulls the
+    // host's keyboard focus onto the <webview> element. `release` always
+    // follows so the host can hand focus back to whatever the human was typing
+    // in: agent clicks must never take the keyboard away.
+    yield* Effect.gen(function* () {
+      yield* expectAgentInput(tabId, { kind: "pointer", ...point, button: 0 });
+      yield* send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        ...point,
+        button: "left",
+        clickCount: 1,
+      });
+      yield* send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        ...point,
+        button: "left",
+        clickCount: 1,
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          const releaseSequence = yield* nextCounter(pointerSequenceRef);
+          const releaseCreatedAt = yield* currentIso;
+          yield* emitPointerEvent({
+            tabId,
+            phase: "release",
+            ...point,
+            sequence: releaseSequence,
+            createdAt: releaseCreatedAt,
+          });
+        }),
+      ),
+    );
   });
 
   const automationClick = Effect.fn("PreviewManager.automationClick")(function* (
