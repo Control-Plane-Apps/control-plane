@@ -6,7 +6,9 @@ import { Kbd } from "../ui/kbd";
 import { cn } from "../../lib/utils";
 import { TaskMoveMenu } from "./TaskMenus";
 
-const ghostAction = cn(buttonVariants({ variant: "ghost", size: "compact" }), "text-[13px]");
+// Match the label at both Button breakpoints, including inside the narrow Assistant rail.
+const actionText = "text-[13px] sm:text-[13px]";
+const ghostAction = cn(buttonVariants({ variant: "ghost", size: "compact" }), actionText);
 
 /**
  * Floating action bar for a multi-task selection. It is an overlay pinned to the bottom of the
@@ -46,7 +48,7 @@ export function TaskBulkBar(props: {
           <Button
             variant="ghost"
             size="compact"
-            className="text-[13px]"
+            className={actionText}
             disabled={props.canHandToAssistant === false}
             onClick={props.onHandToAssistant}
           >
@@ -56,7 +58,7 @@ export function TaskBulkBar(props: {
         <Button
           variant="ghost"
           size="compact"
-          className="text-[13px] text-destructive hover:text-destructive"
+          className={cn(actionText, "text-destructive hover:text-destructive")}
           onClick={props.onDelete}
         >
           Delete {props.count}
