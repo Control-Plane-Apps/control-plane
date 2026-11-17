@@ -300,6 +300,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   const selection = useTaskSelection(orderedIds);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [moveRequest, setMoveRequest] = useState<{ id: string; sequence: number } | null>(null);
+  const [bulkMoveRequest, setBulkMoveRequest] = useState(0);
   const selectedTasks = visibleTasks.filter((task) => selection.selectedIds.has(task.id));
   const deleteSelection = () => {
     for (const task of selectedTasks) void actions.delete(task);
@@ -312,7 +313,10 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     isBlocked: isCommandPaletteOpen,
     onExpand: toggle,
     onClear: selection.clear,
-    onDelete: deleteSelection,
+    onDelete: (ids) => {
+      for (const task of visibleTasks) if (ids.includes(task.id)) void actions.delete(task);
+    },
+    onMoveSelection: () => setBulkMoveRequest((current) => current + 1),
     onNew: openTaskQuickAdd,
     onMove: (id) => setMoveRequest((current) => ({ id, sequence: (current?.sequence ?? 0) + 1 })),
   });
@@ -424,7 +428,10 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
       context={context}
       threads={threads}
       expandedId={expandedId}
-      onToggle={toggle}
+      onToggle={(id) => {
+        setMoveRequest(null);
+        toggle(id);
+      }}
       selectedIds={selection.selectedIds}
       onSelectClick={(id, event) => {
         if (
@@ -769,6 +776,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
                     <span>{selectedTasks.length} selected</span>
                     <TaskMoveMenu
                       home={selectedTasks[0]!.home}
+                      openRequest={bulkMoveRequest}
                       today={today}
                       onMove={(target) => {
                         for (const task of selectedTasks)

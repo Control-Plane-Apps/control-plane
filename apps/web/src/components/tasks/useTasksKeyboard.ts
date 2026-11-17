@@ -8,9 +8,10 @@ export interface TasksKeyboardOptions {
   readonly isBlocked: () => boolean;
   readonly onExpand: (id: string) => void;
   readonly onClear: () => void;
-  readonly onDelete: () => void;
+  readonly onDelete: (ids: readonly string[]) => void;
   readonly onNew: () => void;
   readonly onMove: (id: string) => void;
+  readonly onMoveSelection?: () => void;
 }
 
 export function handleTasksKey(event: KeyboardEvent, options: TasksKeyboardOptions) {
@@ -31,20 +32,27 @@ export function handleTasksKey(event: KeyboardEvent, options: TasksKeyboardOptio
   }
   if (event.key === "Escape") {
     if (typing || target?.closest('[role="menu"],[role="dialog"]')) return;
-    if (options.expandedId !== null) {
-      event.preventDefault();
-      options.onExpand(options.expandedId);
-    } else options.onClear();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (options.expandedId !== null) options.onExpand(options.expandedId);
+    options.onClear();
     return;
   }
+  const selectedIds = options.selectedIds.filter((id) => options.orderedIds.includes(id));
+  const hoveredId =
+    options.hoveredId !== null && options.orderedIds.includes(options.hoveredId)
+      ? options.hoveredId
+      : null;
+  const deleteIds = selectedIds.length > 0 ? selectedIds : hoveredId === null ? [] : [hoveredId];
   if (
     (event.key === "Delete" || event.key === "Backspace") &&
-    options.selectedIds.length > 0 &&
+    deleteIds.length > 0 &&
     !typing &&
     !target?.closest('[role="menu"],[role="dialog"]')
   ) {
     event.preventDefault();
-    options.onDelete();
+    event.stopImmediatePropagation();
+    options.onDelete(deleteIds);
     return;
   }
   if (
@@ -55,17 +63,23 @@ export function handleTasksKey(event: KeyboardEvent, options: TasksKeyboardOptio
     event.repeat
   )
     return;
-  if (options.selectedIds.length > 1) return;
-  const id = options.selectedIds[0] ?? options.hoveredId ?? options.expandedId;
+  if (target?.closest('[role="menu"],[role="dialog"]')) return;
+  if (selectedIds.length > 1) {
+    if (typing || options.onMoveSelection === undefined) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    options.onMoveSelection();
+    return;
+  }
+  const id = selectedIds[0] ?? hoveredId ?? options.expandedId;
   if (!id || !options.orderedIds.includes(id)) return;
   if (typing && target?.closest("[data-task-id]")?.getAttribute("data-task-id") !== id) return;
   event.preventDefault();
   event.stopImmediatePropagation();
-  if (options.expandedId !== id) options.onExpand(id);
   options.onMove(id);
 }
 
-/** Mounted only in Tasks, capturing Cmd+N before the shell's New Chat binding. */
+/** Shared by Tasks and active Assistant task rows; captures before shell bindings. */
 export function useTasksKeyboard(options: TasksKeyboardOptions) {
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => handleTasksKey(event, options);

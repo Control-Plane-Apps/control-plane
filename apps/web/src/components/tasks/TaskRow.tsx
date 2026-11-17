@@ -213,7 +213,6 @@ export function TaskRow(props: {
   const navigate = useNavigate();
   const mobile = useIsMobile();
   const rowRef = useRef<HTMLLIElement>(null);
-  const handledMoveRequest = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!expanded || mobile) return;
     const outside = (event: globalThis.MouseEvent) => {
@@ -226,11 +225,6 @@ export function TaskRow(props: {
     document.addEventListener("click", outside, true);
     return () => document.removeEventListener("click", outside, true);
   }, [expanded, mobile, onToggleExpanded]);
-  useEffect(() => {
-    if (!expanded || !props.moveRequest || handledMoveRequest.current === props.moveRequest) return;
-    handledMoveRequest.current = props.moveRequest;
-    rowRef.current?.querySelector<HTMLButtonElement>('[aria-label^="Move task, now "]')?.click();
-  }, [expanded, props.moveRequest]);
   const project = context.projects.find((p) => p.id === task.links?.projectId) ?? null;
   const status =
     task.links?.statusId === undefined
@@ -332,7 +326,7 @@ export function TaskRow(props: {
             : "-mx-2 my-0.5 px-2 py-2 hover:bg-accent/30 group-data-[selected=true]/task:bg-accent/30 group-data-[highlighted=true]/task:bg-accent/30",
         )}
       >
-        <div className="flex min-w-0 items-center gap-2.5">
+        <div className={cn("flex min-w-0 items-center gap-2.5", !expanded && "pr-7")}>
           {props.draggable ? (
             <button
               type="button"
@@ -351,6 +345,25 @@ export function TaskRow(props: {
             >
               <GripVerticalIcon aria-hidden className="size-3.5" />
             </button>
+          ) : null}
+          {!expanded ? (
+            <TaskMoveMenu
+              home={task.home}
+              today={context.today}
+              openRequest={props.moveRequest ?? 0}
+              className="absolute right-1 top-1 inline-flex size-7 items-center justify-center rounded-md bg-card text-muted-foreground opacity-0 outline-none group-hover/task:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring data-[popup-open]:opacity-100"
+              onMove={(target) =>
+                void context.actions.move(task, homeForMove(target, task.home, context.today))
+              }
+              onPickDate={(date) =>
+                void context.actions.move(
+                  task,
+                  homeForMove({ kind: "date", date }, task.home, context.today),
+                )
+              }
+            >
+              <CalendarIcon aria-hidden className="size-3.5" />
+            </TaskMoveMenu>
           ) : null}
           <TaskCheckbox
             checked={completed}
@@ -418,7 +431,13 @@ export function TaskRow(props: {
           )}
         </div>
         {expanded ? (
-          <ExpandedTask task={task} state={state} context={context} project={project} />
+          <ExpandedTask
+            task={task}
+            state={state}
+            context={context}
+            project={project}
+            moveRequest={props.moveRequest ?? 0}
+          />
         ) : null}
         {!expanded && (state.kind === "needs-you" || state.kind === "workstream-done") ? (
           <div className="ps-6.5 pt-1">
@@ -495,6 +514,7 @@ function NotesInput(props: { readonly task: Task; readonly context: TaskRowConte
 }
 
 function ExpandedTask(props: {
+  readonly moveRequest?: number;
   readonly task: Task;
   readonly state: TaskAgentState;
   readonly context: TaskRowContext;
@@ -513,6 +533,7 @@ function ExpandedTask(props: {
       <NotesInput key={task.notes ?? ""} task={task} context={context} />
       <div className="flex flex-wrap items-center gap-1">
         <TaskMoveMenu
+          openRequest={props.moveRequest ?? 0}
           home={task.home}
           today={context.today}
           className={chipClass()}

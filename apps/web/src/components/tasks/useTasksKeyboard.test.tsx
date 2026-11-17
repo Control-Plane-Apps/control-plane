@@ -68,6 +68,7 @@ beforeEach(() => {
     onDelete: vi.fn(),
     onNew: vi.fn(),
     onMove: vi.fn(),
+    onMoveSelection: vi.fn(),
   };
   act(() => {
     renderer = create(<Probe />);
@@ -110,15 +111,13 @@ describe("Tasks keyboard", () => {
     expect(options.onMove).not.toHaveBeenCalled();
   });
 
-  it("collapses on Escape before clearing selection on a second Escape", () => {
+  it("consumes Escape, clears selection and collapses an expanded task", () => {
     options = { ...options, expandedId: "a" };
     act(() => renderer.update(<Probe />));
-    press("Escape");
+    const event = press("Escape");
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(event.stopImmediatePropagation).toHaveBeenCalledOnce();
     expect(options.onExpand).toHaveBeenCalledWith("a");
-    expect(options.onClear).not.toHaveBeenCalled();
-    options = { ...options, expandedId: null };
-    act(() => renderer.update(<Probe />));
-    press("Escape");
     expect(options.onClear).toHaveBeenCalledOnce();
   });
 
@@ -130,15 +129,15 @@ describe("Tasks keyboard", () => {
     expect(options.onDelete).toHaveBeenCalledTimes(2);
   });
 
-  it("expands and opens Move with Cmd/Ctrl+S, including typing inside that row", () => {
+  it("opens Move without expanding with Cmd/Ctrl+S, including typing inside that row", () => {
     press("s", { metaKey: true });
-    expect(options.onExpand).toHaveBeenCalledWith("a");
+    expect(options.onExpand).not.toHaveBeenCalled();
     expect(options.onMove).toHaveBeenCalledWith("a");
     press("s", { ctrlKey: true, target: new Target(true, "a") });
     expect(options.onMove).toHaveBeenCalledTimes(2);
   });
 
-  it("ignores schedule repeats, modifiers, multi-selection and typing elsewhere", () => {
+  it("ignores schedule repeats, modifiers and typing elsewhere", () => {
     for (const patch of [
       { repeat: true },
       { shiftKey: true },
@@ -148,9 +147,6 @@ describe("Tasks keyboard", () => {
     ]) {
       expect(press("s", { metaKey: true, ...patch }).preventDefault).not.toHaveBeenCalled();
     }
-    options = { ...options, selectedIds: ["a", "b"] };
-    act(() => renderer.update(<Probe />));
-    press("s", { metaKey: true });
     expect(options.onMove).not.toHaveBeenCalled();
   });
 
@@ -159,6 +155,44 @@ describe("Tasks keyboard", () => {
     act(() => renderer.update(<Probe />));
     press("s", { metaKey: true });
     expect(options.onMove).toHaveBeenCalledWith("b");
+  });
+
+  it("prefers selection over hover and expanded tasks and moves multi-selection together", () => {
+    options = { ...options, hoveredId: "b", expandedId: "b" };
+    act(() => renderer.update(<Probe />));
+    press("s", { metaKey: true });
+    expect(options.onMove).toHaveBeenCalledWith("a");
+    expect(options.onExpand).not.toHaveBeenCalled();
+    options = { ...options, selectedIds: ["a", "b"] };
+    act(() => renderer.update(<Probe />));
+    const event = press("s", { metaKey: true });
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(options.onMoveSelection).toHaveBeenCalledOnce();
+    expect(options.onMove).toHaveBeenCalledTimes(1);
+    expect(options.onExpand).not.toHaveBeenCalled();
+  });
+
+  it("deletes selection before hover and supports a visible hovered task", () => {
+    options = { ...options, selectedIds: ["a", "b"], hoveredId: "b" };
+    act(() => renderer.update(<Probe />));
+    press("Delete");
+    expect(options.onDelete).toHaveBeenLastCalledWith(["a", "b"]);
+    options = { ...options, selectedIds: [] };
+    act(() => renderer.update(<Probe />));
+    press("Backspace");
+    expect(options.onDelete).toHaveBeenLastCalledWith(["b"]);
+    options = { ...options, hoveredId: "hidden" };
+    act(() => renderer.update(<Probe />));
+    expect(press("Delete").preventDefault).not.toHaveBeenCalled();
+    expect(options.onDelete).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to the expanded task only when there is no selection or hover", () => {
+    options = { ...options, selectedIds: [], expandedId: "b" };
+    act(() => renderer.update(<Probe />));
+    press("s", { metaKey: true });
+    expect(options.onMove).toHaveBeenCalledWith("b");
+    expect(options.onExpand).not.toHaveBeenCalled();
   });
 
   it("captures Cmd/Ctrl+N for new tasks and ignores typing or extra modifiers", () => {
