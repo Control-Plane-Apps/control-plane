@@ -8,6 +8,7 @@ import { useTheme } from "~/hooks/useTheme";
 import { useActivePreviewSessions } from "~/previewStateStore";
 
 import { readPreviewAnnotationTheme } from "./annotationTheme";
+import { createAgentClickFocusGuard } from "./agentClickFocusGuard";
 import { useBrowserPointerStore } from "./browserPointerStore";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
 import { hostedBrowserSessions } from "./hostedBrowserSessions";
@@ -53,7 +54,10 @@ export function ElectronBrowserHost() {
   useEffect(() => {
     const preview = window.desktopBridge?.preview;
     if (!preview) return;
+    const focusGuard = createAgentClickFocusGuard();
     return preview.onPointerEvent((event) => {
+      focusGuard.handle(event);
+      if (event.phase === "release") return;
       useBrowserPointerStore.getState().apply(event);
     });
   }, []);

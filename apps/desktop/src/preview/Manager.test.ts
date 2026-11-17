@@ -4171,6 +4171,9 @@ describe("PreviewManager", () => {
             activity.push("mousePressed");
             humanInput?.({}, { kind: "pointer", x: params.x, y: params.y, button: 0 });
           }
+          if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") {
+            activity.push("mouseReleased");
+          }
           return undefined;
         });
         fromId.mockReturnValue({
@@ -4219,7 +4222,9 @@ describe("PreviewManager", () => {
         yield* TestClock.adjust(200);
         yield* Fiber.join(click);
 
-        expect(activity).toEqual(["move", "click", "mousePressed"]);
+        // `release` follows the dispatched click so the host can hand back any
+        // keyboard focus the click pulled into the guest.
+        expect(activity).toEqual(["move", "click", "mousePressed", "mouseReleased", "release"]);
         expect(sendCommand).toHaveBeenCalledWith("Input.dispatchMouseEvent", {
           type: "mousePressed",
           x: 120,
