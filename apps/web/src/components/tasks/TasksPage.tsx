@@ -55,7 +55,7 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/men
 import { ScrollArea } from "../ui/scroll-area";
 import { SidebarInset } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { useHandToAgent } from "./handToAgent";
+import { useHandToAssistant } from "./handToAssistant";
 import { openTaskQuickAdd } from "./QuickAddDialog";
 import {
   AddTaskRow,
@@ -276,7 +276,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     serverTaskRecords,
     actions,
   );
-  const handToAgent = useHandToAgent();
+  const handToAssistant = useHandToAssistant();
   const sync = taskSyncIndicator(useTaskSync().status);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const quickAddShortcut = shortcutLabelForCommand(keybindings, "tasks.quickAdd");
@@ -321,7 +321,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     today,
     actions,
     projects,
-    onHandToAgent: (task, kind, project) => void handToAgent(task, kind, project),
+    onHandToAssistant: (task) => void handToAssistant(task),
   };
   const add = (home: TaskHome) => (title: string) =>
     actions.create({
@@ -784,10 +784,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
                     <button
                       type="button"
                       disabled={!findGlobalAssistantProject(projects)}
-                      onClick={() => {
-                        const assistant = findGlobalAssistantProject(projects);
-                        if (assistant) void handToAgent(selectedTasks, "coordinator", assistant);
-                      }}
+                      onClick={() => void handToAssistant(selectedTasks)}
                     >
                       Hand to Assistant
                     </button>

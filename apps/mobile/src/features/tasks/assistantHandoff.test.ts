@@ -1,20 +1,31 @@
 import type { Task, TaskHandoff, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { assistantHandoffThread, handTasksToAssistant, handoffChipLabel } from "./assistantHandoff";
+import { assistantChip, handTasksToAssistant, handoffChipLabel } from "./assistantHandoff";
 
 const ASSISTANT = "assistant-today" as ThreadId;
-const assistantProject = {
-  assistant: { coordinatorThreadId: ASSISTANT, scope: "global" },
-} as never;
-const acmeProject = { assistant: { coordinatorThreadId: "acme-coord" as ThreadId } } as never;
 const task = (id: string) => ({ id, title: id }) as unknown as Task;
 
 describe("Hand to Assistant on iOS", () => {
-  it("sends only coordinator handoffs to the global Assistant", () => {
-    expect(assistantHandoffThread("coordinator", assistantProject)).toBe(ASSISTANT);
-    expect(assistantHandoffThread("agent", assistantProject)).toBeNull();
-    expect(assistantHandoffThread("coordinator", acmeProject)).toBeNull();
+  it("offers one plain chip, says Handed once there, and hides without an Assistant", () => {
+    expect(assistantChip({}, ASSISTANT)).toBe("offer");
+    expect(
+      assistantChip({ handoff: { kind: "coordinator", threadId: ASSISTANT, at: "x" } }, ASSISTANT),
+    ).toBe("handed");
+    // Handed to a coordinator by an agent: still offered.
+    expect(
+      assistantChip(
+        { handoff: { kind: "coordinator", threadId: "acme-coord" as ThreadId, at: "x" } },
+        ASSISTANT,
+      ),
+    ).toBe("offer");
+    expect(
+      assistantChip(
+        { proposal: { projectId: "p" as never, threadId: "c" as ThreadId, proposedAt: "x" } },
+        ASSISTANT,
+      ),
+    ).toBeNull();
+    expect(assistantChip({}, null)).toBeNull();
   });
 
   it("links every selected task, then sends the batch once on the last", async () => {

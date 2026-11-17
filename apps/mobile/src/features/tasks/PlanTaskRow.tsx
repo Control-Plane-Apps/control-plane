@@ -8,8 +8,6 @@ import {
 } from "@t3tools/client-runtime/state/projects";
 import {
   findGlobalAssistantProject,
-  isGlobalAssistant,
-  isProposedTask,
   TASK_NOTES_MAX,
   TASK_TITLE_MAX,
   type ProjectStatus,
@@ -26,7 +24,7 @@ import ReanimatedSwipeable, {
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text, AppTextInput } from "../../components/AppText";
 import { ControlPillMenu } from "../../components/ControlPill";
-import { handoffChipLabel } from "./assistantHandoff";
+import { assistantChip, handoffChipLabel } from "./assistantHandoff";
 import { cn } from "../../lib/cn";
 import { PillButton } from "../status/ProjectStatusPanel";
 import { taskRowMeta } from "./taskRowMeta";
@@ -45,11 +43,7 @@ export interface PlanTaskRowContext {
   readonly onComplete: (task: Task) => void;
   readonly onMove: (task: Task, mode?: "schedule") => void;
   readonly onEnterSelect: (task: Task) => void;
-  readonly onHandToAgent: (
-    task: Task,
-    kind: "coordinator" | "agent",
-    project: EnvironmentProject,
-  ) => void;
+  readonly onHandToAssistant: (task: Task) => void;
   readonly onOpenStatus: (project: EnvironmentProject) => void;
   readonly onAnswerStatus: (project: EnvironmentProject, status: ProjectStatus) => void;
   readonly onReplyStatus: (project: EnvironmentProject, status: ProjectStatus) => void;
@@ -437,11 +431,9 @@ function ExpandedTask(props: {
       ? undefined
       : project?.assistant?.statuses?.find((s) => s.id === task.links!.statusId);
   const assistantProjects = context.projects.filter((p) => p.assistant != null);
-  // The task's own Project coordinator when it has one; the Assistant is always offered.
-  const ownProject =
-    project !== null && project.assistant != null && !isGlobalAssistant(project) ? project : null;
   const globalAssistant = findGlobalAssistantProject(context.projects) ?? null;
-  const canHandOff = !isProposedTask(task) && (ownProject !== null || globalAssistant !== null);
+  const assistantThreadId = globalAssistant?.assistant?.coordinatorThreadId ?? null;
+  const handChip = assistantChip(task, assistantThreadId);
 
   return (
     <View className="gap-3 pb-3 pt-1">
@@ -553,15 +545,24 @@ function ExpandedTask(props: {
             />
           </ControlPillMenu>
         ) : null}
-        {task.handoff !== undefined && project !== null ? (
+        {handChip === "handed" && globalAssistant !== null ? (
+          <TaskChip
+            active
+            label="Handed to Assistant"
+            onPress={() => context.onOpenThread(globalAssistant, task.handoff!.threadId)}
+          />
+        ) : handChip === "offer" ? (
+          <TaskChip
+            active={false}
+            label="Hand to Assistant"
+            onPress={() => context.onHandToAssistant(task)}
+          />
+        ) : null}
+        {task.handoff !== undefined && handChip !== "handed" && project !== null ? (
           <TaskChip
             active
             icon={symbol("bubble.left", "chat_bubble")}
-            label={handoffChipLabel(
-              task.handoff,
-              globalAssistant?.assistant?.coordinatorThreadId,
-              project.title,
-            )}
+            label={handoffChipLabel(task.handoff, assistantThreadId, project.title)}
             onPress={() => context.onOpenThread(project, task.handoff!.threadId)}
           />
         ) : null}
@@ -575,60 +576,6 @@ function ExpandedTask(props: {
         />
       ) : null}
       <View className="flex-row flex-wrap items-center gap-2">
-        {canHandOff ? (
-          <ControlPillMenu
-            actions={[
-              ...(globalAssistant !== null
-                ? [{ id: "assistant", title: "Hand to Assistant" }]
-                : []),
-              ...(ownProject !== null
-                ? [
-                    { id: "coordinator", title: `Ask ${ownProject.title} coordinator` },
-                    { id: "agent", title: "Start an agent" },
-                  ]
-                : []),
-            ]}
-            onPressAction={({ nativeEvent }) => {
-              if (nativeEvent.event === "assistant" && globalAssistant !== null) {
-                context.onHandToAgent(task, "coordinator", globalAssistant);
-              } else if (ownProject !== null) {
-                context.onHandToAgent(
-                  task,
-                  nativeEvent.event === "agent" ? "agent" : "coordinator",
-                  ownProject,
-                );
-              }
-            }}
-          >
-            <View
-              accessible
-              accessibilityRole="button"
-              accessibilityLabel="Hand to agent"
-              style={{
-                minHeight: 44,
-                paddingHorizontal: 18,
-                borderRadius: 22,
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 8,
-                backgroundColor: palette.accent,
-              }}
-            >
-              <SymbolView
-                name={symbol("cpu", "build")}
-                size={15}
-                tintColor={palette.accentForeground}
-                type="monochrome"
-              />
-              <Text
-                className="text-[15px] font-t3-medium"
-                style={{ color: palette.accentForeground }}
-              >
-                Hand to agent
-              </Text>
-            </View>
-          </ControlPillMenu>
-        ) : null}
         <PillButton label="Done" tone="secondary" onPress={props.onClose} />
         <View className="flex-1" />
         <ControlPillMenu

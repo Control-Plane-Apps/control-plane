@@ -492,12 +492,6 @@ export function projectNeedsYouCount(project: {
   );
 }
 
-/** The brief a task hands to an agent: the title, then the notes. */
-export function taskBrief(task: Pick<Task, "title" | "notes">): string {
-  const title = /[.!?]$/.test(task.title) ? task.title : `${task.title}.`;
-  return task.notes === undefined ? title : `${title}\n\n${task.notes}`;
-}
-
 /** The handoff message a client's last handoff of a batch sends. */
 export interface HandoffDelivery {
   readonly commandId: CommandId;

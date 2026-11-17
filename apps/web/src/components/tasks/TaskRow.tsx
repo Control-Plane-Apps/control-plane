@@ -11,7 +11,6 @@ import {
 } from "@t3tools/client-runtime/state/projects";
 import {
   findGlobalAssistantProject,
-  isGlobalAssistant,
   isProposedTask,
   type Task,
   type ThreadId,
@@ -19,14 +18,11 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import {
   BellIcon,
-  BotIcon,
   CalendarIcon,
   CheckIcon,
-  ChevronDownIcon,
   CircleCheckIcon,
   GripVerticalIcon,
   LinkIcon,
-  MessageCircleIcon,
   MoreHorizontalIcon,
   RepeatIcon,
   XIcon,
@@ -48,11 +44,7 @@ export interface TaskRowContext {
   readonly today: string;
   readonly actions: TaskActions;
   readonly projects: ReadonlyArray<EnvironmentProject>;
-  readonly onHandToAgent: (
-    task: Task,
-    kind: "coordinator" | "agent",
-    project: EnvironmentProject,
-  ) => void;
+  readonly onHandToAssistant: (task: Task) => void;
 }
 
 function chipClass(active = false) {
@@ -633,70 +625,41 @@ function ExpandedTask(props: {
           <RepeatIcon aria-hidden className="size-3.5" />
           {task.recurrence !== undefined ? formatTaskRecurrence(task.recurrence) : "Repeat"}
         </TaskRepeatMenu>
+        {!isProposedTask(task) ? <HandToAssistantChip task={task} context={context} /> : null}
       </div>
-      {!isProposedTask(task) &&
-      ((project !== null && project.assistant != null) ||
-        findGlobalAssistantProject(context.projects) !== undefined) ? (
-        <HandToAgentMenu task={task} project={project} context={context} />
-      ) : null}
     </div>
   );
 }
 
-function HandToAgentMenu(props: {
-  readonly task: Task;
-  readonly project: EnvironmentProject | null;
-  readonly context: TaskRowContext;
-}) {
+/**
+ * One plain chip, like Tomorrow and Remind: it sends the task straight to the
+ * Assistant. Once it is there the chip says so; a task another thread has
+ * shows who has it beside the chip.
+ */
+function HandToAssistantChip(props: { readonly task: Task; readonly context: TaskRowContext }) {
   const { task, context } = props;
-  // The task's own Project when it has a coordinator; the Assistant is always offered.
-  const project =
-    props.project !== null && props.project.assistant != null && !isGlobalAssistant(props.project)
-      ? props.project
-      : null;
-  const assistant = findGlobalAssistantProject(context.projects) ?? null;
+  const assistant = findGlobalAssistantProject(context.projects);
+  if (assistant === undefined) return null;
+  const assistantThreadId = assistant.assistant?.coordinatorThreadId;
   const handedTo = task.handoff;
+  if (handedTo !== undefined && handedTo.threadId === assistantThreadId) {
+    return <span className={cn(chipClass(true), "cursor-default")}>Handed to Assistant</span>;
+  }
+  const owner =
+    handedTo === undefined
+      ? null
+      : context.projects.find((p) => p.assistant?.coordinatorThreadId === handedTo.threadId);
   return (
-    <div className="flex items-center gap-2">
-      <Menu>
-        <MenuTrigger
-          className={cn(
-            chipClass(),
-            "h-7 border border-border bg-background px-2 text-foreground hover:bg-accent",
-          )}
-        >
-          <BotIcon aria-hidden className="size-3.5" />
-          Hand to agent
-          <ChevronDownIcon aria-hidden className="size-3 opacity-60" />
-        </MenuTrigger>
-        <MenuPopup align="start" className="w-60">
-          {assistant !== null ? (
-            <MenuItem onClick={() => context.onHandToAgent(task, "coordinator", assistant)}>
-              <MessageCircleIcon aria-hidden className="size-3.5" />
-              Hand to Assistant
-            </MenuItem>
-          ) : null}
-          {project !== null ? (
-            <>
-              {assistant !== null ? <MenuSeparator /> : null}
-              <MenuItem onClick={() => context.onHandToAgent(task, "coordinator", project)}>
-                <MessageCircleIcon aria-hidden className="size-3.5" />
-                Ask {project.title} coordinator
-              </MenuItem>
-              <MenuItem onClick={() => context.onHandToAgent(task, "agent", project)}>
-                <BotIcon aria-hidden className="size-3.5" />
-                Start an agent in {project.title}
-              </MenuItem>
-            </>
-          ) : null}
-        </MenuPopup>
-      </Menu>
+    <>
+      <button type="button" className={chipClass()} onClick={() => context.onHandToAssistant(task)}>
+        Hand to Assistant
+      </button>
       {handedTo !== undefined ? (
         <span className="text-muted-foreground text-xs">
-          {handoffLabel(handedTo, assistant?.assistant?.coordinatorThreadId, project?.title)}
+          {handoffLabel(handedTo, assistantThreadId, owner?.title)}
         </span>
       ) : null}
-    </div>
+    </>
   );
 }
 

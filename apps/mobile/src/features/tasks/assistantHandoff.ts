@@ -1,20 +1,10 @@
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { sendDeliveredHandoff } from "@t3tools/client-runtime/state/projects";
-import { isGlobalAssistant, type Task, type TaskHandoff, type ThreadId } from "@t3tools/contracts";
+import type { Task, TaskHandoff, ThreadId } from "@t3tools/contracts";
 
 import type { TaskActions } from "./useMobileTasks";
 
 // Fork-owned. Hand to Assistant on iOS: no draft to review, the tasks go
 // straight to the Assistant as one handoff message, as on desktop.
-
-/** The Assistant thread a coordinator handoff to `project` sends to, or null for any other target. */
-export function assistantHandoffThread(
-  kind: "coordinator" | "agent",
-  project: Pick<EnvironmentProject, "assistant">,
-): ThreadId | null {
-  if (kind !== "coordinator" || !isGlobalAssistant(project)) return null;
-  return project.assistant?.coordinatorThreadId ?? null;
-}
 
 /** Links each task to the Assistant and sends the batch there as one message. */
 export function handTasksToAssistant(
@@ -37,4 +27,19 @@ export function handoffChipLabel(
     return "Handed to Assistant";
   }
   return handoff.kind === "coordinator" ? `${projectTitle} coordinator` : "Agent thread";
+}
+
+/**
+ * The Hand to Assistant chip on a task's detail: "offer" a plain chip that
+ * sends it, "handed" once the Assistant has it, or null with no Assistant or
+ * for a proposal still waiting on the user.
+ */
+export function assistantChip(
+  task: Pick<Task, "handoff" | "proposal">,
+  assistantThreadId: string | null,
+): "offer" | "handed" | null {
+  if (assistantThreadId === null) return null;
+  if (task.handoff?.threadId === assistantThreadId) return "handed";
+  if (task.proposal !== undefined && task.proposal.acceptedAt === undefined) return null;
+  return "offer";
 }
