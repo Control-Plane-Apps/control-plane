@@ -9,16 +9,17 @@ import { useMemo } from "react";
 
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useTaskToday, useTasks } from "../../state/tasks";
-import { useHandToAgent } from "../tasks/handToAgent";
+import { useHandToAssistant } from "../tasks/handToAssistant";
 import { useExpandedTask } from "../tasks/TaskList";
 import { TaskMoveMenu } from "../tasks/TaskMenus";
 import { TaskRow, type TaskRowContext } from "../tasks/TaskRow";
 import { useTaskActions } from "../tasks/useTaskActions";
+import { useTaskSelection } from "../tasks/useTaskSelection";
 import { railTodayTasks } from "./assistantRailTasks.logic";
 
 // Fork-owned. Today's tasks in the Assistant rail, on the Tasks view's own
-// row: check off, Move (Today, a date, week, month, year, backlog) on hover,
-// and the row's own open gesture for the full detail. No drag here: the rail lists overdue
+// row: check off, click to select and double-click to open the full detail,
+// and Move (Today, a date, week, month, year, backlog) on hover. No drag here: the rail lists overdue
 // first, which is not the user's order, so a reorder would read wrong.
 
 export function AssistantTodayTasks(props: { readonly onOpenTasks: () => void }) {
@@ -27,14 +28,19 @@ export function AssistantTodayTasks(props: { readonly onOpenTasks: () => void })
   const projects = useProjects();
   const threads = useThreadShells() as ReadonlyArray<TaskLifecycleThread>;
   const actions = useTaskActions(environmentId);
-  const handToAgent = useHandToAgent();
+  const handToAssistant = useHandToAssistant();
   const { expandedId, toggle } = useExpandedTask();
   const { shown, more, total } = useMemo(() => railTodayTasks(tasks, today), [tasks, today]);
+  // The Tasks click model: a click selects, a double-click opens. Selection is
+  // local to the rail; no keyboard commands are bound here, so the
+  // Assistant's own shortcuts stay as they are.
+  const shownIds = useMemo(() => shown.map((task) => task.id as string), [shown]);
+  const selection = useTaskSelection(shownIds);
   const context: TaskRowContext = {
     today,
     actions,
     projects,
-    onHandToAgent: (task, kind, project) => void handToAgent(task, kind, project),
+    onHandToAssistant: (task) => void handToAssistant(task),
   };
   const lifecycleProjects = projects as ReadonlyArray<TaskLifecycleProject>;
 
@@ -77,6 +83,22 @@ export function AssistantTodayTasks(props: { readonly onOpenTasks: () => void })
                       expanded={expanded}
                       onToggleExpanded={() => toggle(task.id)}
                       context={context}
+                      draggable={false}
+                      reorderable={false}
+                      selected={selection.selectedIds.has(task.id)}
+                      onSelectClick={(event) => {
+                        // A plain click on a member of a batch keeps the batch, so a
+                        // double-click to open never discards it (as on the Tasks page).
+                        if (
+                          !event.metaKey &&
+                          !event.ctrlKey &&
+                          !event.shiftKey &&
+                          selection.selectedIds.size > 1 &&
+                          selection.selectedIds.has(task.id)
+                        )
+                          return;
+                        selection.handleRowClick(task.id, event);
+                      }}
                     />
                   </ul>
                   {expanded ? null : (
