@@ -7,7 +7,6 @@ import {
   parseQuickAdd,
 } from "@t3tools/client-runtime/state/projects";
 import {
-  taskPeriodFor,
   TASK_TITLE_MAX,
   type ProjectId,
   type TaskHome,
@@ -22,6 +21,7 @@ import { AppTextInput } from "../../components/AppText";
 import { AppText as Text } from "../../components/AppText";
 import { ControlPillMenu } from "../../components/ControlPill";
 import { SymbolView } from "../../components/AppSymbol";
+import { defaultQuickAddHome } from "./quickAddHome";
 import { moveSections, REMINDER_TIMES, repeatMenuActions, repeatMenuChoice } from "./taskMenus";
 import { symbol, TaskCheckbox, TaskChip, useTaskPalette, BARE_INPUT_STYLE } from "./taskUi";
 import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
@@ -29,30 +29,15 @@ import { useMobileTaskStore, useTaskToday } from "./useMobileTasks";
 // Fork-owned. Quick add: type a title with an optional when-phrase
 // ("tomorrow 9am"); the chips show what it parsed and can change it.
 
-type TaskQuickAddParams = {
+export type TaskQuickAddParams = {
   /** Where a task lands when the title names no day. */
   readonly horizon?: "today" | TaskHorizon | "backlog";
   /** Which backlog a "backlog" add lands in; the general backlog when absent. */
   readonly backlog?: TaskHorizon;
   readonly projectId?: string;
+  /** A day (YYYY-MM-DD) the task lands on when the title names none: Upcoming's day cards. */
+  readonly date?: string;
 };
-
-export function defaultQuickAddHome(
-  horizon: TaskQuickAddParams["horizon"],
-  today: string,
-  backlog?: TaskHorizon,
-): TaskHome {
-  switch (horizon) {
-    case "week":
-    case "month":
-    case "year":
-      return { kind: "period", horizon, ...taskPeriodFor(horizon, today) };
-    case "backlog":
-      return { kind: "backlog", horizon: backlog ?? null };
-    default:
-      return { kind: "date", date: today };
-  }
-}
 
 export function TaskQuickAddSheet({ route }: StaticScreenProps<TaskQuickAddParams | undefined>) {
   const navigation = useNavigation();
@@ -70,7 +55,7 @@ export function TaskQuickAddSheet({ route }: StaticScreenProps<TaskQuickAddParam
   const baseHome =
     homeOverride ??
     parsed.home ??
-    defaultQuickAddHome(route.params?.horizon, today, route.params?.backlog);
+    defaultQuickAddHome(route.params?.horizon, today, route.params?.backlog, route.params?.date);
   const home: TaskHome =
     baseHome.kind !== "date" || reminderOverride === undefined
       ? baseHome
