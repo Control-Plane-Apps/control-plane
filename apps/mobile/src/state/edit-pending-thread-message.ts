@@ -1,4 +1,6 @@
-import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
+import { parseQuoteReply, PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
+import { quoteReplyDisplayLabelFromLabel } from "../features/threads/quoteReply.logic";
+import { setQuoteReply } from "../features/threads/quoteReplyStore";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 import {
@@ -47,8 +49,14 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
     if (attachmentIds.size > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
       throw new Error("Remove attachments from the composer before editing this message.");
     }
+    // A quote-reply goes back on the composer chip, not into the text as a
+    // raw "> Replying to" header (a Status header still wraps it; left as is).
+    const quote = parseQuoteReply(message.text);
     try {
-      await mergeComposerDraftContent(draftKey, message);
+      await mergeComposerDraftContent(
+        draftKey,
+        quote === null ? message : { ...message, text: quote.body },
+      );
     } finally {
       rollback = { snapshot, merged: getComposerDraftSnapshot(draftKey) };
     }
@@ -61,6 +69,14 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
     await flushComposerDrafts();
     if (!(await removeThreadOutboxMessage(message, revision))) return false;
     rollback = null;
+    if (quote !== null) {
+      setQuoteReply(draftKey, {
+        messageId: quote.messageId,
+        label: quote.label,
+        text: quote.text,
+        displayLabel: quoteReplyDisplayLabelFromLabel(quote.label),
+      });
+    }
     return true;
   } finally {
     try {

@@ -17,6 +17,7 @@ import {
   COMPOSER_CONTEXT_KINDS,
   agentMessageToolLabel,
   isAgentOriginatedUserMessage,
+  parseQuoteReply,
   parseStatusReply,
   type AssistantCitation,
   type EnvironmentId,
@@ -178,6 +179,10 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { inferEntryKindFromPath } from "../../pierre-icons";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
+import { ReplyToMessageButton, SentMessageQuote } from "./QuoteReply";
+import { flashTimelineRow, resolveQuoteJumpTarget } from "./quoteReply.logic";
+import { quoteReplyDisplayLabelFromStored, type QuoteReplyAuthor } from "./quoteReplyStore";
+import { toastManager } from "../ui/toast";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import {
   AssistantCitationSource,
@@ -317,6 +322,20 @@ interface TimelineRowSharedState {
   onRemoveQueuedMessage: (id: string) => void;
   /** Set in a Project's threads, for its coordinator and agent handoff rows. */
   assistantTimeline: AssistantTimeline | null;
+  /** Starts a quote reply in the composer; null where the composer cannot take one. */
+  onReplyToMessage: ((request: QuoteReplyRequest) => void) | null;
+  replyShortcutLabel: string | null;
+  /** Scrolls to a message and flashes it. False when it is not in this thread. */
+  jumpToMessage: (messageId: string) => boolean;
+  hasTimelineMessage: (messageId: string) => boolean;
+}
+
+/** What a Reply hands the composer: the message, who wrote it, and an optional excerpt. */
+export interface QuoteReplyRequest {
+  readonly messageId: string;
+  readonly messageText: string;
+  readonly author: QuoteReplyAuthor;
+  readonly excerpt?: string | undefined;
 }
 
 interface TimelineRowActivityState {
@@ -490,6 +509,8 @@ interface MessagesTimelineProps {
   /** False skips minimap derivation and rendering (a Project's coordinator). */
   showTurnMinimap?: boolean;
   assistantTimeline?: AssistantTimeline | null;
+  onReplyToMessage?: ((request: QuoteReplyRequest) => void) | null;
+  replyShortcutLabel?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,6 +572,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onRemoveQueuedMessage = NOOP_QUEUED_MESSAGE_ACTION,
   showTurnMinimap = true,
   assistantTimeline = null,
+  onReplyToMessage = null,
+  replyShortcutLabel = null,
 }: MessagesTimelineProps) {
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
   const rememberedPosition = useMemo(
@@ -1157,6 +1180,84 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, [timelineViewportElement, rows.length, reportContentOverflow]);
 
+  // Read through refs so the shared row state stays stable while rows change.
+  const quoteJumpRowsRef = useRef(rows);
+  const quoteJumpEntriesRef = useRef(timelineEntries);
+  useLayoutEffect(() => {
+    quoteJumpRowsRef.current = rows;
+    quoteJumpEntriesRef.current = timelineEntries;
+  }, [rows, timelineEntries]);
+  const pendingQuoteJumpRef = useRef<string | null>(null);
+  const jumpToMessage = useCallback(
+    (messageId: string): boolean => {
+      const target = resolveQuoteJumpTarget(
+        quoteJumpRowsRef.current,
+        quoteJumpEntriesRef.current,
+        messageId,
+      );
+      if (target.kind === "missing") {
+        toastManager.add({
+          type: "info",
+          title: "The original message is not in this thread",
+          description: "It may have been removed. The quote keeps its text.",
+        });
+        return false;
+      }
+      onManualNavigation();
+      if (target.kind === "folded") {
+        pendingQuoteJumpRef.current = messageId;
+        expandCitedTurn(target.turnId);
+        return true;
+      }
+      const list = listRef.current;
+      if (!list) return false;
+      void Promise.resolve(
+        list.scrollToIndex({ index: target.index, animated: true, viewPosition: 0.3 }),
+      ).then(() => {
+        requestAnimationFrame(() => {
+          const element = list
+            .getScrollableNode()
+            ?.querySelector<HTMLElement>(`[data-timeline-row-id="${CSS.escape(target.rowId)}"]`);
+          if (element) flashTimelineRow(element);
+        });
+      });
+      return true;
+    },
+    [expandCitedTurn, listRef, onManualNavigation],
+  );
+  // A jump into a folded turn finishes once the turn's rows are painted.
+  useEffect(() => {
+    const pending = pendingQuoteJumpRef.current;
+    if (pending === null) return;
+    if (!rows.some((row) => row.kind === "message" && row.message.id === pending)) return;
+    pendingQuoteJumpRef.current = null;
+    jumpToMessage(pending);
+  }, [jumpToMessage, rows]);
+  const replyToSelection = useCallback(
+    (messageId: MessageId, excerpt: string): boolean => {
+      if (onReplyToMessage === null) return false;
+      const entry = quoteJumpEntriesRef.current.find(
+        (candidate) => candidate.kind === "message" && candidate.message.id === messageId,
+      );
+      if (entry?.kind !== "message" || entry.message.role !== "assistant") return false;
+      onReplyToMessage({
+        messageId,
+        messageText: entry.message.text,
+        author: { kind: "assistant", displayLabel: assistantDisplayLabel(assistantTimeline) },
+        excerpt,
+      });
+      return true;
+    },
+    [assistantTimeline, onReplyToMessage],
+  );
+  const hasTimelineMessage = useCallback(
+    (messageId: string) =>
+      quoteJumpEntriesRef.current.some(
+        (entry) => entry.kind === "message" && entry.message.id === messageId,
+      ),
+    [],
+  );
+
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
       citationRequest: readyCitationRequest,
@@ -1194,6 +1295,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       steerQueuedMessageShortcutLabel,
       onRemoveQueuedMessage,
       assistantTimeline,
+      onReplyToMessage,
+      replyShortcutLabel,
+      jumpToMessage,
+      hasTimelineMessage,
     }),
     [
       readyCitationRequest,
@@ -1230,6 +1335,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       steerQueuedMessageShortcutLabel,
       onRemoveQueuedMessage,
       assistantTimeline,
+      onReplyToMessage,
+      replyShortcutLabel,
+      jumpToMessage,
+      hasTimelineMessage,
     ],
   );
   const backgroundWorktreeSetup =
@@ -1301,11 +1410,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           className="relative h-full min-h-0"
           data-assistant-citation-viewport="true"
         >
-          {onCiteAssistantText && citationThreadRef ? (
+          {(onCiteAssistantText || onReplyToMessage !== null) && citationThreadRef ? (
             <AssistantSelectionToolbar
               viewport={timelineViewportElement}
               threadRef={citationThreadRef}
               onCite={onCiteAssistantText}
+              {...(onReplyToMessage !== null ? { onReply: replyToSelection } : {})}
             />
           ) : null}
           <LegendList<MessagesTimelineRow>
@@ -2047,6 +2157,17 @@ function UserTimelineRow({
         : null,
     [attribution, inCoordinator, resolvedContext.text, scheduledLabel],
   );
+  // A quote reply: the quoted line or excerpt, shown above the text it answers.
+  const quoteReply = useMemo(
+    () => parseQuoteReply(statusReply?.body ?? resolvedContext.text),
+    [resolvedContext.text, statusReply],
+  );
+  const messageBodyText = quoteReply?.body ?? statusReply?.body ?? resolvedContext.text;
+  const quoteReplyOriginalPresent =
+    quoteReply !== null && ctx.hasTimelineMessage(quoteReply.messageId);
+  const replyAuthor: QuoteReplyAuthor = attribution
+    ? { kind: "agent", name: attribution.displayName }
+    : { kind: "self" };
   const previewImages = useMemo(
     () => userImages.filter((image) => image.name.startsWith("preview-annotation-")),
     [userImages],
@@ -2271,6 +2392,7 @@ function UserTimelineRow({
       ) : null}
       {showBubble ? (
         <div
+          data-quote-reply-flash-target
           className={
             scheduledLabel === null
               ? "relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground"
@@ -2353,8 +2475,24 @@ function UserTimelineRow({
                 </span>
               </p>
             ) : null}
+            {quoteReply !== null ? (
+              <SentMessageQuote
+                displayLabel={quoteReplyDisplayLabelFromStored(
+                  quoteReply.label,
+                  inCoordinator ? "Coordinator" : "Assistant",
+                )}
+                text={quoteReply.text}
+                onJump={
+                  quoteReplyOriginalPresent
+                    ? () => {
+                        ctx.jumpToMessage(quoteReply.messageId);
+                      }
+                    : null
+                }
+              />
+            ) : null}
             <CollapsibleUserMessageBody
-              text={statusReply?.body ?? resolvedContext.text}
+              text={messageBodyText}
               renderContextReference={renderContextReference}
               skills={ctx.skills}
               markdownCwd={ctx.markdownCwd}
@@ -2373,6 +2511,17 @@ function UserTimelineRow({
             </TooltipPopup>
           </Tooltip>
           <div className="flex items-center gap-0.5">
+            {ctx.onReplyToMessage !== null && resolvedContext.text ? (
+              <ReplyToMessageButton
+                onReply={() =>
+                  ctx.onReplyToMessage?.({
+                    messageId: row.message.id,
+                    messageText: resolvedContext.text,
+                    author: replyAuthor,
+                  })
+                }
+              />
+            ) : null}
             {typeof revertTurnCount === "number" && (
               <RevertUserMessageButton turnCount={revertTurnCount} messageId={row.message.id} />
             )}
@@ -2520,11 +2669,25 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const canReply =
+    ctx.onReplyToMessage !== null && !row.message.streaming && row.message.text.trim().length > 0;
+  const startReply = () =>
+    ctx.onReplyToMessage?.({
+      messageId: row.message.id,
+      messageText: row.message.text,
+      author: { kind: "assistant", displayLabel: assistantDisplayLabel(ctx.assistantTimeline) },
+    });
 
   return (
     <>
-      <div className="relative min-w-0 px-1 py-0.5">
+      <div className="relative min-w-0 rounded-md px-1 py-0.5" data-quote-reply-flash-target>
         <MessageAuthorHeading>Control Plane</MessageAuthorHeading>
+        {canReply && !row.showAssistantMeta ? (
+          // Commentary rows have no meta row, so their Reply floats at the top corner.
+          <div className="absolute -top-2 end-0 z-10 rounded-md bg-background opacity-0 shadow-xs transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/assistant:opacity-100">
+            <ReplyToMessageButton onReply={startReply} />
+          </div>
+        ) : null}
         <AssistantCitationSource
           messageId={row.message.id}
           {...(ctx.threadRef ? { threadRef: ctx.threadRef } : {})}
@@ -2556,6 +2719,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             message={row.message}
             showCopyButton={row.showAssistantCopyButton}
             copyStreaming={row.assistantCopyStreaming}
+            onReply={canReply ? startReply : null}
           />
         ) : null}
       </div>
@@ -2563,11 +2727,18 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
   );
 }
 
+function assistantDisplayLabel(assistantTimeline: AssistantTimeline | null): string {
+  return assistantTimeline?.role === "coordinator" ? "Coordinator" : "Assistant";
+}
+
 function AssistantMetaTimelineRow({
   row,
 }: {
   row: Extract<TimelineRow, { kind: "assistant-meta" }>;
 }) {
+  const ctx = use(TimelineRowCtx);
+  const canReply =
+    ctx.onReplyToMessage !== null && !row.message.streaming && row.message.text.trim().length > 0;
   return (
     <div className="px-1">
       <AssistantMessageMeta
@@ -2576,6 +2747,19 @@ function AssistantMetaTimelineRow({
         showCopyButton={row.showAssistantCopyButton}
         copyStreaming={row.assistantCopyStreaming}
         alwaysVisible
+        onReply={
+          canReply
+            ? () =>
+                ctx.onReplyToMessage?.({
+                  messageId: row.message.id,
+                  messageText: row.message.text,
+                  author: {
+                    kind: "assistant",
+                    displayLabel: assistantDisplayLabel(ctx.assistantTimeline),
+                  },
+                })
+            : null
+        }
       />
     </div>
   );
@@ -2587,12 +2771,14 @@ function AssistantMessageMeta({
   showCopyButton,
   copyStreaming,
   alwaysVisible = false,
+  onReply = null,
 }: {
   className?: string;
   message: ChatMessage;
   showCopyButton: boolean;
   copyStreaming: boolean;
   alwaysVisible?: boolean;
+  onReply?: (() => void) | null;
 }) {
   const ctx = use(TimelineRowCtx);
 
@@ -2611,6 +2797,9 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {onReply !== null ? (
+        <ReplyToMessageButton onReply={onReply} shortcutLabel={ctx.replyShortcutLabel} />
+      ) : null}
       {!message.streaming && (
         <Tooltip>
           <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
@@ -4965,7 +5154,7 @@ const AgentMessageTimelineRow = memo(function AgentMessageTimelineRow({
   /** An agent replying to its coordinator: "<Agent> replied", the name linking to the agent. */
   replied?: Extract<AgentMessagePresentation, { kind: "replied" }> | null;
 }) {
-  const { timestampFormat, assistantTimeline } = use(TimelineRowCtx);
+  const { timestampFormat, assistantTimeline, onReplyToMessage } = use(TimelineRowCtx);
   const [expanded, setExpanded] = useState(false);
   const label = replied
     ? `${replied.displayName} replied`
@@ -5028,6 +5217,20 @@ const AgentMessageTimelineRow = memo(function AgentMessageTimelineRow({
               label
             )}
           </p>
+          {onReplyToMessage !== null && canExpand ? (
+            <span className="opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/timeline-row:opacity-100">
+              <ReplyToMessageButton
+                className="h-5"
+                onReply={() =>
+                  onReplyToMessage({
+                    messageId: row.message.id,
+                    messageText: body,
+                    author: { kind: "agent", name: replied?.displayName ?? "Agent" },
+                  })
+                }
+              />
+            </span>
+          ) : null}
           <TimelineRowTimestamp
             createdAt={row.message.createdAt}
             timestampFormat={timestampFormat}

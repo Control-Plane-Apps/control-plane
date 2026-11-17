@@ -3,6 +3,8 @@ import {
   CheckpointRef,
   EnvironmentId,
   MessageId,
+  QUOTE_REPLY_ASSISTANT_LABEL,
+  quoteReplyText,
   ThreadId,
   TurnId,
   type ComposerContextRecord,
@@ -751,6 +753,100 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Keep the referral line.");
     expect(markup).not.toContain("[status:");
     expect(markup).not.toContain("1794324000000");
+  });
+
+  it("renders a quote reply as a compact quote that links to its original", () => {
+    const original = {
+      ...buildAssistantTimelineEntry("Three options for payouts."),
+      id: "entry-original",
+      message: {
+        ...buildAssistantTimelineEntry("Three options for payouts.").message,
+        id: MessageId.make("assistant-original"),
+      },
+    };
+    const reply = {
+      ...buildUserTimelineEntry(
+        quoteReplyText(
+          {
+            messageId: "assistant-original",
+            label: QUOTE_REPLY_ASSISTANT_LABEL,
+            text: "Option B keeps weekly payouts",
+          },
+          "Go with B.",
+        ),
+      ),
+      id: "entry-reply",
+    };
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        onReplyToMessage={() => {}}
+        timelineEntries={[original, reply]}
+      />,
+    );
+
+    expect(markup).toContain("data-quote-reply-quote");
+    expect(markup).not.toContain("data-quote-reply-orphan");
+    expect(markup).toContain('aria-label="Show the message from Assistant"');
+    expect(markup).toContain("Option B keeps weekly payouts");
+    expect(markup).toContain("Go with B.");
+    expect(markup).not.toContain("[reply:");
+    expect(markup).not.toContain("Replying to your earlier message");
+    expect(markup).toContain("data-quote-reply-button");
+  });
+
+  it("keeps a quote's stored text when its original is gone", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          buildUserTimelineEntry(
+            quoteReplyText(
+              { messageId: "deleted", label: "Ada's message", text: "Migration finished" },
+              "Thanks.",
+            ),
+          ),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("data-quote-reply-orphan");
+    expect(markup).toContain("Ada");
+    expect(markup).toContain("Migration finished");
+    expect(markup).toContain("Thanks.");
+    expect(markup).not.toContain("data-quote-reply-button");
+  });
+
+  it("shows both a Status reply header and a quote in the coordinator", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        assistantTimeline={
+          {
+            role: "coordinator",
+            projectThreadTitle: () => null,
+            onOpenThread: () => {},
+          } as unknown as AssistantTimeline
+        }
+        timelineEntries={[
+          buildUserTimelineEntry(
+            `Re: Payouts [status:payouts@1794324000000]\n\n${quoteReplyText(
+              { messageId: "gone", label: QUOTE_REPLY_ASSISTANT_LABEL, text: "Pick one" },
+              "Weekly.",
+            )}`,
+          ),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("data-status-reply-header");
+    expect(markup).toContain("Payouts");
+    expect(markup).toContain("data-quote-reply-quote");
+    expect(markup).toContain("Coordinator");
+    expect(markup).toContain("Pick one");
+    expect(markup).toContain("Weekly.");
+    expect(markup).not.toContain("[status:");
+    expect(markup).not.toContain("[reply:");
   });
 
   it("does not reserve end space for a follow-up user message", () => {

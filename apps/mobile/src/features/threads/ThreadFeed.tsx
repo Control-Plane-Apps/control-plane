@@ -7,8 +7,11 @@ import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-native";
 import {
+  agentMessageDisplayName,
   agentMessageToolLabel,
+  parseQuoteReply,
   parseStatusReply,
+  stripQuoteReplyHeader,
   isAgentOriginatedUserMessage,
   type ChatAttachment,
   type ChatFileAttachment,
@@ -186,6 +189,25 @@ import {
   WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
 import { appendPendingThreadMessages, type PendingThreadFeedEntry } from "./pending-thread-feed";
+import {
+  findFeedMessage,
+  findQuoteScrollTarget,
+  messageTextWithoutReplyHeaders,
+  quoteReplyAuthorOf,
+  quoteReplyDisplayLabelFromLabel,
+  quoteReplyLabelsFor,
+  wholeMessageQuote,
+  type QuoteReplyAuthor,
+} from "./quoteReply.logic";
+import {
+  QuoteReplyBlock,
+  QuoteReplyFeedContext,
+  QuoteReplyHighlightContext,
+  QuoteReplySwipeRow,
+  showMessageActions,
+  type QuoteReplyFeedActions,
+} from "./QuoteReplyFeed";
+import { setQuoteReply } from "./quoteReplyStore";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import {
@@ -291,6 +313,8 @@ export interface ThreadFeedProps {
   /** Rendered after the last row, inside the scroll content. */
   readonly footer?: ReactElement | null;
 }
+
+type ThreadMessageForQuote = Extract<ThreadFeedEntry, { type: "message" }>["message"];
 
 const USER_IMAGE_THUMBNAIL_SIZE = 112;
 // Fixed box so a thumbnail never shifts the feed while its URL resolves.
@@ -1384,6 +1408,7 @@ function ThreadAgentMessageRow(props: {
     readonly presentation: Extract<AgentMessagePresentation, { kind: "replied" }>;
     readonly onOpenThread: (threadId: ThreadId) => void;
   } | null;
+  readonly onReply?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const body = props.text.trim();
@@ -1409,6 +1434,17 @@ function ThreadAgentMessageRow(props: {
         onPress={() => {
           if (body.length > 0) setExpanded((value) => !value);
         }}
+        delayLongPress={350}
+        onLongPress={() =>
+          showMessageActions({
+            onReply: props.onReply ?? null,
+            onCopy:
+              body.length > 0
+                ? () =>
+                    copyTextWithHaptic(body, { target: "thread-message", feedback: "selection" })
+                : null,
+          })
+        }
         className="min-h-11 flex-row items-center gap-2"
       >
         <SymbolView name="text.bubble" size={14} tintColor={props.iconSubtleColor} />
@@ -1465,6 +1501,8 @@ function renderFeedEntry(
     readonly unsettledTurnId: TurnId | null;
     readonly isWorking: boolean;
     readonly onCopyWorkRow: (rowId: string, value: string) => void;
+    /** Starts a quote-reply to a message (swipe right or the long-press menu). */
+    readonly onReplyToMessage: (messageId: string) => void;
     readonly onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
     readonly onToggleWorkRow: (rowId: string, anchorKey: string) => void;
     readonly onToggleTurnFold: (turnId: TurnId) => void;
@@ -1625,18 +1663,22 @@ function renderFeedEntry(
     const attribution =
       presentation.kind === "attributed-user" && assistantTimeline ? presentation : null;
     const scheduled = presentation.kind === "scheduled" ? presentation : null;
+    const replyToMessage = () => props.onReplyToMessage(message.id);
     if (attribution === null && scheduled === null && isAgentOriginatedUserMessage(message)) {
       return (
-        <ThreadAgentMessageRow
-          label={agentMessageToolLabel(message.source)}
-          text={message.text}
-          iconSubtleColor={iconSubtleColor}
-          replied={
-            presentation.kind === "replied" && assistantTimeline
-              ? { presentation, onOpenThread: assistantTimeline.onOpenThread }
-              : null
-          }
-        />
+        <QuoteReplySwipeRow messageId={message.id} iconColor={iconSubtleColor}>
+          <ThreadAgentMessageRow
+            label={agentMessageToolLabel(message.source)}
+            text={message.text}
+            iconSubtleColor={iconSubtleColor}
+            replied={
+              presentation.kind === "replied" && assistantTimeline
+                ? { presentation, onOpenThread: assistantTimeline.onOpenThread }
+                : null
+            }
+            onReply={replyToMessage}
+          />
+        </QuoteReplySwipeRow>
       );
     }
     const renderedText = renderAssistantCitationsAsText(message.text);
@@ -1648,7 +1690,14 @@ function renderFeedEntry(
     // children during the unclamped pass and never moves them once the width
     // is clamped, so the paragraphs around the block end up drawn on top of
     // each other. Pinning the width removes that pass.
-    const hasWideBlock = hasWideMarkdownBlock(renderedText, WIDE_MARKDOWN_BLOCK_OPTIONS);
+    // A quote-reply header is a blockquote, but it renders as a compact quote
+    // block, not Markdown, so it must not pin the bubble to its full width.
+    const hasWideBlock = hasWideMarkdownBlock(
+      isUser
+        ? stripQuoteReplyHeader(parseStatusReply(renderedText)?.body ?? renderedText)
+        : renderedText,
+      WIDE_MARKDOWN_BLOCK_OPTIONS,
+    );
     const assistantTurnStillInProgress =
       message.role === "assistant" &&
       props.unsettledTurnId !== null &&
@@ -1701,148 +1750,157 @@ function renderFeedEntry(
       const showBubble =
         hasVisibleText || bubbleAttachments.length > 0 || pendingOthers.length > 0 || !hasImages;
       const copyUserMessage = () => {
-        if (message.text.trim().length === 0) return;
+        // The Status and quote-reply headers are routing, not what was said.
+        const copyText = messageTextWithoutReplyHeaders(message.text);
+        if (copyText.trim().length === 0) return;
         if (message.context) {
-          void writeComposerContextClipboard(message.text, {
+          void writeComposerContextClipboard(copyText, {
             version: 1,
             source: { environmentId: props.environmentId, messageId: message.id },
             records: message.context.records,
           });
           return;
         }
-        copyTextWithHaptic(message.text, { target: "thread-message", feedback: "selection" });
+        copyTextWithHaptic(copyText, { target: "thread-message", feedback: "selection" });
       };
       return (
-        <View className="mb-5 items-end">
-          {attribution && assistantTimeline ? (
-            <AssistantAttributionLabel timeline={assistantTimeline} attribution={attribution} />
-          ) : scheduled ? (
-            <ScheduledRunLabel
-              name={scheduled.name}
-              at={message.createdAt}
-              iconColor={iconSubtleColor}
-            />
-          ) : null}
-          {hasImages ? (
-            <View
-              className="mb-1.5 flex-row flex-wrap justify-end gap-2"
-              style={{ maxWidth: props.userBubbleMaxWidth }}
-            >
-              {pendingImages.map((attachment) =>
-                attachment.uploadedAttachmentId ? (
+        <QuoteReplySwipeRow messageId={message.id} iconColor={iconSubtleColor}>
+          <View className="mb-5 items-end">
+            {attribution && assistantTimeline ? (
+              <AssistantAttributionLabel timeline={assistantTimeline} attribution={attribution} />
+            ) : scheduled ? (
+              <ScheduledRunLabel
+                name={scheduled.name}
+                at={message.createdAt}
+                iconColor={iconSubtleColor}
+              />
+            ) : null}
+            {hasImages ? (
+              <View
+                className="mb-1.5 flex-row flex-wrap justify-end gap-2"
+                style={{ maxWidth: props.userBubbleMaxWidth }}
+              >
+                {pendingImages.map((attachment) =>
+                  attachment.uploadedAttachmentId ? (
+                    <MessageAttachmentImage
+                      key={attachment.id}
+                      environmentId={props.environmentId}
+                      attachmentId={attachment.uploadedAttachmentId}
+                      name={attachment.name}
+                      mimeType={attachment.mimeType}
+                      className={USER_IMAGE_THUMBNAIL_CLASS}
+                      onPressPreview={props.onPressPreview}
+                    />
+                  ) : (
+                    <Image
+                      key={attachment.id}
+                      source={{ uri: attachment.previewUri }}
+                      accessibilityLabel={attachment.name}
+                      style={{
+                        width: USER_IMAGE_THUMBNAIL_SIZE,
+                        height: USER_IMAGE_THUMBNAIL_SIZE,
+                        borderRadius: 14,
+                      }}
+                    />
+                  ),
+                )}
+                {imageAttachments.map((attachment) => (
                   <MessageAttachmentImage
                     key={attachment.id}
                     environmentId={props.environmentId}
-                    attachmentId={attachment.uploadedAttachmentId}
+                    attachmentId={attachment.id}
                     name={attachment.name}
                     mimeType={attachment.mimeType}
                     className={USER_IMAGE_THUMBNAIL_CLASS}
                     onPressPreview={props.onPressPreview}
                   />
-                ) : (
-                  <Image
-                    key={attachment.id}
-                    source={{ uri: attachment.previewUri }}
-                    accessibilityLabel={attachment.name}
-                    style={{
-                      width: USER_IMAGE_THUMBNAIL_SIZE,
-                      height: USER_IMAGE_THUMBNAIL_SIZE,
-                      borderRadius: 14,
+                ))}
+              </View>
+            ) : null}
+            {showBubble ? (
+              <Pressable
+                accessibilityHint="Long press to reply or copy"
+                delayLongPress={350}
+                onLongPress={() =>
+                  showMessageActions({
+                    onReply: entry.pendingMessage && !entry.acknowledged ? null : replyToMessage,
+                    onCopy: message.text.trim().length > 0 ? copyUserMessage : null,
+                  })
+                }
+                className="min-w-0 gap-2 rounded-[20px] px-3.5 py-2.5"
+                style={{
+                  backgroundColor: userBubbleColor,
+                  maxWidth: props.userBubbleMaxWidth,
+                  ...(hasReviewCommentContext
+                    ? { width: props.reviewCommentBubbleWidth }
+                    : hasWideBlock
+                      ? { width: props.userBubbleMaxWidth }
+                      : null),
+                }}
+              >
+                {pendingOthers.map((attachment) => (
+                  <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
+                ))}
+                {/* An empty container still takes a gap, which pads every attachment-free bubble. */}
+                {bubbleAttachments.length > 0 ? (
+                  <View className="gap-2">
+                    {bubbleAttachments.map((attachment) =>
+                      isFileAttachment(attachment) ? (
+                        <MessageAttachmentFile
+                          key={attachment.id}
+                          environmentId={props.environmentId}
+                          attachment={attachment}
+                          onPressPreview={props.onPressPreview}
+                          onPressVideo={props.onPressVideo}
+                        />
+                      ) : (
+                        <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
+                      ),
+                    )}
+                  </View>
+                ) : null}
+                {hasVisibleText ? (
+                  <MarkdownImageAvailableWidthContext
+                    value={props.userBubbleMaxWidth - USER_BUBBLE_HORIZONTAL_PADDING * 2}
+                  >
+                    <UserMessageContent
+                      text={renderedText}
+                      environmentId={props.environmentId}
+                      context={message.context}
+                      hiddenImageAttachmentIds={imageIdsAbove}
+                      markdownStyles={styles}
+                      reviewCommentColors={props.reviewCommentColors}
+                      skills={props.skills}
+                      linkHandlers={props.markdownLinkHandlers}
+                      renderImage={props.renderMarkdownImage}
+                    />
+                  </MarkdownImageAvailableWidthContext>
+                ) : null}
+              </Pressable>
+            ) : null}
+            {entry.pendingMessage && !entry.acknowledged ? (
+              <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
+                <Text className="font-t3-medium text-xs tabular-nums text-adaptive-neutral-600-400">
+                  Pending
+                </Text>
+                {!entry.pendingMessage.creation &&
+                entry.pendingMessage.messageId !== props.dispatchingMessageId ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Edit pending message"
+                    hitSlop={8}
+                    className="size-7 items-center justify-center"
+                    onPress={() => {
+                      if (entry.pendingMessage) props.onEditPendingMessage(entry.pendingMessage);
                     }}
-                  />
-                ),
-              )}
-              {imageAttachments.map((attachment) => (
-                <MessageAttachmentImage
-                  key={attachment.id}
-                  environmentId={props.environmentId}
-                  attachmentId={attachment.id}
-                  name={attachment.name}
-                  mimeType={attachment.mimeType}
-                  className={USER_IMAGE_THUMBNAIL_CLASS}
-                  onPressPreview={props.onPressPreview}
-                />
-              ))}
-            </View>
-          ) : null}
-          {showBubble ? (
-            <Pressable
-              accessibilityHint="Long press to copy"
-              delayLongPress={350}
-              onLongPress={copyUserMessage}
-              className="min-w-0 gap-2 rounded-[20px] px-3.5 py-2.5"
-              style={{
-                backgroundColor: userBubbleColor,
-                maxWidth: props.userBubbleMaxWidth,
-                ...(hasReviewCommentContext
-                  ? { width: props.reviewCommentBubbleWidth }
-                  : hasWideBlock
-                    ? { width: props.userBubbleMaxWidth }
-                    : null),
-              }}
-            >
-              {pendingOthers.map((attachment) => (
-                <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
-              ))}
-              {/* An empty container still takes a gap, which pads every attachment-free bubble. */}
-              {bubbleAttachments.length > 0 ? (
-                <View className="gap-2">
-                  {bubbleAttachments.map((attachment) =>
-                    isFileAttachment(attachment) ? (
-                      <MessageAttachmentFile
-                        key={attachment.id}
-                        environmentId={props.environmentId}
-                        attachment={attachment}
-                        onPressPreview={props.onPressPreview}
-                        onPressVideo={props.onPressVideo}
-                      />
-                    ) : (
-                      <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
-                    ),
-                  )}
-                </View>
-              ) : null}
-              {hasVisibleText ? (
-                <MarkdownImageAvailableWidthContext
-                  value={props.userBubbleMaxWidth - USER_BUBBLE_HORIZONTAL_PADDING * 2}
-                >
-                  <UserMessageContent
-                    text={renderedText}
-                    environmentId={props.environmentId}
-                    context={message.context}
-                    hiddenImageAttachmentIds={imageIdsAbove}
-                    markdownStyles={styles}
-                    reviewCommentColors={props.reviewCommentColors}
-                    skills={props.skills}
-                    linkHandlers={props.markdownLinkHandlers}
-                    renderImage={props.renderMarkdownImage}
-                  />
-                </MarkdownImageAvailableWidthContext>
-              ) : null}
-            </Pressable>
-          ) : null}
-          {entry.pendingMessage && !entry.acknowledged ? (
-            <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
-              <Text className="font-t3-medium text-xs tabular-nums text-adaptive-neutral-600-400">
-                Pending
-              </Text>
-              {!entry.pendingMessage.creation &&
-              entry.pendingMessage.messageId !== props.dispatchingMessageId ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Edit pending message"
-                  hitSlop={8}
-                  className="size-7 items-center justify-center"
-                  onPress={() => {
-                    if (entry.pendingMessage) props.onEditPendingMessage(entry.pendingMessage);
-                  }}
-                >
-                  <SymbolView name="pencil" size={14} tintColor={iconSubtleColor} />
-                </Pressable>
-              ) : null}
-            </View>
-          ) : null}
-        </View>
+                  >
+                    <SymbolView name="pencil" size={14} tintColor={iconSubtleColor} />
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        </QuoteReplySwipeRow>
       );
     }
 
@@ -1862,52 +1920,59 @@ function renderFeedEntry(
       copyTextWithHaptic(renderedText, { target: "thread-message", feedback: "selection" });
     };
     return (
-      <Animated.View
-        className={cn(showAssistantMeta ? "mb-5 px-1" : "mb-1 px-1", hasWideBlock && "w-full")}
-        {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
-      >
-        {renderedText.trim().length > 0 ? (
-          <Pressable
-            accessibilityHint="Long press to copy"
-            delayLongPress={350}
-            onLongPress={copyAssistantMessage}
-          >
-            <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
-              <AssistantMarkdownContent
-                markdown={renderedText}
-                markdownStyles={styles}
-                linkHandlers={props.markdownLinkHandlers}
-                onUseArtifactTemplate={props.onUseArtifactTemplate}
-                renderImage={props.renderMarkdownImage}
-                skills={props.skills}
+      <QuoteReplySwipeRow messageId={message.id} iconColor={iconSubtleColor}>
+        <Animated.View
+          className={cn(showAssistantMeta ? "mb-5 px-1" : "mb-1 px-1", hasWideBlock && "w-full")}
+          {...(enterAnimated ? { entering: FadeIn.duration(220) } : {})}
+        >
+          {renderedText.trim().length > 0 ? (
+            <Pressable
+              accessibilityHint="Long press to reply or copy"
+              delayLongPress={350}
+              onLongPress={() =>
+                showMessageActions({
+                  onReply: message.streaming ? null : replyToMessage,
+                  onCopy: copyAssistantMessage,
+                })
+              }
+            >
+              <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
+                <AssistantMarkdownContent
+                  markdown={renderedText}
+                  markdownStyles={styles}
+                  linkHandlers={props.markdownLinkHandlers}
+                  onUseArtifactTemplate={props.onUseArtifactTemplate}
+                  renderImage={props.renderMarkdownImage}
+                  skills={props.skills}
+                />
+              </MarkdownImageAvailableWidthContext>
+            </Pressable>
+          ) : null}
+          {attachments.map((attachment) => {
+            return isImageAttachment(attachment) ? (
+              <MessageAttachmentImage
+                key={attachment.id}
+                environmentId={props.environmentId}
+                attachmentId={attachment.id}
+                name={attachment.name}
+                mimeType={attachment.mimeType}
+                className="mt-1.5 aspect-[1.3] w-full rounded-[18px] bg-adaptive-neutral-200-800"
+                onPressPreview={props.onPressPreview}
               />
-            </MarkdownImageAvailableWidthContext>
-          </Pressable>
-        ) : null}
-        {attachments.map((attachment) => {
-          return isImageAttachment(attachment) ? (
-            <MessageAttachmentImage
-              key={attachment.id}
-              environmentId={props.environmentId}
-              attachmentId={attachment.id}
-              name={attachment.name}
-              mimeType={attachment.mimeType}
-              className="mt-1.5 aspect-[1.3] w-full rounded-[18px] bg-adaptive-neutral-200-800"
-              onPressPreview={props.onPressPreview}
-            />
-          ) : isFileAttachment(attachment) ? (
-            <MessageAttachmentFile
-              key={attachment.id}
-              environmentId={props.environmentId}
-              attachment={attachment}
-              onPressPreview={props.onPressPreview}
-              onPressVideo={props.onPressVideo}
-            />
-          ) : (
-            <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
-          );
-        })}
-      </Animated.View>
+            ) : isFileAttachment(attachment) ? (
+              <MessageAttachmentFile
+                key={attachment.id}
+                environmentId={props.environmentId}
+                attachment={attachment}
+                onPressPreview={props.onPressPreview}
+                onPressVideo={props.onPressVideo}
+              />
+            ) : (
+              <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
+            );
+          })}
+        </Animated.View>
+      </QuoteReplySwipeRow>
     );
   }
 
@@ -1954,19 +2019,25 @@ function UserMessageContent(props: UserMessageContentProps) {
   // A reply sent from Status carries a "Re: <workstream> [status:...]" line;
   // show it as a quiet Re: label, like the composer chip, not raw text.
   const statusReply = parseStatusReply(props.text);
-  const text = replaceComposerContextReferences(statusReply?.body ?? props.text, (ref) => {
-    const record = props.context?.records.find(
-      (candidate) => candidate.contextId === ref.contextId,
-    );
-    if (
-      record?.kind === "image" &&
-      "attachmentId" in record &&
-      props.hiddenImageAttachmentIds?.has(record.attachmentId)
-    ) {
-      return "";
-    }
-    return `[${ref.label}${record ? "" : " (unavailable)"}](t3-context://v1/${ref.kind}/${ref.contextId})`;
-  });
+  // A quote-reply header ("> Replying to ... [reply:id]") shows as a compact
+  // quote block above the text; the Status header, when both are set, wraps it.
+  const quoteReply = parseQuoteReply(statusReply?.body ?? props.text);
+  const text = replaceComposerContextReferences(
+    quoteReply?.body ?? statusReply?.body ?? props.text,
+    (ref) => {
+      const record = props.context?.records.find(
+        (candidate) => candidate.contextId === ref.contextId,
+      );
+      if (
+        record?.kind === "image" &&
+        "attachmentId" in record &&
+        props.hiddenImageAttachmentIds?.has(record.attachmentId)
+      ) {
+        return "";
+      }
+      return `[${ref.label}${record ? "" : " (unavailable)"}](t3-context://v1/${ref.kind}/${ref.contextId})`;
+    },
+  );
   const onLinkPress = (href: string) => {
     const reference = parseComposerContextHref(href);
     if (!reference) return props.linkHandlers.onLinkPress?.(href);
@@ -2003,6 +2074,7 @@ function UserMessageContent(props: UserMessageContentProps) {
           Re: <Text className="font-t3-bold text-user-bubble-foreground">{statusReply.title}</Text>
         </Text>
       ) : null}
+      {quoteReply !== null ? <QuoteReplyBlock quote={quoteReply} /> : null}
       <LegacyUserMessageContent
         {...props}
         text={text}
@@ -2928,6 +3000,118 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [expandedReasoningMessageIds, expandedWorkRows, workRowSizing.fixedRowHeight],
   );
 
+  // Quote-reply. Feeds are read through refs so the actions stay stable while
+  // a reply streams; a quote block re-renders with its own row anyway.
+  const quoteFeedRef = useRef({ presented: presentedFeed, full: props.feed });
+  const assistantTimelineRef = useRef(props.assistantTimeline ?? null);
+  useLayoutEffect(() => {
+    quoteFeedRef.current = { presented: presentedFeed, full: props.feed };
+    assistantTimelineRef.current = props.assistantTimeline ?? null;
+  });
+  const pendingQuoteJumpRef = useRef<string | null>(null);
+  // Keyed by thread, so a highlight never carries over to another thread.
+  const [quoteHighlightState, setQuoteHighlight] = useState<{
+    readonly threadKey: string;
+    readonly messageId: string;
+    readonly token: number;
+  } | null>(null);
+  const quoteHighlight =
+    quoteHighlightState?.threadKey === feedThreadKey ? quoteHighlightState : null;
+  const quoteAuthorOf = useCallback((message: ThreadMessageForQuote): QuoteReplyAuthor => {
+    const timeline = assistantTimelineRef.current;
+    return quoteReplyAuthorOf({
+      role: message.role,
+      presentation: resolveAgentMessagePresentation({ message, assistantTimeline: timeline }),
+      agentName: isAgentOriginatedUserMessage(message)
+        ? agentMessageDisplayName(message.source)
+        : null,
+      coordinatorThread: timeline?.role === "coordinator",
+    });
+  }, []);
+  const findQuoteMessage = useCallback((messageId: string) => {
+    const feeds = quoteFeedRef.current;
+    return (findFeedMessage(feeds.presented, messageId) ??
+      findFeedMessage(feeds.full, messageId)) as ThreadMessageForQuote | null;
+  }, []);
+  const onReplyToMessage = useCallback(
+    (messageId: string) => {
+      const message = findQuoteMessage(messageId);
+      if (message === null) return;
+      const author = quoteAuthorOf(message);
+      setQuoteReply(
+        feedThreadKey,
+        wholeMessageQuote({
+          messageId: message.id,
+          text:
+            message.role === "assistant"
+              ? renderAssistantCitationsAsText(message.text)
+              : message.text,
+          author,
+        }),
+      );
+    },
+    [feedThreadKey, findQuoteMessage, quoteAuthorOf],
+  );
+  const scrollToQuoteTarget = useCallback(
+    (messageId: string): boolean => {
+      const feeds = quoteFeedRef.current;
+      const target = findQuoteScrollTarget<TurnId>({
+        messageId,
+        presentedFeed: feeds.presented,
+        fullFeed: feeds.full,
+      });
+      if (target.kind === "missing") return true;
+      if (target.kind === "folded") {
+        // Open the collapsed turn, then scroll once the row is presented.
+        pendingQuoteJumpRef.current = messageId;
+        setInteractionState((current) =>
+          current.expandedTurnIds.has(target.turnId)
+            ? current
+            : { ...current, expandedTurnIds: new Set(current.expandedTurnIds).add(target.turnId) },
+        );
+        return false;
+      }
+      setEndFollow(false);
+      void props.listRef.current?.scrollToIndex({
+        index: target.index,
+        animated: true,
+        viewPosition: 0.3,
+      });
+      setQuoteHighlight({ threadKey: feedThreadKey, messageId, token: Date.now() });
+      return true;
+    },
+    [feedThreadKey, props.listRef, setEndFollow],
+  );
+  useEffect(() => {
+    const messageId = pendingQuoteJumpRef.current;
+    if (messageId === null) return;
+    // Settled (scrolled, or the original is gone) or still folded: try again next change.
+    if (scrollToQuoteTarget(messageId)) pendingQuoteJumpRef.current = null;
+  }, [presentedFeed, scrollToQuoteTarget]);
+  useEffect(() => {
+    pendingQuoteJumpRef.current = null;
+  }, [feedThreadKey]);
+  const quoteReplyActions = useMemo<QuoteReplyFeedActions>(
+    () => ({
+      startReply: onReplyToMessage,
+      resolveQuote: (quote) => {
+        const original = findQuoteMessage(quote.messageId);
+        if (original === null) {
+          return { displayLabel: quoteReplyDisplayLabelFromLabel(quote.label), canJump: false };
+        }
+        return {
+          displayLabel: quoteReplyLabelsFor(quoteAuthorOf(original)).displayLabel,
+          canJump: true,
+        };
+      },
+      jumpToMessage: (messageId) => {
+        pendingQuoteJumpRef.current = null;
+        scrollToQuoteTarget(messageId);
+      },
+    }),
+    [findQuoteMessage, onReplyToMessage, quoteAuthorOf, scrollToQuoteTarget],
+  );
+
   // Disclosures can mount existing offscreen rows as well as new work rows.
   // Fade those in after movement; never retain removed rows over replacements.
   const renderItem = useCallback(
@@ -2950,6 +3134,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             unsettledTurnId,
             isWorking: props.activeWorkStartedAt !== null,
             onCopyWorkRow,
+            onReplyToMessage,
             onToggleWorkGroup,
             onToggleWorkRow,
             onToggleTurnFold,
@@ -3007,6 +3192,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       userBubbleMaxWidth,
       markdownContentWidth,
       onCopyWorkRow,
+      onReplyToMessage,
       markdownLinkHandlers,
       onPressPreview,
       onPressVideo,
@@ -3037,176 +3223,189 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }
 
   return (
-    <PresentationSource identifier={fileShareSourceIdentifier} style={{ flex: 1 }}>
-      <View className="flex-1" onLayout={handleViewportLayout}>
-        <View className="flex-1">
-          <KeyboardAwareLegendList
-            ref={props.listRef}
-            // The empty↔filled key remounts the list when messages first
-            // arrive. LegendList's maintainScrollAtEnd calls scrollToEnd(),
-            // which is blind to UIKit's adjustedContentInset — inserting into
-            // an already-attached list under a transparent header can pin
-            // short content at offset 0 (one header-height too high). A fresh
-            // mount positions during attach, where UIKit applies the inset.
-            key={listMountKey}
-            style={{ flex: 1 }}
-            // RN 0.81+ drops touches inside the contentInset area
-            // (facebook/react-native#54123); the anchored end space after a send
-            // is pure inset, so without this the blank region can't be scrolled.
-            applyWorkaroundForContentInsetHitTestBug
-            contentInsetAdjustmentBehavior={usesNativeAutomaticInsets ? "automatic" : "never"}
-            automaticallyAdjustsScrollIndicatorInsets={usesNativeAutomaticInsets}
-            {...(usesNativeAutomaticInsets
-              ? {
-                  // Do NOT pass a manual `contentInset` here. Like the Home
-                  // ScrollView, we rely purely on `contentInsetAdjustmentBehavior:
-                  // "automatic"` so UIKit derives the top inset from the transparent
-                  // header. A manual contentInset (which LegendList consumes into its
-                  // own layout math) collapses the scroll view's adjustedContentInset
-                  // top to 0, leaving the iOS 26/27 scroll-edge effect no region to
-                  // render into — which is why the header blur was missing on threads.
-                  scrollIndicatorInsets: { top: 0, left: 0, right: 0, bottom: 0 },
+    <QuoteReplyFeedContext.Provider value={quoteReplyActions}>
+      <QuoteReplyHighlightContext.Provider value={quoteHighlight}>
+        <PresentationSource identifier={fileShareSourceIdentifier} style={{ flex: 1 }}>
+          <View className="flex-1" onLayout={handleViewportLayout}>
+            <View className="flex-1">
+              <KeyboardAwareLegendList
+                ref={props.listRef}
+                // The empty↔filled key remounts the list when messages first
+                // arrive. LegendList's maintainScrollAtEnd calls scrollToEnd(),
+                // which is blind to UIKit's adjustedContentInset — inserting into
+                // an already-attached list under a transparent header can pin
+                // short content at offset 0 (one header-height too high). A fresh
+                // mount positions during attach, where UIKit applies the inset.
+                key={listMountKey}
+                style={{ flex: 1 }}
+                // RN 0.81+ drops touches inside the contentInset area
+                // (facebook/react-native#54123); the anchored end space after a send
+                // is pure inset, so without this the blank region can't be scrolled.
+                applyWorkaroundForContentInsetHitTestBug
+                contentInsetAdjustmentBehavior={usesNativeAutomaticInsets ? "automatic" : "never"}
+                automaticallyAdjustsScrollIndicatorInsets={usesNativeAutomaticInsets}
+                {...(usesNativeAutomaticInsets
+                  ? {
+                      // Do NOT pass a manual `contentInset` here. Like the Home
+                      // ScrollView, we rely purely on `contentInsetAdjustmentBehavior:
+                      // "automatic"` so UIKit derives the top inset from the transparent
+                      // header. A manual contentInset (which LegendList consumes into its
+                      // own layout math) collapses the scroll view's adjustedContentInset
+                      // top to 0, leaving the iOS 26/27 scroll-edge effect no region to
+                      // render into — which is why the header blur was missing on threads.
+                      scrollIndicatorInsets: { top: 0, left: 0, right: 0, bottom: 0 },
+                    }
+                  : { scrollIndicatorInsets: { top: topContentInset, bottom: 0 } })}
+                {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+                // Patched LegendList prop (patches/@legendapp__list@3.3.5.patch):
+                // lets its scroll math clamp programmatic scrolls to -headerInset
+                // instead of 0, so initialScrollAtEnd/maintainScrollAtEnd on short
+                // content rest below the transparent header rather than at frame top.
+                contentInsetStartAdjustment={usesNativeAutomaticInsets ? anchorTopInset : 0}
+                contentInsetEndAdjustment={props.contentInsetEndAdjustment}
+                // UIKit's automatic behavior adds the safe-area bottom on top of the
+                // raw contentInset the keyboard integration writes. The detail screen
+                // under-reports the composer inset by this amount (see
+                // ThreadDetailScreen); this tells LegendList's scroll math about the
+                // extra so programmatic end scrolls land at the true resting offset.
+                contentInsetEndStaticAdjustment={usesNativeAutomaticInsets ? insets.bottom : 0}
+                // Android: the composer overlay only exists as the keyboard
+                // integration's animated bottom padding, which the list's scroll
+                // math cannot see until the inset reports above land — and those
+                // arrive via runOnJS, racing the remounted list's one-shot initial
+                // scroll-at-end. Seed the estimated overlay height as a declarative
+                // contentInset floor: LegendList consumes it in JS math only
+                // (Android's ScrollView has no native contentInset prop) and the
+                // first reported override REPLACES it instead of adding to it.
+                // Not on iOS: there the prop would reach UIKit and inset natively
+                // on top of the animated padding.
+                {...(initialContentInset ? { contentInset: initialContentInset } : {})}
+                // The keyboard integration's offset math (end pinning, max scroll)
+                // must add the same UIKit-added extra, or its keyboard-open end
+                // targets land one safe-area short of the true resting offset.
+                adjustedInsetCompensation={usesNativeAutomaticInsets ? insets.bottom : 0}
+                freeze={props.freeze}
+                // Follow the measured end immediately. Animating toward an estimated
+                // end races row measurement when a pending message is acknowledged.
+                maintainScrollAtEnd={
+                  disclosureToggleSettling || !endFollowEnabled
+                    ? false
+                    : {
+                        animated: false,
+                        on: {
+                          dataChange: true,
+                          itemLayout: true,
+                          layout: true,
+                        },
+                      }
                 }
-              : { scrollIndicatorInsets: { top: topContentInset, bottom: 0 } })}
-            {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-            // Patched LegendList prop (patches/@legendapp__list@3.3.5.patch):
-            // lets its scroll math clamp programmatic scrolls to -headerInset
-            // instead of 0, so initialScrollAtEnd/maintainScrollAtEnd on short
-            // content rest below the transparent header rather than at frame top.
-            contentInsetStartAdjustment={usesNativeAutomaticInsets ? anchorTopInset : 0}
-            contentInsetEndAdjustment={props.contentInsetEndAdjustment}
-            // UIKit's automatic behavior adds the safe-area bottom on top of the
-            // raw contentInset the keyboard integration writes. The detail screen
-            // under-reports the composer inset by this amount (see
-            // ThreadDetailScreen); this tells LegendList's scroll math about the
-            // extra so programmatic end scrolls land at the true resting offset.
-            contentInsetEndStaticAdjustment={usesNativeAutomaticInsets ? insets.bottom : 0}
-            // Android: the composer overlay only exists as the keyboard
-            // integration's animated bottom padding, which the list's scroll
-            // math cannot see until the inset reports above land — and those
-            // arrive via runOnJS, racing the remounted list's one-shot initial
-            // scroll-at-end. Seed the estimated overlay height as a declarative
-            // contentInset floor: LegendList consumes it in JS math only
-            // (Android's ScrollView has no native contentInset prop) and the
-            // first reported override REPLACES it instead of adding to it.
-            // Not on iOS: there the prop would reach UIKit and inset natively
-            // on top of the animated padding.
-            {...(initialContentInset ? { contentInset: initialContentInset } : {})}
-            // The keyboard integration's offset math (end pinning, max scroll)
-            // must add the same UIKit-added extra, or its keyboard-open end
-            // targets land one safe-area short of the true resting offset.
-            adjustedInsetCompensation={usesNativeAutomaticInsets ? insets.bottom : 0}
-            freeze={props.freeze}
-            // Follow the measured end immediately. Animating toward an estimated
-            // end races row measurement when a pending message is acknowledged.
-            maintainScrollAtEnd={
-              disclosureToggleSettling || !endFollowEnabled
-                ? false
-                : {
-                    animated: false,
-                    on: {
-                      dataChange: true,
-                      itemLayout: true,
-                      layout: true,
-                    },
-                  }
-            }
-            maintainVisibleContentPosition={
-              endFollowEnabled && !disclosureToggleSettling ? false : maintainVisibleContentPosition
-            }
-            data={presentedFeed}
-            extraData={listAppearanceData}
-            renderItem={renderItem}
-            viewabilityConfig={THREAD_MEDIA_VIEWABILITY_CONFIG}
-            keyExtractor={(entry) => entry.id}
-            getItemType={(entry) =>
-              entry.type === "message" ? `message:${entry.message.role}` : entry.type
-            }
-            getFixedItemSize={getFixedItemSize}
-            // Virtualized rows must move with their measurements. Native layout
-            // transitions can retain stale positions during sync, even at duration 0.
-            onItemSizeChanged={handleItemSizeChanged}
-            // Measure rows well before they scroll into view so estimate→actual
-            // corrections land offscreen instead of under the user's finger.
-            drawDistance={500}
-            keyboardShouldPersistTaps="always"
-            keyboardDismissMode="none"
-            keyboardLiftBehavior="whenAtEnd"
-            // Seed the list's scroll math with the real viewport before its own
-            // onLayout: the empty→filled remount can then tell at mount that
-            // short content underflows the viewport and skip programmatic
-            // positioning entirely (any offset write during screen attach races
-            // UIKit's adjustedContentInset application and lands high or low).
-            {...(viewportHeight > 0 && viewportWidth > 0
-              ? { estimatedListSize: { height: viewportHeight, width: viewportWidth } }
-              : {})}
-            // RN's native scrollTo command clamps targets to a floor of
-            // -contentInset.top using the RAW inset — under automatic insets the
-            // header inset only exists in adjustedContentInset, so scrolls to
-            // negative offsets (content top below the transparent header) get
-            // clamped to 0. This prop disables that clamp; UIKit still bounces
-            // user overscroll back to the adjusted rest position.
-            scrollToOverflowEnabled
-            estimatedItemSize={180}
-            // Chat-style bottom alignment: when a thread is shorter than the
-            // viewport, pad above the content so messages rest just above the
-            // composer instead of under the header. No effect on threads that
-            // overflow the viewport (the padding clamps to zero).
-            // An empty conversation with a list header (the Assistant's
-            // overview) reads from the top, like a home screen.
-            alignItemsAtEnd={props.listHeader == null || presentedFeed.length > 0}
-            initialScrollAtEnd
-            onScroll={handleScroll}
-            onScrollBeginDrag={handleScrollBeginDrag}
-            onScrollEndDrag={handleScrollEndDrag}
-            onMomentumScrollBegin={handleMomentumScrollBegin}
-            onMomentumScrollEnd={handleMomentumScrollEnd}
-            scrollEventThrottle={16}
-            ListHeaderComponent={
-              <>
-                {usesNativeAutomaticInsets ? null : <View style={{ height: topContentInset }} />}
-                {setupAnchorIndex < 0 && props.worktreeSetup ? (
-                  <WorktreeSetupCard key={props.threadId} {...props.worktreeSetup} />
-                ) : null}
-                {props.loadEarlier != null ? (
-                  <Pressable
-                    onPress={props.loadEarlier.onLoadEarlier}
-                    disabled={props.loadEarlier.loading}
-                    className="items-center py-2"
-                  >
-                    <Text className="text-xs text-foreground-secondary">
-                      {props.loadEarlier.loading ? "Loading earlier turns…" : "Load earlier turns"}
-                    </Text>
-                  </Pressable>
-                ) : null}
-                {props.listHeader ?? null}
-              </>
-            }
-            ListFooterComponent={props.footer ?? null}
-            contentContainerStyle={{
-              paddingTop: 12,
-              paddingHorizontal: contentHorizontalPadding,
-            }}
-          />
-        </View>
-        {presentedFeed.length === 0 &&
-        props.listHeader == null &&
-        !props.worktreeSetup &&
-        props.activeWorkStartedAt === null &&
-        props.contentPresentation.kind === "ready" ? (
-          <View pointerEvents="none" style={StyleSheet.absoluteFill}>
-            <ThreadFeedPlaceholder
-              title="No conversation yet"
-              detail="Ask the agent to inspect the repo, run a command, or continue the active thread."
-              topInset={topContentInset}
-              bottomInset={bottomContentInset}
-              horizontalPadding={horizontalPadding}
+                maintainVisibleContentPosition={
+                  endFollowEnabled && !disclosureToggleSettling
+                    ? false
+                    : maintainVisibleContentPosition
+                }
+                data={presentedFeed}
+                extraData={listAppearanceData}
+                renderItem={renderItem}
+                viewabilityConfig={THREAD_MEDIA_VIEWABILITY_CONFIG}
+                keyExtractor={(entry) => entry.id}
+                getItemType={(entry) =>
+                  entry.type === "message" ? `message:${entry.message.role}` : entry.type
+                }
+                getFixedItemSize={getFixedItemSize}
+                // Virtualized rows must move with their measurements. Native layout
+                // transitions can retain stale positions during sync, even at duration 0.
+                onItemSizeChanged={handleItemSizeChanged}
+                // Measure rows well before they scroll into view so estimate→actual
+                // corrections land offscreen instead of under the user's finger.
+                drawDistance={500}
+                keyboardShouldPersistTaps="always"
+                keyboardDismissMode="none"
+                keyboardLiftBehavior="whenAtEnd"
+                // Seed the list's scroll math with the real viewport before its own
+                // onLayout: the empty→filled remount can then tell at mount that
+                // short content underflows the viewport and skip programmatic
+                // positioning entirely (any offset write during screen attach races
+                // UIKit's adjustedContentInset application and lands high or low).
+                {...(viewportHeight > 0 && viewportWidth > 0
+                  ? { estimatedListSize: { height: viewportHeight, width: viewportWidth } }
+                  : {})}
+                // RN's native scrollTo command clamps targets to a floor of
+                // -contentInset.top using the RAW inset — under automatic insets the
+                // header inset only exists in adjustedContentInset, so scrolls to
+                // negative offsets (content top below the transparent header) get
+                // clamped to 0. This prop disables that clamp; UIKit still bounces
+                // user overscroll back to the adjusted rest position.
+                scrollToOverflowEnabled
+                estimatedItemSize={180}
+                // Chat-style bottom alignment: when a thread is shorter than the
+                // viewport, pad above the content so messages rest just above the
+                // composer instead of under the header. No effect on threads that
+                // overflow the viewport (the padding clamps to zero).
+                // An empty conversation with a list header (the Assistant's
+                // overview) reads from the top, like a home screen.
+                alignItemsAtEnd={props.listHeader == null || presentedFeed.length > 0}
+                initialScrollAtEnd
+                onScroll={handleScroll}
+                onScrollBeginDrag={handleScrollBeginDrag}
+                onScrollEndDrag={handleScrollEndDrag}
+                onMomentumScrollBegin={handleMomentumScrollBegin}
+                onMomentumScrollEnd={handleMomentumScrollEnd}
+                scrollEventThrottle={16}
+                ListHeaderComponent={
+                  <>
+                    {usesNativeAutomaticInsets ? null : (
+                      <View style={{ height: topContentInset }} />
+                    )}
+                    {setupAnchorIndex < 0 && props.worktreeSetup ? (
+                      <WorktreeSetupCard key={props.threadId} {...props.worktreeSetup} />
+                    ) : null}
+                    {props.loadEarlier != null ? (
+                      <Pressable
+                        onPress={props.loadEarlier.onLoadEarlier}
+                        disabled={props.loadEarlier.loading}
+                        className="items-center py-2"
+                      >
+                        <Text className="text-xs text-foreground-secondary">
+                          {props.loadEarlier.loading
+                            ? "Loading earlier turns…"
+                            : "Load earlier turns"}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                    {props.listHeader ?? null}
+                  </>
+                }
+                ListFooterComponent={props.footer ?? null}
+                contentContainerStyle={{
+                  paddingTop: 12,
+                  paddingHorizontal: contentHorizontalPadding,
+                }}
+              />
+            </View>
+            {presentedFeed.length === 0 &&
+            props.listHeader == null &&
+            !props.worktreeSetup &&
+            props.activeWorkStartedAt === null &&
+            props.contentPresentation.kind === "ready" ? (
+              <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+                <ThreadFeedPlaceholder
+                  title="No conversation yet"
+                  detail="Ask the agent to inspect the repo, run a command, or continue the active thread."
+                  topInset={topContentInset}
+                  bottomInset={bottomContentInset}
+                  horizontalPadding={horizontalPadding}
+                />
+              </View>
+            ) : null}
+            <VideoPreviewModal
+              source={expandedVideo}
+              onRequestClose={() => setExpandedVideo(null)}
             />
+            <FilePreviewModal source={expandedFile} onRequestClose={() => setExpandedFile(null)} />
           </View>
-        ) : null}
-        <VideoPreviewModal source={expandedVideo} onRequestClose={() => setExpandedVideo(null)} />
-        <FilePreviewModal source={expandedFile} onRequestClose={() => setExpandedFile(null)} />
-      </View>
-    </PresentationSource>
+        </PresentationSource>
+      </QuoteReplyHighlightContext.Provider>
+    </QuoteReplyFeedContext.Provider>
   );
 });
