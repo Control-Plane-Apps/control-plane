@@ -2107,6 +2107,82 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       ),
   );
 
+  it.effect("notarizes DMGs with an App Store Connect key given as a path or as contents", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const outputDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-dmg-api-key-" });
+        const dmg = path.join(outputDir, "T3-Code-0.0.42-arm64.dmg");
+        const keyFile = path.join(outputDir, "AuthKey_TESTKEY123.p8");
+        const keyContents = "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n";
+        yield* fs.writeFileString(dmg, "dmg");
+        yield* fs.writeFileString(keyFile, keyContents);
+
+        const notarizeKeyArgs = (apiKey: string) =>
+          Effect.gen(function* () {
+            const commands: Array<{
+              readonly command: string;
+              readonly args: ReadonlyArray<string>;
+            }> = [];
+            const spawner = Layer.succeed(
+              ChildProcessSpawner.ChildProcessSpawner,
+              ChildProcessSpawner.make((command) => {
+                commands.push(
+                  command as unknown as {
+                    readonly command: string;
+                    readonly args: ReadonlyArray<string>;
+                  },
+                );
+                return Effect.succeed(mockProcess(0));
+              }),
+            );
+            yield* signAndNotarizeMacDmgs({
+              signed: true,
+              platform: "mac",
+              artifacts: [dmg],
+              verbose: false,
+            }).pipe(
+              Effect.provide(spawner),
+              Effect.provide(
+                ConfigProvider.layer(
+                  ConfigProvider.fromEnv({
+                    env: {
+                      APPLE_API_KEY: apiKey,
+                      APPLE_API_KEY_ID: "TESTKEY123",
+                      APPLE_API_ISSUER: "issuer-uuid",
+                    },
+                  }),
+                ),
+              ),
+            );
+            const submit = commands.find((command) => command.args[1] === "submit")!;
+            const keyPath = submit.args[submit.args.indexOf("--key") + 1]!;
+            return { args: submit.args, keyContents: yield* fs.readFileString(keyPath) };
+          });
+
+        // electron-builder reads APPLE_API_KEY as a path, so the same env must work here.
+        const fromPath = yield* notarizeKeyArgs(keyFile);
+        assert.deepStrictEqual(fromPath.args, [
+          "notarytool",
+          "submit",
+          dmg,
+          "--key",
+          keyFile,
+          "--key-id",
+          "TESTKEY123",
+          "--issuer",
+          "issuer-uuid",
+          "--wait",
+        ]);
+        // Contents are still written to a scoped key file.
+        const fromContents = yield* notarizeKeyArgs(keyContents);
+        assert.notStrictEqual(fromContents.args[4], keyFile);
+        assert.strictEqual(fromContents.keyContents, keyContents.trim());
+      }),
+    ),
+  );
+
   it.effect("keeps executable resource editing enabled for unsigned Windows builds", () =>
     Effect.gen(function* () {
       const config = yield* createBuildConfig(
