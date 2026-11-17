@@ -34,7 +34,13 @@ class Target {
   }
 }
 let renderer: ReactTestRenderer | undefined;
-async function mount(expanded = false) {
+const ASSISTANT_PROJECT = {
+  id: "assistant-home",
+  environmentId: "env",
+  title: "Assistant",
+  assistant: { coordinatorThreadId: "assistant-today", scope: "global" },
+};
+async function mount(expanded = false, extra: { projects?: unknown[]; task?: object } = {}) {
   vi.stubGlobal("Element", Target);
   vi.stubGlobal("document", {
     addEventListener: (key: string, listener: (event: unknown) => void) =>
@@ -44,25 +50,32 @@ async function mount(expanded = false) {
   const onSelectClick = vi.fn();
   const onToggleExpanded = vi.fn();
   const patch = vi.fn();
+  const onHandToAssistant = vi.fn();
   const props = {
     task: {
       id: "synthetic",
       title: "Synthetic task",
       status: "todo",
       home: { kind: "backlog", horizon: null },
+      ...extra.task,
     },
     state: { kind: "none" },
     expanded,
     onSelectClick,
     onToggleExpanded,
-    context: { today: "2026-11-16", projects: [], actions: { patch }, onHandToAgent: vi.fn() },
+    context: {
+      today: "2026-11-16",
+      projects: extra.projects ?? [],
+      actions: { patch },
+      onHandToAssistant,
+    },
   } as unknown as Props;
   await act(async () => {
     renderer = create(<TaskRow {...props} />, {
       createNodeMock: () => ({ contains: (target: Target) => target.inside }),
     });
   });
-  return { root: renderer!.root, onSelectClick, onToggleExpanded, patch };
+  return { root: renderer!.root, onSelectClick, onToggleExpanded, patch, onHandToAssistant };
 }
 afterEach(async () => {
   await act(async () => renderer?.unmount());
@@ -114,5 +127,32 @@ describe("TaskRow desktop interactions", () => {
     );
     expect(patch).not.toHaveBeenCalled();
     expect(input.props.value).toBe("Synthetic task");
+  });
+  it("offers one plain Hand to Assistant chip that sends the task, with no agent menu", async () => {
+    const { root, onHandToAssistant } = await mount(true, { projects: [ASSISTANT_PROJECT] });
+    const buttons = root.findAll(
+      (node) => node.type === "button" && node.props.children === "Hand to Assistant",
+    );
+    expect(buttons).toHaveLength(1);
+    const text = JSON.stringify(renderer!.toJSON());
+    expect(text).not.toContain("Hand to agent");
+    expect(text).not.toContain("coordinator");
+    buttons[0]!.props.onClick();
+    expect(onHandToAssistant).toHaveBeenCalledWith(expect.objectContaining({ id: "synthetic" }));
+  });
+  it("reads Handed to Assistant once it is there, and hides without an Assistant", async () => {
+    const handed = await mount(true, {
+      projects: [ASSISTANT_PROJECT],
+      task: { handoff: { kind: "coordinator", threadId: "assistant-today", at: "x" } },
+    });
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Handed to Assistant");
+    expect(
+      handed.root.findAll(
+        (node) => node.type === "button" && node.props.children === "Hand to Assistant",
+      ),
+    ).toHaveLength(0);
+    await act(async () => renderer?.unmount());
+    await mount(true);
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain("Assistant");
   });
 });

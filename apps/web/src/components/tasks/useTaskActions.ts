@@ -16,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { useMemo } from "react";
 
+import type { HandoffDelivery } from "@t3tools/client-runtime/state/projects";
 import { randomUUID } from "~/lib/utils";
 import { projectEnvironment } from "../../state/projects";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -115,9 +116,18 @@ export function useTaskActions(environmentId: EnvironmentId | null) {
         run(accept ? `Could not add ${task.title}` : `Could not dismiss ${task.title}`, (id) =>
           respond({ environmentId: id, input: { taskId: task.id, accept } }),
         ),
-      handOff: (task: Task, handoff: TaskHandoff | null) =>
+      handOff: (task: Task, handoff: TaskHandoff | null, delivery?: HandoffDelivery) =>
         run(`Could not hand off ${task.title}`, (id) =>
-          handOff({ environmentId: id, input: { taskId: task.id, handoff } }),
+          handOff({
+            environmentId: id,
+            input: {
+              taskId: task.id,
+              handoff,
+              ...(delivery !== undefined
+                ? { commandId: delivery.commandId, deliver: { taskIds: delivery.taskIds } }
+                : {}),
+            },
+          }),
         ),
       setIntent: (horizon: TaskHorizon, startsOn: string, text: string) =>
         run("Could not save the intent", (id) =>

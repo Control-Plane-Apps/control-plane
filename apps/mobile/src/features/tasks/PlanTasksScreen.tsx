@@ -27,6 +27,7 @@ import {
   type TaskLifecycleProject,
 } from "@t3tools/client-runtime/state/projects";
 import {
+  findGlobalAssistantProject,
   taskPeriodFor,
   TASK_INTENT_MAX,
   type ProjectStatus,
@@ -53,7 +54,7 @@ import { CHECK_OFF_LINGER_MS, withLingeringTasks } from "./taskCheckOff";
 import { autoScrollDelta, dayDropTarget, planTaskReorder } from "./taskReorder";
 import { ProposedTasks } from "./ProposedTasks";
 import { useOptimisticTaskHomes } from "./useOptimisticTaskHomes";
-import { projectForTask, useHandToAgent } from "./taskHandoff";
+import { useHandToAssistant } from "./taskHandoff";
 import {
   RowSeparator,
   SectionLabel,
@@ -145,7 +146,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
   const { tasks: storeTasks, intents, projects, actions, available, source } = useMobileTaskStore();
   const { tasks, move: moveTask } = useOptimisticTaskHomes(storeTasks, actions.move);
   const threads = useThreadShells();
-  const handToAgent = useHandToAgent();
+  const handToAssistant = useHandToAssistant();
   const undo = useUndoNotice();
   const showUndo = undo.show;
 
@@ -271,8 +272,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
         setSelecting(true);
         setSelectedIds(new Set([task.id]));
       },
-      onHandToAgent: (task: Task, kind: "coordinator" | "agent", project: EnvironmentProject) =>
-        void handToAgent([task], kind, project),
+      onHandToAssistant: (task: Task) => void handToAssistant([task]),
       onOpenStatus: (project: EnvironmentProject) =>
         navigation.navigate("ProjectStatus", {
           environmentId: String(project.environmentId),
@@ -293,7 +293,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
       },
       onOpenThread: openThread,
     }),
-    [actions, handToAgent, linger, navigation, openThread, projects, showUndo, today],
+    [actions, handToAssistant, linger, navigation, openThread, projects, showUndo, today],
   );
 
   const lifecycleProjects = projects as ReadonlyArray<TaskLifecycleProject>;
@@ -595,34 +595,41 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             <DayDropZone
               key={group.date}
               date={group.date}
+              title={formatTaskDayTitle(group.date)}
+              weekday={formatTaskWeekday(group.date)}
+              offset={formatUpcomingOffset(group.date, today)}
+              count={group.tasks.length}
               hovering={dropHover === `${DAY_TARGET_PREFIX}${group.date}`}
               lifted={liftedDate === group.date}
+              dragging={reordering}
               refs={dayRefs.current}
               onMeasure={measureDays}
             >
-              <SectionLabel
-                trailing={
-                  <Text className="text-[13px] text-foreground-tertiary">
-                    {formatUpcomingOffset(group.date, today)}
-                  </Text>
-                }
-              >
-                {formatTaskDayTitle(group.date)}
-              </SectionLabel>
               <ProposedTasks
                 tasks={group.proposals}
                 projects={projects}
                 today={today}
                 actions={actions}
                 highlightIds={highlightIds}
+                inline
               />
-              {group.tasks.length > 0 ? (
-                <TaskCard style={reordering ? { overflow: "visible" } : undefined}>
-                  {renderList(group.tasks, { reorderable: true, hideDay: true })}
-                </TaskCard>
-              ) : group.proposals.length > 0 ? null : (
-                <Text className="px-9 text-[14px] text-foreground-tertiary">Nothing yet</Text>
-              )}
+              {group.proposals.length > 0 && group.tasks.length > 0 ? (
+                <RowSeparator inset={0} />
+              ) : null}
+              {renderList(group.tasks, { reorderable: true, hideDay: true })}
+              {group.tasks.length > 0 ? <RowSeparator /> : null}
+              <AddTaskRow
+                label="Add a task"
+                onPress={() =>
+                  navigation.navigate("TaskQuickAdd", {
+                    horizon: "today",
+                    date: group.date,
+                    ...(projectFilter !== null && projectFilter !== "none"
+                      ? { projectId: projectFilter }
+                      : {}),
+                  })
+                }
+              />
             </DayDropZone>
           ))}
         </>
@@ -884,8 +891,8 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
           projects={projects}
           selectedTasks={selectedTasks}
           onMove={() => navigation.navigate("TaskMove", { taskIds: [...selectedIds].join(",") })}
-          onHandToAgent={(kind, project) => {
-            void handToAgent(selectedTasks, kind, project);
+          onHandToAssistant={() => {
+            void handToAssistant(selectedTasks);
             setSelecting(false);
             setSelectedIds(new Set());
           }}
@@ -1057,14 +1064,23 @@ function BacklogFilters(props: {
 }
 
 /**
- * One day of Upcoming: its label and card. While a lifted task from another
- * day hovers it, a dashed outline shows where it will land.
+ * One day of Upcoming as a card, the same as desktop: the day, its tasks and
+ * an add row. Every day shows, empty or not, so any day can take a drop.
+ * While a lifted task from another day hovers it, a dashed outline and a
+ * "Move to {day}" label show where it will land.
  */
 function DayDropZone(props: {
   readonly date: string;
+  readonly title: string;
+  /** "Tuesday": the drop label stays short enough for the header. */
+  readonly weekday: string;
+  readonly offset: string;
+  readonly count: number;
   readonly hovering: boolean;
   /** A row of this day is lifted: stack above the other days. */
   readonly lifted: boolean;
+  /** Any row is lifted: the card must not clip a row passing over it. */
+  readonly dragging: boolean;
   readonly refs: Map<string, View | null>;
   readonly onMeasure: () => void;
   readonly children: ReactNode;
@@ -1075,19 +1091,50 @@ function DayDropZone(props: {
       ref={(node) => {
         props.refs.set(props.date, node);
       }}
+      // Never let Fabric flatten this view: overflow flips while a row is
+      // lifted, and a flattened card re-parents the row mid-gesture, which
+      // cancels the drag on iOS (the #110 bug).
       collapsable={false}
       onLayout={props.onMeasure}
-      className="rounded-3xl pb-1"
+      accessibilityLabel={props.hovering ? `Move to ${props.weekday}` : undefined}
+      className="mx-4 mt-3 rounded-2xl bg-card"
       style={{
-        marginHorizontal: 4,
         zIndex: props.lifted ? 50 : 0,
+        overflow: props.dragging ? "visible" : "hidden",
         borderWidth: 1.5,
         borderStyle: props.hovering ? "dashed" : "solid",
         borderColor: props.hovering ? palette.accent : "transparent",
       }}
     >
-      {/* Cancels the outline's inset so the rows keep their usual margins. */}
-      <View style={{ marginHorizontal: -5.5 }}>{props.children}</View>
+      {props.hovering ? (
+        <View
+          pointerEvents="none"
+          className="absolute inset-0 rounded-2xl"
+          style={{ backgroundColor: palette.accent, opacity: 0.07 }}
+        />
+      ) : null}
+      <View className="flex-row items-center gap-2 pl-4 pr-4 pt-3 pb-1">
+        <Text className="shrink text-[16px] font-t3-bold text-foreground" numberOfLines={1}>
+          {props.title}
+        </Text>
+        <Text className="text-[13px] text-foreground-tertiary">{props.offset}</Text>
+        <View className="flex-1" />
+        {props.hovering ? (
+          <View className="rounded-full px-2.5 py-1" style={{ backgroundColor: palette.accent }}>
+            <Text
+              className="text-[12px] font-t3-medium"
+              style={{ color: palette.accentForeground }}
+            >
+              {`Move to ${props.weekday}`}
+            </Text>
+          </View>
+        ) : props.count > 0 ? (
+          <Text className="text-[13px] tabular-nums text-foreground-tertiary">
+            {`${props.count} ${props.count === 1 ? "task" : "tasks"}`}
+          </Text>
+        ) : null}
+      </View>
+      {props.children}
     </View>
   );
 }
@@ -1249,19 +1296,11 @@ function SelectionBar(props: {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly selectedTasks: ReadonlyArray<Task>;
   readonly onMove: () => void;
-  readonly onHandToAgent: (kind: "coordinator" | "agent", project: EnvironmentProject) => void;
+  readonly onHandToAssistant: () => void;
   readonly onDelete: () => void;
 }) {
   const palette = useTaskPalette();
-  const owners = new Set(
-    props.selectedTasks.map((task) => projectForTask(task, props.projects)?.id ?? null),
-  );
-  const project =
-    owners.size === 1 ? projectForTask(props.selectedTasks[0]!, props.projects) : null;
-  const handOffProjects =
-    project !== null && project.assistant != null
-      ? [project]
-      : props.projects.filter((candidate) => candidate.assistant != null);
+  const hasAssistant = findGlobalAssistantProject(props.projects) !== undefined;
   const disabled = props.count === 0;
   return (
     <View
@@ -1269,21 +1308,13 @@ function SelectionBar(props: {
       style={{ paddingBottom: Math.max(props.bottomInset, 12) }}
     >
       <BarButton label="Move" icon="calendar" disabled={disabled} onPress={props.onMove} />
-      <ControlPillMenu
-        actions={handOffProjects.flatMap((candidate) => [
-          { id: `coordinator:${candidate.id}`, title: `Ask ${candidate.title} coordinator` },
-          { id: `agent:${candidate.id}`, title: `Start an agent in ${candidate.title}` },
-        ])}
-        onPressAction={({ nativeEvent }) => {
-          const [kind, id] = nativeEvent.event.split(":");
-          const target = props.projects.find((candidate) => candidate.id === id);
-          if (target !== undefined && !disabled) {
-            props.onHandToAgent(kind === "agent" ? "agent" : "coordinator", target);
-          }
-        }}
-      >
-        <BarButton label="Hand to agent" icon="cpu" disabled={disabled} />
-      </ControlPillMenu>
+      {hasAssistant ? (
+        <BarButton
+          label="Hand to Assistant"
+          disabled={disabled}
+          onPress={props.onHandToAssistant}
+        />
+      ) : null}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Delete ${props.count}`}
@@ -1302,7 +1333,7 @@ function SelectionBar(props: {
 
 function BarButton(props: {
   readonly label: string;
-  readonly icon: Parameters<typeof symbol>[0];
+  readonly icon?: Parameters<typeof symbol>[0];
   readonly disabled?: boolean;
   readonly onPress?: () => void;
 }) {
@@ -1324,12 +1355,14 @@ function BarButton(props: {
         backgroundColor: palette.chip,
       })}
     >
-      <SymbolView
-        name={symbol(props.icon, "build")}
-        size={15}
-        tintColorClassName="accent-foreground"
-        type="monochrome"
-      />
+      {props.icon !== undefined ? (
+        <SymbolView
+          name={symbol(props.icon, "build")}
+          size={15}
+          tintColorClassName="accent-foreground"
+          type="monochrome"
+        />
+      ) : null}
       <Text className="text-[16px] font-t3-medium text-foreground">{props.label}</Text>
     </Pressable>
   );
