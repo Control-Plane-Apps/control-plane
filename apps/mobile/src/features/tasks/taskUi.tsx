@@ -77,10 +77,11 @@ export function useTaskPalette(): TaskPalette {
   const tertiary = colorOf(useResolveClassNames("text-foreground-tertiary"), "color");
   const muted = colorOf(useResolveClassNames("text-foreground-muted"), "color");
   const secondaryText = colorOf(useResolveClassNames("text-foreground-secondary"), "color");
-  const chip = colorOf(useResolveClassNames("bg-secondary"), "backgroundColor");
+  // Chip fill matches desktop's bg-accent (#efe9e0 in light). bg-secondary is
+  // the same color as bg-card in light, so chips on a task card read as text.
+  const chip = colorOf(useResolveClassNames("bg-subtle-strong"), "backgroundColor");
   const iconMuted = colorOf(useResolveClassNames("text-icon-muted"), "color");
   const shadow = colorOf(useResolveClassNames("bg-primary-shadow"), "backgroundColor");
-  const subtleStrong = colorOf(useResolveClassNames("bg-subtle-strong"), "backgroundColor");
   const card = colorOf(useResolveClassNames("bg-card"), "backgroundColor");
   const ink = colorOf(useResolveClassNames("bg-foreground"), "backgroundColor");
   const paper = colorOf(useResolveClassNames("text-screen"), "color");
@@ -98,7 +99,7 @@ export function useTaskPalette(): TaskPalette {
     warningText,
     chip,
     dashed: muted,
-    swipeSelect: subtleStrong,
+    swipeSelect: chip,
     swipeMove: secondaryText,
     swipeSchedule: info,
     checkboxBorder: iconMuted,
