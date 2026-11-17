@@ -74,25 +74,40 @@ export interface DropFrame {
   readonly height: number;
 }
 
+/** How far past a day card (into a gap or the list's end) a drop still lands on it. */
+export const DAY_DROP_SLOP_PT = 120;
+
 /**
  * The day card (by date) under the finger while a task is lifted, in window
  * coordinates. The task's own day is never a target, so dragging inside it
  * still reorders; a task that is not open has none.
+ *
+ * With `area` (the scrolling list's visible band), a finger inside the list
+ * but between cards or past the last one lands on the nearest card within
+ * DAY_DROP_SLOP_PT. Auto-scroll runs while the finger is near the bottom
+ * edge, and once the list reaches its end that edge is the empty space below
+ * the last card, so without this a drop there would land nowhere.
  */
 export function dayDropTarget(
   frames: ReadonlyMap<string, DropFrame>,
   x: number,
   y: number,
   lifted: Pick<Task, "home" | "status">,
+  area?: { readonly top: number; readonly bottom: number },
 ): string | null {
   if (lifted.status !== "todo") return null;
+  const own = lifted.home.kind === "date" ? lifted.home.date : null;
+  let nearest: { date: string; distance: number } | null = null;
   for (const [date, frame] of frames) {
-    if (lifted.home.kind === "date" && lifted.home.date === date) continue;
-    if (x >= frame.x && x <= frame.x + frame.width && y >= frame.y && y <= frame.y + frame.height) {
-      return date;
-    }
+    if (x < frame.x || x > frame.x + frame.width) continue;
+    const distance =
+      y < frame.y ? frame.y - y : y > frame.y + frame.height ? y - (frame.y + frame.height) : 0;
+    if (distance === 0) return date === own ? null : date;
+    if (nearest === null || distance < nearest.distance) nearest = { date, distance };
   }
-  return null;
+  if (area === undefined || nearest === null) return null;
+  if (y < area.top || y > area.bottom || nearest.distance > DAY_DROP_SLOP_PT) return null;
+  return nearest.date === own ? null : nearest.date;
 }
 
 export const AUTO_SCROLL_EDGE_PT = 90;

@@ -97,6 +97,23 @@ describe("dayDropTarget", () => {
     expect(dayDropTarget(days, 500, 300, gym)).toBeNull();
   });
 
+  it("inside the list, lands a drop between cards or past the last one on the nearest card", () => {
+    const area = { top: 50, bottom: 600 };
+    // Gap between the 19th and 20th: nearer the 20th.
+    expect(dayDropTarget(days, 200, 397, gym, area)).toBe("2026-11-20");
+    // Below the last card, where auto-scroll leaves the finger at the list's end.
+    expect(dayDropTarget(days, 200, 540, gym, area)).toBe("2026-11-20");
+    // Up to DAY_DROP_SLOP_PT (120) past it, then nothing.
+    expect(dayDropTarget(days, 200, 570, gym, { top: 50, bottom: 800 })).toBe("2026-11-20");
+    expect(dayDropTarget(days, 200, 600, gym, { top: 50, bottom: 800 })).toBeNull();
+    // Outside the list (over the range chips above it): never a day.
+    expect(dayDropTarget(days, 200, 40, gym, area)).toBeNull();
+    // The gap next to the task's own day still reorders.
+    expect(dayDropTarget(days, 200, 224, gym, area)).toBeNull();
+    // Off to the side of the cards.
+    expect(dayDropTarget(days, 500, 540, gym, area)).toBeNull();
+  });
+
   it("lets a committed or backlog task drop on any day, but not a closed one", () => {
     const committed = {
       status: "todo",
