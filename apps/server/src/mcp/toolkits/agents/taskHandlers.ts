@@ -3,12 +3,13 @@
  *
  * Callers: a Project's coordinator, or the Assistant (its "Today" thread and
  * pinned channels). A coordinator lists its Project's tasks, proposes new
- * ones and edits only its own proposals. The Assistant follows the user's
- * Assistant settings: `tasks` (off / read / edit) gates listing and every
- * write (edit, cancel, delete, restore, reorder), and `newTasks` ("create"
- * with edit access) adds new tasks directly instead of proposing them. Only
- * the user adds or dismisses a proposal. The decider checks the caller's
- * role again; settings are checked only here.
+ * ones, and edits or withdraws only its own waiting proposals. The Assistant
+ * follows the user's Assistant settings: `tasks` (off / read / edit) gates
+ * listing and every write (edit, cancel, delete, restore, reorder, bulk,
+ * handoff, withdrawing any proposal, and adding or dismissing proposals when
+ * the user asks), and `newTasks` ("create" with edit access) adds new tasks
+ * directly instead of proposing them. The decider checks the caller's role
+ * again; settings are checked only here.
  *
  * Every write goes through the same task commands the UI uses, so Task Sync
  * sees an ordinary local edit: a delete tombstones the synced record, a
@@ -23,16 +24,20 @@ import {
   agentManagerRole,
   compareTaskOrder,
   CommandId,
+  findGlobalAssistantProject,
   isAssistantChannel,
   isProposedTask,
   isTaskLocalDate,
   localTaskDate,
   taskPeriodFor,
   TaskId,
+  taskHandoffDeliveryId,
+  ThreadId,
   type AssistantSettings,
   type OrchestrationCommand,
   type Task,
   type TaskAgentPatch,
+  type TaskHandoff,
   type TaskHome,
   type TaskOrderKey,
 } from "@t3tools/contracts";
@@ -42,6 +47,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as Toolkit from "effect/unstable/ai/Toolkit";
@@ -59,11 +65,15 @@ import {
   AgentToolFailedError,
   TASK_LIST_LIMIT_DEFAULT,
   TaskAccessDeniedError,
+  type TaskBulkInput,
+  type TaskBulkItem,
   type TaskDeleteInput,
+  type TaskHandoffInput,
   type TaskIntentSetInput,
   type TaskListInput,
   type TaskListItem,
   type TaskListRange,
+  type TaskProposalRespondInput,
   type TaskProposeInput,
   type TaskReorderInput,
   type TaskRestoreInput,
@@ -80,6 +90,9 @@ type TaskHandlers = Pick<
   | "cp_task_restore"
   | "cp_task_reorder"
   | "cp_task_intent_set"
+  | "cp_task_bulk"
+  | "cp_task_proposal_respond"
+  | "cp_task_handoff"
 >;
 
 const readFailed = (cause: unknown) =>
@@ -399,13 +412,12 @@ export const makeTaskHandlers = Effect.gen(function* () {
     );
 
   /** The caller as the Assistant with edit access, or why not. */
-  const requireAssistantEditor = Effect.fn("TaskTools.requireAssistantEditor")(function* () {
+  const requireAssistantEditor = Effect.fn("TaskTools.requireAssistantEditor")(function* (
+    coordinatorDetail = "Only the Assistant deletes, restores or reorders the user's tasks, hands them off or sets intents. Ask the user, or propose a change.",
+  ) {
     const caller = yield* requireCaller();
     if (caller.settings === null) {
-      return yield* new TaskAccessDeniedError({
-        detail:
-          "Only the Assistant deletes, restores or reorders the user's tasks or sets intents. Ask the user, or propose a change.",
-      });
+      return yield* new TaskAccessDeniedError({ detail: coordinatorDetail });
     }
     if (caller.settings.tasks !== "edit") {
       return yield* new TaskAccessDeniedError({ detail: ASSISTANT_TASKS_READ_ONLY });
@@ -471,7 +483,7 @@ export const makeTaskHandlers = Effect.gen(function* () {
   const dispatch = (command: OrchestrationCommand, fallback: string) =>
     engine.dispatch(command).pipe(Effect.catchCause(writeFailed(fallback)));
 
-  return {
+  const handlers = {
     cp_task_list: (input: TaskListInput) =>
       Effect.gen(function* () {
         const { projectId, settings } = yield* requireCaller();
@@ -512,6 +524,8 @@ export const makeTaskHandlers = Effect.gen(function* () {
               (input.repeating === undefined ||
                 (task.recurrence !== undefined || task.seriesId !== undefined) ===
                   input.repeating) &&
+              (input.proposed === undefined || isProposedTask(task) === input.proposed) &&
+              (input.handedOff === undefined || (task.handoff !== undefined) === input.handedOff) &&
               (input.threadId === undefined || task.links?.threadId === input.threadId) &&
               (input.statusId === undefined || task.links?.statusId === input.statusId),
           )
@@ -646,9 +660,15 @@ export const makeTaskHandlers = Effect.gen(function* () {
           );
         }
         if (typeof home === "string") return yield* new AgentToolFailedError({ detail: home });
-        if (settings === null && (input.recurrence !== undefined || input.links !== undefined)) {
+        if (
+          settings === null &&
+          (input.recurrence !== undefined ||
+            input.links !== undefined ||
+            input.completionPromptDismissed !== undefined)
+        ) {
           return yield* new AgentToolFailedError({
-            detail: "Only the user and the Assistant change a task's repeat or links.",
+            detail:
+              "Only the user and the Assistant change a task's repeat, links or completion prompt.",
           });
         }
         // Lucive keeps a repeating task on days: committing it to a period or
@@ -670,6 +690,9 @@ export const makeTaskHandlers = Effect.gen(function* () {
           ...(input.status !== undefined ? { status: input.status } : {}),
           ...(input.recurrence !== undefined ? { recurrence: input.recurrence } : {}),
           ...(input.links !== undefined ? { links: input.links } : {}),
+          ...(input.completionPromptDismissed !== undefined
+            ? { completionPromptDismissedAt: input.completionPromptDismissed ? iso : null }
+            : {}),
         };
         if (Object.keys(patch).length === 0) {
           return yield* new AgentToolFailedError({ detail: "Nothing to change." });
@@ -695,12 +718,24 @@ export const makeTaskHandlers = Effect.gen(function* () {
 
     cp_task_delete: (input: TaskDeleteInput) =>
       Effect.gen(function* () {
-        const { callerId } = yield* requireAssistantEditor();
+        const { callerId, projectId, settings } = yield* requireCaller();
+        if (settings !== null && settings.tasks !== "edit") {
+          return yield* new TaskAccessDeniedError({ detail: ASSISTANT_TASKS_READ_ONLY });
+        }
         const stored = yield* findTask(input.taskId);
         if (stored === undefined) {
           return yield* new AgentToolFailedError({
             detail:
               "That task no longer exists. If it was deleted, cp_task_restore brings it back.",
+          });
+        }
+        if (
+          settings === null &&
+          (!isProposedTask(stored) || stored.proposal?.projectId !== projectId)
+        ) {
+          return yield* new TaskAccessDeniedError({
+            detail:
+              "A coordinator deletes only its own Project's proposals still waiting on the user (withdrawing them). Ask the user to delete other tasks.",
           });
         }
         const synced =
@@ -724,6 +759,7 @@ export const makeTaskHandlers = Effect.gen(function* () {
           taskId: stored.id,
           title: stored.title,
           synced,
+          ...(isProposedTask(stored) ? { withdrawn: true } : {}),
           ...(next !== undefined ? { next } : {}),
         };
       }),
@@ -788,10 +824,26 @@ export const makeTaskHandlers = Effect.gen(function* () {
         const { callerId } = yield* requireAssistantEditor();
         const anchors = [input.beforeTaskId, input.afterTaskId].filter((id) => id !== undefined);
         const single = input.taskId !== undefined;
-        if (single === (input.orderedTaskIds !== undefined) || (single && anchors.length !== 1)) {
+        const homeGiven =
+          input.when !== undefined || input.date !== undefined || input.period !== undefined;
+        if (homeGiven !== (input.position !== undefined)) {
+          return yield* new AgentToolFailedError({
+            detail: "`position` goes with a home (`when`, or `date` with optional `period`).",
+          });
+        }
+        if (homeGiven && (!single || anchors.length > 0)) {
           return yield* new AgentToolFailedError({
             detail:
-              "Give `taskId` with exactly one of `beforeTaskId` or `afterTaskId`, or `orderedTaskIds` alone.",
+              "A home with `position` goes with `taskId` alone, without an anchor or `orderedTaskIds`.",
+          });
+        }
+        if (
+          single === (input.orderedTaskIds !== undefined) ||
+          (single && !homeGiven && anchors.length !== 1)
+        ) {
+          return yield* new AgentToolFailedError({
+            detail:
+              "Give `taskId` with exactly one of `beforeTaskId` or `afterTaskId` (or a home with `position`), or `orderedTaskIds` alone.",
           });
         }
         if (!single && anchors.length > 0) {
@@ -799,15 +851,15 @@ export const makeTaskHandlers = Effect.gen(function* () {
             detail: "`orderedTaskIds` goes alone, without `beforeTaskId` or `afterTaskId`.",
           });
         }
-        const named = single ? [input.taskId!, anchors[0]!] : [...input.orderedTaskIds!];
+        const named = single ? [input.taskId!, ...anchors.slice(0, 1)] : [...input.orderedTaskIds!];
         if (named.length === 0) {
           return yield* new AgentToolFailedError({ detail: "Name at least one task." });
         }
         if (new Set(named).size !== named.length) {
           return yield* new AgentToolFailedError({ detail: "Each task may appear only once." });
         }
-        const tasks = yield* allTasks;
-        const byId = new Map(tasks.map((task) => [task.id as string, task]));
+        let tasks = yield* allTasks;
+        let byId = new Map(tasks.map((task) => [task.id as string, task]));
         const missing = named.find((id) => byId.get(id) === undefined);
         if (missing !== undefined) {
           return yield* new AgentToolFailedError({ detail: `There is no task '${missing}'.` });
@@ -821,8 +873,55 @@ export const makeTaskHandlers = Effect.gen(function* () {
         const waiting = named.map((id) => byId.get(id)!).find((task) => isProposedTask(task));
         if (waiting !== undefined) {
           return yield* new AgentToolFailedError({
-            detail: `'${waiting.title}' is still a proposal; the user adds it before it has a place.`,
+            detail: `'${waiting.title}' is still a proposal; it has a place once it is added.`,
           });
+        }
+        const { iso, today } = yield* nowParts;
+        // A single task may first move to another list: its anchor's, or the home given.
+        if (single) {
+          const moved = byId.get(input.taskId!)!;
+          let target: TaskHome | null = null;
+          if (homeGiven) {
+            const resolved = resolveTaskHome(input, today);
+            if (typeof resolved === "string") {
+              return yield* new AgentToolFailedError({ detail: resolved });
+            }
+            target = resolved;
+          } else {
+            const anchor = byId.get(anchors[0]!)!;
+            if (taskListKey(anchor.home) !== taskListKey(moved.home)) target = anchor.home;
+          }
+          if (target !== null && taskListKey(target) !== taskListKey(moved.home)) {
+            // Like a drag between lists, a day keeps the moved task's reminder.
+            let home: TaskHome = target;
+            if (home.kind === "date") {
+              const { reminderTime: _anchorReminder, ...day } = home;
+              home =
+                moved.home.kind === "date" && moved.home.reminderTime !== undefined
+                  ? { ...day, reminderTime: moved.home.reminderTime }
+                  : day;
+            }
+            if (moved.recurrence !== undefined && home.kind !== "date") {
+              return yield* new AgentToolFailedError({
+                detail:
+                  "A repeating task moves only between days. Stop the repeat first (cp_task_update recurrence: null).",
+              });
+            }
+            const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+            yield* dispatch(
+              {
+                type: "task.agent.update",
+                commandId: CommandId.make(`mcp-task:${uuid}`),
+                taskId: moved.id,
+                actorThreadId: callerId,
+                patch: { home },
+                createdAt: iso,
+              },
+              "Could not move the task.",
+            );
+            tasks = yield* allTasks;
+            byId = new Map(tasks.map((task) => [task.id as string, task]));
+          }
         }
         const listKey = taskListKey(byId.get(named[0]!)!.home);
         const outside = named
@@ -830,7 +929,7 @@ export const makeTaskHandlers = Effect.gen(function* () {
           .find((t) => taskListKey(t.home) !== listKey);
         if (outside !== undefined) {
           return yield* new AgentToolFailedError({
-            detail: `'${outside.title}' is in another list. Move it there first with cp_task_update, then reorder.`,
+            detail: `'${outside.title}' is in another list. Move tasks one at a time with \`taskId\` and an anchor, or with cp_task_update, then order them.`,
           });
         }
         const list = tasks
@@ -842,15 +941,23 @@ export const makeTaskHandlers = Effect.gen(function* () {
         let wanted: string[];
         if (single) {
           const movedId = input.taskId!;
-          const anchorId = anchors[0]!;
           const ids = list.map((task) => task.id as string).filter((id) => id !== movedId);
-          ids.splice(ids.indexOf(anchorId) + (input.afterTaskId !== undefined ? 1 : 0), 0, movedId);
+          if (homeGiven) {
+            if (input.position === "top") ids.unshift(movedId);
+            else ids.push(movedId);
+          } else {
+            const anchorId = anchors[0]!;
+            ids.splice(
+              ids.indexOf(anchorId) + (input.afterTaskId !== undefined ? 1 : 0),
+              0,
+              movedId,
+            );
+          }
           wanted = ids;
         } else {
           const first = new Set<string>(named);
           wanted = [...named, ...list.map((t) => t.id as string).filter((id) => !first.has(id))];
         }
-        const { iso } = yield* nowParts;
         for (const assignment of planTaskReorder(list, wanted)) {
           const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
           yield* dispatch(
@@ -927,6 +1034,280 @@ export const makeTaskHandlers = Effect.gen(function* () {
           endsOn: period.endsOn,
           intent: intent ?? null,
         };
+      }),
+  };
+
+  /** Runs `one` for each task, collecting a result per task instead of stopping at a failure. */
+  const eachTask = <E extends { readonly message: string }, R>(
+    taskIds: ReadonlyArray<string>,
+    one: (taskId: string) => Effect.Effect<Task | null, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      const results: TaskBulkItem[] = [];
+      for (const taskId of taskIds) {
+        const title = (yield* findTask(taskId))?.title;
+        const outcome = yield* Effect.result(one(taskId));
+        results.push({
+          taskId: TaskId.make(taskId),
+          ...(title !== undefined ? { title } : {}),
+          ...(Result.isSuccess(outcome)
+            ? { ok: true, task: outcome.success }
+            : { ok: false, error: outcome.failure.message }),
+        });
+      }
+      const succeeded = results.filter((entry) => entry.ok).length;
+      return { results, succeeded, failed: results.length - succeeded };
+    });
+
+  const uniqueIds = (ids: ReadonlyArray<string>) =>
+    new Set(ids).size === ids.length
+      ? Effect.succeed(ids)
+      : Effect.fail(new AgentToolFailedError({ detail: "Each task may appear only once." }));
+
+  return {
+    ...handlers,
+
+    cp_task_bulk: (input: TaskBulkInput) =>
+      Effect.gen(function* () {
+        const { settings } = yield* requireCaller();
+        if (settings === null && input.action !== "move" && input.action !== "delete") {
+          return yield* new TaskAccessDeniedError({
+            detail:
+              "A coordinator may only move or withdraw (delete) its own Project's waiting proposals. Ask the user to change the others.",
+          });
+        }
+        if (settings !== null && settings.tasks !== "edit") {
+          return yield* new TaskAccessDeniedError({ detail: ASSISTANT_TASKS_READ_ONLY });
+        }
+        const homeGiven =
+          input.when !== undefined || input.date !== undefined || input.period !== undefined;
+        if (input.action === "move" && !homeGiven && input.reminderTime === undefined) {
+          return yield* new AgentToolFailedError({
+            detail: "move needs a home: `when`, or `date` with optional `period`.",
+          });
+        }
+        if (input.action !== "move" && (homeGiven || input.reminderTime !== undefined)) {
+          return yield* new AgentToolFailedError({
+            detail: "A home or reminder goes only with action move.",
+          });
+        }
+        if (input.scope !== undefined && input.action !== "delete") {
+          return yield* new AgentToolFailedError({ detail: "`scope` goes only with delete." });
+        }
+        const taskIds = yield* uniqueIds(input.taskIds);
+        const status = { complete: "completed", cancel: "cancelled", reopen: "todo" } as const;
+        return yield* eachTask(taskIds, (taskId) => {
+          const id = TaskId.make(taskId);
+          switch (input.action) {
+            case "move":
+              return handlers
+                .cp_task_update({
+                  taskId: id,
+                  ...(input.when !== undefined ? { when: input.when } : {}),
+                  ...(input.date !== undefined ? { date: input.date } : {}),
+                  ...(input.period !== undefined ? { period: input.period } : {}),
+                  ...(input.reminderTime !== undefined ? { reminderTime: input.reminderTime } : {}),
+                })
+                .pipe(Effect.map((result): Task | null => result.task));
+            case "complete":
+            case "cancel":
+            case "reopen":
+              return handlers
+                .cp_task_update({ taskId: id, status: status[input.action] })
+                .pipe(Effect.map((result): Task | null => result.task));
+            case "delete":
+              return Effect.gen(function* () {
+                const stored = yield* findTask(taskId);
+                // A scope applies to the repeating tasks among them only.
+                const repeats = stored?.recurrence !== undefined && stored.home.kind === "date";
+                yield* handlers.cp_task_delete({
+                  taskId: id,
+                  ...(input.scope !== undefined && repeats ? { scope: input.scope } : {}),
+                });
+                return null;
+              });
+            case "restore":
+              return handlers
+                .cp_task_restore({ taskId: id })
+                .pipe(Effect.map((result): Task | null => result.task));
+          }
+        });
+      }),
+
+    cp_task_proposal_respond: (input: TaskProposalRespondInput) =>
+      Effect.gen(function* () {
+        const { callerId } = yield* requireAssistantEditor(
+          "Only the user (or the Assistant, when the user asks) adds or dismisses a proposal. To take back one of your own, withdraw it with cp_task_delete.",
+        );
+        if ((input.taskIds === undefined) === (input.projectId === undefined)) {
+          return yield* new AgentToolFailedError({
+            detail: "Give either `taskIds` or `projectId`.",
+          });
+        }
+        const { iso, today } = yield* nowParts;
+        const resolved = resolveTaskHome(input, today);
+        if (typeof resolved === "string") {
+          return yield* new AgentToolFailedError({ detail: resolved });
+        }
+        if (!input.accept && (resolved !== null || input.reminderTime !== undefined)) {
+          return yield* new AgentToolFailedError({
+            detail: "A home or reminder goes only with accept: true.",
+          });
+        }
+        const taskIds =
+          input.taskIds !== undefined
+            ? yield* uniqueIds(input.taskIds)
+            : (yield* allTasks)
+                .filter(
+                  (task) => isProposedTask(task) && task.proposal?.projectId === input.projectId,
+                )
+                .toSorted((left, right) =>
+                  left.proposal!.proposedAt.localeCompare(right.proposal!.proposedAt),
+                )
+                .map((task) => task.id as string);
+        if (taskIds.length === 0) {
+          return yield* new AgentToolFailedError({
+            detail: "That Project has no proposals waiting.",
+          });
+        }
+        return yield* eachTask(taskIds, (taskId) =>
+          Effect.gen(function* () {
+            const stored = yield* findTask(taskId);
+            if (stored === undefined || !isProposedTask(stored)) {
+              return yield* new AgentToolFailedError({
+                detail: "That is not a proposal waiting on the user.",
+              });
+            }
+            let home: TaskHome | string | undefined = resolved ?? undefined;
+            if (input.reminderTime !== undefined) {
+              home = withReminder(resolved ?? stored.home, input.reminderTime);
+            }
+            if (typeof home === "string") return yield* new AgentToolFailedError({ detail: home });
+            const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+            yield* dispatch(
+              {
+                type: "task.agent.respond",
+                commandId: CommandId.make(`mcp-task:${uuid}`),
+                taskId: stored.id,
+                actorThreadId: callerId,
+                accept: input.accept,
+                ...(home !== undefined ? { patch: { home } } : {}),
+                createdAt: iso,
+              },
+              input.accept ? "Could not add the proposal." : "Could not dismiss the proposal.",
+            );
+            if (!input.accept) return null;
+            const task = yield* findTask(stored.id);
+            if (task === undefined) {
+              return yield* new AgentToolFailedError({ detail: "The task was not saved." });
+            }
+            return task;
+          }),
+        );
+      }),
+
+    cp_task_handoff: (input: TaskHandoffInput) =>
+      Effect.gen(function* () {
+        const { callerId } = yield* requireAssistantEditor();
+        if (input.projectId !== undefined && input.to !== "coordinator") {
+          return yield* new AgentToolFailedError({
+            detail: "`projectId` goes with to: coordinator.",
+          });
+        }
+        if ((input.threadId !== undefined) !== (input.to === "agent")) {
+          return yield* new AgentToolFailedError({
+            detail: "to: agent needs `threadId`, and `threadId` goes only with it.",
+          });
+        }
+        const taskIds = yield* uniqueIds(input.taskIds);
+        const model = yield* snapshots.getCommandReadModel().pipe(Effect.mapError(readFailed));
+        const liveProjects = model.projects.filter((project) => project.deletedAt === null);
+        const { iso } = yield* nowParts;
+        /** The thread `to` names for this task, or why there is none. */
+        const targetFor = (task: Task | undefined): TaskHandoff | null | string => {
+          switch (input.to) {
+            case "none":
+              return null;
+            case "assistant": {
+              const threadId =
+                findGlobalAssistantProject(liveProjects)?.assistant?.coordinatorThreadId;
+              return threadId == null
+                ? "The user has no Assistant to hand tasks to."
+                : { kind: "coordinator", threadId, at: iso };
+            }
+            case "coordinator": {
+              const projectId = input.projectId ?? task?.links?.projectId;
+              if (projectId === undefined) {
+                return "That task has no Project; give `projectId`.";
+              }
+              const threadId = liveProjects.find((project) => project.id === projectId)?.assistant
+                ?.coordinatorThreadId;
+              return threadId == null
+                ? "That Project has no coordinator."
+                : { kind: "coordinator", threadId, at: iso };
+            }
+            case "agent":
+              return { kind: "agent", threadId: input.threadId!, at: iso };
+          }
+        };
+        const outcome = yield* eachTask(taskIds, (taskId) =>
+          Effect.gen(function* () {
+            const stored = yield* findTask(taskId);
+            if (stored === undefined) {
+              return yield* new AgentToolFailedError({ detail: "That task no longer exists." });
+            }
+            const handoff = targetFor(stored);
+            if (typeof handoff === "string") {
+              return yield* new AgentToolFailedError({ detail: handoff });
+            }
+            if (handoff === null && stored.handoff === undefined) return stored;
+            const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+            yield* dispatch(
+              {
+                type: "task.agent.handoff",
+                commandId: CommandId.make(`mcp-task:${uuid}`),
+                taskId: stored.id,
+                actorThreadId: callerId,
+                handoff,
+                createdAt: iso,
+              },
+              "Could not hand the task off.",
+            );
+            const task = yield* findTask(stored.id);
+            if (task === undefined) {
+              return yield* new AgentToolFailedError({ detail: "The task was not saved." });
+            }
+            return task;
+          }),
+        );
+        // Then each receiving thread gets one handoff message with its tasks,
+        // queued until it is idle, unless the caller is that thread itself.
+        const byThread = new Map<string, TaskId[]>();
+        for (const entry of outcome.results) {
+          const threadId = entry.ok ? entry.task?.handoff?.threadId : undefined;
+          if (threadId === undefined || threadId === callerId) continue;
+          byThread.set(threadId, [...(byThread.get(threadId) ?? []), entry.taskId]);
+        }
+        const delivered: ThreadId[] = [];
+        for (const [threadId, ids] of byThread) {
+          const last = (yield* findTask(ids.at(-1)!))?.handoff;
+          if (last === undefined) continue;
+          const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+          yield* dispatch(
+            {
+              type: "task.agent.handoff",
+              commandId: CommandId.make(taskHandoffDeliveryId(threadId, uuid)),
+              taskId: ids.at(-1)!,
+              actorThreadId: callerId,
+              handoff: last,
+              deliver: { taskIds: ids },
+              createdAt: iso,
+            },
+            "The tasks were handed off, but the handoff message was not sent.",
+          );
+          delivered.push(ThreadId.make(threadId));
+        }
+        return { ...outcome, ...(delivered.length > 0 ? { delivered } : {}) };
       }),
   } satisfies TaskHandlers;
 });

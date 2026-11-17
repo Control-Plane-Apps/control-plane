@@ -10,6 +10,7 @@ import {
   setTaskWeekStartsOn,
   taskPeriodFor,
   TaskId,
+  taskHandoffDeliveryId,
   ThreadId,
   type AssistantSettings,
   type OrchestrationCommand,
@@ -18,6 +19,7 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -48,6 +50,7 @@ import {
 } from "./taskHandlers.ts";
 import {
   AgentsToolkit,
+  TaskBulkResult,
   TaskDeleteResult,
   TaskIntentSetResult,
   TaskListResult,
@@ -55,7 +58,10 @@ import {
   TaskReorderResult,
   TaskRestoreResult,
   TaskUpdateResult,
+  type TaskBulkInput,
   type TaskDeleteInput,
+  type TaskHandoffInput,
+  type TaskProposalRespondInput,
   type TaskIntentSetInput,
   type TaskListInput,
   type TaskProposeInput,
@@ -316,6 +322,18 @@ const tools = {
   reorder: (caller: ThreadId, params: TaskReorderInput) =>
     Effect.flatMap(AgentsToolkit, (toolkit) =>
       call(toolkit.handle("cp_task_reorder", params), TaskReorderResult, caller),
+    ),
+  bulk: (caller: ThreadId, params: TaskBulkInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_bulk", params), TaskBulkResult, caller),
+    ),
+  respond: (caller: ThreadId, params: TaskProposalRespondInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_proposal_respond", params), TaskBulkResult, caller),
+    ),
+  handoff: (caller: ThreadId, params: TaskHandoffInput) =>
+    Effect.flatMap(AgentsToolkit, (toolkit) =>
+      call(toolkit.handle("cp_task_handoff", params), TaskBulkResult, caller),
     ),
   propose: (caller: ThreadId, params: TaskProposeInput) =>
     Effect.flatMap(AgentsToolkit, (toolkit) =>
@@ -979,13 +997,11 @@ describe("cp_task_delete and cp_task_restore", () => {
           expect(tags).toEqual(Array(4).fill("TaskAccessDeniedError"));
         }
         useAssistant({ tasks: "edit" });
-        const proposal = yield* tools.propose(ACME_COORD, { title: "Approve copy" });
-        expect(
-          (yield* errorOf(tools.delete(ACME_COORD, { taskId: proposal.task.id }))).message,
-        ).toMatch(/Only the Assistant/);
-        expect(
-          (yield* errorOf(tools.delete(ASSISTANT, { taskId: proposal.task.id }))).message,
-        ).toMatch(/still a proposal/);
+        const coordinator = yield* errorOf(
+          tools.delete(ACME_COORD, { taskId: TaskId.make("lift-sat") }),
+        );
+        expect(coordinator.tag).toBe("TaskAccessDeniedError");
+        expect(coordinator.message).toMatch(/coordinator deletes only its own Project's proposals/);
         expect(yield* storedTask("lift-sat")).toBeDefined();
       }),
     ),
@@ -1079,7 +1095,7 @@ describe("cp_task_reorder", () => {
         const message = (params: TaskReorderInput) =>
           Effect.map(errorOf(tools.reorder(ASSISTANT, params)), (error) => error.message);
         expect(
-          yield* message({ taskId: TaskId.make("b1"), beforeTaskId: TaskId.make("run-fri") }),
+          yield* message({ orderedTaskIds: [TaskId.make("b1"), TaskId.make("run-fri")] }),
         ).toMatch(/another list/);
         expect(yield* message({ taskId: TaskId.make("b1") })).toMatch(/exactly one/);
         expect(
@@ -1243,7 +1259,7 @@ describe("repeating tasks, links and intents (Lucive parity)", () => {
         const own = yield* tools.propose(ACME_COORD, { title: "Approve copy", when: "today" });
         expect(
           (yield* errorOf(tools.update(ACME_COORD, { taskId: own.task.id, links: null }))).message,
-        ).toMatch(/repeat or links/);
+        ).toMatch(/repeat, links/);
         const relinked = yield* tools.update(ASSISTANT, {
           taskId: TaskId.make("user-task"),
           links: { threadId: ACME_STANDING },
@@ -1420,6 +1436,621 @@ describe("repeat end conditions and the user's Delete (Lucive parity)", () => {
           }),
         );
         expect(plain._tag).toBe("Failure");
+      }),
+    ),
+  );
+});
+
+describe("proposals: withdraw, edit, add and dismiss", () => {
+  it.effect("the Assistant withdraws its own proposal and any other, and can restore one", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit", newTasks: "propose" });
+        const mine = yield* tools.propose(ASSISTANT, { title: "Call the bank" });
+        const withdrawn = yield* tools.delete(ASSISTANT, { taskId: mine.task.id });
+        expect(withdrawn.withdrawn).toBe(true);
+        expect(yield* storedTask(mine.task.id)).toBeUndefined();
+        const restored = yield* tools.restore(ASSISTANT, { taskId: mine.task.id });
+        expect(restored.task.proposal?.acceptedAt).toBeUndefined();
+        expect(restored.task.title).toBe("Call the bank");
+        const theirs = yield* tools.propose(ACME_COORD, { title: "Approve copy" });
+        yield* tools.delete(ASSISTANT, { taskId: theirs.task.id });
+        expect(yield* storedTask(theirs.task.id)).toBeUndefined();
+        const scoped = yield* errorOf(
+          tools.delete(ASSISTANT, { taskId: mine.task.id, scope: "series" }),
+        );
+        expect(scoped.message).toMatch(/does not repeat/);
+      }),
+    ),
+  );
+
+  it.effect("a coordinator withdraws and edits only its own Project's proposals", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        const own = yield* tools.propose(ACME_COORD, { title: "Approve copy" });
+        const other = yield* tools.propose(OTHER_COORD, { title: "Sign NDA" });
+        const edited = yield* tools.update(ACME_COORD, {
+          taskId: own.task.id,
+          title: "Approve email copy",
+          notes: "v2",
+          when: "tomorrow",
+        });
+        expect(edited.task).toMatchObject({ title: "Approve email copy", notes: "v2" });
+        const denied = yield* errorOf(tools.delete(ACME_COORD, { taskId: other.task.id }));
+        expect(denied.tag).toBe("TaskAccessDeniedError");
+        expect((yield* tools.delete(ACME_COORD, { taskId: own.task.id })).withdrawn).toBe(true);
+        expect(yield* storedTask(own.task.id)).toBeUndefined();
+        expect(yield* storedTask(other.task.id)).toBeDefined();
+        // Once the user adds it, it is theirs: the coordinator can no longer delete it.
+        const later = yield* tools.propose(ACME_COORD, { title: "Review pricing" });
+        yield* dispatch({
+          type: "task.proposal.respond",
+          commandId: cid(),
+          taskId: later.task.id,
+          accept: true,
+          createdAt: SEEDED_AT,
+        });
+        expect((yield* errorOf(tools.delete(ACME_COORD, { taskId: later.task.id }))).tag).toBe(
+          "TaskAccessDeniedError",
+        );
+        // And it never adds or dismisses proposals.
+        const respond = yield* errorOf(
+          tools.respond(ACME_COORD, { taskIds: [other.task.id], accept: true }),
+        );
+        expect(respond.tag).toBe("TaskAccessDeniedError");
+        expect(respond.message).toMatch(/withdraw it with cp_task_delete/);
+      }),
+    ),
+  );
+
+  it.effect("the Assistant adds or dismisses proposals by id or by Project (Add all)", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        const one = yield* tools.propose(ACME_COORD, { title: "One" });
+        const two = yield* tools.propose(ACME_COORD, { title: "Two" });
+        const other = yield* tools.propose(OTHER_COORD, { title: "Other" });
+        const added = yield* tools.respond(ASSISTANT, {
+          taskIds: [one.task.id],
+          accept: true,
+          date: "2026-11-16",
+          reminderTime: "09:00",
+        });
+        expect(added.succeeded).toBe(1);
+        expect(added.results[0]?.task?.proposal?.acceptedAt).toBeDefined();
+        expect(added.results[0]?.task?.home).toEqual({
+          kind: "date",
+          date: "2026-11-16",
+          reminderTime: "09:00",
+        });
+        // Already added: reported, the rest still done.
+        const again = yield* tools.respond(ASSISTANT, {
+          taskIds: [one.task.id, two.task.id],
+          accept: true,
+        });
+        expect(again).toMatchObject({ succeeded: 1, failed: 1 });
+        expect(again.results[0]?.error).toMatch(/not a proposal waiting/);
+        const dismissed = yield* tools.respond(ASSISTANT, { projectId: OTHER, accept: false });
+        expect(dismissed.results.map((entry) => entry.taskId)).toEqual([other.task.id]);
+        expect(dismissed.results[0]?.task).toBeNull();
+        expect(yield* storedTask(other.task.id)).toBeUndefined();
+        expect(
+          (yield* errorOf(tools.respond(ASSISTANT, { projectId: OTHER, accept: true }))).message,
+        ).toMatch(/no proposals waiting/);
+        expect(
+          (yield* errorOf(
+            tools.respond(ASSISTANT, { taskIds: [two.task.id], accept: false, when: "today" }),
+          )).message,
+        ).toMatch(/only with accept/);
+        useAssistant({ tasks: "read" });
+        expect(
+          (yield* errorOf(tools.respond(ASSISTANT, { projectId: ACME, accept: true }))).tag,
+        ).toBe("TaskAccessDeniedError");
+      }),
+    ),
+  );
+
+  it.effect("the decider keeps add and dismiss from coordinators, and withdraws per Project", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        const own = yield* tools.propose(ACME_COORD, { title: "Approve copy" });
+        const respond = yield* Effect.exit(
+          dispatch({
+            type: "task.agent.respond",
+            commandId: cid(),
+            taskId: own.task.id,
+            actorThreadId: ACME_COORD,
+            accept: true,
+            createdAt: SEEDED_AT,
+          }),
+        );
+        expect(respond._tag).toBe("Failure");
+        const withdraw = yield* Effect.exit(
+          dispatch({
+            type: "task.agent.delete",
+            commandId: cid(),
+            taskId: own.task.id,
+            actorThreadId: OTHER_COORD,
+            createdAt: SEEDED_AT,
+          }),
+        );
+        expect(withdraw._tag).toBe("Failure");
+        const handoff = yield* Effect.exit(
+          dispatch({
+            type: "task.agent.handoff",
+            commandId: cid(),
+            taskId: TaskId.make("user-task"),
+            actorThreadId: ACME_COORD,
+            handoff: null,
+            createdAt: SEEDED_AT,
+          }),
+        );
+        expect(handoff._tag).toBe("Failure");
+        expect(yield* storedTask(own.task.id)).toBeDefined();
+      }),
+    ),
+  );
+
+  it.effect("cp_task_list finds waiting proposals and handed-off tasks", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        const proposal = yield* tools.propose(ACME_COORD, { title: "Approve copy" });
+        const waiting = yield* tools.list(ASSISTANT, { proposed: true });
+        expect(waiting.tasks.map((task) => task.id)).toEqual([proposal.task.id]);
+        const listed = yield* tools.list(ASSISTANT, { proposed: false });
+        expect(listed.tasks.map((task) => task.id)).toEqual(["user-task"]);
+        yield* tools.handoff(ASSISTANT, { taskIds: [TaskId.make("user-task")], to: "assistant" });
+        const handed = yield* tools.list(ASSISTANT, { handedOff: true });
+        expect(handed.tasks.map((task) => task.id)).toEqual(["user-task"]);
+      }),
+    ),
+  );
+});
+
+describe("cp_task_handoff", () => {
+  it.effect("hands tasks to the Assistant, a coordinator or an agent, and clears it", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        yield* addTask(
+          "t2",
+          "Book flights",
+          { kind: "backlog", horizon: null },
+          {
+            links: { projectId: ACME },
+          },
+        );
+        // The coordinator of the task's linked Project by default.
+        const toCoordinator = yield* tools.handoff(ASSISTANT, {
+          taskIds: [TaskId.make("t2"), TaskId.make("user-task")],
+          to: "coordinator",
+        });
+        expect(toCoordinator.results[0]?.task?.handoff).toMatchObject({ threadId: ACME_COORD });
+        expect(toCoordinator.results[1]?.error).toMatch(/no Project/);
+        const named = yield* tools.handoff(ASSISTANT, {
+          taskIds: [TaskId.make("user-task")],
+          to: "coordinator",
+          projectId: OTHER,
+        });
+        expect(named.results[0]?.task?.handoff).toMatchObject({ threadId: OTHER_COORD });
+        const toAssistant = yield* tools.handoff(ASSISTANT, {
+          taskIds: [TaskId.make("user-task"), TaskId.make("t2")],
+          to: "assistant",
+        });
+        expect(toAssistant.succeeded).toBe(2);
+        expect((yield* storedTask("user-task"))?.handoff).toMatchObject({
+          kind: "coordinator",
+          threadId: ASSISTANT,
+        });
+        const toAgent = yield* tools.handoff(ASSISTANT, {
+          taskIds: [TaskId.make("t2")],
+          to: "agent",
+          threadId: ACME_STANDING,
+        });
+        expect(toAgent.results[0]?.task?.handoff).toMatchObject({
+          kind: "agent",
+          threadId: ACME_STANDING,
+        });
+        const cleared = yield* tools.handoff(ASSISTANT, {
+          taskIds: [TaskId.make("t2"), TaskId.make("user-task")],
+          to: "none",
+        });
+        expect(cleared.succeeded).toBe(2);
+        expect((yield* storedTask("t2"))?.handoff).toBeUndefined();
+        expect((yield* storedTask("user-task"))?.handoff).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("refuses coordinators, read-only access, proposals and bad targets", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        const proposal = yield* tools.propose(ACME_COORD, { title: "Approve copy" });
+        const result = yield* tools.handoff(ASSISTANT, {
+          taskIds: [proposal.task.id],
+          to: "assistant",
+        });
+        expect(result.results[0]?.error).toMatch(/Add the proposed task/);
+        expect(
+          (yield* errorOf(
+            tools.handoff(ASSISTANT, { taskIds: [TaskId.make("user-task")], to: "agent" }),
+          )).message,
+        ).toMatch(/threadId/);
+        expect(
+          (yield* errorOf(
+            tools.handoff(ACME_COORD, { taskIds: [TaskId.make("user-task")], to: "assistant" }),
+          )).tag,
+        ).toBe("TaskAccessDeniedError");
+        useAssistant({ tasks: "read" });
+        expect(
+          (yield* errorOf(
+            tools.handoff(ASSISTANT, { taskIds: [TaskId.make("user-task")], to: "none" }),
+          )).tag,
+        ).toBe("TaskAccessDeniedError");
+      }),
+    ),
+  );
+});
+
+describe("handoff messages", () => {
+  const messagesOf = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{
+        readonly id: string;
+        readonly role: string;
+        readonly text: string;
+        readonly source: string | null;
+      }>`
+        SELECT message_id AS id, role, text, source_json AS source
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId} AND message_id LIKE '%:task-handoff:%'
+        ORDER BY rowid
+      `;
+      return rows.map((row) => ({
+        ...row,
+        source: row.source === null ? undefined : (JSON.parse(row.source) as object),
+      }));
+    });
+
+  it.effect("cp_task_handoff sends each receiving thread one message, never the caller", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        yield* addTask(
+          "t2",
+          "Book flights",
+          { kind: "date", date: "2026-11-20" },
+          {
+            notes: "Window seat",
+            links: { projectId: ACME },
+          },
+        );
+        yield* addTask(
+          "t3",
+          "Pick hotel",
+          { kind: "backlog", horizon: null },
+          {
+            links: { projectId: ACME },
+          },
+        );
+        const toCoordinator = yield* tools.handoff(ASSISTANT, {
+          taskIds: [TaskId.make("t2"), TaskId.make("t3")],
+          to: "coordinator",
+        });
+        expect(toCoordinator.delivered).toEqual([ACME_COORD]);
+        const [message] = yield* messagesOf(ACME_COORD);
+        expect(message?.id).toMatch(/^cp-send:acme-coord:task-handoff:/);
+        expect(message?.text).toContain("these 2 tasks");
+        expect(message?.text).toContain("- Book flights (task t2)");
+        expect(message?.text).toContain("Home: 2026-11-20");
+        expect(message?.text).toContain("Project acme (acme)");
+        expect(message?.text).toContain("Notes: Window seat");
+        expect(message?.text).toContain("- Pick hotel (task t3)");
+        expect(message?.text).toContain("Home: the general backlog");
+        // The Assistant handing tasks to itself sends nothing.
+        const self = yield* tools.handoff(ASSISTANT, {
+          taskIds: [TaskId.make("user-task")],
+          to: "assistant",
+        });
+        expect(self.delivered).toBeUndefined();
+        expect(yield* messagesOf(ASSISTANT)).toEqual([]);
+        // From a pinned channel, the Assistant's thread gets it, from that channel.
+        const fromChannel = yield* tools.handoff(ASSISTANT_CHANNEL, {
+          taskIds: [TaskId.make("user-task")],
+          to: "assistant",
+        });
+        expect(fromChannel.delivered).toEqual([ASSISTANT]);
+        const [handed] = yield* messagesOf(ASSISTANT);
+        expect(handed?.text).toContain("- Renew passport (task user-task)");
+        expect(handed?.source).toMatchObject({ kind: "agent", threadId: ASSISTANT_CHANNEL });
+        // Clearing sends nothing.
+        const cleared = yield* tools.handoff(ASSISTANT_CHANNEL, {
+          taskIds: [TaskId.make("user-task")],
+          to: "none",
+        });
+        expect(cleared.delivered).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("the user's Hand to Assistant sends the batch once, on its last handoff", () =>
+    run(
+      Effect.gen(function* () {
+        yield* addTask("t2", "Book flights", { kind: "backlog", horizon: null });
+        const handoff = { kind: "coordinator", threadId: ASSISTANT, at: SEEDED_AT } as const;
+        yield* dispatch({
+          type: "task.handoff",
+          commandId: cid(),
+          taskId: TaskId.make("user-task"),
+          handoff,
+          createdAt: SEEDED_AT,
+        });
+        const delivery = taskHandoffDeliveryId(ASSISTANT, "batch-1");
+        yield* dispatch({
+          type: "task.handoff",
+          commandId: CommandId.make(delivery),
+          taskId: TaskId.make("t2"),
+          handoff,
+          deliver: { taskIds: [TaskId.make("user-task"), TaskId.make("t2")] },
+          createdAt: SEEDED_AT,
+        });
+        const messages = yield* messagesOf(ASSISTANT);
+        expect(messages.map((message) => message.id)).toEqual([delivery]);
+        expect(messages[0]?.role).toBe("user");
+        expect(messages[0]?.source).toBeUndefined();
+        expect(messages[0]?.text).toContain("Renew passport (task user-task)");
+        expect((yield* storedTask("t2"))?.handoff?.threadId).toBe(ASSISTANT);
+      }),
+    ),
+  );
+
+  it.effect("the decider refuses a delivery that is malformed, and saves nothing", () =>
+    run(
+      Effect.gen(function* () {
+        const handoff = { kind: "coordinator", threadId: ASSISTANT, at: SEEDED_AT } as const;
+        const attempt = (overrides: object) =>
+          Effect.exit(
+            dispatch({
+              type: "task.handoff",
+              commandId: CommandId.make(taskHandoffDeliveryId(ASSISTANT, `x-${cid()}`)),
+              taskId: TaskId.make("user-task"),
+              handoff,
+              deliver: { taskIds: [TaskId.make("user-task")] },
+              createdAt: SEEDED_AT,
+              ...overrides,
+            } as OrchestrationCommand),
+          );
+        // A plain command id: the delivery ledger could not track the message.
+        expect((yield* attempt({ commandId: cid() }))._tag).toBe("Failure");
+        // The batch must include this task, and every task must exist.
+        expect((yield* attempt({ deliver: { taskIds: [TaskId.make("nope")] } }))._tag).toBe(
+          "Failure",
+        );
+        // Clearing a handoff sends nothing.
+        expect((yield* attempt({ handoff: null }))._tag).toBe("Failure");
+        expect((yield* storedTask("user-task"))?.handoff).toBeUndefined();
+        expect(yield* messagesOf(ASSISTANT)).toEqual([]);
+      }),
+    ),
+  );
+});
+
+describe("cp_task_bulk", () => {
+  it.effect("moves, completes, reopens, cancels, deletes and restores many tasks", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        useAssistant({ tasks: "edit" });
+        const ids = [TaskId.make("run-fri"), TaskId.make("lift-sat"), TaskId.make("old")];
+        const moved = yield* tools.bulk(ASSISTANT, {
+          taskIds: ids,
+          action: "move",
+          date: "2026-11-20",
+        });
+        expect(moved.succeeded).toBe(3);
+        for (const id of ids) {
+          expect((yield* storedTask(id))?.home).toEqual({ kind: "date", date: "2026-11-20" });
+        }
+        const done = yield* tools.bulk(ASSISTANT, { taskIds: ids, action: "complete" });
+        expect(done.results.map((entry) => entry.task?.status)).toEqual(Array(3).fill("completed"));
+        yield* tools.bulk(ASSISTANT, { taskIds: ids, action: "reopen" });
+        expect((yield* storedTask("old"))?.status).toBe("todo");
+        yield* tools.bulk(ASSISTANT, { taskIds: [ids[0]!], action: "cancel" });
+        expect((yield* storedTask("run-fri"))?.status).toBe("cancelled");
+        const deleted = yield* tools.bulk(ASSISTANT, {
+          taskIds: [...ids, TaskId.make("missing")],
+          action: "delete",
+        });
+        expect(deleted).toMatchObject({ succeeded: 3, failed: 1 });
+        expect(deleted.results[3]?.error).toMatch(/no longer exists/);
+        for (const id of ids) expect(yield* storedTask(id)).toBeUndefined();
+        const restored = yield* tools.bulk(ASSISTANT, { taskIds: ids, action: "restore" });
+        expect(restored.succeeded).toBe(3);
+        expect((yield* storedTask("lift-sat"))?.notes).toBe("Upper body");
+      }),
+    ),
+  );
+
+  it.effect("applies a delete scope to the repeating tasks among them only", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit", newTasks: "create" });
+        const series = yield* tools.propose(ASSISTANT, {
+          title: "Stretch",
+          date: "2026-11-13",
+          recurrence: { frequency: "daily", interval: 1 },
+        });
+        const result = yield* tools.bulk(ASSISTANT, {
+          taskIds: [series.task.id, TaskId.make("user-task")],
+          action: "delete",
+          scope: "series",
+        });
+        expect(result.succeeded).toBe(2);
+        const model = yield* (yield* ProjectionSnapshotQuery).getCommandReadModel();
+        expect((model.tasks ?? []).filter((task) => task.title === "Stretch")).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("lets a coordinator move and withdraw only its own proposals", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        const one = yield* tools.propose(ACME_COORD, { title: "One" });
+        const two = yield* tools.propose(ACME_COORD, { title: "Two" });
+        const moved = yield* tools.bulk(ACME_COORD, {
+          taskIds: [one.task.id, two.task.id, TaskId.make("user-task")],
+          action: "move",
+          when: "next-week",
+        });
+        expect(moved).toMatchObject({ succeeded: 2, failed: 1 });
+        const withdrawn = yield* tools.bulk(ACME_COORD, {
+          taskIds: [one.task.id, two.task.id],
+          action: "delete",
+        });
+        expect(withdrawn.succeeded).toBe(2);
+        expect(
+          (yield* errorOf(
+            tools.bulk(ACME_COORD, { taskIds: [TaskId.make("user-task")], action: "complete" }),
+          )).tag,
+        ).toBe("TaskAccessDeniedError");
+      }),
+    ),
+  );
+
+  it.effect("refuses malformed requests and read-only access", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        const id = TaskId.make("user-task");
+        const message = (params: TaskBulkInput) =>
+          Effect.map(errorOf(tools.bulk(ASSISTANT, params)), (error) => error.message);
+        expect(yield* message({ taskIds: [id], action: "move" })).toMatch(/needs a home/);
+        expect(yield* message({ taskIds: [id], action: "complete", when: "today" })).toMatch(
+          /only with action move/,
+        );
+        expect(yield* message({ taskIds: [id], action: "complete", scope: "series" })).toMatch(
+          /only with delete/,
+        );
+        expect(yield* message({ taskIds: [id, id], action: "complete" })).toMatch(/only once/);
+        useAssistant({ tasks: "read" });
+        expect(
+          (yield* errorOf(tools.bulk(ASSISTANT, { taskIds: [id], action: "complete" }))).tag,
+        ).toBe("TaskAccessDeniedError");
+      }),
+    ),
+  );
+});
+
+describe("cp_task_reorder across lists", () => {
+  it.effect("moves a task next to an anchor in another list, keeping its reminder", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        useAssistant({ tasks: "edit" });
+        yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("lift-sat"),
+          reminderTime: "07:00",
+        });
+        yield* addTask("fri-2", "Groceries", day("2026-11-13"), { orderKey: "t" });
+        const result = yield* tools.reorder(ASSISTANT, {
+          taskId: TaskId.make("lift-sat"),
+          beforeTaskId: TaskId.make("fri-2"),
+        });
+        // run-fri has no order key yet, so it sorts after the arranged ones.
+        expect(result.tasks.map((task) => task.id)).toEqual(["lift-sat", "fri-2", "run-fri"]);
+        expect((yield* storedTask("lift-sat"))?.home).toEqual({
+          kind: "date",
+          date: "2026-11-13",
+          reminderTime: "07:00",
+        });
+      }),
+    ),
+  );
+
+  it.effect("moves a task to a home at its top or bottom", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedWeek;
+        useAssistant({ tasks: "edit" });
+        const top = yield* tools.reorder(ASSISTANT, {
+          taskId: TaskId.make("old"),
+          when: "today",
+          position: "top",
+        });
+        expect(top.tasks.map((task) => task.id)).toEqual(["old", "run-fri"]);
+        const bottom = yield* tools.reorder(ASSISTANT, {
+          taskId: TaskId.make("someday"),
+          when: "today",
+          position: "bottom",
+        });
+        expect(bottom.tasks.map((task) => task.id)).toEqual(["old", "run-fri", "someday"]);
+        // Already in that list: only the position changes.
+        const again = yield* tools.reorder(ASSISTANT, {
+          taskId: TaskId.make("someday"),
+          when: "today",
+          position: "top",
+        });
+        expect(again.tasks.map((task) => task.id)).toEqual(["someday", "old", "run-fri"]);
+        const message = (params: TaskReorderInput) =>
+          Effect.map(errorOf(tools.reorder(ASSISTANT, params)), (error) => error.message);
+        expect(yield* message({ taskId: TaskId.make("old"), when: "today" })).toMatch(/position/);
+        expect(
+          yield* message({
+            taskId: TaskId.make("old"),
+            when: "today",
+            position: "top",
+            beforeTaskId: TaskId.make("run-fri"),
+          }),
+        ).toMatch(/without an anchor/);
+      }),
+    ),
+  );
+
+  it.effect("keeps a repeating task on days", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit", newTasks: "create" });
+        const series = yield* tools.propose(ASSISTANT, {
+          title: "Stretch",
+          date: "2026-11-13",
+          recurrence: { frequency: "daily", interval: 1 },
+        });
+        const error = yield* errorOf(
+          tools.reorder(ASSISTANT, { taskId: series.task.id, when: "this-week", position: "top" }),
+        );
+        expect(error.message).toMatch(/only between days/);
+      }),
+    ),
+  );
+});
+
+describe("cp_task_update completion prompt", () => {
+  it.effect("answers Not yet and shows the prompt again; coordinators cannot", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        const dismissed = yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("user-task"),
+          completionPromptDismissed: true,
+        });
+        expect(dismissed.task.completionPromptDismissedAt).toBeDefined();
+        const shown = yield* tools.update(ASSISTANT, {
+          taskId: TaskId.make("user-task"),
+          completionPromptDismissed: false,
+        });
+        expect(shown.task.completionPromptDismissedAt).toBeUndefined();
+        const own = yield* tools.propose(ACME_COORD, { title: "Approve copy" });
+        expect(
+          (yield* errorOf(
+            tools.update(ACME_COORD, { taskId: own.task.id, completionPromptDismissed: true }),
+          )).message,
+        ).toMatch(/completion prompt/);
       }),
     ),
   );

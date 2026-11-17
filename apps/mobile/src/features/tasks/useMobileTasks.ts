@@ -27,6 +27,7 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Alert, AppState } from "react-native";
 
+import type { HandoffDelivery } from "@t3tools/client-runtime/state/projects";
 import { uuidv4 } from "../../lib/uuid";
 import { environmentCatalog } from "../../connection/catalog";
 import { useProjects, useServerConfigs } from "../../state/entities";
@@ -305,9 +306,22 @@ export function useTaskActions(
         run(accept ? `Could not add ${task.title}` : `Could not dismiss ${task.title}`, (id) =>
           respond({ environmentId: id, input: { taskId: task.id, accept } }),
         ),
-      handOff: (task: Pick<Task, "id" | "title">, handoff: TaskHandoff | null) =>
+      handOff: (
+        task: Pick<Task, "id" | "title">,
+        handoff: TaskHandoff | null,
+        delivery?: HandoffDelivery,
+      ) =>
         run(`Could not hand off ${task.title}`, (id) =>
-          handOff({ environmentId: id, input: { taskId: task.id, handoff } }),
+          handOff({
+            environmentId: id,
+            input: {
+              taskId: task.id,
+              handoff,
+              ...(delivery !== undefined
+                ? { commandId: delivery.commandId, deliver: { taskIds: delivery.taskIds } }
+                : {}),
+            },
+          }),
         ),
       setIntent: (horizon: TaskHorizon, startsOn: string, text: string) =>
         run("Could not save the intent", (id) =>
@@ -363,7 +377,11 @@ function cloudActions() {
       Alert.alert(`Could not answer ${task.title}`, NEEDS_MAC);
       return false;
     },
-    handOff: async (task: Pick<Task, "id" | "title">, _handoff: TaskHandoff | null) => {
+    handOff: async (
+      task: Pick<Task, "id" | "title">,
+      _handoff: TaskHandoff | null,
+      _delivery?: HandoffDelivery,
+    ) => {
       Alert.alert(`Could not hand off ${task.title}`, NEEDS_MAC);
       return false;
     },

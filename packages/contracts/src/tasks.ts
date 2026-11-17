@@ -399,3 +399,86 @@ export function localTaskDate(nowMs: number): TaskLocalDate {
     day: "2-digit",
   }).format(nowMs);
 }
+
+/** A handoff message also carries these tasks, sent once for a batch. */
+export const TaskHandoffDelivery = Schema.Struct({
+  taskIds: Schema.Array(TaskId).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+});
+export type TaskHandoffDelivery = typeof TaskHandoffDelivery.Type;
+
+/** Names a handoff message shows for a task's links, when known. */
+export interface TaskHandoffNames {
+  readonly project?: (projectId: string) => string | undefined;
+  readonly thread?: (threadId: string) => string | undefined;
+  readonly workstream?: (projectId: string, statusId: string) => string | undefined;
+}
+
+/** Where a task lives, in words, for a handoff message. */
+export function describeTaskHome(home: TaskHome): string {
+  switch (home.kind) {
+    case "date":
+      return home.reminderTime !== undefined
+        ? `${home.date}, reminder ${home.reminderTime}`
+        : home.date;
+    case "period":
+      return `the ${home.horizon} ${home.startsOn} to ${home.endsOn}`;
+    case "backlog":
+      return home.horizon === null ? "the general backlog" : `the ${home.horizon} backlog`;
+  }
+}
+
+/**
+ * The message a task handoff sends to the receiving thread: every task's id,
+ * title, notes, home and links, so the receiver can route it with the task
+ * tools.
+ */
+export function taskHandoffMessage(
+  tasks: ReadonlyArray<Pick<Task, "id" | "title" | "notes" | "home" | "links" | "recurrence">>,
+  names: TaskHandoffNames = {},
+): string {
+  const one = tasks.length === 1;
+  const lines = [
+    one
+      ? "Task handoff: the user handed you this task from Tasks."
+      : `Task handoff: the user handed you these ${tasks.length} tasks from Tasks.`,
+    "Route each one: do it, hand it to the right agent or coordinator, or tell the user what it needs. Use the task id with the cp_task_* tools (complete it with cp_task_update when it is done).",
+  ];
+  for (const task of tasks) {
+    lines.push("", `- ${task.title} (task ${task.id})`);
+    lines.push(`  Home: ${describeTaskHome(task.home)}${task.recurrence ? ", repeating" : ""}`);
+    const links = task.links;
+    if (links !== undefined) {
+      const parts: string[] = [];
+      if (links.projectId !== undefined) {
+        const title = names.project?.(links.projectId);
+        parts.push(`Project ${title ?? links.projectId} (${links.projectId})`);
+      }
+      if (links.threadId !== undefined) {
+        const title = names.thread?.(links.threadId);
+        parts.push(`thread ${title ?? links.threadId} (${links.threadId})`);
+      }
+      if (links.statusId !== undefined && links.projectId !== undefined) {
+        const title = names.workstream?.(links.projectId, links.statusId);
+        parts.push(`workstream ${title ?? links.statusId} (${links.statusId})`);
+      }
+      if (parts.length > 0) lines.push(`  Links: ${parts.join("; ")}`);
+    }
+    if (task.notes !== undefined) {
+      lines.push(`  Notes: ${task.notes.replace(/\n+/g, " / ")}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Command id of a handoff that delivers, and the id of the message it sends:
+ * a held send (`cp-send:`), started once the receiving thread is idle. The
+ * delivery ledger needs the two ids equal.
+ */
+export function taskHandoffDeliveryId(threadId: string, uuid: string): string {
+  return `cp-send:${threadId}:task-handoff:${uuid}`;
+}
+
+export function isTaskHandoffDeliveryId(id: string, threadId: string): boolean {
+  return id.startsWith(`cp-send:${threadId}:task-handoff:`);
+}
