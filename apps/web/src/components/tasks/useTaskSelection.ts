@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export interface TaskSelectionClickEvent {
   readonly shiftKey: boolean;
@@ -61,6 +61,26 @@ export function useTaskSelection(orderedIds: readonly string[]) {
   const pruned = pruneTaskSelection(state, orderedIds);
   if (pruned !== state) setState(pruned);
   const clear = useCallback(() => setState(emptyTaskSelection()), []);
+  useEffect(() => {
+    if (pruned.selected.size === 0) return;
+    const outside = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const row = target.closest("[data-task-id]");
+      if (row !== null && orderedIds.includes(row.getAttribute("data-task-id") ?? "")) return;
+      // Selection actions and their portaled menus must retain the selection
+      // until the command has consumed it.
+      if (
+        target.closest(
+          '[aria-label="Selected task actions"], [role="menu"], [role="dialog"], [data-base-ui-portal]',
+        )
+      )
+        return;
+      clear();
+    };
+    document.addEventListener("click", outside, true);
+    return () => document.removeEventListener("click", outside, true);
+  }, [clear, orderedIds, pruned.selected.size]);
   const handleRowClick = useCallback(
     (id: string, event: TaskSelectionClickEvent) => {
       setState((current) => selectTask(current, orderedIds, id, event));

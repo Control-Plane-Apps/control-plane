@@ -291,7 +291,7 @@ export function TaskRow(props: {
         setNodeRef(node);
       }}
       data-task-expanded={expanded || undefined}
-      data-selected={props.selected || undefined}
+      data-selected={(!expanded && props.selected) || undefined}
       onMouseEnter={() => props.onHover?.(true)}
       onMouseLeave={() => props.onHover?.(false)}
       onClick={(event) => {
@@ -314,7 +314,7 @@ export function TaskRow(props: {
           return;
         props.onToggleExpanded();
       }}
-      className="group/task relative list-none rounded-lg transition-colors duration-700 data-[highlighted=true]:bg-primary/10 data-[selected=true]:bg-primary/10"
+      className="group/task relative list-none"
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
@@ -326,10 +326,10 @@ export function TaskRow(props: {
     >
       <div
         className={cn(
-          "relative -mx-6 flex flex-col rounded-lg px-6",
+          "relative flex flex-col rounded-lg transition-colors duration-150",
           expanded
-            ? "my-1.5 border border-border bg-card py-2.5 shadow-sm"
-            : "py-1.5 hover:bg-accent/30",
+            ? "-mx-6 my-1.5 border border-border bg-card px-6 py-2.5 shadow-sm"
+            : "-mx-2 my-0.5 px-2 py-2 hover:bg-accent/30 group-data-[selected=true]/task:bg-accent/30 group-data-[highlighted=true]/task:bg-accent/30",
         )}
       >
         <div className="flex min-w-0 items-center gap-2.5">
@@ -342,8 +342,9 @@ export function TaskRow(props: {
               aria-label={`Reorder ${task.title}`}
               disabled={!dragEnabled}
               className={cn(
-                "absolute left-1 inline-flex size-4.5 cursor-grab items-center justify-center rounded text-muted-foreground/60 opacity-0 outline-none",
+                "absolute inline-flex size-4.5 cursor-grab items-center justify-center rounded text-muted-foreground/60 opacity-0 outline-none",
                 "group-hover/task:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
+                expanded ? "left-1" : "-left-4",
                 (expanded || isDragging) && "opacity-100",
               )}
               onClick={(event) => event.stopPropagation()}
