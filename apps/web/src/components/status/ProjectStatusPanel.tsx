@@ -109,7 +109,8 @@ export function ProjectStatusPanel(
   );
 }
 
-function ProjectStatusPanelContent(
+/** The board itself, for callers that check availability on their own (the Assistant). */
+export function ProjectStatusPanelContent(
   props: {
     readonly threadRef: ScopedThreadRef;
     readonly project: EnvironmentProject;

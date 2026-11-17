@@ -325,6 +325,18 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     assert.deepEqual(migrated.removed, ["thread.jump.8", "thread.jump.9"]);
   });
 
+  it("drops the retired Assistant rail toggle but keeps a rebound one", () => {
+    const dropped = Keybindings.migrateMovedDefaultKeybindings([
+      { key: "mod+alt+s", command: "assistant.toggleRail", when: "!terminalFocus" },
+    ]);
+    assert.deepEqual(dropped.config, []);
+    assert.deepEqual(dropped.removed, ["assistant.toggleRail"]);
+    const kept = Keybindings.migrateMovedDefaultKeybindings([
+      { key: "mod+shift+y", command: "assistant.toggleRail" },
+    ]);
+    assert.deepEqual(kept.removed, []);
+  });
+
   it("leaves a rebound thread jump alone while moving the rest", () => {
     const migrated = Keybindings.migrateMovedDefaultKeybindings([
       { key: "mod+alt+1", command: "thread.jump.1", when: "isDesktop" },

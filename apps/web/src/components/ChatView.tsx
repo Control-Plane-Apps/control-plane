@@ -1,6 +1,6 @@
 import { prepareImageForAttachment } from "../lib/imageCompression";
 import { useAssistantChatChrome } from "./assistant/useAssistantChatChrome";
-import { useAssistantRailStore } from "./assistant/assistantRailStore";
+import { useAssistantOverviewStore } from "./assistant/assistantOverviewStore";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -3599,7 +3599,7 @@ export default function ChatView(props: ChatViewProps) {
   ]);
   const openMemorySurfaceRef = useRef<() => void>(() => {});
   const openSchedulesSurfaceRef = useRef<() => void>(() => {});
-  // The Assistant's channels swap in their own header, rail and cards.
+  // The Assistant's channels swap in their own header, panel tabs and cards.
   const globalAssistantChrome = useAssistantChatChrome({
     project: activeProject,
     environmentId: activeThreadRef?.environmentId ?? null,
@@ -3615,7 +3615,6 @@ export default function ChatView(props: ChatViewProps) {
     rightPanelOpen,
   });
   const assistantHiddenMessageIds = globalAssistantChrome?.hiddenMessageIds ?? null;
-  const assistantRailAvailable = globalAssistantChrome !== null;
   const visibleTimelineMessages = useMemo(
     () =>
       assistantHiddenMessageIds === null || assistantHiddenMessageIds.size === 0
@@ -4818,6 +4817,27 @@ export default function ChatView(props: ChatViewProps) {
   const openStatusSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "status");
   }, [activeThreadRef]);
+  // Overview (Needs you, Working on, Today) is the Assistant's; Status is a
+  // coordinator's own board, or in the Assistant a picker over every Project's.
+  const overviewSurfaceAvailable = globalAssistantChrome !== null;
+  const statusSurfaceAvailable =
+    serverConfig?.environment.capabilities.projectStatus === true &&
+    (statusBoardEnabled || globalAssistantChrome !== null);
+  const addOverviewSurface = useCallback(() => {
+    if (activeThreadRef && overviewSurfaceAvailable) {
+      useRightPanelStore.getState().open(activeThreadRef, "overview");
+    }
+  }, [activeThreadRef, overviewSurfaceAvailable]);
+  // The Assistant opens on its Overview, where the rail used to sit. Once per
+  // thread: after that the tab persists or stays closed like any other.
+  useEffect(() => {
+    if (!activeThreadRef || !overviewSurfaceAvailable || shouldUseRightPanelSheet) return;
+    const threadKey = scopedThreadKey(activeThreadRef);
+    const overview = useAssistantOverviewStore.getState();
+    if (overview.seededThreadKeys.includes(threadKey)) return;
+    overview.markSeeded(threadKey);
+    useRightPanelStore.getState().open(activeThreadRef, "overview");
+  }, [activeThreadRef, overviewSurfaceAvailable, shouldUseRightPanelSheet]);
   const statusReplyTag = useStatusReplyTag(statusBoardEnabled ? activeThreadKey : null);
   // "Go with recommendation" messages already in the thread, by question version.
   const sentStatusRecommendations = useMemo(
@@ -7088,15 +7108,6 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
-      if (command === "assistant.toggleRail") {
-        // Only the Assistant has a rail; elsewhere the shortcut does nothing.
-        if (!assistantRailAvailable) return;
-        event.preventDefault();
-        event.stopPropagation();
-        useAssistantRailStore.getState().toggleCollapsed();
-        return;
-      }
-
       if (command === "rightPanel.toggleMaximized") {
         event.preventDefault();
         event.stopPropagation();
@@ -7267,7 +7278,6 @@ export default function ChatView(props: ChatViewProps) {
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
   }, [
-    assistantRailAvailable,
     activeProject,
     activeRightPanelSurface,
     activeProjectScripts,
@@ -10105,6 +10115,10 @@ export default function ChatView(props: ChatViewProps) {
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
     ) : renderedRightPanelSurface?.kind === "schedules" && activeThreadRef ? (
       <SchedulesPanel threadRef={activeThreadRef} project={activeProject} />
+    ) : renderedRightPanelSurface?.kind === "overview" ? (
+      (globalAssistantChrome?.overview ?? null)
+    ) : renderedRightPanelSurface?.kind === "status" && globalAssistantChrome ? (
+      globalAssistantChrome.statusBoard
     ) : renderedRightPanelSurface?.kind === "status" && activeThreadRef ? (
       <ProjectStatusPanel
         threadRef={activeThreadRef}
@@ -10779,7 +10793,6 @@ export default function ChatView(props: ChatViewProps) {
             ) : null}
           </div>
           {/* end chat column */}
-          {globalAssistantChrome?.rail ?? null}
         </div>
         {/* end horizontal flex container */}
 
@@ -10836,6 +10849,8 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequests={addPullRequestsSurface}
           onAddAgents={addAgentsSurface}
           onAddDevice={addDeviceSurface}
+          onAddOverview={addOverviewSurface}
+          onAddStatus={openStatusSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
@@ -10844,6 +10859,8 @@ export default function ChatView(props: ChatViewProps) {
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           agentsAvailable
           deviceAvailable={activeThreadRef !== null}
+          overviewAvailable={overviewSurfaceAvailable}
+          statusAvailable={statusSurfaceAvailable}
           liveAgentCount={agentPanelModel.liveCount}
         >
           {rightPanelContent}
@@ -10894,6 +10911,8 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequests={addPullRequestsSurface}
             onAddAgents={addAgentsSurface}
             onAddDevice={addDeviceSurface}
+            onAddOverview={addOverviewSurface}
+            onAddStatus={openStatusSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
@@ -10902,6 +10921,8 @@ export default function ChatView(props: ChatViewProps) {
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
             agentsAvailable
             deviceAvailable={activeThreadRef !== null}
+            overviewAvailable={overviewSurfaceAvailable}
+            statusAvailable={statusSurfaceAvailable}
             liveAgentCount={agentPanelModel.liveCount}
           >
             {rightPanelContent}

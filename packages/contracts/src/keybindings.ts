@@ -83,6 +83,8 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "rightPanel.toggle",
   "rightPanel.toggleMaximized",
   "rightPanel.close",
+  // Retired with the Assistant rail; kept so keybindings files that still
+  // list it decode, and the server can drop the rule on startup.
   "assistant.toggleRail",
   "pullRequest.copyNumber",
   "diff.toggle",

@@ -124,6 +124,8 @@ function renderTabs(
       onAddFiles={() => undefined}
       onAddAgents={() => undefined}
       onAddDevice={() => undefined}
+      onAddOverview={() => undefined}
+      onAddStatus={() => undefined}
       liveAgentCount={0}
       browserAvailable
       terminalAvailable={false}
@@ -133,6 +135,8 @@ function renderTabs(
       pullRequestsAvailable={false}
       agentsAvailable={false}
       deviceAvailable={false}
+      overviewAvailable={false}
+      statusAvailable={false}
     >
       <div>content</div>
     </RightPanelTabs>,

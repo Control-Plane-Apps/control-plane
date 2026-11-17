@@ -191,6 +191,22 @@ describe("rightPanelStore", () => {
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("diff");
   });
 
+  it("opens Overview and Status as singleton tabs that survive a restart", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "overview");
+    store.open(refA, "status");
+    store.open(refA, "overview");
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual(["overview", "status"]);
+    expect(state.activeSurfaceId).toBe("overview");
+    const restored = migratePersistedRightPanelState({
+      byThreadKey: useRightPanelStore.getState().byThreadKey,
+    });
+    expect(
+      selectThreadRightPanelState(restored.byThreadKey, refA).surfaces.map((s) => s.kind),
+    ).toEqual(["overview", "status"]);
+  });
+
   it("keeps manual choices scoped to their thread and environment", () => {
     const otherEnvironment = scopeThreadRef("env-2" as EnvironmentId, refA.threadId);
     const store = useRightPanelStore.getState();
