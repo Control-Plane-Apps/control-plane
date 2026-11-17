@@ -40,7 +40,10 @@ const ASSISTANT_PROJECT = {
   title: "Assistant",
   assistant: { coordinatorThreadId: "assistant-today", scope: "global" },
 };
-async function mount(expanded = false, extra: { projects?: unknown[]; task?: object } = {}) {
+async function mount(
+  expanded = false,
+  extra: { projects?: unknown[]; task?: object; selected?: boolean } = {},
+) {
   vi.stubGlobal("Element", Target);
   vi.stubGlobal("document", {
     addEventListener: (key: string, listener: (event: unknown) => void) =>
@@ -61,6 +64,7 @@ async function mount(expanded = false, extra: { projects?: unknown[]; task?: obj
     },
     state: { kind: "none" },
     expanded,
+    selected: extra.selected,
     onSelectClick,
     onToggleExpanded,
     context: {
@@ -86,6 +90,27 @@ afterEach(async () => {
 });
 
 describe("TaskRow desktop interactions", () => {
+  it("pads a neutral selected surface inside the row", async () => {
+    const { root } = await mount(false, { selected: true });
+    const row = root.findByType("li");
+    expect(row.props["data-selected"]).toBe(true);
+    expect(row.props.className).not.toContain("bg-");
+    const surface = row.findAllByType("div")[0]!;
+    expect(surface.props.className).toContain("px-2 py-2");
+    expect(surface.props.className).toContain("rounded-lg");
+    expect(surface.props.className).toContain("group-data-[selected=true]/task:bg-accent/30");
+    expect(surface.props.className).not.toContain("bg-primary");
+  });
+  it("replaces selection with the expanded card without a background on its wrapper", async () => {
+    const { root } = await mount(true, { selected: true });
+    const row = root.findByType("li");
+    expect(row.props["data-selected"]).toBeUndefined();
+    expect(row.props.className).not.toContain("bg-");
+    const surface = row.findAllByType("div")[0]!;
+    expect(surface.props.className).toContain("bg-card");
+    expect(surface.props.className).not.toContain("selected");
+    expect(surface.props.className).not.toContain("highlighted");
+  });
   it("selects the title or row whitespace without expanding, then expands on double click", async () => {
     const { root, onSelectClick, onToggleExpanded } = await mount();
     const row = root.findByType("li");

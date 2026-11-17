@@ -85,10 +85,16 @@ export function TaskMoveMenu(props: {
   readonly onPickDate: (date: string) => void;
   readonly children: ReactNode;
   readonly className?: string;
+  readonly openRequest?: number;
 }) {
   const groups = moveEntries(props.today);
   const [open, setOpen] = useState(false);
   const dateInput = useRef<HTMLInputElement>(null);
+  const [handledRequest, setHandledRequest] = useState(props.openRequest ?? 0);
+  if (props.openRequest && props.openRequest !== handledRequest) {
+    setHandledRequest(props.openRequest);
+    setOpen(true);
+  }
   return (
     <Menu open={open} onOpenChange={setOpen}>
       <MenuTrigger

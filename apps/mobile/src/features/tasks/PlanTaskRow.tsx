@@ -88,8 +88,17 @@ export const PlanTaskRow = memo(function PlanTaskRow(props: {
 
   const body = (
     <View
-      className={cn("bg-card", (selected || props.highlighted === true) && "bg-secondary")}
-      style={{ paddingVertical: 4, paddingRight: 16 }}
+      className={cn(
+        "rounded-lg bg-card",
+        !expanded && (selected || props.highlighted === true) && "bg-secondary",
+      )}
+      style={{
+        marginHorizontal: 8,
+        marginVertical: 2,
+        paddingVertical: 8,
+        paddingRight: 16,
+        paddingLeft: 2,
+      }}
     >
       <View className="flex-row items-start">
         <View className="pl-1.5">

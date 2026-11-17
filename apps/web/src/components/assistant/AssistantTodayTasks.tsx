@@ -4,9 +4,11 @@ import {
   type TaskLifecycleProject,
   type TaskLifecycleThread,
 } from "@t3tools/client-runtime/state/projects";
-import { CalendarIcon } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
+import { isCommandPaletteOpen } from "../../commandPaletteBus";
+import { openTaskQuickAdd } from "../tasks/QuickAddDialog";
+import { useTasksKeyboard } from "../tasks/useTasksKeyboard";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useTaskToday, useTasks } from "../../state/tasks";
 import { useHandToAssistant } from "../tasks/handToAssistant";
@@ -31,11 +33,29 @@ export function AssistantTodayTasks(props: { readonly onOpenTasks: () => void })
   const handToAssistant = useHandToAssistant();
   const { expandedId, toggle } = useExpandedTask();
   const { shown, more, total } = useMemo(() => railTodayTasks(tasks, today), [tasks, today]);
-  // The Tasks click model: a click selects, a double-click opens. Selection is
-  // local to the rail; no keyboard commands are bound here, so the
-  // Assistant's own shortcuts stay as they are.
   const shownIds = useMemo(() => shown.map((task) => task.id as string), [shown]);
   const selection = useTaskSelection(shownIds);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [moveRequest, setMoveRequest] = useState<{ id: string; sequence: number } | null>(null);
+  const [bulkMoveRequest, setBulkMoveRequest] = useState(0);
+  const selectedTasks = shown.filter((task) => selection.selectedIds.has(task.id));
+  useTasksKeyboard({
+    expandedId,
+    selectedIds: selectedTasks.map((task) => task.id),
+    hoveredId,
+    orderedIds: shownIds,
+    isBlocked: () =>
+      isCommandPaletteOpen() ||
+      (selection.selectedCount === 0 && hoveredId === null && expandedId === null),
+    onExpand: toggle,
+    onClear: selection.clear,
+    onDelete: (ids) => {
+      for (const task of shown) if (ids.includes(task.id)) void actions.delete(task);
+    },
+    onNew: openTaskQuickAdd,
+    onMove: (id) => setMoveRequest((current) => ({ id, sequence: (current?.sequence ?? 0) + 1 })),
+    onMoveSelection: () => setBulkMoveRequest((current) => current + 1),
+  });
   const context: TaskRowContext = {
     today,
     actions,
@@ -72,16 +92,18 @@ export function AssistantTodayTasks(props: { readonly onOpenTasks: () => void })
             {shown.map((task) => {
               const expanded = expandedId === task.id;
               return (
-                // The Tasks row, plus its Move menu on hover: the collapsed row
-                // only offers Move once expanded, and the rail is about
-                // rescheduling at a glance.
                 <li key={task.id} className="group/railtask relative list-none">
                   <ul className="flex flex-col">
                     <TaskRow
+                      moveRequest={moveRequest?.id === task.id ? moveRequest.sequence : 0}
+                      onHover={(hovered) => setHoveredId(hovered ? task.id : null)}
                       task={task}
                       state={taskAgentState(task, threads, lifecycleProjects)}
                       expanded={expanded}
-                      onToggleExpanded={() => toggle(task.id)}
+                      onToggleExpanded={() => {
+                        setMoveRequest(null);
+                        toggle(task.id);
+                      }}
                       context={context}
                       draggable={false}
                       reorderable={false}
@@ -101,28 +123,44 @@ export function AssistantTodayTasks(props: { readonly onOpenTasks: () => void })
                       }}
                     />
                   </ul>
-                  {expanded ? null : (
-                    <TaskMoveMenu
-                      home={task.home}
-                      today={today}
-                      className="absolute top-1 right-1 inline-flex size-7 cursor-pointer items-center justify-center rounded-md bg-card text-muted-foreground opacity-0 outline-none group-hover/railtask:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring data-[popup-open]:opacity-100"
-                      onMove={(target) =>
-                        void actions.move(task, homeForMove(target, task.home, today))
-                      }
-                      onPickDate={(date) =>
-                        void actions.move(
-                          task,
-                          homeForMove({ kind: "date", date }, task.home, today),
-                        )
-                      }
-                    >
-                      <CalendarIcon aria-hidden className="size-3.5" />
-                    </TaskMoveMenu>
-                  )}
                 </li>
               );
             })}
           </ul>
+          {selectedTasks.length > 0 ? (
+            <div
+              aria-label="Selected task actions"
+              className="flex items-center gap-2 px-2 py-1 text-xs"
+            >
+              <span>{selectedTasks.length} selected</span>
+              <TaskMoveMenu
+                home={selectedTasks[0]!.home}
+                today={today}
+                openRequest={bulkMoveRequest}
+                onMove={(target) => {
+                  for (const task of selectedTasks)
+                    void actions.move(task, homeForMove(target, task.home, today));
+                }}
+                onPickDate={(date) => {
+                  for (const task of selectedTasks)
+                    void actions.move(task, homeForMove({ kind: "date", date }, task.home, today));
+                }}
+              >
+                Move
+              </TaskMoveMenu>
+              <button
+                type="button"
+                onClick={() => {
+                  for (const task of selectedTasks) void actions.delete(task);
+                }}
+              >
+                Delete
+              </button>
+              <button type="button" onClick={selection.clear}>
+                Clear selection
+              </button>
+            </div>
+          ) : null}
           {more > 0 ? (
             <button
               type="button"
