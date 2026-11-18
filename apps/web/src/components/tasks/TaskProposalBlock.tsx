@@ -2,6 +2,7 @@ import {
   encodeTaskHighlight,
   resolveTaskProposalBlock,
   summarizeTaskProposalBlock,
+  type TaskProposalBlockSummary,
   type TaskProposeCall,
 } from "@t3tools/client-runtime/state/projects";
 import { useNavigate } from "@tanstack/react-router";
@@ -42,6 +43,15 @@ export function TaskProposalBlock(props: {
             params: { view },
             search: { highlight: encodeTaskHighlight(summary.highlightIds) },
           });
+  return <TaskProposalCard summary={summary} onOpen={open} />;
+}
+
+/** The card itself, from a summary: pure, so every state can be shown without a store. */
+export function TaskProposalCard(props: {
+  readonly summary: TaskProposalBlockSummary;
+  readonly onOpen: (() => void) | undefined;
+}) {
+  const { summary, onOpen: open } = props;
   const settled = summary.waiting === 0;
   return (
     <section aria-label={summary.headline} className="my-1" data-testid="task-proposal-block">

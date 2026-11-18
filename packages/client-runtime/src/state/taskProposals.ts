@@ -312,13 +312,13 @@ export function resolveTaskProposalBlock(
 }
 
 export interface TaskProposalBlockSummary {
-  /** "Proposed 6 tasks · This week" */
+  /** "Added 1 task · Nov 25", "Added 2 of 3 tasks", or "Proposed 6 tasks" while any wait. */
   readonly headline: string;
   /** The first few tasks, in call order. */
   readonly items: ReadonlyArray<{ readonly id: string; readonly title: string }>;
   /** Tasks beyond `items`. */
   readonly moreCount: number;
-  /** "6 proposed · 4 added", "All added", "All dismissed". */
+  /** "2 waiting · 1 dismissed", "All dismissed"; empty when all are added. */
   readonly status: string;
   readonly waiting: number;
   readonly added: number;
@@ -374,34 +374,31 @@ export function summarizeTaskProposalBlock(
   const waiting = open.filter((task) => isProposedTask(task)).length + pending;
   const added = open.length - open.filter((task) => isProposedTask(task)).length;
   const total = waiting + added + dismissed;
-  // The Assistant adding directly leaves no proposal behind.
-  const direct =
-    tasks.length > 0 && dismissed === 0 && pending === 0 && tasks.every((task) => !task.proposal);
   const range = rangeLabel(open, today);
+  // The headline follows where the tasks stand now, not how they arrived:
+  // added directly, accepted later (by the user or the Assistant), or waiting.
+  const allAdded = total > 0 && added === total;
   const headline =
     total === 0 && failed > 0
       ? `Could not propose ${plural(failed, "task")}`
-      : `${direct ? "Added" : "Proposed"} ${plural(total, "task")}${
-          range !== null ? ` · ${range}` : ""
-        }`;
+      : `${
+          allAdded
+            ? `Added ${plural(total, "task")}`
+            : added > 0
+              ? `Added ${added} of ${plural(total, "task")}`
+              : `Proposed ${plural(total, "task")}`
+        }${range !== null ? ` · ${range}` : ""}`;
   const status =
-    direct || total === 0
+    total === 0 || allAdded
       ? ""
-      : total > 0 && added === total
-        ? "All added"
-        : total > 0 && dismissed === total
-          ? "All dismissed"
-          : waiting === 0
-            ? [added > 0 ? `${added} added` : null, dismissed > 0 ? `${dismissed} dismissed` : null]
-                .filter((part) => part !== null)
-                .join(" · ")
-            : [
-                `${total} proposed`,
-                added > 0 ? `${added} added` : null,
-                dismissed > 0 ? `${dismissed} dismissed` : null,
-              ]
-                .filter((part) => part !== null)
-                .join(" · ");
+      : added === 0 && dismissed === total
+        ? "All dismissed"
+        : [
+            waiting > 0 ? `${waiting} waiting` : null,
+            dismissed > 0 ? `${dismissed} dismissed` : null,
+          ]
+            .filter((part) => part !== null)
+            .join(" · ");
   const items = open
     .slice(0, maxTitles)
     .map((task) => ({ id: task.id as string, title: task.title }));

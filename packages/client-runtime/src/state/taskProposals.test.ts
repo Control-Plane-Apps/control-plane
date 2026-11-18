@@ -209,14 +209,14 @@ describe("a block's live state", () => {
       resolveTaskProposalBlock({ calls }, tasks, THREAD),
       TODAY,
     );
-    expect(summary.headline).toBe("Proposed 6 tasks · This week");
+    expect(summary.headline).toBe("Added 2 of 6 tasks · This week");
     expect(summary.items.map((item) => item.title)).toEqual([
       "Draft the memo",
       "Book flights",
       "Review deck",
     ]);
     expect(summary.moreCount).toBe(1);
-    expect(summary.status).toBe("6 proposed · 2 added · 2 dismissed");
+    expect(summary.status).toBe("2 waiting · 2 dismissed");
     expect(summary.view).toBe("week");
     expect(summary.highlightIds).toEqual(["a", "b", "c", "d"]);
   });
@@ -226,8 +226,8 @@ describe("a block's live state", () => {
       resolveTaskProposalBlock({ calls: [call("a", "a")] }, [proposal("a", {}, AT)], THREAD),
       TODAY,
     );
-    expect(added.headline).toBe("Proposed 1 task · Today");
-    expect(added.status).toBe("All added");
+    expect(added.headline).toBe("Added 1 task · Today");
+    expect(added.status).toBe("");
 
     const gone = summarizeTaskProposalBlock(
       resolveTaskProposalBlock({ calls: [call("a", "a"), call("b", "b")] }, [], THREAD),
@@ -250,7 +250,7 @@ describe("a block's live state", () => {
       TODAY,
     );
     expect(mixed.headline).toBe("Proposed 3 tasks · across ranges");
-    expect(mixed.status).toBe("3 proposed");
+    expect(mixed.status).toBe("3 waiting");
     expect(mixed.view).toBe("week");
   });
 
@@ -260,6 +260,60 @@ describe("a block's live state", () => {
       TODAY,
     );
     expect(summary.headline).toBe("Added 1 task · Today");
+    expect(summary.status).toBe("");
+  });
+
+  it("says Added N of M with what is waiting or dismissed", () => {
+    const calls = [call("a", "a"), call("b", "b"), call("c", "c")];
+    const waiting = summarizeTaskProposalBlock(
+      resolveTaskProposalBlock(
+        { calls },
+        [proposal("a", {}, AT), proposal("b", {}, AT), proposal("c", {})],
+        THREAD,
+      ),
+      TODAY,
+    );
+    expect(waiting.headline).toBe("Added 2 of 3 tasks · Today");
+    expect(waiting.status).toBe("1 waiting");
+
+    const dismissed = summarizeTaskProposalBlock(
+      resolveTaskProposalBlock({ calls }, [proposal("a", {}, AT), proposal("b", {}, AT)], THREAD),
+      TODAY,
+    );
+    expect(dismissed.headline).toBe("Added 2 of 3 tasks · Today");
+    expect(dismissed.status).toBe("1 dismissed");
+
+    const both = summarizeTaskProposalBlock(
+      resolveTaskProposalBlock({ calls }, [proposal("a", {}, AT), proposal("b", {})], THREAD),
+      TODAY,
+    );
+    expect(both.headline).toBe("Added 1 of 3 tasks · Today");
+    expect(both.status).toBe("1 waiting · 1 dismissed");
+  });
+
+  it("keeps Proposed while all wait, some dismissed", () => {
+    const summary = summarizeTaskProposalBlock(
+      resolveTaskProposalBlock(
+        { calls: [call("a", "a"), call("b", "b")] },
+        [proposal("a", {})],
+        THREAD,
+      ),
+      TODAY,
+    );
+    expect(summary.headline).toBe("Proposed 2 tasks · Today");
+    expect(summary.status).toBe("1 waiting · 1 dismissed");
+  });
+
+  it("says Added for several accepted tasks, no All added label", () => {
+    const summary = summarizeTaskProposalBlock(
+      resolveTaskProposalBlock(
+        { calls: [call("a", "a"), call("b", "b")] },
+        [proposal("a", {}, AT), proposal("b", {}, AT)],
+        THREAD,
+      ),
+      TODAY,
+    );
+    expect(summary.headline).toBe("Added 2 tasks · Today");
     expect(summary.status).toBe("");
   });
 
