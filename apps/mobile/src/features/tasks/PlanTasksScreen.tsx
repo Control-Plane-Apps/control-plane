@@ -448,6 +448,20 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     />
   );
 
+  const renderCompleted = (completed: ReadonlyArray<Task>) => {
+    const done = visible(completed).filter((task) => !lingering.has(task.id));
+    return done.length > 0 ? (
+      <>
+        <TextLink
+          label={showCompleted ? "Hide completed" : `Show completed · ${done.length}`}
+          onPress={() => setShowCompleted((value) => !value)}
+          align="left"
+        />
+        {showCompleted ? <TaskCard>{renderList(done)}</TaskCard> : null}
+      </>
+    ) : null;
+  };
+
   const openQuickAdd = (horizon: "today" | TaskHorizon | "backlog") =>
     navigation.navigate("TaskQuickAdd", {
       horizon,
@@ -517,16 +531,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
               </TaskCard>
             </>
           )}
-          {done.length > 0 ? (
-            <>
-              <TextLink
-                label={showCompleted ? "Hide completed" : `Show completed · ${done.length}`}
-                onPress={() => setShowCompleted((value) => !value)}
-                align="left"
-              />
-              {showCompleted ? <TaskCard>{renderList(done)}</TaskCard> : null}
-            </>
-          ) : null}
+          {renderCompleted(done)}
         </>
       );
       break;
@@ -573,6 +578,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
             {committed.length > 0 ? <RowSeparator /> : null}
             {addRow("Add a commitment", horizon)}
           </TaskCard>
+          {renderCompleted(committedTasks(tasks, horizon, today, "completed"))}
           <TextLink
             label={`${horizon[0]!.toUpperCase()}${horizon.slice(1)} backlog · ${backlog}`}
             align="left"
@@ -588,8 +594,10 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     case "upcoming": {
       title = "Upcoming";
       subtitle = "Next 7 days";
-      const groups = upcomingTasks(listTasks, today).map((group) => ({
+      const completedGroups = upcomingTasks(tasks, today, 7, "completed");
+      const groups = upcomingTasks(listTasks, today).map((group, index) => ({
         ...group,
+        done: completedGroups[index]?.tasks ?? [],
         tasks: visible(group.tasks),
         proposals: visible(proposedTasksOnDate(tasks, group.date)),
       }));
@@ -634,6 +642,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
                   })
                 }
               />
+              {renderCompleted(group.done)}
             </DayDropZone>
           ))}
         </>
@@ -685,6 +694,7 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
                     : null}
                 </TaskCard>
               </View>
+              {renderCompleted(allTasks(tasks, backlogFilter).done)}
               {result.recurring.length > 0 && backlogFilter === "all" ? (
                 <>
                   <SectionLabel>Recurring</SectionLabel>
