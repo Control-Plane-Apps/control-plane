@@ -124,15 +124,16 @@ export function TaskProposalCardView(props: {
             tintColorClassName="accent-icon-muted"
             type="monochrome"
           />
-          <Text className="shrink text-[14px] font-t3-medium text-foreground" numberOfLines={1}>
-            {headline}
-          </Text>
-          <View className="flex-1" />
-          {status.length > 0 ? (
-            <Text className="text-[13px] tabular-nums text-foreground-muted" numberOfLines={1}>
-              {status}
-            </Text>
-          ) : null}
+          {/* The headline wraps rather than truncates; the counts sit beside it
+              when they fit and drop under it when space is tight. */}
+          <View className="min-w-0 flex-1 flex-row flex-wrap items-baseline justify-between gap-x-2">
+            <Text className="shrink text-[14px] font-t3-medium text-foreground">{headline}</Text>
+            {status.length > 0 ? (
+              <Text className="ml-auto text-[13px] tabular-nums text-foreground-muted">
+                {status}
+              </Text>
+            ) : null}
+          </View>
           {onOpen !== undefined ? (
             <SymbolView
               name={symbol("chevron.right")}
