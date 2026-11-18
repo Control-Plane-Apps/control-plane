@@ -291,10 +291,21 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     if (view === "today")
       return [...todayTasks(tasks, today), ...(showCompleted ? completedToday(tasks, today) : [])];
     if (view === "week" || view === "month" || view === "year")
-      return committedTasks(tasks, view, today);
-    if (view === "upcoming") return upcomingTasks(tasks, today).flatMap((group) => group.tasks);
+      return [
+        ...committedTasks(tasks, view, today),
+        ...(showCompleted ? committedTasks(tasks, view, today, "completed") : []),
+      ];
+    if (view === "upcoming") {
+      const done = upcomingTasks(tasks, today, 7, "completed");
+      return upcomingTasks(tasks, today).flatMap((group, index) => [
+        ...group.tasks,
+        ...(showCompleted ? (done[index]?.tasks ?? []) : []),
+      ]);
+    }
     const result = allTasks(tasks, search.filter ?? "all");
-    return search.filter === "completed" ? result.done : [...result.open, ...result.recurring];
+    return search.filter === "completed"
+      ? result.done
+      : [...result.open, ...result.recurring, ...(showCompleted ? result.done : [])];
   }, [tasks, today, view, showCompleted, search.filter]);
   const orderedIds = useMemo(() => visibleTasks.map((task) => task.id as string), [visibleTasks]);
   const selection = useTaskSelection(orderedIds);
@@ -457,6 +468,19 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     void actions.setIntent(horizon, taskPeriodFor(horizon, today).startsOn, text);
 
   let body: ReactNode;
+  const completedSection = (done: ReadonlyArray<Task>, label = "Completed") =>
+    done.length > 0 ? (
+      <>
+        <button
+          type="button"
+          className="mt-3 cursor-pointer text-muted-foreground text-xs hover:text-foreground"
+          onClick={() => setShowCompleted((value) => !value)}
+        >
+          {showCompleted ? "Hide completed" : `Show completed · ${done.length}`}
+        </button>
+        {showCompleted ? list(done, label, false) : null}
+      </>
+    ) : null;
   let aside: ReactNode = null;
   if (environmentId === null) {
     body = (
@@ -499,18 +523,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
             ) : null}
             {list(open, "Today")}
             <AddTaskRow onAdd={add({ kind: "date", date: today })} />
-            {done.length > 0 ? (
-              <>
-                <button
-                  type="button"
-                  className="mt-3 cursor-pointer text-muted-foreground text-xs hover:text-foreground"
-                  onClick={() => setShowCompleted((value) => !value)}
-                >
-                  {showCompleted ? "Hide completed" : `Show completed · ${done.length}`}
-                </button>
-                {showCompleted ? list(done, "Completed today", false) : null}
-              </>
-            ) : null}
+            {completedSection(done, "Completed today")}
           </div>
         </>
       );
@@ -560,6 +573,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
         <TasksSectionLabel>Committed</TasksSectionLabel>
         {list(committed, "Committed", true, true)}
         <AddTaskRow label="Add a commitment" onAdd={add({ kind: "period", horizon, ...period })} />
+        {completedSection(committedTasks(tasks, horizon, today, "completed"))}
       </>
     );
     aside = (
@@ -589,6 +603,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
     );
   } else if (view === "upcoming") {
     const groups = upcomingTasks(tasks, today);
+    const completedGroups = upcomingTasks(tasks, today, 7, "completed");
     body = (
       <>
         <h1 className="font-semibold text-2xl">Upcoming</h1>
@@ -621,6 +636,9 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
                 ) : null}
                 {list(group.tasks, formatTaskDayTitle(group.date), true, true)}
                 <AddTaskRow onAdd={add({ kind: "date", date: group.date })} />
+                {completedSection(
+                  completedGroups.find((entry) => entry.date === group.date)?.tasks ?? [],
+                )}
               </TaskDayDropZone>
             );
           })}
@@ -707,6 +725,7 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
                   {list(recurring, "Recurring")}
                 </>
               ) : null}
+              {completedSection(done)}
             </>
           )}
         </div>

@@ -230,17 +230,18 @@ export function completedToday(tasks: ReadonlyArray<Task>, today: string): Task[
   );
 }
 
-/** Open commitments to the current week, month or year. */
+/** Commitments to the current week, month or year, open by default. */
 export function committedTasks(
   tasks: ReadonlyArray<Task>,
   horizon: TaskHorizon,
   today: string,
+  status: Task["status"] = "todo",
 ): Task[] {
   const { startsOn } = taskPeriodFor(horizon, today);
   return sorted(
     listed(tasks).filter(
       (task) =>
-        task.status === "todo" &&
+        task.status === status &&
         task.home.kind === "period" &&
         task.home.horizon === horizon &&
         task.home.startsOn === startsOn,
@@ -263,8 +264,13 @@ export interface TaskDayGroup {
   readonly tasks: Task[];
 }
 
-/** The next `days` days after today, each with its open tasks. */
-export function upcomingTasks(tasks: ReadonlyArray<Task>, today: string, days = 7): TaskDayGroup[] {
+/** The next `days` days after today, each with tasks of the requested status. */
+export function upcomingTasks(
+  tasks: ReadonlyArray<Task>,
+  today: string,
+  days = 7,
+  status: Task["status"] = "todo",
+): TaskDayGroup[] {
   const groups: TaskDayGroup[] = [];
   for (let offset = 1; offset <= days; offset += 1) {
     const date = addTaskDays(today, offset);
@@ -272,7 +278,7 @@ export function upcomingTasks(tasks: ReadonlyArray<Task>, today: string, days = 
       date,
       tasks: sorted(
         listed(tasks).filter(
-          (task) => task.status === "todo" && task.home.kind === "date" && task.home.date === date,
+          (task) => task.status === status && task.home.kind === "date" && task.home.date === date,
         ),
       ),
     });
@@ -298,8 +304,8 @@ function homeRank(home: TaskHome): string {
 }
 
 /**
- * The All tasks view: open one-off tasks by home, then repeating ones. The
- * "completed" filter lists finished tasks instead, most recent first.
+ * The All tasks view: open one-off tasks by home, then repeating ones.
+ * Matching finished tasks are returned separately, most recent first.
  */
 export function allTasks(
   tasks: ReadonlyArray<Task>,
@@ -334,7 +340,9 @@ export function allTasks(
   return {
     open: filter === "recurring" ? [] : oneOff,
     recurring,
-    done: [],
+    done: finished
+      .filter(matches)
+      .sort((a, b) => (b.completedAt ?? b.updatedAt).localeCompare(a.completedAt ?? a.updatedAt)),
     completed: finished.length,
   };
 }

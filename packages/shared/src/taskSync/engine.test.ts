@@ -36,7 +36,13 @@ class FakeCloud implements TaskSyncCloudClient {
     return this.available;
   };
 
-  seedPeriod(id: string, horizon: "week" | "month", startsOn: string, endsOn: string, extra = {}) {
+  seedPeriod(
+    id: string,
+    horizon: "week" | "month" | "year",
+    startsOn: string,
+    endsOn: string,
+    extra = {},
+  ) {
     this.seq += 1;
     this.periods.set(id, {
       id,
@@ -240,6 +246,65 @@ describe("TaskSyncEngine", () => {
     await engine.sync();
     expect(cloud.tasks.get("t1")?.status).toBe("completed");
     expect((await engine.status()).pendingChanges).toBe(0);
+  });
+
+  it.each([
+    ["week", "2026-11-09", "2026-11-15"],
+    ["month", "2026-11-01", "2026-11-30"],
+    ["year", "2026-01-01", "2026-12-31"],
+  ] as const)(
+    "keeps its %s commitment live through completion and reopening",
+    async (horizon, startsOn, endsOn) => {
+      const cloud = new FakeCloud();
+      cloud.seedPeriod("own-period", horizon, startsOn, endsOn);
+      cloud.seedTask({ id: "t1", scheduledDate: "2026-11-12", reminderTime: "09:00" });
+      cloud.seedCommitment("own-membership", "own-period", "t1");
+      const originalMembership = cloud.memberships.get("own-membership");
+      const { engine, local, state } = setup(cloud);
+      await engine.verify("n@example.com", "123456");
+      const originalHome = local.tasks[0]!.home;
+      expect(originalHome).toEqual({ kind: "period", horizon, startsOn, endsOn });
+
+      for (const status of ["completed", "todo"] as const) {
+        const { completedAt: _completedAt, ...stored } = local.tasks[0]!;
+        const task = { ...stored, status, ...(status === "completed" ? { completedAt: T0 } : {}) };
+        local.tasks = [task];
+        await engine.onLocalTask("t1", task);
+        expect(state().outbox.memberships).toEqual({});
+        await engine.sync();
+        expect(cloud.memberships.get("own-membership")).toEqual(originalMembership);
+        expect(cloud.tasks.get("t1")).toMatchObject({
+          status,
+          scheduledDate: "2026-11-12",
+          reminderTime: "09:00",
+          completedAt: status === "completed" ? T0 : null,
+        });
+        expect(local.tasks[0]!.home).toEqual(originalHome);
+      }
+    },
+  );
+
+  it("keeps a dated task on its day through completion and reopening", async () => {
+    const cloud = new FakeCloud();
+    cloud.seedTask({ id: "t1", scheduledDate: "2026-11-12", reminderTime: "09:00" });
+    const { engine, local } = setup(cloud);
+    await engine.verify("n@example.com", "123456");
+    const originalHome = local.tasks[0]!.home;
+    expect(originalHome).toMatchObject({ kind: "date", date: "2026-11-12" });
+
+    for (const status of ["completed", "todo"] as const) {
+      const { completedAt: _completedAt, ...stored } = local.tasks[0]!;
+      const task = { ...stored, status, ...(status === "completed" ? { completedAt: T0 } : {}) };
+      local.tasks = [task];
+      await engine.onLocalTask("t1", task);
+      await engine.sync();
+      expect(cloud.tasks.get("t1")).toMatchObject({
+        status,
+        scheduledDate: "2026-11-12",
+        reminderTime: "09:00",
+      });
+      expect(local.tasks[0]!.home).toEqual(originalHome);
+    }
   });
 
   it("commits to a week through a period and a commitment, adopting another device's period", async () => {

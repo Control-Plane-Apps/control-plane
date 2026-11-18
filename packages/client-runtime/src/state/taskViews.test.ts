@@ -1,5 +1,6 @@
 import {
   setTaskWeekStartsOn,
+  taskPeriodFor,
   type ProjectStatus,
   type Task,
   type TaskIntent,
@@ -206,7 +207,7 @@ describe("the Completed filter", () => {
     expect(completed.done.map((entry) => entry.id)).toEqual(["newer", "older"]);
     expect(completed.open).toEqual([]);
     expect(completed.completed).toBe(2);
-    expect(allTasks(tasks, "all").done).toEqual([]);
+    expect(allTasks(tasks, "all").done.map((entry) => entry.id)).toEqual(["newer", "older"]);
     expect(allTasks(tasks, "all").open.map((entry) => entry.id)).toEqual(["open"]);
   });
 });
@@ -422,5 +423,57 @@ describe("delivered handoffs", () => {
     expect(handoffLabel({ kind: "agent", threadId: "c" as never }, ASSISTANT, undefined)).toBe(
       "With an agent",
     );
+  });
+});
+
+describe("completed range tasks", () => {
+  it.each(["week", "month", "year"] as const)(
+    "keeps completed %s commitments in their own current period",
+    (horizon) => {
+      const home = { kind: "period" as const, horizon, ...taskPeriodFor(horizon, TODAY) };
+      const tasks = [
+        task("open", { home }),
+        task("done", { home, status: "completed", completedAt: AT }),
+        task("cancelled", { home, status: "cancelled" }),
+        task("old", { home: { ...home, startsOn: "2020-01-01" }, status: "completed" }),
+        task("proposal", {
+          home,
+          status: "completed",
+          proposal: { projectId: "p", threadId: "c", proposedAt: AT } as never,
+        }),
+      ];
+      expect(committedTasks(tasks, horizon, TODAY).map((t) => t.id)).toEqual(["open"]);
+      expect(committedTasks(tasks, horizon, TODAY, "completed").map((t) => t.id)).toEqual(["done"]);
+    },
+  );
+
+  it("keeps upcoming completions on their scheduled day within the next seven days", () => {
+    const tasks = [
+      task("today", { status: "completed" }),
+      task("tomorrow", {
+        home: { kind: "date", date: "2026-11-14" },
+        status: "completed",
+        completedAt: AT,
+      }),
+      task("last", { home: { kind: "date", date: "2026-11-20" }, status: "completed" }),
+      task("outside", { home: { kind: "date", date: "2026-11-21" }, status: "completed" }),
+      task("cancelled", { home: { kind: "date", date: "2026-11-14" }, status: "cancelled" }),
+    ];
+    const groups = upcomingTasks(tasks, TODAY, 7, "completed");
+    expect(groups[0]?.tasks.map((t) => t.id)).toEqual(["tomorrow"]);
+    expect(groups[6]?.tasks.map((t) => t.id)).toEqual(["last"]);
+    expect(groups.flatMap((g) => g.tasks).map((t) => t.id)).toEqual(["tomorrow", "last"]);
+    expect(upcomingTasks(tasks, TODAY).flatMap((g) => g.tasks)).toEqual([]);
+  });
+
+  it("scopes completed All tasks to the selected backlog filter", () => {
+    const tasks = [
+      task("week", { home: { kind: "backlog", horizon: "week" }, status: "completed" }),
+      task("month", { home: { kind: "backlog", horizon: "month" }, status: "completed" }),
+      task("cancelled", { status: "cancelled" }),
+    ];
+    expect(allTasks(tasks, "week").done.map((t) => t.id)).toEqual(["week"]);
+    expect(allTasks(tasks, "month").done.map((t) => t.id)).toEqual(["month"]);
+    expect(allTasks(tasks, "all").done.map((t) => t.id)).toEqual(["week", "month"]);
   });
 });
