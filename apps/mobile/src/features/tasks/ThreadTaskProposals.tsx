@@ -81,18 +81,40 @@ function TaskProposalBlockView(props: {
   const more = live ? summary.moreCount : Math.max(0, calls.length - items.length);
   const view = live ? summary.view : null;
   return (
+    <TaskProposalCardView
+      headline={headline}
+      status={live ? summary.status : ""}
+      items={items}
+      more={more}
+      onOpen={
+        view === null
+          ? undefined
+          : () =>
+              navigation.navigate("PlanTasks", {
+                view,
+                highlight: encodeTaskHighlight(summary.highlightIds),
+              })
+      }
+    />
+  );
+}
+
+/** The card itself, from its text: pure, so every state can be shown without a store. */
+export function TaskProposalCardView(props: {
+  readonly headline: string;
+  readonly status: string;
+  readonly items: ReadonlyArray<{ readonly id: string; readonly title: string }>;
+  readonly more: number;
+  readonly onOpen: (() => void) | undefined;
+}) {
+  const { headline, status, items, more, onOpen } = props;
+  return (
     <View className="px-4 py-1">
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${headline}${live && summary.status ? `, ${summary.status}` : ""}. Open in Tasks`}
-        disabled={view === null}
-        onPress={() => {
-          if (view === null) return;
-          navigation.navigate("PlanTasks", {
-            view,
-            highlight: encodeTaskHighlight(summary.highlightIds),
-          });
-        }}
+        accessibilityLabel={`${headline}${status ? `, ${status}` : ""}. Open in Tasks`}
+        disabled={onOpen === undefined}
+        onPress={onOpen}
         className="rounded-2xl bg-card px-4 py-2.5"
       >
         <View className="flex-row items-center gap-1.5">
@@ -106,12 +128,12 @@ function TaskProposalBlockView(props: {
             {headline}
           </Text>
           <View className="flex-1" />
-          {live && summary.status.length > 0 ? (
+          {status.length > 0 ? (
             <Text className="text-[13px] tabular-nums text-foreground-muted" numberOfLines={1}>
-              {summary.status}
+              {status}
             </Text>
           ) : null}
-          {view !== null ? (
+          {onOpen !== undefined ? (
             <SymbolView
               name={symbol("chevron.right")}
               size={11}
