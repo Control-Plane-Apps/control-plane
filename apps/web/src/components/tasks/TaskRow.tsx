@@ -35,6 +35,7 @@ import { useIsMobile } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { TASK_DRAG_TRANSITION, usePrefersReducedMotion } from "./taskDrag";
 import { TaskMoveMenu, TaskReminderMenu, TaskRepeatMenu } from "./TaskMenus";
@@ -80,6 +81,7 @@ export function TaskCheckbox(props: {
   readonly disabled?: boolean;
   /** The 350ms beat between checking off and the write: scaled up 1.1. */
   readonly completing?: boolean;
+  readonly className?: string;
 }) {
   return (
     <button
@@ -93,6 +95,7 @@ export function TaskCheckbox(props: {
         "focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default",
         "transition-all duration-200 ease-[ease] motion-reduce:transition-none",
         props.completing && "scale-110",
+        props.className,
         props.proposed
           ? "border-dashed border-muted-foreground/60"
           : props.checked
@@ -326,7 +329,7 @@ export function TaskRow(props: {
             : "-mx-2 my-0.5 px-2 py-2 hover:bg-accent/30 group-data-[selected=true]/task:bg-accent/30 group-data-[highlighted=true]/task:bg-accent/30",
         )}
       >
-        <div className={cn("flex min-w-0 items-center gap-2.5", !expanded && "pr-7")}>
+        <div className={cn("flex min-w-0 gap-2.5", expanded ? "items-center" : "items-start pr-7")}>
           {props.draggable ? (
             <button
               type="button"
@@ -368,67 +371,90 @@ export function TaskRow(props: {
           <TaskCheckbox
             checked={completed}
             completing={completing}
+            // Collapsed rows top-align, so the box sits on the title's first line
+            // (15px * leading-snug is a 20.6px line, the box is 18px).
+            className={cn(!expanded && "mt-px")}
             label={completed ? `Reopen ${task.title}` : `Complete ${task.title}`}
             onToggle={toggleCompleted}
           />
           {expanded ? (
             <TitleInput key={task.title} task={task} context={context} />
           ) : (
-            <button
-              type="button"
-              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-start outline-none"
-              data-task-title
-              aria-expanded={expanded}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (mobile || props.onSelectClick === undefined) props.onToggleExpanded();
-                else props.onSelectClick(event);
-              }}
-            >
-              {/* Long titles wrap rather than truncate. */}
-              <span
-                className={cn(
-                  "min-w-0 break-words font-semibold text-[15px] leading-snug",
-                  "transition-all duration-300 ease-[ease] motion-reduce:transition-none",
-                  completed && "font-normal text-muted-foreground line-through",
-                  completing && "opacity-50",
-                )}
-              >
-                {task.title}
-              </span>
-              {agentActive ? (
-                <span
-                  role="img"
-                  aria-label={
-                    state.kind === "agent-working"
-                      ? "An agent is working on this"
-                      : "Handed to an agent"
+            // Title and meta wrap as a pair: the title takes the free width (two lines, then
+            // clamp) and the meta stays a compact right column. When the title's natural
+            // width plus the meta no longer fits, the meta drops under the title instead of
+            // squeezing it into a narrow column.
+            <div className="flex min-w-0 flex-1 flex-wrap items-start gap-x-2.5 gap-y-0.5">
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      className="flex min-w-0 max-w-full flex-auto cursor-pointer items-start gap-2 text-start outline-none"
+                      data-task-title
+                      aria-expanded={expanded}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (mobile || props.onSelectClick === undefined) props.onToggleExpanded();
+                        else props.onSelectClick(event);
+                      }}
+                    >
+                      <span
+                        className={cn(
+                          "line-clamp-2 min-w-0 break-words font-semibold text-[15px] leading-snug",
+                          "transition-all duration-300 ease-[ease] motion-reduce:transition-none",
+                          completed && "font-normal text-muted-foreground line-through",
+                          completing && "opacity-50",
+                        )}
+                      >
+                        {task.title}
+                      </span>
+                      {agentActive ? (
+                        <span
+                          role="img"
+                          aria-label={
+                            state.kind === "agent-working"
+                              ? "An agent is working on this"
+                              : "Handed to an agent"
+                          }
+                          className={cn(
+                            "mt-2 size-1.5 shrink-0 rounded-full",
+                            state.kind === "agent-working" ? "bg-info" : "bg-info/50",
+                          )}
+                        />
+                      ) : null}
+                    </button>
                   }
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    state.kind === "agent-working" ? "bg-info" : "bg-info/50",
-                  )}
                 />
+                <TooltipPopup className="max-w-80" side="top">
+                  {task.title}
+                </TooltipPopup>
+              </Tooltip>
+              {(status !== undefined && state.kind !== "workstream-done") || meta !== null ? (
+                <span className="flex min-h-[1.2875rem] max-w-full min-w-0 shrink-0 items-center gap-2 text-xs">
+                  {status !== undefined && state.kind !== "workstream-done" ? (
+                    <span className="inline-flex max-w-56 min-w-0 items-center gap-1 text-muted-foreground">
+                      <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-success" />
+                      <span className="truncate">{status.title}</span>
+                    </span>
+                  ) : null}
+                  {meta !== null ? (
+                    <span
+                      className={cn(
+                        "shrink-0",
+                        overdue ? "text-warning-foreground" : "text-muted-foreground",
+                      )}
+                    >
+                      {meta}
+                    </span>
+                  ) : null}
+                </span>
               ) : null}
-            </button>
+            </div>
           )}
           {expanded ? (
             <TaskRowMenu task={task} context={context} onClose={props.onToggleExpanded} />
-          ) : (
-            <span className="flex shrink-0 items-center gap-2 text-xs">
-              {status !== undefined && state.kind !== "workstream-done" ? (
-                <span className="inline-flex max-w-40 items-center gap-1 text-muted-foreground">
-                  <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-success" />
-                  <span className="truncate">{status.title}</span>
-                </span>
-              ) : null}
-              {meta !== null ? (
-                <span className={cn(overdue ? "text-warning-foreground" : "text-muted-foreground")}>
-                  {meta}
-                </span>
-              ) : null}
-            </span>
-          )}
+          ) : null}
         </div>
         {expanded ? (
           <ExpandedTask

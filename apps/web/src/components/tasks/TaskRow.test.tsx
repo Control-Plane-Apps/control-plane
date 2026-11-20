@@ -1,4 +1,4 @@
-import { act, type ComponentProps } from "react";
+import { act, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -21,7 +21,13 @@ vi.mock("../ui/menu", () => ({
   MenuSeparator: () => null,
   MenuTrigger: () => null,
 }));
+vi.mock("../ui/tooltip", () => ({
+  Tooltip: (props: { children: ReactNode }) => props.children,
+  TooltipTrigger: (props: { render: ReactElement }) => props.render,
+  TooltipPopup: () => null,
+}));
 const { TaskRow } = await import("./TaskRow");
+const { TooltipPopup, TooltipTrigger } = await import("../ui/tooltip");
 type Props = ComponentProps<typeof TaskRow>;
 const listeners = new Map<string, (event: unknown) => void>();
 class Target {
@@ -90,6 +96,18 @@ afterEach(async () => {
 });
 
 describe("TaskRow desktop interactions", () => {
+  it("clamps a long title to two lines with the full title as the tooltip, wrapping the meta under it", async () => {
+    const title = "Scan 3-5 rooms on Android + iPhone for room-scan test";
+    const { root } = await mount(false, { task: { title } });
+    const trigger = root.findByType(TooltipTrigger);
+    expect(root.findByType(TooltipPopup).props.children).toBe(title);
+    const button = trigger.props.render;
+    const span = root.findByProps({ "data-task-title": true }).findAllByType("span")[0]!;
+    expect(span.props.className).toContain("line-clamp-2");
+    // Title and meta share a wrapping group, so a long title never gets a squeezed column.
+    expect(root.findByType(TooltipTrigger).parent!.parent!.props.className).toContain("flex-wrap");
+    expect(button.props["data-task-title"]).toBe(true);
+  });
   it("pads a neutral selected surface inside the row", async () => {
     const { root } = await mount(false, { selected: true });
     const row = root.findByType("li");
