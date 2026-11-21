@@ -18,7 +18,7 @@ import {
 
 const FADE_IN_MS = 250;
 
-function useDelayedConnectionStatus(): WorkspaceConnectionStatusPresentation | null {
+export function useWorkspaceConnectionStatus(): WorkspaceConnectionStatusPresentation | null {
   const { state, environments } = useWorkspaceState(true);
   const presentation = workspaceConnectionStatusPresentation(state);
   const visible = useConnectionStatusVisible(
@@ -87,7 +87,7 @@ export function WorkspaceConnectionTitle(props: {
   /** Space available beside the native header actions. */
   readonly maxWidth?: number;
 }) {
-  const status = useDelayedConnectionStatus();
+  const status = useWorkspaceConnectionStatus();
   const size = props.size ?? "navbar";
 
   if (status === null) {
