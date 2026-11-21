@@ -224,7 +224,8 @@ describe("cp_assistant_*", () => {
         }))
           .filter((activity) => activity.kind === ASSISTANT_ASK_ACTIVITY_KIND)
           .map((activity) => (activity.payload as { title?: string }).title);
-        expect(titles).toEqual(["Collapsible panel", "Collapse the panel"]);
+        // Both asks share one test-clock time, so their order is the random ask id's.
+        expect(titles.toSorted()).toEqual(["Collapse the panel", "Collapsible panel"]);
       }),
     ),
   );

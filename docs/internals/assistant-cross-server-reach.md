@@ -17,6 +17,30 @@ Projects and coordinators could not reach the Assistant. Code: `apps/server/src/
   coordinator records the handoff on the Assistant's server and delivers the handoff message to
   the coordinator on its server.
 
+## Task authority
+
+With Task Sync on for one account on both servers, both would run commitment rollover
+(`taskRolloverToCurrentPeriod`). A rollover retires the old membership and creates one with a new
+random id, so two servers rolling the same commitment can leave duplicate memberships (see the
+rollover contract with Lucive). So exactly one server is the **task authority**:
+
+- **Rule** (`reach/taskAuthority.ts`, `decideTaskAuthority`): the server that hosts the user's
+  live Assistant. With no Assistant on any linked machine, a server is its own authority (one
+  machine, as before). If two linked servers both host one, the lower environment id wins, and both
+  sides compute the same answer.
+- **Knowledge** (`reach/TaskAuthorityLive.ts`): each server asks its linked machines `describe`
+  every 5 minutes and stores who hosts an Assistant in `reach-assistants.json`. The decision is
+  made from that file at startup, before clients connect, and a machine that does not answer keeps
+  its stored answer, so the MacBook keeps deferring while the mini sleeps or after a restart.
+- **Rollover** (`TaskCommitmentRollover.ts`): a server that is not the authority never rolls, with
+  or without Task Sync. Rollover is the only automatic task write; Task Sync's own pull and push and
+  writes a person or agent asks for (coordinator proposals, push-notification actions) still run.
+- **Clients:** a deferring server reports `capabilities.tasks: false` in its descriptor. The web
+  client's `resolveTaskEnvironmentId` and the mobile `useTaskEnvironmentId` (first server with the
+  tasks capability) both skip it, so every client uses the Assistant's server for Tasks. A phone
+  paired only with the MacBook falls back to its own cloud copy, as when the Mac is unreachable.
+  Clients read the descriptor when they connect, so a change of authority shows after reconnect.
+
 ## Transport
 
 Reuses the linked-machine link from [multi-machine agents](./multi-machine-agents.md): the peer's
@@ -119,4 +143,5 @@ Pull, so a sleeping caller or callee loses nothing and no reverse link is needed
    The Assistant stays the only thing that pings the user.
 4. **Every linked machine is in reach.** The per-Project reach setting filters. The reach picker
    in Settings lists only this server's Projects; `null` (all) includes remote ones.
-5. **Tasks are not proxied.** Task Sync is the way to share one task list.
+5. **Tasks are not proxied.** Task Sync is the way to share one task list, and only the task
+   authority (the Assistant's server) rolls commitments or serves Tasks to clients.

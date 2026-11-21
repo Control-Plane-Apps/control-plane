@@ -24,6 +24,7 @@ import { HostTimeZoneSource } from "../schedules/hostZone.ts";
 import { resolveScheduleBackend } from "../schedules/scheduleBackend.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
 import { detectServerEnvironmentMachineKind } from "./ServerEnvironmentMachine.ts";
+import { withTaskAuthority } from "../reach/taskAuthority.ts";
 
 export class ServerEnvironmentIdPersistenceError extends Schema.TaggedError<ServerEnvironmentIdPersistenceError>()(
   "ServerEnvironmentIdPersistenceError",
@@ -269,10 +270,13 @@ export const make = Effect.gen(function* () {
     // publish`, the client settings toggle), so the capability is read per
     // descriptor request rather than baked in at startup.
     getDescriptor: readAgentActivityPublishingActive(secrets).pipe(
-      Effect.map((agentActivityPublishing) => ({
-        ...descriptor,
-        capabilities: { ...descriptor.capabilities, agentActivityPublishing },
-      })),
+      Effect.map((agentActivityPublishing) =>
+        // A server that defers Tasks to the Assistant's server does not offer them.
+        withTaskAuthority({
+          ...descriptor,
+          capabilities: { ...descriptor.capabilities, agentActivityPublishing },
+        }),
+      ),
     ),
   });
 });
