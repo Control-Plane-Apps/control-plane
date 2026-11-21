@@ -386,7 +386,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const connectionStatusVisible = useConnectionStatusVisible(
     props.connectionStateLabel !== "connected",
     props.connectionStateLabel === "offline",
-    props.environmentLabel,
+    props.environmentId,
   );
   const floatingStatus = ((): FloatingWorkingStatus | null => {
     const connectionStatus = connectionFloatingStatus({

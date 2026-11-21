@@ -8,7 +8,7 @@ export function useConnectionStatusVisible(
   offline: boolean,
   scope: string | null = null,
 ): boolean {
-  const [status, setStatus] = useState({ scope, visible: false });
+  const [status, setStatus] = useState({ scope, offline, visible: false });
   useEffect(() => {
     let cancel: (() => void) | undefined;
     const restart = () => {
@@ -17,7 +17,7 @@ export function useConnectionStatusVisible(
         pending,
         offline,
         active: AppState.currentState === "active",
-        show: (visible) => setStatus({ scope, visible }),
+        show: (visible) => setStatus({ scope, offline, visible }),
       });
     };
     restart();
@@ -27,5 +27,7 @@ export function useConnectionStatusVisible(
       subscription.remove();
     };
   }, [pending, offline, scope]);
-  return pending && (offline || (status.scope === scope && status.visible));
+  return (
+    pending && (offline || (status.scope === scope && status.offline === offline && status.visible))
+  );
 }
