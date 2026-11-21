@@ -16,15 +16,13 @@ import {
   type TaskHorizon,
   type TaskId,
   type TaskIntent,
-  type TaskLinks,
   type TaskPatch,
-  type TaskRecurrence,
   type TaskSyncStatus,
 } from "@t3tools/contracts";
 import { presentConnectionState } from "@t3tools/client-runtime/connection";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, AppState } from "react-native";
 
 import type { HandoffDelivery } from "@t3tools/client-runtime/state/projects";
@@ -35,12 +33,23 @@ import { projectEnvironment } from "../../state/projects";
 import { environmentShell } from "../../state/shell";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { cloudTaskStore, type CloudTaskSnapshot } from "./cloudTasks";
+import {
+  cloudTaskSourceActive,
+  layerMacFields,
+  makeCloudTaskActions,
+  NEEDS_MAC_MESSAGE,
+  selectTaskSource,
+  type MacTaskBridge,
+  type MobileTaskSource,
+  type NewTaskInput,
+} from "./taskSource";
 
 // Fork-owned. The one place the mobile Tasks UI reads and writes personal
-// tasks. With the paired Mac connected they come from its shell snapshot and
-// are written with the task.* orchestration commands. With the Mac asleep and
-// the phone signed in to Task Sync they come from the phone's own cloud copy
-// (cloudTasks.ts); links, proposals and hand-offs still come from the Mac.
+// tasks. Signed in to Task Sync, the phone's own cloud copy (cloudTasks.ts) is
+// the source of truth for tasks and intents, Mac connected or not: reads and
+// writes go there, offline-capable. The paired Mac only adds links, proposals
+// and hand-offs (taskSource.ts). Without Task Sync, the Mac's shell snapshot
+// is the list and writes are the task.* orchestration commands, as before.
 
 const EMPTY_TASKS: ReadonlyArray<Task> = Object.freeze([]);
 const EMPTY_INTENTS: ReadonlyArray<TaskIntent> = Object.freeze([]);
@@ -101,48 +110,34 @@ export function useCloudTasks(): CloudTaskSnapshot {
   return useSyncExternalStore(store.subscribe, store.getSnapshot);
 }
 
-function cloudSignedIn(snapshot: CloudTaskSnapshot): boolean {
-  const state = snapshot.status?.state;
-  return state === "synced" || state === "syncing" || state === "error";
-}
-
-/** Cloud records with the Mac's Control Plane-only fields laid back on. */
-function withMacFields(cloud: ReadonlyArray<Task>, mac: ReadonlyArray<Task>): ReadonlyArray<Task> {
-  const macById = new Map(mac.map((task) => [task.id as string, task]));
-  return cloud.map((task) => {
-    const known = macById.get(task.id);
-    if (known === undefined) return task;
-    return {
-      ...task,
-      ...(known.links !== undefined ? { links: known.links } : {}),
-      ...(known.handoff !== undefined ? { handoff: known.handoff } : {}),
-    };
-  });
-}
-
-export type MobileTaskSource = "mac" | "cloud";
+export type { MobileTaskSource, NewTaskInput };
 
 export interface MobileTasks {
   readonly environmentId: EnvironmentId | null;
-  /** Where the list comes from: the paired Mac, or the phone's cloud copy while the Mac sleeps. */
+  /** Where the list comes from: the phone's Task Sync copy, or the paired Mac without it. */
   readonly source: MobileTaskSource;
+  /** Whether the paired Mac is reachable now (it alone holds links, hand-offs, proposals). */
+  readonly macConnected: boolean;
   readonly available: boolean;
   readonly tasks: ReadonlyArray<Task>;
   readonly intents: ReadonlyArray<TaskIntent>;
+  /** The Mac's own tasks (its last snapshot), for the Mac-only fields. */
+  readonly macTasks: ReadonlyArray<Task>;
   /** Projects of the task environment, for chips, filters and hand-offs. */
   readonly projects: ReadonlyArray<EnvironmentProject>;
 }
 
 /**
- * With the Mac connected, its intents are keyed by the account's week start,
- * which only the Mac's Task Sync status carries. Reading it here keeps the
- * phone's weeks on the same day; the cloud copy sets it from its own sync.
+ * With the Mac as the source, its intents are keyed by the account's week
+ * start, which only the Mac's Task Sync status carries. Reading it here keeps
+ * the phone's weeks on the same day. With the phone's own copy, its engine
+ * sets the week start and the Mac is not asked.
  */
-function useMacWeekStart(environmentId: EnvironmentId | null, macConnected: boolean): void {
+function useMacWeekStart(environmentId: EnvironmentId | null, enabled: boolean): void {
   const readStatus = useAtomCommand(projectEnvironment.taskSyncStatus, { reportFailure: false });
   const [, setWeekStart] = useState(getTaskWeekStartsOn());
   useEffect(() => {
-    if (environmentId === null || !macConnected) return;
+    if (environmentId === null || !enabled) return;
     let cancelled = false;
     void readStatus({ environmentId, input: undefined as never }).then((result) => {
       if (cancelled || result._tag !== "Success") return;
@@ -155,7 +150,7 @@ function useMacWeekStart(environmentId: EnvironmentId | null, macConnected: bool
     return () => {
       cancelled = true;
     };
-  }, [environmentId, macConnected, readStatus]);
+  }, [environmentId, enabled, readStatus]);
 }
 
 export function useMobileTasks(): MobileTasks {
@@ -165,8 +160,9 @@ export function useMobileTasks(): MobileTasks {
   );
   const macConnected = useMacConnected(environmentId);
   const cloud = useCloudTasks();
-  const useCloud = !macConnected && cloudSignedIn(cloud);
-  useMacWeekStart(environmentId, macConnected);
+  // Only Task Sync picks the source; the Mac connecting or dropping never switches it.
+  const source = selectTaskSource(cloudTaskSourceActive(cloud.status, cloud.savedAccount));
+  useMacWeekStart(environmentId, source === "mac" && macConnected);
   const allProjects = useProjects();
   const projects = useMemo(
     () =>
@@ -176,25 +172,29 @@ export function useMobileTasks(): MobileTasks {
     [allProjects, environmentId],
   );
   const cloudTasks = useMemo(
-    () => (useCloud ? withMacFields(cloud.tasks, state.tasks) : EMPTY_TASKS),
-    [cloud.tasks, state.tasks, useCloud],
+    () => (source === "cloud" ? layerMacFields(cloud.tasks, state.tasks) : EMPTY_TASKS),
+    [cloud.tasks, state.tasks, source],
   );
-  if (useCloud) {
+  if (source === "cloud") {
     return {
       environmentId,
-      source: "cloud",
+      source,
+      macConnected,
       available: true,
       tasks: cloudTasks,
       intents: cloud.intents,
+      macTasks: state.tasks,
       projects,
     };
   }
   return {
     environmentId,
-    source: "mac",
+    source,
+    macConnected,
     available: environmentId !== null,
     tasks: state.tasks,
     intents: state.intents,
+    macTasks: state.tasks,
     projects,
   };
 }
@@ -218,18 +218,19 @@ export function useTaskToday(): string {
   return today;
 }
 
-export interface NewTaskInput {
-  readonly title: string;
-  readonly notes?: string;
-  readonly home: TaskHome;
-  readonly recurrence?: TaskRecurrence;
-  readonly links?: TaskLinks;
-}
-
 function failureMessage(result: unknown, fallback: string): string {
   const error = squashAtomCommandFailure(result as never);
   return error instanceof Error ? error.message : fallback;
 }
+
+/** How long a Mac-only write waits for the Mac to pull a task the phone just pushed. */
+const MAC_CATCH_UP_MS = 4_000;
+const MAC_POLL_MS = 200;
+
+const NO_MAC: { readonly connected: boolean; readonly tasks: ReadonlyArray<Task> } = {
+  connected: false,
+  tasks: EMPTY_TASKS,
+};
 
 /**
  * The user's task writes. Each reports its own failure as an alert and
@@ -237,7 +238,8 @@ function failureMessage(result: unknown, fallback: string): string {
  */
 export function useTaskActions(
   environmentId: EnvironmentId | null,
-  source: MobileTaskSource = "mac",
+  source: MobileTaskSource,
+  mac: { readonly connected: boolean; readonly tasks: ReadonlyArray<Task> } = NO_MAC,
 ) {
   const create = useAtomCommand(projectEnvironment.createTask, { reportFailure: false });
   const update = useAtomCommand(projectEnvironment.updateTask, { reportFailure: false });
@@ -247,6 +249,17 @@ export function useTaskActions(
   });
   const handOff = useAtomCommand(projectEnvironment.handOffTask, { reportFailure: false });
   const setIntent = useAtomCommand(projectEnvironment.setTaskIntent, { reportFailure: false });
+  const macSyncNow = useAtomCommand(projectEnvironment.taskSyncNow, { reportFailure: false });
+  // The Mac's latest snapshot, read by a write that waits for the Mac to catch up.
+  const macTasksRef = useRef(mac.tasks);
+  useEffect(() => {
+    macTasksRef.current = mac.tasks;
+  }, [mac.tasks]);
+  const macKnows = useCallback(
+    (taskId: TaskId) => macTasksRef.current.some((task) => task.id === taskId),
+    [],
+  );
+  const macConnected = mac.connected;
 
   return useMemo(() => {
     const run = async (
@@ -261,14 +274,80 @@ export function useTaskActions(
       return false;
     };
 
+    const outcome = async (
+      execute: (environmentId: EnvironmentId) => Promise<{ readonly _tag: string }>,
+    ) => {
+      if (environmentId === null) return { ok: false as const, message: NEEDS_MAC_MESSAGE };
+      const result = await execute(environmentId);
+      if (result._tag === "Success") return { ok: true as const };
+      if (isAtomCommandInterrupted(result as never)) return { ok: false as const };
+      return { ok: false as const, message: failureMessage(result, "Try again in a moment.") };
+    };
+
+    const sendHandOff = (
+      id: EnvironmentId,
+      taskId: TaskId,
+      handoff: TaskHandoff | null,
+      delivery?: HandoffDelivery,
+    ) =>
+      handOff({
+        environmentId: id,
+        input: {
+          taskId,
+          handoff,
+          ...(delivery !== undefined
+            ? { commandId: delivery.commandId, deliver: { taskIds: delivery.taskIds } }
+            : {}),
+        },
+      });
+
+    if (source === "cloud") {
+      const knows = macKnows;
+      const bridge: MacTaskBridge = {
+        connected: environmentId !== null && macConnected,
+        knows,
+        syncNow: async () => {
+          if (environmentId === null) return;
+          await macSyncNow({ environmentId, input: undefined as never });
+        },
+        waitFor: async (taskId) => {
+          for (let waited = 0; waited < MAC_CATCH_UP_MS; waited += MAC_POLL_MS) {
+            if (knows(taskId)) return true;
+            await new Promise((resolve) => setTimeout(resolve, MAC_POLL_MS));
+          }
+          return knows(taskId);
+        },
+        update: (taskId, value) =>
+          outcome((id) => update({ environmentId: id, input: { taskId, patch: value } })),
+        remove: (taskId, scope) =>
+          outcome((id) =>
+            remove({
+              environmentId: id,
+              input: { taskId, ...(scope !== undefined ? { scope } : {}) },
+            }),
+          ),
+        respond: (taskId, accept) =>
+          outcome((id) => respond({ environmentId: id, input: { taskId, accept } })),
+        handOff: (taskId, handoff, delivery) =>
+          outcome((id) => sendHandOff(id, taskId, handoff, delivery)),
+      };
+      return makeCloudTaskActions({
+        cloud: cloudTaskStore(),
+        mac: bridge,
+        alert: (title, message) => Alert.alert(title, message),
+        newId: () => uuidv4() as TaskId,
+      });
+    }
+
     const patch = (task: Pick<Task, "id" | "title">, value: TaskPatch, title?: string) =>
       run(title ?? `Could not update ${task.title}`, (id) =>
         update({ environmentId: id, input: { taskId: task.id, patch: value } }),
       );
 
-    if (source === "cloud") return cloudActions();
     return {
       available: environmentId !== null,
+      /** The Mac is the source here: everything goes through it. */
+      macReachable: environmentId !== null,
       create: async (input: NewTaskInput): Promise<TaskId | null> => {
         const taskId = uuidv4() as TaskId;
         const ok = await run("Could not add the task", (id) =>
@@ -312,82 +391,26 @@ export function useTaskActions(
         delivery?: HandoffDelivery,
       ) =>
         run(`Could not hand off ${task.title}`, (id) =>
-          handOff({
-            environmentId: id,
-            input: {
-              taskId: task.id,
-              handoff,
-              ...(delivery !== undefined
-                ? { commandId: delivery.commandId, deliver: { taskIds: delivery.taskIds } }
-                : {}),
-            },
-          }),
+          sendHandOff(id, task.id, handoff, delivery),
         ),
       setIntent: (horizon: TaskHorizon, startsOn: string, text: string) =>
         run("Could not save the intent", (id) =>
           setIntent({ environmentId: id, input: { horizon, startsOn, text } }),
         ),
     };
-  }, [create, environmentId, handOff, remove, respond, setIntent, update, source]);
-}
-
-const NEEDS_MAC = "Your Mac needs to be awake for this. Your other task changes sync now.";
-
-/** Writes straight to the phone's cloud copy while the Mac sleeps. */
-function cloudActions() {
-  const store = cloudTaskStore();
-  const guarded = async (title: string, run: () => Promise<unknown>): Promise<boolean> => {
-    try {
-      const result = await run();
-      return result !== false;
-    } catch {
-      Alert.alert(title, "Try again in a moment.");
-      return false;
-    }
-  };
-  const patch = (task: Pick<Task, "id" | "title">, value: TaskPatch, title?: string) =>
-    guarded(title ?? `Could not update ${task.title}`, () => store.patch(task.id, value));
-  return {
-    available: true,
-    create: async (input: NewTaskInput): Promise<TaskId | null> => {
-      const taskId = uuidv4() as TaskId;
-      const ok = await guarded("Could not add the task", () =>
-        store.create({
-          id: taskId,
-          title: input.title,
-          home: input.home,
-          ...(input.notes !== undefined ? { notes: input.notes } : {}),
-          ...(input.recurrence !== undefined ? { recurrence: input.recurrence } : {}),
-        }),
-      );
-      return ok ? taskId : null;
-    },
-    patch,
-    setCompleted: (task: Pick<Task, "id" | "title">, completed: boolean) =>
-      patch(
-        task,
-        { status: completed ? "completed" : "todo" },
-        completed ? `Could not complete ${task.title}` : `Could not reopen ${task.title}`,
-      ),
-    move: (task: Pick<Task, "id" | "title">, home: TaskHome) =>
-      patch(task, { home }, `Could not move ${task.title}`),
-    delete: (task: Pick<Task, "id" | "title">, scope?: TaskDeleteScope) =>
-      guarded(`Could not delete ${task.title}`, () => store.delete(task.id, scope)),
-    respond: async (task: Pick<Task, "id" | "title">, _accept: boolean) => {
-      Alert.alert(`Could not answer ${task.title}`, NEEDS_MAC);
-      return false;
-    },
-    handOff: async (
-      task: Pick<Task, "id" | "title">,
-      _handoff: TaskHandoff | null,
-      _delivery?: HandoffDelivery,
-    ) => {
-      Alert.alert(`Could not hand off ${task.title}`, NEEDS_MAC);
-      return false;
-    },
-    setIntent: (horizon: TaskHorizon, startsOn: string, text: string) =>
-      guarded("Could not save the intent", () => store.setIntent(horizon, startsOn, text)),
-  };
+  }, [
+    create,
+    environmentId,
+    handOff,
+    macConnected,
+    macKnows,
+    macSyncNow,
+    remove,
+    respond,
+    setIntent,
+    source,
+    update,
+  ]);
 }
 
 export type TaskActions = ReturnType<typeof useTaskActions>;
@@ -395,7 +418,10 @@ export type TaskActions = ReturnType<typeof useTaskActions>;
 /** Tasks plus their writes, for screens. */
 export function useMobileTaskStore() {
   const source = useMobileTasks();
-  const actions = useTaskActions(source.environmentId, source.source);
+  const actions = useTaskActions(source.environmentId, source.source, {
+    connected: source.macConnected,
+    tasks: source.macTasks,
+  });
   return { ...source, actions };
 }
 

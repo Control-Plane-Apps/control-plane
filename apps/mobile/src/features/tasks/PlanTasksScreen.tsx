@@ -192,8 +192,9 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
     return () => clearTimeout(timer);
   }, [paramHighlight, paramView, setView]);
 
-  // Pull to refresh: with Task Sync this syncs now; tasks read through the Mac
-  // are already live, so the spinner just confirms.
+  // Pull to refresh: with Task Sync this pushes the phone's queued edits and
+  // pulls now; tasks read through the Mac are already live, so the spinner
+  // just confirms. Foreground and a timer sync too (cloudTasks.ts).
   const [refreshing, setRefreshing] = useState(false);
   const refresh = useCallback(async () => {
     setRefreshing(true);

@@ -57,7 +57,7 @@ function TaskProposalBlockView(props: {
   readonly threadId: ThreadId;
 }) {
   const navigation = useNavigation();
-  const { tasks, source } = useMobileTaskStore();
+  const { tasks, source, macConnected } = useMobileTaskStore();
   const today = useTaskToday();
   const summary = useMemo(
     () =>
@@ -68,7 +68,7 @@ function TaskProposalBlockView(props: {
     [props.block, props.threadId, tasks, today],
   );
   // Proposals stay on the Mac: away from it, only the calls themselves are known.
-  const live = source === "mac";
+  const live = source === "mac" || macConnected;
   const calls = props.block.calls.filter((call) => call.status !== "failed");
   const headline = live
     ? summary.headline

@@ -41,7 +41,8 @@ describe("task sync cloud client", () => {
     const offline = makeTaskSyncCloudClient(config, async () => {
       throw new TypeError("network down");
     });
-    expect(await offline.availability()).toBe(false);
+    // Unreachable is not "off": it throws, so a signed-in device keeps syncing once back online.
+    await expect(offline.availability()).rejects.toMatchObject({ reason: "network" });
   });
 
   it("signs the handshake exactly as the server checks it", () => {
