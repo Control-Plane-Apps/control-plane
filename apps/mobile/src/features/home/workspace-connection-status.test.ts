@@ -62,6 +62,7 @@ describe("workspace connection status", () => {
   it("surfaces connection errors before the generic disconnected fallback", () => {
     const state = workspaceState({
       connectionError: "Could not reach Julius’s Mac mini",
+      hasConnectingEnvironment: true,
       hasLoadedShellSnapshot: false,
       hasReadyEnvironment: false,
     });
