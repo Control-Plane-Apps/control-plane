@@ -1,3 +1,4 @@
+import { useConnectionStatusVisible } from "../connection/useConnectionStatusVisible";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
@@ -382,6 +383,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // One floating pill above the composer: it reads the connection phase while
   // disconnected, the sync state while messages load, then the working timer
   // once the feed is settled.
+  const connectionStatusVisible = useConnectionStatusVisible(
+    props.connectionStateLabel !== "connected",
+    props.connectionStateLabel === "offline",
+    props.environmentLabel,
+  );
   const floatingStatus = ((): FloatingWorkingStatus | null => {
     const connectionStatus = connectionFloatingStatus({
       connectionError: props.connectionError,
@@ -390,7 +396,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       onReconnect: props.onReconnectEnvironment,
     });
     if (connectionStatus !== null) {
-      return connectionStatus;
+      return connectionStatusVisible ? connectionStatus : null;
     }
     if (props.activePendingApproval !== null || props.activePendingUserInput !== null) {
       return null;

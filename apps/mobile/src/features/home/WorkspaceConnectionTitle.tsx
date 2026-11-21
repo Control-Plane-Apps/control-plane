@@ -1,5 +1,5 @@
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { ActivityIndicator, Animated, Pressable, View } from "react-native";
 
 import { SymbolView } from "../../components/AppSymbol";
@@ -9,39 +9,23 @@ import {
   CompactBrandTitle,
   getCompactBrandHeaderOptions,
 } from "../../components/CompactBrandTitle";
+import { useConnectionStatusVisible } from "../connection/useConnectionStatusVisible";
 import { useWorkspaceState } from "../../state/workspace";
 import {
   workspaceConnectionStatusPresentation,
   type WorkspaceConnectionStatusPresentation,
 } from "./workspace-connection-status";
 
-/**
- * Delay before a connection interruption surfaces in the title slot. Sub-second
- * blips (the common reconnect case) resolve without any UI at all.
- */
-const STATUS_SHOW_DELAY_MS = 800;
 const FADE_IN_MS = 250;
 
-/**
- * Connection status presentation, debounced for display: null until the
- * workspace has been in a non-connected state for STATUS_SHOW_DELAY_MS,
- * then live-updating until the workspace reconnects (null again immediately).
- */
 function useDelayedConnectionStatus(): WorkspaceConnectionStatusPresentation | null {
-  const { state } = useWorkspaceState();
+  const { state, environments } = useWorkspaceState(true);
   const presentation = workspaceConnectionStatusPresentation(state);
-  const hasStatus = presentation !== null;
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    if (!hasStatus) {
-      setVisible(false);
-      return;
-    }
-    const timer = setTimeout(() => setVisible(true), STATUS_SHOW_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [hasStatus]);
-
+  const visible = useConnectionStatusVisible(
+    presentation !== null,
+    state.networkStatus === "offline",
+    environments.map((environment) => environment.environmentId).join(","),
+  );
   return visible ? presentation : null;
 }
 
