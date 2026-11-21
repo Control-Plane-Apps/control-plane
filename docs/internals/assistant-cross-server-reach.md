@@ -145,3 +145,102 @@ Pull, so a sleeping caller or callee loses nothing and no reverse link is needed
    in Settings lists only this server's Projects; `null` (all) includes remote ones.
 5. **Tasks are not proxied.** Task Sync is the way to share one task list, and only the task
    authority (the Assistant's server) rolls commitments or serves Tasks to clients.
+
+## Phase 2: choosing the Assistant's machine (general feature)
+
+Phase 1 (above, PR #129) is the server mechanism. Phase 2 makes it a product feature any user
+can set up from the UI: pick which of their servers runs the Assistant, move it cleanly, and link
+servers both ways with the normal pairing flow.
+
+### Where the Assistant lives
+
+- **One home.** The Assistant's home is the server that holds the live global Assistant Project.
+  There is no separate "home" setting to drift out of sync: the marker is the truth, and every
+  server learns the others' answer through `describe` (already stored in
+  `reach-assistants.json`). Task authority already follows this rule.
+- **Clients find it wherever it is.** Today web (`useGlobalAssistantProject`, `useOpenAssistant`)
+  and mobile (`useAssistantEntry`) look only on the primary environment and create one there on
+  first open. Phase 2: look across every connected environment for a live global Assistant and
+  open that one; create only when none exists anywhere, on the machine the user picks.
+- **Two at once is a conflict, not a state.** If two linked servers each hold one (created before
+  they were linked), task authority already picks one (lower environment id). Settings shows
+  "Your Assistant exists on two machines" with "Keep the one on X" (moves the other in, below).
+
+### Moving it (`assistant.move`, RPC on the current home)
+
+1. **Freeze the source.** The current home archives its Assistant marker (`archivedAt`). That
+   stops its schedules (ScheduleHost skips archived Projects), holds results for it (the reactor
+   holds archived assistants), and makes `describe` report no Assistant. From here there are zero
+   Assistants, never two.
+2. **Bundle.** Assistant settings (`ServerSettings.assistant`: reach, workspaces, task access,
+   new tasks, messaging, check-in, brief), the Assistant Project's schedules and prompts, the
+   home folder's `MEMORY.md`, recent conversation (last 200 messages), and open asks from
+   `reach-requests.json`.
+3. **Adopt on the target** (new reach op `assistant.adopt`): `ensureAssistant`, apply the
+   settings, recreate schedules with the same enabled state, write `MEMORY.md`, import the
+   conversation with `thread.history.import` (shows in the thread; the new provider session
+   starts with a one-line note that the conversation moved), and take over the open asks (the
+   target polls the same machines).
+4. **Commit or roll back.** On success the source keeps its archived Assistant as read-only
+   history. On any failure the target deletes what it made and the source unarchives, so the user
+   is back where they started. The move is idempotent by move id, so a retry finishes a partial
+   move.
+5. **Everything follows:** task authority (both sides re-`describe` right after the move),
+   reach (the new home calls the same linked machines; it needs links both ways, checked before
+   step 1), and clients (descriptor and shell updates point them at the new home).
+
+Preconditions checked before step 1, each with a clear message: target linked and online, target
+links back to this server (else offer "Link back" below), target runs a build with reach, and no
+Assistant turn is running (or "Move after this turn").
+
+### Linking both ways from the normal pairing UI
+
+- **Settings > Connections > Agent machines, "Add machine"** stays the entry point (pairing
+  link). After linking A to B, A offers **"Let <B> reach this machine too"**: A mints a pairing
+  credential for itself and sends it, with A's address as B should use it (tailnet name
+  prefilled, editable), over the new link; B runs its own `link`. One action, both directions.
+- **Adding a remote environment in a client** (the client-side pairing Nick used) ends with a
+  prompt when both servers have Projects or an Assistant: "Link these servers so your Assistant
+  and coordinators can reach each other?" which runs the same two-way link.
+- Each machine row shows both directions: "Reaches it / It reaches this machine", with
+  needs-relink and token expiry.
+
+### Settings and onboarding UX
+
+- **Settings > Assistant, "Runs on"**: a picker of this machine plus linked machines (online
+  state, "always on" hint for machines that report a desktop or server kind). Changing it runs the
+  move with a confirmation sheet ("Moves your Assistant, its schedules, memory and settings to
+  <B>. <A> keeps a read-only copy.") and a progress row. Disabled with the reason when a
+  precondition fails.
+- **First open of the Assistant** with linked machines present: "Where should your Assistant
+  run?" (this machine, or a linked one), recommending an always-on machine. With no linked
+  machines it is created here as today, no question.
+- **Reach**: the per-Project picker lists Projects on every machine, grouped by machine, with
+  each machine's state. `null` (all Projects) stays the default.
+- **Offline states**:
+  - Assistant thread header: "MacBook offline since 10:42. Its 2 Projects show their last known
+    state." Ask cards mark targets on an offline machine as "Not sent: MacBook offline".
+  - When the Assistant's own machine is offline, clients show "Your Assistant runs on Mac mini,
+    which is offline (last seen 10:42)" instead of offering to create a new one (the key guard
+    against two Assistants).
+  - Coordinators' tools already return explicit offline errors (phase 1).
+- **Mobile**: opens the Assistant on whichever paired server hosts it and shows the same
+  offline line; picker and move live in desktop/web Settings only at first. Any iPhone UI change
+  ships with simulator screenshots per AGENTS.md.
+
+### Estimate
+
+Phase 1 (this PR) is done. Phase 2 adds about **5 to 7 working days**:
+
+| Piece                                                              | Days     |
+| ------------------------------------------------------------------ | -------- |
+| Move: bundle, adopt op, rollback, idempotence, tests               | 1.5 to 2 |
+| Clients find the Assistant on any environment; no-create when away | 0.5 to 1 |
+| Two-way link from Agent machines and from client pairing           | 1        |
+| Settings: Runs on picker, move sheet, conflict, reach by machine   | 1.5      |
+| Offline banners, ask-card states, mobile open-remote and line      | 1        |
+| Two-server and simulator verification                              | 0.5      |
+
+Suggested split: review and merge phase 1 first (server-only, no UI change, no effect for a user
+without linked machines), then phase 2 as two PRs: (a) move and client discovery, (b) linking and
+settings UX.
