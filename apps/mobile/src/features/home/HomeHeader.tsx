@@ -3,7 +3,7 @@ import type { MenuAction } from "@react-native-menu/menu";
 
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useCallback, useMemo } from "react";
-import { Platform } from "react-native";
+import { Platform, useWindowDimensions } from "react-native";
 
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
@@ -11,6 +11,7 @@ import {
   createClearFilterHeaderItem,
   createHomeListHeaderItems,
 } from "../threads/sidebar-native-header-items";
+import { WorkspaceConnectionTitle } from "./WorkspaceConnectionTitle";
 import { MaterialThreadListToolbar } from "./MaterialThreadListToolbar";
 import {
   buildHomeListFilterMenu,
@@ -166,6 +167,7 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
 }
 
 function IosHomeHeader(props: HomeHeaderProps) {
+  const { width } = useWindowDimensions();
   const iconColor = useUniwindTheme()["--color-icon"];
   // The list uses a fixed creation order and ignores sort/group options, so
   // the filter menu only carries the filters and the "customized" icon state
@@ -179,18 +181,29 @@ function IosHomeHeader(props: HomeHeaderProps) {
   useHardwareKeyboardCommand("focusSearch", focusSearch);
   const filterMenu = buildHomeListFilterMenu(props);
 
+  const renderConnectionTitle = useCallback(
+    () => (
+      <WorkspaceConnectionTitle
+        brand={null}
+        maxWidth={Math.max(0, width - 64 - 44 * 2)}
+        onPress={props.onOpenEnvironments}
+      />
+    ),
+    [props.onOpenEnvironments, width],
+  );
+
   const backTitle = props.filterTitle ?? "";
   const showBack = props.onClearFilter !== undefined;
   const searchOpen = props.searchOpen === true;
 
   return (
     <NativeStackScreenOptions
-      optionsVersion={[filterMenu.items, showBack, backTitle, searchOpen]}
+      optionsVersion={[filterMenu.items, showBack, backTitle, searchOpen, width]}
       options={{
         headerShown: !searchOpen,
         headerTintColor: iconColor,
         headerBackVisible: false,
-        headerTitle: showBack && backTitle.length > 0 ? backTitle : () => null,
+        headerTitle: showBack && backTitle.length > 0 ? backTitle : renderConnectionTitle,
         title: showBack ? backTitle : "",
         unstable_headerLeftItems: () =>
           showBack && props.onClearFilter
