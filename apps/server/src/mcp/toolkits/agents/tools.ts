@@ -439,7 +439,18 @@ export type ScheduleListEntry = typeof ScheduleListEntry.Type;
 export const ScheduleListResult = Schema.Struct({ schedules: Schema.Array(ScheduleListEntry) });
 export type ScheduleListResult = typeof ScheduleListResult.Type;
 
+const ScheduleProjectId = Schema.optional(
+  Schema.String.annotate({
+    description:
+      "Assistant only: the Project whose schedules to manage, from cp_assistant_overview, on this machine or a linked one. Omit for your own Project.",
+  }),
+);
+
+export const ScheduleListInput = Schema.Struct({ projectId: ScheduleProjectId });
+export type ScheduleListInput = typeof ScheduleListInput.Type;
+
 export const ScheduleCreateInput = Schema.Struct({
+  projectId: ScheduleProjectId,
   name: ScheduleName,
   prompt: SchedulePrompt,
   cron: ScheduleCron,
@@ -457,6 +468,7 @@ export const ScheduleCreateResult = Schema.Struct({
 export type ScheduleCreateResult = typeof ScheduleCreateResult.Type;
 
 export const ScheduleUpdateInput = Schema.Struct({
+  projectId: ScheduleProjectId,
   id: ScheduleRef,
   name: Schema.optional(ScheduleName),
   prompt: Schema.optional(SchedulePrompt),
@@ -476,7 +488,7 @@ export const ScheduleUpdateResult = Schema.Struct({
 });
 export type ScheduleUpdateResult = typeof ScheduleUpdateResult.Type;
 
-export const ScheduleDeleteInput = Schema.Struct({ id: ScheduleRef });
+export const ScheduleDeleteInput = Schema.Struct({ projectId: ScheduleProjectId, id: ScheduleRef });
 export type ScheduleDeleteInput = typeof ScheduleDeleteInput.Type;
 
 export const ScheduleDeleteResult = Schema.Struct({
@@ -1068,7 +1080,8 @@ const AgentSettleTool = Tool.make("cp_agent_settle", {
 
 const ScheduleListTool = Tool.make("cp_schedule_list", {
   description:
-    "List this Project's schedules with their prompts, cadence, state, next and last run.",
+    "List this Project's schedules with their prompts, cadence, state, next and last run. The Assistant can pass projectId for any Project in its reach.",
+  parameters: ScheduleListInput,
   success: ScheduleListResult,
   failure: ScheduleToolError,
   dependencies,

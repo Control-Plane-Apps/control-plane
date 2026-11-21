@@ -49,6 +49,7 @@ export * from "./agentPlacement.ts";
 export * from "./globalInstructions.ts";
 export * from "./assistantSettings.ts";
 export * from "./assistantAsk.ts";
+export * from "./reach.ts";
 export * from "./device.ts";
 export * from "./preview.ts";
 export * from "./previewAutomation.ts";

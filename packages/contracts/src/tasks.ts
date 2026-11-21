@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProjectStatusId } from "./projectStatus.ts";
+import { ReachMachineRef } from "./reach.ts";
 
 // Fork-owned. Personal tasks that live beside agent work: one global list,
 // optionally linked to a Project, a thread or a Status workstream. The shape
@@ -119,6 +120,8 @@ export const TaskHandoff = Schema.Struct({
   kind: Schema.Literals(["coordinator", "agent"]),
   threadId: ThreadId,
   at: IsoDateTime,
+  /** The linked server the thread is on; absent for a thread on this server. */
+  machine: Schema.optional(ReachMachineRef),
 });
 export type TaskHandoff = typeof TaskHandoff.Type;
 

@@ -54,10 +54,14 @@ export class ThreadSendSelfError extends Schema.TaggedError<ThreadSendSelfError>
 
 export class ThreadSendFailedError extends Schema.TaggedError<ThreadSendFailedError>()(
   "ThreadSendFailedError",
-  { cause: Schema.Defect() },
+  {
+    cause: Schema.Defect(),
+    /** Why, when it is worth telling the agent: a linked machine is offline. */
+    detail: Schema.optional(Schema.String),
+  },
 ) {
   override get message(): string {
-    return "Could not send the message.";
+    return this.detail ?? "Could not send the message.";
   }
 }
 
@@ -185,7 +189,7 @@ export type AgentMessageResult = typeof AgentMessageResult.Type;
 
 const SendThreadMessageTool = Tool.make("cp_thread_send", {
   description:
-    "Send a message to another Control Plane thread. The receiving thread sees this as a tool call named after this thread, not as a user prompt. Pass threadId or the exact thread title. To message another agent in your Project, prefer cp_agent_message.",
+    'Send a message to another Control Plane thread. The receiving thread sees this as a tool call named after this thread, not as a user prompt. Pass threadId or the exact thread title. To message another agent in your Project, prefer cp_agent_message. threadTitle "Assistant" reaches the user\'s Assistant even on a linked machine; the Assistant can also reach any thread on a linked machine.',
   parameters: ThreadSendInput,
   success: ThreadSendResult,
   failure: ThreadSendToolError,

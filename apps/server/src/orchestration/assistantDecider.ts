@@ -5,6 +5,7 @@
 import {
   assistantThreadRole,
   isAgentPushMessageId,
+  isReachRequestId,
   isStandingAgent,
   type MessageId,
   type OrchestrationAgentMessageSource,
@@ -149,6 +150,15 @@ export function requireReplyTo(
     (recipientProject.assistant.coordinatorThreadId === recipient.id || recipient.pinnedAt != null)
   ) {
     return Effect.void;
+  }
+  // The user's Assistant on a linked server asks this coordinator: its answer
+  // is recorded here for that server to collect (`isReachRequestId`).
+  if (isReachRequestId(message.messageId) && recipient === undefined) {
+    return assistantThreadRole(project, threadId) === "coordinator"
+      ? Effect.void
+      : Effect.fail(
+          invariant(commandType, "Only a coordinator takes requests from another server."),
+        );
   }
   if (assistantThreadRole(project, threadId) === "coordinator") {
     return Effect.fail(invariant(commandType, "The coordinator does not take requests."));

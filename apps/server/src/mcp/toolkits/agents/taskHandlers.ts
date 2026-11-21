@@ -25,6 +25,7 @@ import {
   compareTaskOrder,
   CommandId,
   findGlobalAssistantProject,
+  taskHandoffMessage,
   isAssistantChannel,
   isProposedTask,
   isTaskLocalDate,
@@ -57,6 +58,11 @@ import * as OrchestrationEngine from "../../../orchestration/Services/Orchestrat
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationEventStore } from "../../../persistence/Services/OrchestrationEventStore.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
+import { Reach, type ReachMachine } from "../../../reach/Reach.ts";
+import {
+  ThreadFindResult as ReachFindResult,
+  ThreadSendResult as ReachThreadSendResult,
+} from "../../../reach/reachProtocol.ts";
 import { TaskSyncService } from "../../../taskSync/TaskSyncService.ts";
 import { TaskCommitmentRollover } from "../../../orchestration/TaskCommitmentRollover.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -354,6 +360,26 @@ export const makeTaskHandlers = Effect.gen(function* () {
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const settingsService = yield* ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
+  const reach = yield* Reach;
+
+  /** The linked machine with a live thread of that id, if any answers. */
+  const findThreadMachine = (
+    threadId: string,
+    callerRef: { readonly threadId: string; readonly threadTitle: string },
+  ) =>
+    Effect.gen(function* () {
+      const known = yield* reach.locateThread(threadId);
+      if (Option.isSome(known)) return known;
+      for (const machine of yield* reach.machines) {
+        const found = yield* reach
+          .call(machine, "thread.find", { ref: threadId }, callerRef, ReachFindResult)
+          .pipe(Effect.option);
+        if (Option.isSome(found) && found.value.matches.some((m) => m.threadId === threadId)) {
+          return Option.some(machine);
+        }
+      }
+      return Option.none<ReachMachine>();
+    });
   // Optional like Task Sync: the live toolkit always has it (handlers.ts).
   const eventStore = yield* Effect.serviceOption(OrchestrationEventStore);
   // Optional so toolkits built without Task Sync (tests) report nothing as synced.
@@ -1223,40 +1249,72 @@ export const makeTaskHandlers = Effect.gen(function* () {
         const model = yield* snapshots.getCommandReadModel().pipe(Effect.mapError(readFailed));
         const liveProjects = model.projects.filter((project) => project.deletedAt === null);
         const { iso } = yield* nowParts;
-        /** The thread `to` names for this task, or why there is none. */
-        const targetFor = (task: Task | undefined): TaskHandoff | null | string => {
-          switch (input.to) {
-            case "none":
-              return null;
-            case "assistant": {
-              const threadId =
-                findGlobalAssistantProject(liveProjects)?.assistant?.coordinatorThreadId;
-              return threadId == null
-                ? "The user has no Assistant to hand tasks to."
-                : { kind: "coordinator", threadId, at: iso };
-            }
-            case "coordinator": {
-              const projectId = input.projectId ?? task?.links?.projectId;
-              if (projectId === undefined) {
-                return "That task has no Project; give `projectId`.";
+        const callerRef = { threadId: callerId as string, threadTitle: "Assistant" };
+        /**
+         * The thread `to` names for this task, or why there is none. A Project,
+         * agent or Assistant not on this server is looked up on linked machines;
+         * the handoff then names that machine.
+         */
+        const targetFor = (task: Task | undefined) =>
+          Effect.gen(function* (): Effect.fn.Return<TaskHandoff | null | string> {
+            switch (input.to) {
+              case "none":
+                return null;
+              case "assistant": {
+                const threadId =
+                  findGlobalAssistantProject(liveProjects)?.assistant?.coordinatorThreadId;
+                if (threadId != null) return { kind: "coordinator", threadId, at: iso };
+                const remote = yield* reach.findAssistant;
+                return Option.isNone(remote)
+                  ? "The user has no Assistant to hand tasks to."
+                  : {
+                      kind: "coordinator",
+                      threadId: ThreadId.make(remote.value.threadId),
+                      at: iso,
+                      machine: { id: remote.value.machineId, label: remote.value.machineLabel },
+                    };
               }
-              const threadId = liveProjects.find((project) => project.id === projectId)?.assistant
-                ?.coordinatorThreadId;
-              return threadId == null
-                ? "That Project has no coordinator."
-                : { kind: "coordinator", threadId, at: iso };
+              case "coordinator": {
+                const projectId = input.projectId ?? task?.links?.projectId;
+                if (projectId === undefined) {
+                  return "That task has no Project; give `projectId`.";
+                }
+                const local = liveProjects.find((project) => project.id === projectId);
+                if (local !== undefined) {
+                  const threadId = local.assistant?.coordinatorThreadId;
+                  return threadId == null
+                    ? "That Project has no coordinator."
+                    : { kind: "coordinator", threadId, at: iso };
+                }
+                const remote = yield* reach.locateProject(projectId, callerRef);
+                return Option.isNone(remote)
+                  ? "That Project is not on this machine or any linked machine that answered."
+                  : {
+                      kind: "coordinator",
+                      threadId: ThreadId.make(remote.value.project.coordinatorThreadId),
+                      at: iso,
+                      machine: { id: remote.value.machine.id, label: remote.value.machine.label },
+                    };
+              }
+              case "agent": {
+                const threadId = input.threadId!;
+                if (model.threads.some((thread) => thread.id === threadId)) {
+                  return { kind: "agent", threadId, at: iso };
+                }
+                const machine = yield* findThreadMachine(threadId, callerRef);
+                return Option.isNone(machine)
+                  ? { kind: "agent", threadId, at: iso }
+                  : { kind: "agent", threadId, at: iso, machine: machine.value };
+              }
             }
-            case "agent":
-              return { kind: "agent", threadId: input.threadId!, at: iso };
-          }
-        };
+          });
         const outcome = yield* eachTask(taskIds, (taskId) =>
           Effect.gen(function* () {
             const stored = yield* findTask(taskId);
             if (stored === undefined) {
               return yield* new AgentToolFailedError({ detail: "That task no longer exists." });
             }
-            const handoff = targetFor(stored);
+            const handoff = yield* targetFor(stored);
             if (typeof handoff === "string") {
               return yield* new AgentToolFailedError({ detail: handoff });
             }
@@ -1292,6 +1350,33 @@ export const makeTaskHandlers = Effect.gen(function* () {
         for (const [threadId, ids] of byThread) {
           const last = (yield* findTask(ids.at(-1)!))?.handoff;
           if (last === undefined) continue;
+          if (last.machine !== undefined) {
+            // On a linked machine: the message goes there; the tasks stay here.
+            const tasks = (yield* Effect.forEach(ids, findTask)).filter(
+              (task): task is Task => task !== undefined,
+            );
+            const text = taskHandoffMessage(tasks, {
+              project: (id) => liveProjects.find((project) => project.id === id)?.title,
+            });
+            yield* reach
+              .call(
+                last.machine,
+                "task.deliver",
+                { threadId, text },
+                callerRef,
+                ReachThreadSendResult,
+              )
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new AgentToolFailedError({
+                      detail: `The tasks were handed off, but the handoff message was not sent: ${error.detail}`,
+                    }),
+                ),
+              );
+            delivered.push(ThreadId.make(threadId));
+            continue;
+          }
           const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
           yield* dispatch(
             {

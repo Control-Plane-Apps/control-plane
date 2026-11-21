@@ -285,16 +285,24 @@ export const decideStatusSet = Effect.fn("decideStatusSet")(function* (
     actor === undefined
       ? undefined
       : readModel.projects.find((entry) => entry.id === actor.projectId);
+  // The user's Assistant on a linked server: the reach route checked the
+  // caller's token, and the Assistant's own server checked its reach.
+  const remoteAssistant =
+    command.remoteActor !== undefined &&
+    command.remoteActor.threadId === command.actorThreadId &&
+    actor === undefined &&
+    project.assistant.scope !== "global";
   if (
-    actor === undefined ||
-    actor.deletedAt !== null ||
-    actor.archivedAt !== null ||
-    (agentManagerRole(project, actor) !== "coordinator" &&
-      !(
-        actorProject !== undefined &&
-        actorProject.deletedAt === null &&
-        isAssistantChannel(actorProject, actor)
-      ))
+    !remoteAssistant &&
+    (actor === undefined ||
+      actor.deletedAt !== null ||
+      actor.archivedAt !== null ||
+      (agentManagerRole(project, actor) !== "coordinator" &&
+        !(
+          actorProject !== undefined &&
+          actorProject.deletedAt === null &&
+          isAssistantChannel(actorProject, actor)
+        )))
   ) {
     return yield* invariant(
       command.type,

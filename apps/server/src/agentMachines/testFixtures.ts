@@ -216,6 +216,9 @@ export function makeFakePeer(options: FakePeerOptions = {}) {
     markNeedsRelink: () => Effect.sync(() => void (state.needsRelink = true)),
     isReachable: () => Effect.sync(() => state.reachable && !state.unauthorized),
     homeLabel: Effect.succeed("This Mac"),
+    linked: Effect.succeed([{ id: machineId, label: "Mac Mini" }]),
+    reach: () => Effect.die("not stubbed"),
+    healthOf: () => Effect.succeed({ status: "connected", detail: null, lastSeenAt: null }),
   };
 
   return {

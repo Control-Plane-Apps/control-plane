@@ -4,6 +4,7 @@ import {
   MessageId,
   agentManagerRole,
   canManageAgent,
+  isAssistantChannel,
   isStandingAgent,
   type OrchestrationAgentMessageSource,
   type OrchestrationProjectShell,
@@ -21,6 +22,11 @@ import * as Option from "effect/Option";
 import type { AgentPhase } from "../../../agentMachines/agentPhase.ts";
 import type { RemoteAgentRecord } from "../../../agentMachines/RemoteAgentStore.ts";
 import { RemoteAgents } from "../../../agentMachines/RemoteAgents.ts";
+import { Reach, type ReachError, type ReachMachine } from "../../../reach/Reach.ts";
+import {
+  ThreadFindResult as ReachFindResult,
+  ThreadSendResult as ReachSendResult,
+} from "../../../reach/reachProtocol.ts";
 import { AgentLineage } from "../../../orchestration/agentLineage.ts";
 import {
   AGENT_PEER_FYI_KIND,
@@ -60,6 +66,7 @@ import {
   type AgentPeer,
   type AgentPeerRole,
   type ThreadSendInput,
+  type ThreadSendResult as ThreadSendResultShape,
 } from "./tools.ts";
 
 /** A thread in a Project with a live coordinator, and that Project. */
@@ -84,6 +91,7 @@ const make = Effect.gen(function* () {
   const lineage = yield* AgentLineage;
   const crypto = yield* Crypto.Crypto;
   const remote = yield* RemoteAgents;
+  const reach = yield* Reach;
 
   const randomUuid = crypto.randomUUIDv4.pipe(Effect.orDie);
   const mintId = (tag: string, threadId: ThreadId) =>
@@ -492,6 +500,103 @@ const make = Effect.gen(function* () {
     return phase ?? "idle";
   };
 
+  /**
+   * A thread on a linked machine, when none here matched. The user's Assistant
+   * reaches any thread there; anyone else reaches only the user's Assistant
+   * (threadTitle "Assistant" or its thread id). None when nothing matched.
+   */
+  const sendAcrossMachines = Effect.fn("ThreadsToolkit.sendAcrossMachines")(function* (
+    input: ThreadSendInput,
+    sender: OrchestrationThreadShell,
+  ) {
+    const ref = (input.threadId ?? input.threadTitle ?? "").trim();
+    if (ref.length === 0) return Option.none<ThreadSendResultShape>();
+    const callerRef = { threadId: sender.id as string, threadTitle: sender.title };
+    const home = Option.getOrUndefined(
+      yield* snapshots
+        .getProjectShellById(sender.projectId)
+        .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause }))),
+    );
+    const failed = (error: ReachError) =>
+      new ThreadSendFailedError({ cause: error, detail: error.detail });
+    /** Nothing matched, but a machine that might have it did not answer: say so. */
+    const unanswered = (machines: ReadonlyArray<ReachMachine>, what: string) =>
+      Effect.gen(function* () {
+        if (machines.length === 0) return Option.none<ThreadSendResultShape>();
+        const details = yield* Effect.forEach(machines, (machine) =>
+          reach
+            .healthOf(machine.id)
+            .pipe(
+              Effect.map((health) =>
+                health.lastSeenAt === null
+                  ? `${machine.label} is offline`
+                  : `${machine.label} is offline, last seen ${health.lastSeenAt}`,
+              ),
+            ),
+        );
+        return yield* new ThreadSendFailedError({
+          cause: new Error("unanswered"),
+          detail: `No ${what} here, and ${details.join("; ")}, so it may be there. Nothing was sent; try again when it is awake.`,
+        });
+      });
+    const send = (machine: ReachMachine, threadId: string) =>
+      reach
+        .call(
+          machine,
+          "thread.send",
+          { threadId, message: input.message },
+          callerRef,
+          ReachSendResult,
+        )
+        .pipe(
+          Effect.mapError(failed),
+          Effect.map((sent) =>
+            Option.some<ThreadSendResultShape>({
+              threadId: ThreadId.make(sent.threadId),
+              threadTitle: `${sent.threadTitle} (on ${machine.label})`,
+              queued: sent.queued,
+            }),
+          ),
+        );
+    if (home !== undefined && isAssistantChannel(home, sender)) {
+      const known = input.threadId === undefined ? Option.none() : yield* reach.locateThread(ref);
+      if (Option.isSome(known)) return yield* send(known.value, ref);
+      const matches: Array<{ machine: ReachMachine; threadId: string; title: string }> = [];
+      const silent: Array<ReachMachine> = [];
+      for (const machine of yield* reach.machines) {
+        const found = yield* reach
+          .call(machine, "thread.find", { ref }, callerRef, ReachFindResult)
+          .pipe(Effect.option);
+        if (Option.isNone(found)) {
+          silent.push(machine);
+          continue;
+        }
+        for (const match of found.value.matches) matches.push({ machine, ...match });
+      }
+      if (matches.length === 0) return yield* unanswered(silent, `thread matched ${ref}`);
+      if (matches.length > 1) return yield* new ThreadSendTargetAmbiguousError({ title: ref });
+      return yield* send(matches[0]!.machine, matches[0]!.threadId);
+    }
+    const namesAssistantTitle =
+      ref.localeCompare("Assistant", undefined, { sensitivity: "accent" }) === 0;
+    const assistant = yield* reach.findAssistant;
+    if (Option.isNone(assistant)) {
+      if (!namesAssistantTitle) return Option.none<ThreadSendResultShape>();
+      const silent: Array<ReachMachine> = [];
+      for (const machine of yield* reach.machines) {
+        const health = yield* reach.healthOf(machine.id);
+        if (health.status !== "connected" && health.status !== "unknown") silent.push(machine);
+      }
+      return yield* unanswered(silent, "Assistant");
+    }
+    const namesAssistant = ref === assistant.value.threadId || namesAssistantTitle;
+    if (!namesAssistant) return Option.none<ThreadSendResultShape>();
+    return yield* send(
+      { id: assistant.value.machineId, label: assistant.value.machineLabel },
+      assistant.value.threadId,
+    );
+  });
+
   const toSendFailure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.catchCause((cause) =>
@@ -529,7 +634,20 @@ const make = Effect.gen(function* () {
             : false;
         const remoteSent = yield* sendToRemoteAgent(input, sender.value, localTitleMatch);
         if (remoteSent !== null) return remoteSent;
-        const target: OrchestrationThreadShell = yield* resolveTarget(input, sender.value);
+        const resolved = yield* resolveTarget(input, sender.value).pipe(
+          Effect.map((thread) => ({ kind: "local" as const, thread })),
+          Effect.catchTag("ThreadSendTargetNotFoundError", (notFound) =>
+            sendAcrossMachines(input, sender.value).pipe(
+              Effect.flatMap((sent) =>
+                Option.isSome(sent)
+                  ? Effect.succeed({ kind: "remote" as const, result: sent.value })
+                  : Effect.fail(notFound),
+              ),
+            ),
+          ),
+        );
+        if (resolved.kind === "remote") return resolved.result;
+        const target: OrchestrationThreadShell = resolved.thread;
         if (target.id === sender.value.id) {
           return yield* new ThreadSendSelfError({});
         }

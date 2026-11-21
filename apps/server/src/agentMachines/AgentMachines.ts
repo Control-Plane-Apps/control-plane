@@ -37,6 +37,7 @@ import {
   fetchPeerShell,
   fetchPeerThread,
   PeerError,
+  postPeerReach,
   requirePeerIdentity,
   validatePeerBaseUrl,
   type PeerCommand,
@@ -104,7 +105,23 @@ export interface AgentMachinesShape {
   readonly isReachable: (machineId: string) => Effect.Effect<boolean>;
   /** How this machine is named to a linked one. */
   readonly homeLabel: Effect.Effect<string>;
+  /** Every linked machine, enabled for placement or not: all are in the Assistant's reach. */
+  readonly linked: Effect.Effect<ReadonlyArray<{ readonly id: string; readonly label: string }>>;
+  /** Posts one cross-server reach op; fails fast for a few seconds after a failed call. */
+  readonly reach: (machineId: string, body: unknown) => Effect.Effect<unknown, PeerError>;
+  /** The last known health of a linked machine, and when it last answered. */
+  readonly healthOf: (machineId: string) => Effect.Effect<MachineHealth>;
 }
+
+export interface MachineHealth {
+  readonly status: AgentMachineStatus["status"] | "unknown";
+  readonly detail: string | null;
+  /** ISO time of the last successful call, or null when none this run. */
+  readonly lastSeenAt: string | null;
+}
+
+/** After a failed reach call, further calls to that machine fail at once for this long. */
+const REACH_OFFLINE_TTL_MS = 10_000;
 
 export class AgentMachines extends Context.Service<AgentMachines, AgentMachinesShape>()(
   "t3/agentMachines/AgentMachines",
@@ -125,6 +142,7 @@ const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
 
   const health = new Map<string, Health>();
+  const lastSeen = new Map<string, number>();
   const shells = new Map<string, { snapshot: OrchestrationShellSnapshot; atMs: number }>();
   const identities = new Map<string, number>();
 
@@ -192,6 +210,7 @@ const make = Effect.gen(function* () {
       }
       const result = yield* use({ baseUrl: config.baseUrl, token: stored.value.token, config });
       yield* record(machineId, { status: "connected" });
+      lastSeen.set(machineId, yield* nowMs);
       return result;
     }).pipe(
       withHttp,
@@ -492,6 +511,43 @@ const make = Effect.gen(function* () {
         detail: "The linked machine refused the token.",
       }).pipe(Effect.asVoid),
     homeLabel: environment.getDescriptor.pipe(Effect.map((descriptor) => descriptor.label)),
+    linked: settingsService.getSettings.pipe(
+      Effect.map((settings) =>
+        Object.entries(settings.agentPlacement.machines).map(([id, config]) => ({
+          id,
+          label: config.label,
+        })),
+      ),
+      Effect.orElseSucceed(() => []),
+    ),
+    reach: (machineId, body) =>
+      Effect.gen(function* () {
+        const failed = health.get(machineId);
+        const now = yield* nowMs;
+        if (
+          failed !== undefined &&
+          failed.status !== "connected" &&
+          now - failed.checkedAtMs < REACH_OFFLINE_TTL_MS
+        ) {
+          return yield* new PeerError({
+            kind: failed.status === "needs-relink" ? "unauthorized" : "unreachable",
+            detail: failed.detail ?? "The linked machine is unavailable.",
+          });
+        }
+        return yield* withPeer(machineId, ({ baseUrl, token }) =>
+          postPeerReach(baseUrl, token, body),
+        );
+      }),
+    healthOf: (machineId) =>
+      Effect.sync(() => {
+        const known = health.get(machineId);
+        const seen = lastSeen.get(machineId);
+        return {
+          status: known?.status ?? "unknown",
+          detail: known?.detail ?? null,
+          lastSeenAt: seen === undefined ? null : DateTime.formatIso(DateTime.makeUnsafe(seen)),
+        } satisfies MachineHealth;
+      }),
     isReachable: (machineId) =>
       Effect.sync(() => health.get(machineId)?.status).pipe(
         Effect.map((status) => status === undefined || status === "connected"),

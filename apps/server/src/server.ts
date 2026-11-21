@@ -89,6 +89,9 @@ import { AgentMachinesLive } from "./agentMachines/AgentMachines.ts";
 import { RemoteAgentBridgeLive } from "./agentMachines/RemoteAgentBridge.ts";
 import { RemoteAgentsLive } from "./agentMachines/RemoteAgents.ts";
 import { RemoteAgentStoreLive } from "./agentMachines/RemoteAgentStore.ts";
+import { ReachLive } from "./reach/Reach.ts";
+import { ReachBridgeLive } from "./reach/ReachBridge.ts";
+import { reachRouteLayer } from "./reach/route.ts";
 import * as AgentCompletionReactor from "./orchestration/AgentCompletionReactor.ts";
 import * as StatusDeadlineReactor from "./orchestration/StatusDeadlineReactor.ts";
 import * as TaskCommitmentRollover from "./orchestration/TaskCommitmentRollover.ts";
@@ -269,7 +272,13 @@ const BaseReactorLayerLive = Layer.empty.pipe(
   // Agents on linked machines: the bridge needs the reactor below it.
   Layer.provideMerge(RemoteAgentBridgeLive),
   Layer.provideMerge(RemoteAgentsLive),
-  Layer.provideMerge(AgentMachinesLive.pipe(Layer.provide(ServerSecretStore.layer))),
+  // Cross-server reach for the Assistant rides the same machine links.
+  Layer.provideMerge(
+    ReachBridgeLive.pipe(
+      Layer.provideMerge(ReachLive),
+      Layer.provideMerge(AgentMachinesLive.pipe(Layer.provide(ServerSecretStore.layer))),
+    ),
+  ),
   Layer.provideMerge(RemoteAgentStoreLive),
   Layer.provideMerge(AgentCompletionReactor.layer),
   Layer.provideMerge(ScheduleService.layer),
@@ -622,6 +631,7 @@ export const makeRoutesLayer = Layer.mergeAll(
     assetRouteLayer,
     attachmentUploadRouteLayer,
     scheduleFireRouteLayer,
+    reachRouteLayer,
     pushDevicesRouteLayer,
     pushActionRouteLayer,
     deviceHubProxyRouteLayer,

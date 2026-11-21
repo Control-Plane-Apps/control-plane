@@ -17,6 +17,11 @@
 import {
   agentManagerRole,
   CommandId,
+  isAssistantChannel,
+  isProjectInAssistantReach,
+  ProjectId,
+  type ReachRemoteActor,
+  type ThreadId,
   isStandingAgent,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
@@ -50,7 +55,16 @@ import {
   ScheduleNotFoundError,
   SchedulesCoordinatorOnlyError,
   ScheduleTurnOnNotRequestedError,
+  ScheduleCreateResult,
+  type ScheduleCreateInput,
+  ScheduleDeleteResult,
+  type ScheduleDeleteInput,
+  ScheduleListResult,
+  ScheduleUpdateResult,
+  type ScheduleUpdateInput,
 } from "./tools.ts";
+import { Reach, type ReachMachine } from "../../../reach/Reach.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
 
 type ScheduleToolName =
   | "cp_schedule_list"
@@ -63,9 +77,19 @@ type ScheduleHandlers = Pick<
   ScheduleToolName
 >;
 
-interface Coordinator {
-  readonly caller: OrchestrationThreadShell;
-  readonly project: OrchestrationProjectShell;
+/**
+ * Whose schedules a call manages and who acts: the Project's coordinator, or
+ * the user's Assistant (here, or on a linked server through the reach route).
+ */
+export interface ScheduleScope {
+  readonly project: Pick<OrchestrationProjectShell, "id" | "assistant">;
+  readonly actorThreadId: ThreadId;
+  readonly remoteActor?: ReachRemoteActor | undefined;
+  /** Fails unless the acting turn was started by the user's own message. */
+  readonly requireUserTurn: Effect.Effect<
+    void,
+    ScheduleTurnOnNotRequestedError | AgentToolFailedError
+  >;
 }
 
 type ScheduleTargetResolution =
@@ -129,7 +153,7 @@ const changeFailed = <E>(cause: Cause.Cause<E>): Effect.Effect<never, AgentToolF
 };
 
 /** Needs the project repository: the shell leaves out prompts. */
-export const makeScheduleHandlers = Effect.gen(function* () {
+export const makeScheduleCore = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const projects = yield* ProjectionProjectRepository;
@@ -153,9 +177,8 @@ export const makeScheduleHandlers = Effect.gen(function* () {
    * does not change which message started the turn.
    */
   const requireUserTurn = Effect.fn("ScheduleTools.requireUserTurn")(function* (
-    coordinator: Coordinator,
+    caller: OrchestrationThreadShell,
   ) {
-    const { caller } = coordinator;
     const turnId =
       caller.session?.activeTurnId ??
       (caller.latestTurn?.state === "running" ? caller.latestTurn.turnId : null);
@@ -202,46 +225,30 @@ export const makeScheduleHandlers = Effect.gen(function* () {
     if (agentSent) return yield* new ScheduleTurnOnNotRequestedError();
   });
 
-  /** The role is checked live, so a replaced coordinator, or one whose Project was archived, is refused. */
-  const requireCoordinator = Effect.fn("ScheduleTools.requireCoordinator")(function* () {
-    const invocation = yield* McpInvocationContext.requireMcpCapability("agents");
-    const caller = yield* snapshots
-      .getThreadShellById(invocation.threadId)
-      .pipe(Effect.mapError(readFailed));
-    if (Option.isNone(caller)) return yield* new SchedulesCoordinatorOnlyError();
-    const project = yield* snapshots
-      .getProjectShellById(caller.value.projectId)
-      .pipe(Effect.mapError(readFailed));
-    if (Option.isNone(project) || agentManagerRole(project.value, caller.value) !== "coordinator") {
-      return yield* new SchedulesCoordinatorOnlyError();
-    }
-    return { caller: caller.value, project: project.value } satisfies Coordinator;
-  });
-
   /** The full marker, prompts included. */
-  const readMarker = (coordinator: Coordinator) =>
-    projects.getById({ projectId: coordinator.project.id }).pipe(
+  const readMarker = (scope: ScheduleScope) =>
+    projects.getById({ projectId: scope.project.id }).pipe(
       Effect.mapError(readFailed),
       Effect.map((row): ProjectAssistant | null => Option.getOrUndefined(row)?.assistant ?? null),
     );
 
   const requireSchedule = Effect.fn("ScheduleTools.requireSchedule")(function* (
-    coordinator: Coordinator,
+    scope: ScheduleScope,
     id: string,
   ) {
-    const marker = yield* readMarker(coordinator);
+    const marker = yield* readMarker(scope);
     const schedule = marker?.schedules?.find((entry) => entry.id === id);
     if (schedule === undefined) return yield* new ScheduleNotFoundError({ id });
     return { schedule, prompt: entryOf(marker?.schedulePrompts, id) };
   });
 
   const requireTarget = Effect.fn("ScheduleTools.requireTarget")(function* (
-    coordinator: Coordinator,
+    scope: ScheduleScope,
     ref: string,
   ) {
     const snapshot = yield* snapshots.getShellSnapshot().pipe(Effect.mapError(readFailed));
     const resolved = resolveScheduleTarget(ref, {
-      project: coordinator.project,
+      project: scope.project,
       threads: snapshot.threads,
     });
     switch (resolved.kind) {
@@ -259,7 +266,7 @@ export const makeScheduleHandlers = Effect.gen(function* () {
   });
 
   const dispatchChange = Effect.fn("ScheduleTools.dispatchChange")(function* (
-    coordinator: Coordinator,
+    scope: ScheduleScope,
     change: ProjectScheduleAgentChange,
   ) {
     const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
@@ -267,8 +274,9 @@ export const makeScheduleHandlers = Effect.gen(function* () {
       .dispatch({
         type: "project.schedule.agent-change",
         commandId: CommandId.make(`mcp-schedule:${uuid}`),
-        projectId: coordinator.project.id,
-        actorThreadId: coordinator.caller.id,
+        projectId: scope.project.id,
+        actorThreadId: scope.actorThreadId,
+        ...(scope.remoteActor !== undefined ? { remoteActor: scope.remoteActor } : {}),
         change,
         createdAt: DateTime.formatIso(yield* DateTime.now),
       })
@@ -276,9 +284,9 @@ export const makeScheduleHandlers = Effect.gen(function* () {
   });
 
   return {
-    cp_schedule_list: () =>
+    requireUserTurn,
+    list: (coordinator: ScheduleScope) =>
       Effect.gen(function* () {
-        const coordinator = yield* requireCoordinator();
         const marker = yield* readMarker(coordinator);
         const schedules = yield* Effect.forEach(marker?.schedules ?? [], (schedule) =>
           Effect.map(nextRunOf(schedule), (nextRun) => ({
@@ -298,13 +306,12 @@ export const makeScheduleHandlers = Effect.gen(function* () {
         return { schedules };
       }),
 
-    cp_schedule_create: (input) =>
+    create: (coordinator: ScheduleScope, input: ScheduleCreateInput) =>
       Effect.gen(function* () {
-        const coordinator = yield* requireCoordinator();
         const target =
           input.target === undefined ? undefined : yield* requireTarget(coordinator, input.target);
         const enabled = input.enabled === true;
-        if (enabled) yield* requireUserTurn(coordinator);
+        if (enabled) yield* coordinator.requireUserTurn;
         const taken = new Set(
           ((yield* readMarker(coordinator))?.schedules ?? []).map((schedule) => schedule.id),
         );
@@ -331,9 +338,8 @@ export const makeScheduleHandlers = Effect.gen(function* () {
         };
       }),
 
-    cp_schedule_update: (input) =>
+    update: (coordinator: ScheduleScope, input: ScheduleUpdateInput) =>
       Effect.gen(function* () {
-        const coordinator = yield* requireCoordinator();
         const { schedule: existing, prompt } = yield* requireSchedule(coordinator, input.id);
         const target =
           input.target === undefined ? undefined : yield* requireTarget(coordinator, input.target);
@@ -366,7 +372,7 @@ export const makeScheduleHandlers = Effect.gen(function* () {
           (requested === existing.enabled && !(requested && pausesUnlessOn))
             ? undefined
             : requested;
-        if (enabled === true) yield* requireUserTurn(coordinator);
+        if (enabled === true) yield* coordinator.requireUserTurn;
         if (Object.keys(fields).length === 0 && enabled === undefined) {
           return {
             id: existing.id,
@@ -384,12 +390,178 @@ export const makeScheduleHandlers = Effect.gen(function* () {
         return { id: updated.id, enabled: updated.enabled, nextRun: yield* nextRunOf(updated) };
       }),
 
-    cp_schedule_delete: (input) =>
+    delete: (coordinator: ScheduleScope, input: ScheduleDeleteInput) =>
       Effect.gen(function* () {
-        const coordinator = yield* requireCoordinator();
         const { schedule: existing } = yield* requireSchedule(coordinator, input.id);
         yield* dispatchChange(coordinator, { kind: "delete", id: existing.id });
         return { id: existing.id, deleted: true as const };
+      }),
+  };
+});
+
+/**
+ * The tools: the coordinator manages its own Project's schedules; the user's
+ * Assistant also any Project in its reach, named by `projectId`, here or on a
+ * linked server (the schedule lives and fires on the server that runs it).
+ */
+export const makeScheduleHandlers = Effect.gen(function* () {
+  const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const settings = yield* ServerSettings.ServerSettingsService;
+  const core = yield* makeScheduleCore;
+  const reach = yield* Reach;
+
+  type Resolved =
+    | { readonly kind: "local"; readonly scope: ScheduleScope }
+    | {
+        readonly kind: "remote";
+        readonly machine: ReachMachine;
+        readonly callerRef: { readonly threadId: string; readonly threadTitle: string };
+        readonly userTurn: Effect.Effect<boolean>;
+      };
+
+  /** Checked live, so a replaced coordinator, or one whose Project was archived, is refused. */
+  const requireScope = Effect.fn("ScheduleTools.requireScope")(function* (
+    requested: string | undefined,
+  ) {
+    const invocation = yield* McpInvocationContext.requireMcpCapability("agents");
+    const caller = yield* snapshots
+      .getThreadShellById(invocation.threadId)
+      .pipe(Effect.mapError(readFailed));
+    if (Option.isNone(caller)) return yield* new SchedulesCoordinatorOnlyError();
+    const project = yield* snapshots
+      .getProjectShellById(caller.value.projectId)
+      .pipe(Effect.mapError(readFailed));
+    if (Option.isNone(project)) return yield* new SchedulesCoordinatorOnlyError();
+    const userTurn = core.requireUserTurn(caller.value);
+    const own: Resolved = {
+      kind: "local",
+      scope: { project: project.value, actorThreadId: caller.value.id, requireUserTurn: userTurn },
+    };
+    if (isAssistantChannel(project.value, caller.value) && requested !== undefined) {
+      if (requested === project.value.id) return own;
+      const notInReach = new AgentToolFailedError({
+        detail: `'${requested}' is not a Project in your reach. Use a projectId from cp_assistant_overview.`,
+      });
+      const { assistant } = yield* settings.getSettings.pipe(Effect.mapError(readFailed));
+      if (!isProjectInAssistantReach(assistant, requested)) return yield* notInReach;
+      const target = yield* snapshots
+        .getProjectShellById(ProjectId.make(requested))
+        .pipe(Effect.mapError(readFailed));
+      if (Option.isSome(target)) {
+        const marker = target.value.assistant;
+        if (marker == null || marker.scope === "global" || marker.archivedAt != null) {
+          return yield* notInReach;
+        }
+        return {
+          kind: "local",
+          scope: {
+            project: target.value,
+            actorThreadId: caller.value.id,
+            requireUserTurn: userTurn,
+          },
+        } satisfies Resolved;
+      }
+      const callerRef = { threadId: caller.value.id, threadTitle: caller.value.title };
+      const machine = yield* reach.locateProject(requested, callerRef);
+      if (Option.isNone(machine)) return yield* notInReach;
+      return {
+        kind: "remote",
+        machine: machine.value.machine,
+        callerRef,
+        // Checked here, where the Assistant's turn is: the linked server cannot see it.
+        userTurn: userTurn.pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        ),
+      } satisfies Resolved;
+    }
+    if (agentManagerRole(project.value, caller.value) !== "coordinator") {
+      return yield* new SchedulesCoordinatorOnlyError();
+    }
+    if (requested !== undefined && requested !== project.value.id) {
+      return yield* new AgentToolFailedError({
+        detail: "Only the user's Assistant can manage another Project's schedules. Omit projectId.",
+      });
+    }
+    return own;
+  });
+
+  const forward = <A, I>(
+    resolved: Extract<Resolved, { kind: "remote" }>,
+    op: "schedule.list" | "schedule.create" | "schedule.update" | "schedule.delete",
+    projectId: string,
+    input: unknown,
+    result: Schema.Codec<A, I>,
+  ) =>
+    Effect.gen(function* () {
+      const userTurn = op === "schedule.list" ? false : yield* resolved.userTurn;
+      return yield* reach
+        .call(resolved.machine, op, { projectId, input, userTurn }, resolved.callerRef, result)
+        .pipe(Effect.mapError((error) => new AgentToolFailedError({ detail: error.detail })));
+    });
+
+  /** Drops `projectId` before the core sees the input. */
+  const withoutProject = <T extends { readonly projectId?: string | undefined }>(input: T) => {
+    const { projectId: _projectId, ...rest } = input;
+    return rest;
+  };
+
+  return {
+    cp_schedule_list: (input) =>
+      Effect.gen(function* () {
+        const resolved = yield* requireScope(input?.projectId);
+        if (resolved.kind === "remote") {
+          return yield* forward(
+            resolved,
+            "schedule.list",
+            input!.projectId!,
+            {},
+            ScheduleListResult,
+          );
+        }
+        return yield* core.list(resolved.scope);
+      }),
+    cp_schedule_create: (input) =>
+      Effect.gen(function* () {
+        const resolved = yield* requireScope(input.projectId);
+        if (resolved.kind === "remote") {
+          return yield* forward(
+            resolved,
+            "schedule.create",
+            input.projectId!,
+            withoutProject(input),
+            ScheduleCreateResult,
+          );
+        }
+        return yield* core.create(resolved.scope, withoutProject(input));
+      }),
+    cp_schedule_update: (input) =>
+      Effect.gen(function* () {
+        const resolved = yield* requireScope(input.projectId);
+        if (resolved.kind === "remote") {
+          return yield* forward(
+            resolved,
+            "schedule.update",
+            input.projectId!,
+            withoutProject(input),
+            ScheduleUpdateResult,
+          );
+        }
+        return yield* core.update(resolved.scope, withoutProject(input));
+      }),
+    cp_schedule_delete: (input) =>
+      Effect.gen(function* () {
+        const resolved = yield* requireScope(input.projectId);
+        if (resolved.kind === "remote") {
+          return yield* forward(
+            resolved,
+            "schedule.delete",
+            input.projectId!,
+            withoutProject(input),
+            ScheduleDeleteResult,
+          );
+        }
+        return yield* core.delete(resolved.scope, withoutProject(input));
       }),
   } satisfies ScheduleHandlers;
 });
