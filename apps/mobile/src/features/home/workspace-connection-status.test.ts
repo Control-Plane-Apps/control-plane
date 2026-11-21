@@ -62,6 +62,7 @@ describe("workspace connection status", () => {
   it("surfaces connection errors before the generic disconnected fallback", () => {
     const state = workspaceState({
       connectionError: "Could not reach Julius’s Mac mini",
+      hasConnectingEnvironment: true,
       hasLoadedShellSnapshot: false,
       hasReadyEnvironment: false,
     });
@@ -72,19 +73,17 @@ describe("workspace connection status", () => {
     });
   });
 
-  it("shows shell catch-up while cached threads remain visible", () => {
+  it("keeps shell catch-up quiet while a relevant environment is connected", () => {
     const state = workspaceState({ hasPendingShellSnapshot: true });
 
-    expect(workspaceConnectionStatusPresentation(state)).toEqual({
-      label: "Syncing threads...",
-      showsProgress: true,
-    });
+    expect(workspaceConnectionStatusPresentation(state)).toBeNull();
   });
 
   it("distinguishes initial shell loading from cached catch-up", () => {
     const state = workspaceState({
       hasLoadedShellSnapshot: false,
       hasPendingShellSnapshot: true,
+      hasReadyEnvironment: false,
     });
 
     expect(workspaceConnectionStatusPresentation(state)).toEqual({

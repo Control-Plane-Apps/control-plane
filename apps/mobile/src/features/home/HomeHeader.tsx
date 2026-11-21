@@ -11,6 +11,7 @@ import {
   createClearFilterHeaderItem,
   createHomeListHeaderItems,
 } from "../threads/sidebar-native-header-items";
+import { useWorkspaceConnectionStatus } from "./WorkspaceConnectionTitle";
 import { MaterialThreadListToolbar } from "./MaterialThreadListToolbar";
 import {
   buildHomeListFilterMenu,
@@ -166,6 +167,7 @@ function AndroidHomeHeader(props: HomeHeaderProps) {
 }
 
 function IosHomeHeader(props: HomeHeaderProps) {
+  const connectionStatus = useWorkspaceConnectionStatus();
   const iconColor = useUniwindTheme()["--color-icon"];
   // The list uses a fixed creation order and ignores sort/group options, so
   // the filter menu only carries the filters and the "customized" icon state
@@ -185,12 +187,12 @@ function IosHomeHeader(props: HomeHeaderProps) {
 
   return (
     <NativeStackScreenOptions
-      optionsVersion={[filterMenu.items, showBack, backTitle, searchOpen]}
+      optionsVersion={[filterMenu.items, showBack, backTitle, searchOpen, connectionStatus?.label]}
       options={{
         headerShown: !searchOpen,
         headerTintColor: iconColor,
         headerBackVisible: false,
-        headerTitle: showBack && backTitle.length > 0 ? backTitle : () => null,
+        headerTitle: showBack && backTitle.length > 0 ? backTitle : (connectionStatus?.label ?? ""),
         title: showBack ? backTitle : "",
         unstable_headerLeftItems: () =>
           showBack && props.onClearFilter

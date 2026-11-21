@@ -7,7 +7,11 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Option from "effect/Option";
 
-import { projectWorkspaceEnvironment, projectWorkspaceState } from "./workspaceModel";
+import {
+  projectWorkspaceEnvironment,
+  projectWorkspaceState,
+  workspaceStatusEnvironmentIds,
+} from "./workspaceModel";
 import type { EnvironmentPresentation } from "./environments";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
@@ -120,5 +124,17 @@ describe("mobile workspace projection", () => {
     expect(state.hasPendingShellSnapshot).toBe(true);
     expect(state.hasReadyEnvironment).toBe(false);
     expect(state.connectionState).toBe("reconnecting");
+  });
+});
+
+describe("workspace header environment scope", () => {
+  it("includes Projects hosts and the Tasks host without unused paired environments", () => {
+    const projectHost = EnvironmentId.make("projects");
+    const taskHost = EnvironmentId.make("tasks");
+    expect([...workspaceStatusEnvironmentIds([projectHost, projectHost], taskHost)]).toEqual([
+      projectHost,
+      taskHost,
+    ]);
+    expect([...workspaceStatusEnvironmentIds([], null)]).toEqual([]);
   });
 });

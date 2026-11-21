@@ -113,3 +113,13 @@ export function projectWorkspaceState(input: {
 }
 
 export type ServerConfigByEnvironmentId = ReadonlyMap<EnvironmentId, ServerConfig>;
+
+/** Cached Projects and the Tasks host matter; unused paired servers do not. */
+export function workspaceStatusEnvironmentIds(
+  projectEnvironmentIds: ReadonlyArray<EnvironmentId>,
+  taskEnvironmentId: EnvironmentId | null,
+): ReadonlySet<EnvironmentId> {
+  const ids = new Set(projectEnvironmentIds);
+  if (taskEnvironmentId !== null) ids.add(taskEnvironmentId);
+  return ids;
+}

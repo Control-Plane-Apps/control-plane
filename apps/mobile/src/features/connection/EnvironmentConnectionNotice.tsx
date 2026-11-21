@@ -1,3 +1,4 @@
+import { useConnectionStatusVisible } from "./useConnectionStatusVisible";
 import { ConnectionTraceId } from "./ConnectionTraceId";
 import {
   type EnvironmentConnectionPhase,
@@ -58,6 +59,13 @@ export function EnvironmentConnectionNotice(props: {
   readonly resourceName: string;
   readonly onRetry: () => void;
 }) {
+  const visible = useConnectionStatusVisible(
+    props.connection.phase !== "connected",
+    props.connection.phase === "offline",
+    props.environmentLabel,
+  );
+  if (!visible) return null;
+
   const isRetrying =
     props.connection.phase === "connecting" || props.connection.phase === "reconnecting";
 
