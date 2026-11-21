@@ -65,15 +65,28 @@ Pull, so a sleeping caller or callee loses nothing and no reverse link is needed
 ## Offline (the MacBook sleeps)
 
 - **Overview:** the machine is listed in `machines` as `offline` (or `needs-relink`) with when it
-  was last seen, and its Projects from the last good read are listed with `coordinatorPhase:
-"offline"` and `stale: true`. Never silently empty.
+  was last seen, and its Projects from the last good read (kept in `reach-overviews.json`, so they
+  survive a restart of the Assistant's server) are listed with `coordinatorPhase: "offline"` and
+  `stale: true`. Never silently empty.
 - **Ask, status, thread send, handoff, schedules:** fail fast with an explicit per-target error
   ("MacBook is offline, last seen 10:42. Try again when it is awake."). For `cp_assistant_ask` the
   offline Projects land in `skipped` with that reason; the online ones are still asked.
 - **Answers in flight** wait: the bridge backs off and resumes when the machine answers. After 24
   hours an open ask gets one "no answer, <machine> unreachable" result under its own id.
 - **Assistant's server offline** (coordinator side): `cp_thread_send` / `cp_assistant_ping` to
-  the Assistant fail with an explicit error.
+  the Assistant fail with an explicit error naming the machine ("No Assistant here, and Mac mini
+  is offline, last seen ..."), never a bare "no thread matched".
+
+## Details
+
+- **Names.** A callee calls the caller what the user named it when linking (the label in its own
+  Agent machines settings), so messages read "Assistant (on Mac mini)" even when both hosts
+  report the same hostname.
+- **Turning a schedule on** still needs the Assistant's turn to be started by the user's own
+  message. The Assistant's server checks its own turn and sends `userTurn`; the owning server
+  refuses `enabled: true` without it.
+- **Task handoff** records the handoff on the Assistant's task list with `handoff.machine`, and the
+  coordinator's message says where the task list lives.
 
 ## Security
 
@@ -89,7 +102,9 @@ Pull, so a sleeping caller or callee loses nothing and no reverse link is needed
 
 ## Loops and duplicates
 
-- Each op carries `requestId`, used in the callee's command ids, so a retried call dedupes.
+- Each op carries a fresh `requestId` that the callee builds its command ids from. The caller
+  never retries an op itself: a failure goes back to the agent as an error, so one call lands at
+  most once.
 - Answers are pushes with no `replyTo`, so an answer never owes an answer.
 - Thread sends and notes carry no `replyTo`; nothing chains across machines.
 - The bridge appends with the callee's push id, so a repeated poll never doubles an answer.
