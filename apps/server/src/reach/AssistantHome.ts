@@ -49,7 +49,6 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { AgentMachines } from "../agentMachines/AgentMachines.ts";
-import { ensureAssistant } from "../assistant/ensureAssistant.ts";
 import { EnvironmentAuth } from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";

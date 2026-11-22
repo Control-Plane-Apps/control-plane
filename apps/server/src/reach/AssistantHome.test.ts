@@ -311,15 +311,17 @@ const journalPath = Effect.map(ServerConfig, (config) => `${config.stateDir}/ass
 const JournalJson = Schema.fromJsonString(
   Schema.Struct({ version: Schema.Literal(1), moves: Schema.Array(MoveRecord) }),
 );
+const decodeJournal = Schema.decodeUnknownEffect(JournalJson);
+const encodeJournal = Schema.encodeEffect(JournalJson);
 const readJournal = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const raw = yield* fs.readFileString(yield* journalPath);
-  return (yield* Schema.decodeUnknownEffect(JournalJson)(raw)).moves;
+  return (yield* decodeJournal(raw)).moves;
 });
 const writeJournal = (moves: ReadonlyArray<MoveRecord>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const contents = yield* Schema.encodeEffect(JournalJson)({ version: 1, moves });
+    const contents = yield* encodeJournal({ version: 1, moves });
     yield* fs.writeFileString(yield* journalPath, contents);
   });
 const projectIds = Effect.flatMap(ProjectionSnapshotQuery, (snapshots) =>
