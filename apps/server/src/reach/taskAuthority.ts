@@ -9,7 +9,7 @@
  * If two linked servers both host one, the lower environment id wins on
  * both, so they agree. What a linked machine hosts is learned from `describe`
  * and kept in `reach-assistants.json`, so the answer is stable across
- * restarts and while that machine is offline.
+ * restarts and while that machine is offline, for up to three days.
  *
  * The decision is held in this module (like the account week start in
  * contracts) so the environment descriptor and the rollover read it without
@@ -45,6 +45,25 @@ export function decideTaskAuthority(input: {
   if (first === undefined) return { authority: true };
   if (input.localAssistant && input.selfId.localeCompare(first.id) < 0) return { authority: true };
   return { authority: false, deferTo: { id: first.id, label: first.label } };
+}
+
+/** A linked machine's last answer about hosting the Assistant, and when it gave it. */
+export interface AssistantAnswer {
+  readonly hosts: boolean;
+  readonly at: number;
+}
+
+/**
+ * How long a machine that stopped answering still counts as hosting the
+ * Assistant. Long enough to cover a sleeping or traveling machine; short
+ * enough that a retired one does not keep every other server from rolling
+ * commitments forever.
+ */
+export const ASSISTANT_ANSWER_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** Whether an answer still says the machine hosts the Assistant. */
+export function hostsAssistant(answer: AssistantAnswer | undefined, nowMs: number): boolean {
+  return answer !== undefined && answer.hosts && nowMs - answer.at < ASSISTANT_ANSWER_TTL_MS;
 }
 
 let current: TaskAuthorityDecision = { authority: true };

@@ -1,7 +1,13 @@
 import type { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 
-import { decideTaskAuthority, setTaskAuthority, withTaskAuthority } from "./taskAuthority.ts";
+import {
+  ASSISTANT_ANSWER_TTL_MS,
+  decideTaskAuthority,
+  hostsAssistant,
+  setTaskAuthority,
+  withTaskAuthority,
+} from "./taskAuthority.ts";
 
 const mini = { id: "env-mini", label: "Mac mini", hasAssistant: true };
 const macbook = { id: "env-macbook", label: "MacBook", hasAssistant: false };
@@ -38,6 +44,17 @@ describe("decideTaskAuthority", () => {
       linked: [mini],
     });
     expect([onMini.authority, onMacbook.authority]).toEqual([false, true]);
+  });
+});
+
+describe("hostsAssistant", () => {
+  it("lets a machine that stopped answering count as host for a while, then not", () => {
+    const answer = { hosts: true, at: 1_000 };
+    expect(hostsAssistant(answer, 1_000 + ASSISTANT_ANSWER_TTL_MS - 1)).toBe(true);
+    // A retired machine no longer keeps everyone else from rolling commitments.
+    expect(hostsAssistant(answer, 1_000 + ASSISTANT_ANSWER_TTL_MS)).toBe(false);
+    expect(hostsAssistant({ hosts: false, at: 1_000 }, 1_000)).toBe(false);
+    expect(hostsAssistant(undefined, 1_000)).toBe(false);
   });
 });
 

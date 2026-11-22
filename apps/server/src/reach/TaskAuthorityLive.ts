@@ -8,6 +8,7 @@
  * @module TaskAuthorityLive
  */
 import { findGlobalAssistantProject } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -23,14 +24,18 @@ import { forkParked } from "../serverActivation.ts";
 import { Reach } from "./Reach.ts";
 import { DescribeResult } from "./reachProtocol.ts";
 import {
+  type AssistantAnswer,
   decideTaskAuthority,
+  hostsAssistant,
   setTaskAuthority,
   type TaskAuthorityDecision,
 } from "./taskAuthority.ts";
 
 export const TASK_AUTHORITY_REFRESH = Duration.minutes(5);
 
-const KnownJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Boolean));
+const KnownJson = Schema.fromJsonString(
+  Schema.Record(Schema.String, Schema.Struct({ hosts: Schema.Boolean, at: Schema.Number })),
+);
 const decodeKnown = Schema.decodeUnknownEffect(KnownJson);
 const encodeKnown = Schema.encodeEffect(KnownJson);
 
@@ -48,11 +53,11 @@ export const TaskAuthorityLive = Layer.effectDiscard(
     const path = yield* Path.Path;
     const config = yield* ServerConfig.ServerConfig;
     const filePath = `${config.stateDir}/reach-assistants.json`;
-    const known = new Map<string, boolean>(
+    const known = new Map<string, AssistantAnswer>(
       Object.entries(
         yield* fileSystem.readFileString(filePath).pipe(
           Effect.flatMap(decodeKnown),
-          Effect.orElseSucceed((): Record<string, boolean> => ({})),
+          Effect.orElseSucceed((): Record<string, AssistantAnswer> => ({})),
         ),
       ),
     );
@@ -65,12 +70,13 @@ export const TaskAuthorityLive = Layer.effectDiscard(
         snapshot._tag === "Some" &&
         findGlobalAssistantProject(snapshot.value.projects) !== undefined;
       const machines = yield* reach.machines;
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
       const decision = decideTaskAuthority({
         selfId,
         localAssistant,
         linked: machines.map((machine) => ({
           ...machine,
-          hasAssistant: known.get(machine.id) === true,
+          hasAssistant: hostsAssistant(known.get(machine.id), nowMs),
         })),
       });
       setTaskAuthority(decision);
@@ -86,7 +92,12 @@ export const TaskAuthorityLive = Layer.effectDiscard(
         const described = yield* reach
           .call(machine, "describe", {}, { threadId: "", threadTitle: "" }, DescribeResult)
           .pipe(Effect.option);
-        if (described._tag === "Some") known.set(machine.id, described.value.assistant !== null);
+        if (described._tag === "Some") {
+          known.set(machine.id, {
+            hosts: described.value.assistant !== null,
+            at: DateTime.toEpochMillis(yield* DateTime.now),
+          });
+        }
       }
       yield* encodeKnown(Object.fromEntries(known)).pipe(
         Effect.flatMap((contents) => writeFileStringAtomically({ filePath, contents })),

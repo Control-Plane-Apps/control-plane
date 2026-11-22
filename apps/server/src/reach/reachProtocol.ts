@@ -20,6 +20,7 @@ export type ReachCaller = typeof ReachCaller.Type;
 
 export const ReachOp = Schema.Literals([
   "describe",
+  "confirm",
   "overview",
   "ask",
   "results",
@@ -35,6 +36,18 @@ export const ReachOp = Schema.Literals([
   "schedule.delete",
 ]);
 export type ReachOp = typeof ReachOp.Type;
+
+/** Largest body the route reads at all. */
+export const REACH_MAX_BODY_BYTES = 64 * 1024 * 1024;
+/** Most ops carry a message or a status row. */
+const DEFAULT_BODY_LIMIT = 256 * 1024;
+/** Ops that carry more, by op. */
+const BODY_LIMITS: Partial<Record<string, number>> = {};
+
+/** The largest body accepted for one op. */
+export function reachBodyLimit(op: string): number {
+  return BODY_LIMITS[op] ?? DEFAULT_BODY_LIMIT;
+}
 
 export const ReachRequest = Schema.Struct({
   op: ReachOp,
@@ -171,3 +184,22 @@ export const OverviewResult = Schema.Struct({
   workspaces: Schema.Array(OverviewWorkspaceThread),
 });
 export type OverviewResult = typeof OverviewResult.Type;
+
+/** The callee asks the claimed caller whether it really sent a request. */
+export const ConfirmInput = Schema.Struct({ requestId: Schema.String });
+export const ConfirmResult = Schema.Struct({ sent: Schema.Boolean });
+
+/**
+ * Ops that act for the caller. The callee runs them only after the caller,
+ * reached over the callee's own pinned link, confirms it sent the request.
+ */
+export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
+  "ask",
+  "status.set",
+  "thread.send",
+  "assistant.note",
+  "task.deliver",
+  "schedule.create",
+  "schedule.update",
+  "schedule.delete",
+]);

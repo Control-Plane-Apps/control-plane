@@ -9,6 +9,7 @@
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -19,6 +20,7 @@ import * as Path from "effect/Path";
 
 import { AgentMachines, type MachineHealth } from "../agentMachines/AgentMachines.ts";
 import { writeFileStringAtomically } from "../atomicWrite.ts";
+import { noteSent } from "./reachSent.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import {
@@ -31,8 +33,11 @@ import {
 } from "./reachProtocol.ts";
 
 export class ReachError extends Schema.TaggedError<ReachError>()("ReachError", {
-  /** `offline`: not reachable now. `relink`: token refused. `refused`: the op failed there. */
-  kind: Schema.Literals(["offline", "relink", "refused"]),
+  /**
+   * `offline`: not reachable now. `timeout`: sent, no answer in time, it may
+   * still finish. `relink`: token refused. `refused`: it answered with an error.
+   */
+  kind: Schema.Literals(["offline", "timeout", "relink", "refused"]),
   machineId: Schema.String,
   machineLabel: Schema.String,
   detail: Schema.String,
@@ -67,6 +72,7 @@ export interface ReachShape {
     input: unknown,
     caller: { readonly threadId: string; readonly threadTitle: string },
     result: Schema.Codec<A, I>,
+    options?: { readonly timeout?: Duration.Duration },
   ) => Effect.Effect<A, ReachError>;
   /** The user's Assistant on a linked machine, cached for a minute. None when no machine has one. */
   readonly findAssistant: Effect.Effect<Option.Option<RemoteAssistant>>;
@@ -183,10 +189,11 @@ export const make = Effect.gen(function* () {
     return { environmentId: descriptor.environmentId as string, label: descriptor.label };
   });
 
-  const call: ReachShape["call"] = (machine, op, input, caller, result) =>
+  const call: ReachShape["call"] = (machine, op, input, caller, result, options) =>
     Effect.gen(function* () {
       const me = yield* self;
       const requestId = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "");
+      noteSent(requestId, DateTime.toEpochMillis(yield* DateTime.now));
       const body = {
         op,
         requestId,
@@ -198,20 +205,37 @@ export const make = Effect.gen(function* () {
         } satisfies ReachCaller,
         input,
       };
-      const raw = yield* agentMachines.reach(machine.id, body).pipe(
+      const raw = yield* agentMachines.reach(machine.id, body, options).pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {
-            const health = yield* agentMachines.healthOf(machine.id);
-            const kind = error.kind === "unauthorized" ? ("relink" as const) : ("offline" as const);
-            return yield* new ReachError({
-              kind: error.kind === "incompatible" ? "refused" : kind,
-              machineId: machine.id,
-              machineLabel: machine.label,
-              detail:
-                error.kind === "incompatible"
-                  ? `${machine.label}: ${error.detail}`
-                  : reachFailureDetail(machine.label, kind, health.lastSeenAt),
-            });
+            switch (error.kind) {
+              case "unauthorized":
+              case "unreachable": {
+                const health = yield* agentMachines.healthOf(machine.id);
+                const kind = error.kind === "unauthorized" ? "relink" : "offline";
+                return yield* new ReachError({
+                  kind,
+                  machineId: machine.id,
+                  machineLabel: machine.label,
+                  detail: reachFailureDetail(machine.label, kind, health.lastSeenAt),
+                });
+              }
+              case "timeout":
+                return yield* new ReachError({
+                  kind: "timeout",
+                  machineId: machine.id,
+                  machineLabel: machine.label,
+                  detail: `${machine.label} did not answer in time. It may still finish what was asked.`,
+                });
+              default:
+                // It answered: say what it said, never that it is offline.
+                return yield* new ReachError({
+                  kind: "refused",
+                  machineId: machine.id,
+                  machineLabel: machine.label,
+                  detail: `${machine.label}: ${error.detail}`,
+                });
+            }
           }),
         ),
       );

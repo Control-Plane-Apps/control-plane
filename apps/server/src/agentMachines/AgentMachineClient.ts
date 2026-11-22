@@ -37,6 +37,8 @@ export class PeerError extends Schema.TaggedError<PeerError>()("PeerError", {
   kind: Schema.Literals([
     "invalid-url",
     "unreachable",
+    /** Sent, but no answer in time: the peer may still finish it. */
+    "timeout",
     "unauthorized",
     "incompatible",
     "wrong-environment",
@@ -132,7 +134,7 @@ export function classifyPeerFailure(error: unknown): PeerError {
   }
   if (tag === "TimeoutError") {
     return new PeerError({
-      kind: "unreachable",
+      kind: "timeout",
       detail: "The linked machine did not answer in time.",
     });
   }
@@ -301,6 +303,7 @@ export const postPeerReach = (
   baseUrl: string,
   token: string,
   body: unknown,
+  timeout: Duration.Duration = REACH_REQUEST_TIMEOUT,
 ): Effect.Effect<unknown, PeerError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
@@ -322,10 +325,12 @@ export const postPeerReach = (
       });
     }
     if (response.status < 200 || response.status >= 300) {
+      const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+      const reason = text.trim().slice(0, 200);
       return yield* new PeerError({
         kind: "rejected",
-        detail: `The linked machine answered ${response.status}.`,
+        detail: `The linked machine refused the request (${response.status}${reason.length > 0 ? `: ${reason}` : ""}).`,
       });
     }
     return yield* response.json;
-  }).pipe(Effect.timeout(REACH_REQUEST_TIMEOUT), noRedirects, Effect.mapError(classifyPeerFailure));
+  }).pipe(Effect.timeout(timeout), noRedirects, Effect.mapError(classifyPeerFailure));

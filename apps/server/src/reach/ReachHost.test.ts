@@ -42,6 +42,7 @@ import {
   ThreadSendResult,
   type ReachOp,
 } from "./reachProtocol.ts";
+import { makeScriptedReach } from "./testReach.ts";
 
 const CODEX = ProviderInstanceId.make("codex");
 const AT = "2026-11-21T09:00:00.000Z";
@@ -52,7 +53,22 @@ const ASSISTANT = ThreadId.make("assistant");
 const SELF = "env-macbook";
 const MINI = { environmentId: "env-mini", label: "Mac mini" };
 
+let confirms = true;
+// The Mac mini, as this server's own link reaches it: it vouches for its requests.
+const scripted = makeScriptedReach([
+  {
+    id: "env-mini",
+    label: "Mac mini",
+    online: true,
+    answer: (op) => {
+      if (op === "confirm") return { sent: confirms };
+      throw new Error(`unexpected ${op}`);
+    },
+  },
+]);
+
 const TestLayer = ReachHostDependencies.pipe(
+  Layer.provideMerge(scripted.layer),
   Layer.provideMerge(
     Layer.mock(ServerSettingsService)({
       getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
@@ -149,7 +165,11 @@ const call = <A, I>(
   });
 
 const run = <A, E, R>(effect: Effect.Effect<A, E, R>, withAssistant = false) =>
-  seed(withAssistant).pipe(Effect.andThen(effect), Effect.provide(TestLayer));
+  Effect.sync(() => void (confirms = true)).pipe(
+    Effect.andThen(seed(withAssistant)),
+    Effect.andThen(effect),
+    Effect.provide(TestLayer),
+  );
 
 describe("ReachHost", () => {
   it.effect("refuses a call from its own environment", () =>
@@ -384,6 +404,37 @@ describe("ReachHost", () => {
           Schema.Struct({ schedules: Schema.Array(Schema.Struct({ name: Schema.String })) }),
         );
         expect(listed.ok && listed.value.schedules.map((entry) => entry.name)).toEqual(["Standup"]);
+      }),
+    ),
+  );
+
+  it.effect("runs a write only for a caller its own link can confirm", () =>
+    run(
+      Effect.gen(function* () {
+        const stranger = yield* call(
+          "thread.send",
+          { threadId: ACME_COORD, message: "hi" },
+          ThreadSendResult,
+          { environmentId: "env-stranger", label: "Stranger" },
+        );
+        expect(stranger).toEqual({
+          ok: false,
+          error:
+            "This machine has not linked Stranger back, so it cannot confirm who is asking. Link the machines both ways first.",
+        });
+        confirms = false;
+        const forged = yield* call(
+          "thread.send",
+          { threadId: ACME_COORD, message: "hi" },
+          ThreadSendResult,
+        );
+        expect(forged).toEqual({ ok: false, error: "Mac mini did not send this request." });
+        // Reads need no confirmation.
+        const read = yield* call("overview", {}, OverviewResult, {
+          environmentId: "env-stranger",
+          label: "Stranger",
+        });
+        expect(read.ok).toBe(true);
       }),
     ),
   );

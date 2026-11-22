@@ -271,7 +271,7 @@ export const make = Effect.gen(function* () {
     // descriptor request rather than baked in at startup.
     getDescriptor: readAgentActivityPublishingActive(secrets).pipe(
       Effect.map((agentActivityPublishing) =>
-        // A server that defers Tasks to the Assistant's server does not offer them.
+        // A server that defers Tasks to the Assistant's server marks them tasksDeferred.
         withTaskAuthority({
           ...descriptor,
           capabilities: { ...descriptor.capabilities, agentActivityPublishing },

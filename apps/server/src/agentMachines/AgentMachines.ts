@@ -20,6 +20,7 @@ import {
 import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -108,7 +109,11 @@ export interface AgentMachinesShape {
   /** Every linked machine, enabled for placement or not: all are in the Assistant's reach. */
   readonly linked: Effect.Effect<ReadonlyArray<{ readonly id: string; readonly label: string }>>;
   /** Posts one cross-server reach op; fails fast for a few seconds after a failed call. */
-  readonly reach: (machineId: string, body: unknown) => Effect.Effect<unknown, PeerError>;
+  readonly reach: (
+    machineId: string,
+    body: unknown,
+    options?: { readonly timeout?: Duration.Duration },
+  ) => Effect.Effect<unknown, PeerError>;
   /** The last known health of a linked machine, and when it last answered. */
   readonly healthOf: (machineId: string) => Effect.Effect<MachineHealth>;
 }
@@ -215,17 +220,20 @@ const make = Effect.gen(function* () {
     }).pipe(
       withHttp,
       Effect.tapError((error) =>
-        record(machineId, {
-          status:
-            error.kind === "unauthorized"
-              ? "needs-relink"
-              : error.kind === "incompatible"
-                ? "incompatible"
-                : error.kind === "wrong-environment"
-                  ? "wrong-environment"
-                  : "offline",
-          detail: error.detail,
-        }).pipe(Effect.tap(() => Effect.sync(() => identities.delete(machineId)))),
+        // A timeout says nothing about whether the machine is up; keep its health.
+        error.kind === "timeout"
+          ? Effect.void
+          : record(machineId, {
+              status:
+                error.kind === "unauthorized"
+                  ? "needs-relink"
+                  : error.kind === "incompatible"
+                    ? "incompatible"
+                    : error.kind === "wrong-environment"
+                      ? "wrong-environment"
+                      : "offline",
+              detail: error.detail,
+            }).pipe(Effect.tap(() => Effect.sync(() => identities.delete(machineId)))),
       ),
     );
 
@@ -520,7 +528,7 @@ const make = Effect.gen(function* () {
       ),
       Effect.orElseSucceed(() => []),
     ),
-    reach: (machineId, body) =>
+    reach: (machineId, body, options) =>
       Effect.gen(function* () {
         const failed = health.get(machineId);
         const now = yield* nowMs;
@@ -535,7 +543,7 @@ const make = Effect.gen(function* () {
           });
         }
         return yield* withPeer(machineId, ({ baseUrl, token }) =>
-          postPeerReach(baseUrl, token, body),
+          postPeerReach(baseUrl, token, body, options?.timeout),
         );
       }),
     healthOf: (machineId) =>

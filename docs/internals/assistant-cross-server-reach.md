@@ -31,7 +31,9 @@ rollover contract with Lucive). So exactly one server is the **task authority**:
 - **Knowledge** (`reach/TaskAuthorityLive.ts`): each server asks its linked machines `describe`
   every 5 minutes and stores who hosts an Assistant in `reach-assistants.json`. The decision is
   made from that file at startup, before clients connect, and a machine that does not answer keeps
-  its stored answer, so the MacBook keeps deferring while the mini sleeps or after a restart.
+  its stored answer, so the MacBook keeps deferring while the mini sleeps or after a restart. An
+  answer expires three days after the machine last gave it, so a retired machine that stays
+  linked does not stop every other server from rolling commitments forever.
 - **Rollover** (`TaskCommitmentRollover.ts`): a server that is not the authority never rolls, with
   or without Task Sync. Rollover is the only automatic task write; Task Sync's own pull and push and
   writes a person or agent asks for (coordinator proposals, push-notification actions) still run.
@@ -115,15 +117,23 @@ Pull, so a sleeping caller or callee loses nothing and no reverse link is needed
 
 ## Security
 
-- Only bearer sessions with `orchestration:operate` reach the route; those come only from pairing
-  this server (Nick's own clients and linked servers). That token can already dispatch any client
-  command, so reach adds no new power; it only adds server-only writes the tools already allow
-  the Assistant locally (Status, schedules, held messages).
-- The caller identity in the body is a claim made by a holder of that token, used for labels and
-  `remoteActor`. A callee refuses calls whose `caller.environmentId` is its own.
+- **Bearer only.** `/api/reach` authenticates by the `Authorization: Bearer` token alone and
+  drops cookies before checking it: every localhost port is the same site for `SameSite=Lax`, so a
+  browser session cookie would let any local page send ops. The token needs
+  `orchestration:operate`, which only pairing this server issues.
+- **Caller identity is verified, not claimed.** The body names the caller, but before any op that
+  acts for it (ask, status writes, thread sends, notes, task handoffs, schedule writes, and in
+  phase 2 the move ops) the callee asks that machine over the callee's own link, whose identity is
+  pinned by descriptor, whether it sent this request id (`confirm` op; the caller remembers what it
+  sent for five minutes, `reach/reachSent.ts`). So writes need the machines linked both ways;
+  reads (describe, overview, results, status list, thread find, schedule list) do not. A callee
+  also refuses calls whose `caller.environmentId` is its own.
 - Remote writes keep the local checks: a target Project must be live, marked and non-global; the
   Assistant's reach setting is checked on the Assistant's server before any call.
 - Messages from another machine are labelled agent messages, never user instructions.
+- **Honest errors.** Only a transport failure reads as "offline". A machine that answered with an
+  error (for example 413 for a body over the op's limit) is reported with what it said, and a
+  timeout says the machine may still finish what was asked.
 
 ## Loops and duplicates
 

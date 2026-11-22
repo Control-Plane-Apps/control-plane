@@ -52,8 +52,13 @@ import {
   ScheduleUpdateInput,
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
+import { Reach } from "./Reach.ts";
+import { wasSent } from "./reachSent.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
 import {
+  ConfirmInput,
+  ConfirmResult,
+  REACH_VERIFIED_OPS,
   AskInput,
   AssistantNoteInput,
   ProjectInput,
@@ -101,6 +106,7 @@ export const make = Effect.gen(function* () {
   const statusCore = yield* makeStatusCore;
   const settings = yield* ServerSettingsService;
   const scheduleCore = yield* makeScheduleCore;
+  const reach = yield* Reach;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const shell = snapshots
@@ -391,6 +397,16 @@ export const make = Effect.gen(function* () {
     switch (request.op) {
       case "describe":
         return describe;
+      case "confirm":
+        return decode(ConfirmInput)(request.input).pipe(
+          Effect.flatMap((input) =>
+            DateTime.now.pipe(
+              Effect.map((now) => ({
+                sent: wasSent(input.requestId, DateTime.toEpochMillis(now)),
+              })),
+            ),
+          ),
+        );
       case "overview":
         return overview;
       case "ask":
@@ -438,6 +454,37 @@ export const make = Effect.gen(function* () {
     }
   };
 
+  /**
+   * The body only claims who is calling. Before a write, ask that machine over
+   * this server's own link (its identity pinned by descriptor) whether it sent
+   * this request; only a machine linked both ways can be confirmed.
+   */
+  const verifyCaller = (request: ReachRequest) =>
+    Effect.gen(function* () {
+      const machine = (yield* reach.machines).find(
+        (entry) => entry.id === request.caller.environmentId,
+      );
+      if (machine === undefined) {
+        return yield* opFailed(
+          `This machine has not linked ${request.caller.label} back, so it cannot confirm who is asking. Link the machines both ways first.`,
+        );
+      }
+      const answer = yield* reach
+        .call(
+          machine,
+          "confirm",
+          { requestId: request.requestId },
+          { threadId: "", threadTitle: "" },
+          ConfirmResult,
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            opFailed(`Could not confirm the request with ${machine.label}: ${error.detail}`),
+          ),
+        );
+      if (!answer.sent) return yield* opFailed(`${machine.label} did not send this request.`);
+    });
+
   const handle = (request: ReachRequest): Effect.Effect<ReachResponse> =>
     Effect.gen(function* () {
       const self = yield* environment.getEnvironmentId;
@@ -455,7 +502,8 @@ export const make = Effect.gen(function* () {
         linkedLabel === undefined
           ? request
           : { ...request, caller: { ...request.caller, label: linkedLabel } };
-      return yield* run(named).pipe(
+      const verified = REACH_VERIFIED_OPS.has(request.op) ? verifyCaller(named) : Effect.void;
+      return yield* verified.pipe(Effect.andThen(run(named))).pipe(
         Effect.map((result) => ({ ok: true as const, result })),
         Effect.catch((error) =>
           Effect.succeed({
