@@ -23,6 +23,7 @@ export interface ReachCall {
   readonly machineId: string;
   readonly op: ReachOp;
   readonly input: unknown;
+  readonly fresh?: boolean;
 }
 
 export function makeScriptedReach(machines: ReadonlyArray<ScriptedMachine>) {
@@ -37,9 +38,14 @@ export function makeScriptedReach(machines: ReadonlyArray<ScriptedMachine>) {
     });
   const find = (id: string) => machines.find((machine) => machine.id === id);
 
-  const call: ReachShape["call"] = (machine, op, input, _caller, result) =>
+  const call: ReachShape["call"] = (machine, op, input, _caller, result, options) =>
     Effect.gen(function* () {
-      calls.push({ machineId: machine.id, op, input });
+      calls.push({
+        machineId: machine.id,
+        op,
+        input,
+        ...(options?.fresh === true ? { fresh: true } : {}),
+      });
       const scripted = find(machine.id);
       if (scripted === undefined || !scripted.online) return yield* offline(machine);
       const raw = (() => {

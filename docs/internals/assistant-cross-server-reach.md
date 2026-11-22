@@ -57,10 +57,11 @@ callee runs the op against its own state and answers JSON `{ ok: true, result }`
 `{ ok: false, error }`. Ops act only locally; a callee never forwards an op, so there are no
 forwarding loops.
 
-**Links.** Assistant to Projects needs the Assistant's server to link the Project server.
-Coordinators to the Assistant needs the reverse link. The target setup links both ways
-(Settings > Connections > Agent machines on each). Every linked machine is in reach; the
-Assistant's per-Project reach setting still filters.
+**Links.** Every write across machines needs the two machines **linked both ways**: the receiver
+confirms each write with the sender over its own link (see Security). A one-way link is enough
+only for reads (overview, status list, schedule list, thread lookup). Agent machines' Add machine
+links both ways in one step ("Let that machine reach this one too", on by default). Every linked
+machine is in reach; the Assistant's per-Project reach setting still filters.
 
 ## Ops and tools
 
@@ -77,7 +78,8 @@ Assistant's per-Project reach setting still filters.
 
 ## How answers come back
 
-Pull, so a sleeping caller or callee loses nothing and no reverse link is needed for answers:
+Pull, so a sleeping caller or callee loses nothing (the asking itself is a write, so the machines
+are linked both ways; the answers are collected by the asking server, which only reads):
 
 1. The callee's `AgentCompletionReactor` treats a request whose id carries `:reach:` as owed to a
    remote thread. Instead of appending into a local recipient it records the formatted result as an
@@ -124,10 +126,13 @@ Pull, so a sleeping caller or callee loses nothing and no reverse link is needed
 - **Caller identity is verified, not claimed.** The body names the caller, but before any op that
   acts for it (ask, status writes, thread sends, notes, task handoffs, schedule writes, and in
   phase 2 the move ops) the callee asks that machine over the callee's own link, whose identity is
-  pinned by descriptor, whether it sent this request id (`confirm` op; the caller remembers what it
-  sent for five minutes, `reach/reachSent.ts`). So writes need the machines linked both ways;
-  reads (describe, overview, results, status list, thread find, schedule list) do not. A callee
-  also refuses calls whose `caller.environmentId` is its own.
+  pinned by descriptor, whether it sent this exact request (`confirm` op, `reach/reachSent.ts`):
+  the same request id, op and input hash, sent to this receiver, within five minutes. So a machine
+  that received a real request cannot replay it to another machine, or with another op or input,
+  and each request id is accepted once. The confirmation never reuses a recent "offline" verdict
+  for the caller. Writes therefore need the machines linked both ways; reads (describe, overview,
+  results, status list, thread find, schedule list) do not. A callee also refuses calls whose
+  `caller.environmentId` is its own.
 - Remote writes keep the local checks: a target Project must be live, marked and non-global; the
   Assistant's reach setting is checked on the Assistant's server before any call.
 - Messages from another machine are labelled agent messages, never user instructions.
@@ -146,8 +151,8 @@ Pull, so a sleeping caller or callee loses nothing and no reverse link is needed
 
 ## Decisions (defaults taken; say if you want otherwise)
 
-1. **Pull, not push, for answers.** Works with a one-way link and survives either machine
-   sleeping. Costs a 5 second poll only while asks are open.
+1. **Pull, not push, for answers.** Survives either machine sleeping, and the answering machine
+   never has to call out. Costs a 5 second poll only while asks are open.
 2. **Explicit errors, no queued sends** when a machine is offline. Queued cross-machine sends can
    fire hours later out of context; the Assistant can retry, and schedules rerun.
 3. **Coordinator `cp_assistant_ping` becomes a note to the Assistant,** not a direct user ping.

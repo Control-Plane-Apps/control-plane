@@ -20,7 +20,7 @@ import * as Path from "effect/Path";
 
 import { AgentMachines, type MachineHealth } from "../agentMachines/AgentMachines.ts";
 import { writeFileStringAtomically } from "../atomicWrite.ts";
-import { noteSent } from "./reachSent.ts";
+import { noteSent, reachInputHash } from "./reachSent.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import {
@@ -72,7 +72,11 @@ export interface ReachShape {
     input: unknown,
     caller: { readonly threadId: string; readonly threadTitle: string },
     result: Schema.Codec<A, I>,
-    options?: { readonly timeout?: Duration.Duration },
+    options?: {
+      readonly timeout?: Duration.Duration;
+      /** Call even if the machine failed a moment ago (a confirmation must not reuse that). */
+      readonly fresh?: boolean;
+    },
   ) => Effect.Effect<A, ReachError>;
   /** The user's Assistant on a linked machine, cached for a minute. None when no machine has one. */
   readonly findAssistant: Effect.Effect<Option.Option<RemoteAssistant>>;
@@ -193,7 +197,10 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const me = yield* self;
       const requestId = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "");
-      noteSent(requestId, DateTime.toEpochMillis(yield* DateTime.now));
+      noteSent(
+        { requestId, op, inputHash: reachInputHash(input), receiver: machine.id },
+        DateTime.toEpochMillis(yield* DateTime.now),
+      );
       const body = {
         op,
         requestId,

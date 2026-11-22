@@ -112,7 +112,7 @@ export interface AgentMachinesShape {
   readonly reach: (
     machineId: string,
     body: unknown,
-    options?: { readonly timeout?: Duration.Duration },
+    options?: { readonly timeout?: Duration.Duration; readonly fresh?: boolean },
   ) => Effect.Effect<unknown, PeerError>;
   /** The last known health of a linked machine, and when it last answered. */
   readonly healthOf: (machineId: string) => Effect.Effect<MachineHealth>;
@@ -537,6 +537,7 @@ const make = Effect.gen(function* () {
           failed !== undefined &&
           failed.status !== "connected" &&
           failed.timedOut !== true &&
+          options?.fresh !== true &&
           now - failed.checkedAtMs < REACH_OFFLINE_TTL_MS
         ) {
           return yield* new PeerError({

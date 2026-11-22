@@ -34,6 +34,7 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import { ServerSettingsService } from "../serverSettings.ts";
 import { make as makeReachHost, ReachHostDependencies } from "./ReachHost.ts";
 import {
+  ConfirmResult,
   AskResult,
   DescribeResult,
   OverviewResult,
@@ -43,6 +44,7 @@ import {
   type ReachOp,
 } from "./reachProtocol.ts";
 import { makeScriptedReach } from "./testReach.ts";
+import { noteSent, reachInputHash } from "./reachSent.ts";
 
 const CODEX = ProviderInstanceId.make("codex");
 const AT = "2026-11-21T09:00:00.000Z";
@@ -54,14 +56,18 @@ const SELF = "env-macbook";
 const MINI = { environmentId: "env-mini", label: "Mac mini" };
 
 let confirms = true;
+const confirmsAsked: Array<unknown> = [];
 // The Mac mini, as this server's own link reaches it: it vouches for its requests.
 const scripted = makeScriptedReach([
   {
     id: "env-mini",
     label: "Mac mini",
     online: true,
-    answer: (op) => {
-      if (op === "confirm") return { sent: confirms };
+    answer: (op, input) => {
+      if (op === "confirm") {
+        confirmsAsked.push(input);
+        return { sent: confirms };
+      }
       throw new Error(`unexpected ${op}`);
     },
   },
@@ -148,12 +154,13 @@ const call = <A, I>(
   input: unknown,
   result: Schema.Codec<A, I>,
   caller: { environmentId: string; label: string } = MINI,
+  requestId = `req${(request += 1)}xyz`,
 ) =>
   Effect.gen(function* () {
     const host = yield* makeReachHost;
     const response = yield* host.handle({
       op,
-      requestId: `req${(request += 1)}xyz`,
+      requestId,
       caller: { ...caller, threadId: "mini-assistant", threadTitle: "Assistant" },
       input,
     });
@@ -417,24 +424,77 @@ describe("ReachHost", () => {
           ThreadSendResult,
           { environmentId: "env-stranger", label: "Stranger" },
         );
-        expect(stranger).toEqual({
-          ok: false,
-          error:
-            "This machine has not linked Stranger back, so it cannot confirm who is asking. Link the machines both ways first.",
-        });
+        expect(stranger.ok).toBe(false);
+        expect(!stranger.ok && stranger.error).toContain(
+          'use Settings, Connections, Agent machines, Add machine with "Let that machine reach this one too" on',
+        );
         confirms = false;
         const forged = yield* call(
           "thread.send",
           { threadId: ACME_COORD, message: "hi" },
           ThreadSendResult,
         );
-        expect(forged).toEqual({ ok: false, error: "Mac mini did not send this request." });
+        expect(forged).toEqual({
+          ok: false,
+          error: "Mac mini did not send this request, so nothing was done.",
+        });
         // Reads need no confirmation.
         const read = yield* call("overview", {}, OverviewResult, {
           environmentId: "env-stranger",
           label: "Stranger",
         });
         expect(read.ok).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("asks to confirm the exact request, and accepts each id once", () =>
+    run(
+      Effect.gen(function* () {
+        confirmsAsked.length = 0;
+        const input = { threadId: ACME_COORD, message: "hi" };
+        const first = yield* call("thread.send", input, ThreadSendResult, MINI, "replay123");
+        expect(first.ok).toBe(true);
+        expect(confirmsAsked).toEqual([
+          {
+            requestId: "replay123",
+            op: "thread.send",
+            inputHash: reachInputHash(input),
+            receiver: SELF,
+          },
+        ]);
+        // The same id again, even with the same op and input, is refused without asking.
+        const again = yield* call("thread.send", input, ThreadSendResult, MINI, "replay123");
+        expect(again).toEqual({ ok: false, error: "This request was already used." });
+        // The confirmation never reuses a recent "offline" verdict for the caller.
+        expect(scripted.calls.findLast((entry) => entry.op === "confirm")?.fresh).toBe(true);
+        expect(confirmsAsked).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("confirms only requests this machine sent to the machine asking", () =>
+    run(
+      Effect.gen(function* () {
+        noteSent({ requestId: "sent1", op: "status.set", inputHash: "h", receiver: "env-mini" }, 0);
+        const asked = (receiver: string) =>
+          call(
+            "confirm",
+            { requestId: "sent1", op: "status.set", inputHash: "h", receiver },
+            ConfirmResult,
+          );
+        // The Mac mini asks about a request this machine sent it: yes.
+        expect(yield* asked("env-mini")).toEqual({ ok: true, value: { sent: true } });
+        // Another machine relaying it, or a mismatched receiver, gets no.
+        expect(
+          yield* call(
+            "confirm",
+            { requestId: "sent1", op: "status.set", inputHash: "h", receiver: "env-mini" },
+            ConfirmResult,
+            { environmentId: "env-stranger", label: "Stranger" },
+          ),
+        ).toEqual({ ok: true, value: { sent: false } });
+        expect(yield* asked("env-stranger")).toEqual({ ok: true, value: { sent: false } });
       }),
     ),
   );

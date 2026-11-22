@@ -53,7 +53,7 @@ import {
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
 import { Reach } from "./Reach.ts";
-import { wasSent } from "./reachSent.ts";
+import { acceptOnce, reachInputHash, wasSent } from "./reachSent.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
 import {
   ConfirmInput,
@@ -402,7 +402,10 @@ export const make = Effect.gen(function* () {
           Effect.flatMap((input) =>
             DateTime.now.pipe(
               Effect.map((now) => ({
-                sent: wasSent(input.requestId, DateTime.toEpochMillis(now)),
+                // Bound to this caller as the receiver: a confirmation for another machine says no.
+                sent:
+                  input.receiver === request.caller.environmentId &&
+                  wasSent(input, DateTime.toEpochMillis(now)),
               })),
             ),
           ),
@@ -466,23 +469,37 @@ export const make = Effect.gen(function* () {
       );
       if (machine === undefined) {
         return yield* opFailed(
-          `This machine has not linked ${request.caller.label} back, so it cannot confirm who is asking. Link the machines both ways first.`,
+          `This machine has not linked ${request.caller.label} back, so it cannot confirm who is asking. On ${request.caller.label}, use Settings, Connections, Agent machines, Add machine with "Let that machine reach this one too" on, or "Let this machine reach ${request.caller.label}" on its row.`,
         );
+      }
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+      if (!acceptOnce(machine.id, request.requestId, nowMs)) {
+        return yield* opFailed("This request was already used.");
       }
       const answer = yield* reach
         .call(
           machine,
           "confirm",
-          { requestId: request.requestId },
+          {
+            requestId: request.requestId,
+            op: request.op,
+            inputHash: reachInputHash(request.input),
+            receiver: yield* environment.getEnvironmentId,
+          },
           { threadId: "", threadTitle: "" },
           ConfirmResult,
+          { fresh: true },
         )
         .pipe(
           Effect.mapError((error) =>
-            opFailed(`Could not confirm the request with ${machine.label}: ${error.detail}`),
+            opFailed(
+              `Could not confirm with ${machine.label} that it sent this request, so nothing was done: ${error.detail}`,
+            ),
           ),
         );
-      if (!answer.sent) return yield* opFailed(`${machine.label} did not send this request.`);
+      if (!answer.sent) {
+        return yield* opFailed(`${machine.label} did not send this request, so nothing was done.`);
+      }
     });
 
   const handle = (request: ReachRequest): Effect.Effect<ReachResponse> =>

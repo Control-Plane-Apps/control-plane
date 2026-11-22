@@ -186,7 +186,13 @@ export const OverviewResult = Schema.Struct({
 export type OverviewResult = typeof OverviewResult.Type;
 
 /** The callee asks the claimed caller whether it really sent a request. */
-export const ConfirmInput = Schema.Struct({ requestId: Schema.String });
+export const ConfirmInput = Schema.Struct({
+  requestId: Schema.String,
+  op: Schema.String,
+  inputHash: Schema.String,
+  /** The machine asking, which must be the one the request was sent to. */
+  receiver: Schema.String,
+});
 export const ConfirmResult = Schema.Struct({ sent: Schema.Boolean });
 
 /**

@@ -11,7 +11,7 @@ import { PeerError } from "../agentMachines/AgentMachineClient.ts";
 import { ServerConfig } from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { make as makeReach } from "./Reach.ts";
-import { wasSent } from "./reachSent.ts";
+import { reachInputHash, wasSent } from "./reachSent.ts";
 
 let next: () => Effect.Effect<unknown, PeerError> = () => Effect.succeed({ ok: true, result: 1 });
 const bodies: Array<{ requestId: string }> = [];
@@ -86,9 +86,19 @@ describe("Reach.call", () => {
       bodies.length = 0;
       const reach = yield* makeReach;
       yield* reach.call(machine, "describe", {}, caller, Schema.Number);
-      const sent = bodies[0]?.requestId ?? "";
-      expect(wasSent(sent, 0)).toBe(true);
-      expect(wasSent("someone-else", 0)).toBe(false);
+      const requestId = bodies[0]?.requestId ?? "";
+      const exact = {
+        requestId,
+        op: "describe",
+        inputHash: reachInputHash({}),
+        receiver: "env-mini",
+      };
+      expect(wasSent(exact, 0)).toBe(true);
+      // Replayed elsewhere, as another op, or with another input: not what this machine sent.
+      expect(wasSent({ ...exact, receiver: "env-other" }, 0)).toBe(false);
+      expect(wasSent({ ...exact, op: "thread.send" }, 0)).toBe(false);
+      expect(wasSent({ ...exact, inputHash: reachInputHash({ x: 1 }) }, 0)).toBe(false);
+      expect(wasSent({ ...exact, requestId: "someone-else" }, 0)).toBe(false);
     }).pipe(Effect.provide(TestLayer)),
   );
 });
