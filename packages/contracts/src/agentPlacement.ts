@@ -78,6 +78,16 @@ export const AgentMachinesInput = Schema.Union([
     baseUrl: Schema.optionalKey(TrimmedNonEmptyString),
   }),
   Schema.Struct({ action: Schema.Literal("unlink"), id: AgentMachineId }),
+  /**
+   * Has a linked machine link this one back, so an Assistant on either can
+   * reach the other: this machine mints a pairing credential and the other
+   * redeems it at `baseUrl`, this machine's address as the other reaches it.
+   */
+  Schema.Struct({
+    action: Schema.Literal("linkBack"),
+    id: AgentMachineId,
+    baseUrl: TrimmedNonEmptyString,
+  }),
   Schema.Struct({ action: Schema.Literal("check") }),
 ]);
 export type AgentMachinesInput = typeof AgentMachinesInput.Type;

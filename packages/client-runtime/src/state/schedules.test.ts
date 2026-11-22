@@ -227,6 +227,7 @@ describe("resolveScheduleRowState", () => {
       linkThreadId: coordinatorThreadId,
     });
     expect(missed("target-missing")).toMatchObject({ kind: "pick-target", text: "Pick target" });
+    expect(missed("not-home").text).toBe("Skipped · your Assistant may run on another machine");
     expect(missed(undefined)).toMatchObject({ text: "Missed at 7:00", attention: true });
     expect(rowText({ run: run({ outcome: "failed" }) })).toMatchObject({
       kind: "failed",

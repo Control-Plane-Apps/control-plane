@@ -11,6 +11,7 @@ import {
 } from "./taskSync.ts";
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { AssistantEnsureError } from "./assistantSettings.ts";
+import { AssistantHomeError, AssistantHomeInput, AssistantHomeStatus } from "./reach.ts";
 import { AgentMachinesError, AgentMachinesInput, AgentMachinesResult } from "./agentPlacement.ts";
 import {
   GlobalInstructionsError,
@@ -417,6 +418,7 @@ export const WS_METHODS = {
   serverAgentMachines: "server.agentMachines",
   serverGlobalInstructions: "server.globalInstructions",
   serverAssistantEnsure: "server.assistantEnsure",
+  serverAssistantHome: "server.assistantHome",
   serverReportClientActivity: "server.reportClientActivity",
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
@@ -716,6 +718,12 @@ export const AssistantEnsureResult = Schema.Struct({
   created: Schema.Boolean,
 });
 export type AssistantEnsureResult = typeof AssistantEnsureResult.Type;
+
+const WsServerAssistantHomeRpc = Rpc.make(WS_METHODS.serverAssistantHome, {
+  payload: AssistantHomeInput,
+  success: AssistantHomeStatus,
+  error: Schema.Union([EnvironmentAuthorizationError, AssistantHomeError]),
+});
 
 const WsServerAssistantEnsureRpc = Rpc.make(WS_METHODS.serverAssistantEnsure, {
   payload: AssistantEnsureInput,
@@ -1530,6 +1538,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerAgentMachinesRpc,
   WsServerGlobalInstructionsRpc,
   WsServerAssistantEnsureRpc,
+  WsServerAssistantHomeRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,

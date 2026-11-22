@@ -18,6 +18,7 @@
  * @module taskAuthority
  */
 import type { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 
 export interface TaskAuthorityMachine {
   readonly id: string;
@@ -88,3 +89,51 @@ export function withTaskAuthority(
   if (current.authority) return descriptor;
   return { ...descriptor, capabilities: { ...descriptor.capabilities, tasksDeferred: true } };
 }
+
+/** What each linked machine last said about hosting the Assistant, by machine id. */
+const knownHosts = new Map<string, AssistantAnswer>();
+
+/**
+ * Whether a linked machine hosts the Assistant, by its last answer however
+ * old; undefined when it never answered. The 3-day expiry is only for task
+ * authority: guarding against a second Assistant and offering to take it
+ * back must remember a host that has been off for a week.
+ */
+export function lastAssistantHost(machineId: string): boolean | undefined {
+  return knownHosts.get(machineId)?.hosts;
+}
+
+export function knownAssistantHosts(): ReadonlyMap<string, AssistantAnswer> {
+  return knownHosts;
+}
+
+export function noteAssistantHost(machineId: string, answer: AssistantAnswer): void {
+  knownHosts.set(machineId, answer);
+}
+
+/** Whether this machine is the Assistant's home right now, or why that is not confirmed. */
+export type HomeCheck = { readonly ok: true } | { readonly ok: false; readonly detail: string };
+
+let homeCheck: Effect.Effect<HomeCheck> = Effect.succeed({ ok: true });
+
+/** Set by the live AssistantHome layer. */
+export function registerAssistantHomeCheck(check: Effect.Effect<HomeCheck>): void {
+  homeCheck = check;
+}
+
+/**
+ * Asked before any Assistant schedule runs. A machine that was asleep or off
+ * may have had the Assistant taken back meanwhile: it runs nothing until its
+ * linked machines confirm none of them runs the Assistant.
+ */
+export const confirmAssistantHome: Effect.Effect<HomeCheck> = Effect.suspend(() => homeCheck);
+
+let refreshHook: Effect.Effect<void> = Effect.void;
+
+/** Set by the live layer: asks every linked machine again and recomputes. */
+export function registerTaskAuthorityRefresh(refresh: Effect.Effect<void>): void {
+  refreshHook = refresh;
+}
+
+/** Re-asks linked machines and recomputes now, as after the Assistant moves. */
+export const refreshTaskAuthority: Effect.Effect<void> = Effect.suspend(() => refreshHook);

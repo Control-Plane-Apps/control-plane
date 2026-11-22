@@ -51,3 +51,68 @@ export const ReachResultActivityPayload = Schema.Struct({
   text: Schema.String,
 });
 export type ReachResultActivityPayload = typeof ReachResultActivityPayload.Type;
+
+// ── Where the Assistant runs (RPC `server.assistantHome`) ─────────
+
+export const AssistantHomeInput = Schema.Union([
+  Schema.Struct({ action: Schema.Literal("status") }),
+  /** Moves the Assistant to a linked machine id, or `"local"` for this machine. */
+  Schema.Struct({ action: Schema.Literal("move"), to: TrimmedNonEmptyString }),
+  /**
+   * Runs the Assistant here again while the machine that runs it is
+   * unreachable; that machine pauses its copy when it is back.
+   */
+  Schema.Struct({ action: Schema.Literal("reclaim") }),
+]);
+export type AssistantHomeInput = typeof AssistantHomeInput.Type;
+
+export const AssistantHomeMachineState = Schema.Literals([
+  "online",
+  "offline",
+  "needs-relink",
+  "incompatible",
+]);
+export type AssistantHomeMachineState = typeof AssistantHomeMachineState.Type;
+
+export const AssistantHomeMachine = Schema.Struct({
+  id: Schema.String,
+  label: Schema.String,
+  state: AssistantHomeMachineState,
+  detail: Schema.optional(Schema.String),
+  lastSeenAt: Schema.optional(Schema.String),
+  /** It runs the user's Assistant; null when it has not answered yet. */
+  hostsAssistant: Schema.NullOr(Schema.Boolean),
+  /** It has linked this machine back, so an Assistant there can reach Projects here. */
+  linksBack: Schema.NullOr(Schema.Boolean),
+  /** Its Projects as last seen, for the Assistant's reach picker. */
+  projects: Schema.Array(Schema.Struct({ projectId: Schema.String, title: Schema.String })),
+});
+export type AssistantHomeMachine = typeof AssistantHomeMachine.Type;
+
+export const AssistantHomeStatus = Schema.Struct({
+  /** This machine runs the live Assistant. */
+  here: Schema.Boolean,
+  /** The linked machine that runs it, when not this one. */
+  elsewhere: Schema.NullOr(Schema.Struct({ id: Schema.String, label: Schema.String })),
+  /** Linked machines that also run one: a conflict to resolve by moving one in. */
+  conflicts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
+  machines: Schema.Array(AssistantHomeMachine),
+  /** Addresses linked machines can likely use to reach this one, best first. */
+  addresses: Schema.Array(Schema.String),
+  /** The machine that runs the Assistant is unreachable, so it can be taken back here. */
+  canReclaim: Schema.optional(Schema.Boolean),
+  /** A move from this machine that has not finished; the Assistant is paused meanwhile. */
+  pendingMove: Schema.optional(Schema.Struct({ label: Schema.String, startedAt: Schema.String })),
+  /** After a move: what did not move as it was, such as schedules aimed at other threads. */
+  notes: Schema.optional(Schema.Array(Schema.String)),
+});
+export type AssistantHomeStatus = typeof AssistantHomeStatus.Type;
+
+export class AssistantHomeError extends Schema.TaggedError<AssistantHomeError>()(
+  "AssistantHomeError",
+  { detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}

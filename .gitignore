@@ -48,3 +48,6 @@ node_modules/
 # Local agent runtime state
 .agents/caches/
 .agents/userdata/
+
+# Python bytecode from helper scripts
+__pycache__/

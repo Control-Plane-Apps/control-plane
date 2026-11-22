@@ -155,6 +155,7 @@ const TestLayer = Layer.mergeAll(
     Layer.succeed(ReachBridge, {
       track: (record) => Effect.sync(() => void tracked.push(record)),
       open: Effect.sync(() => tracked),
+      dropFor: () => Effect.void,
       start: () => Effect.void,
       pollOnce: Effect.void,
     }),

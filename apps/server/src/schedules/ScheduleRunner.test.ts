@@ -17,6 +17,7 @@ import { TestClock } from "effect/testing";
 import { vi } from "vite-plus/test";
 
 import { HostTimeZoneSource } from "./hostZone.ts";
+import { registerAssistantHomeCheck } from "../reach/taskAuthority.ts";
 import * as ScheduleRunner from "./ScheduleRunner.ts";
 import {
   makeScheduleEngineLayer,
@@ -90,6 +91,52 @@ const cronMessage = (projectId: ProjectId, scheduleId: string, slot = SLOT) =>
   `cp-schedule:${projectId}:${scheduleId}:${slot}`;
 
 describe("ScheduleRunner fires", () => {
+  test(
+    "skips the Assistant's schedule when another machine may run the Assistant",
+    Effect.gen(function* () {
+      const f = yield* makeRunnerFixture();
+      const GLOBAL = ProjectId.make("project-assistant");
+      const ASSISTANT = ThreadId.make("thread-assistant");
+      yield* f.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("test:assistant-project"),
+        projectId: GLOBAL,
+        title: "Assistant",
+        workspaceRoot: "/tmp/assistant",
+        createdAt: WRITTEN_AT,
+      });
+      yield* f.createThread(GLOBAL, ASSISTANT, "Assistant");
+      yield* f.dispatch({
+        type: "project.meta.update",
+        commandId: CommandId.make("test:global"),
+        projectId: GLOBAL,
+        assistant: { coordinatorThreadId: ASSISTANT, scope: "global" },
+      });
+      yield* f.setSchedules(GLOBAL, [
+        { id: "daily", name: "Morning brief", cron: DAILY, prompt: "Brief me." },
+      ]);
+      registerAssistantHomeCheck(
+        Effect.succeed({ ok: false, detail: "Mac mini runs your Assistant." }),
+      );
+      yield* f
+        .withRunner((runner) => f.fireAt(runner, "2026-09-28T13:00:30.000Z"))
+        .pipe(
+          Effect.ensuring(
+            Effect.sync(() => registerAssistantHomeCheck(Effect.succeed({ ok: true }))),
+          ),
+        );
+      assert.deepStrictEqual(yield* f.userMessages(ASSISTANT), []);
+      assert.deepStrictEqual((yield* f.runsOf(GLOBAL)).daily, {
+        slot: SLOT,
+        at: "2026-09-28T13:00:30.000Z",
+        trigger: "cron",
+        outcome: "missed",
+        reason: "not-home",
+        threadId: ASSISTANT,
+      });
+    }),
+  );
+
   test(
     "appends a due run once, with ids built from the Project, schedule and slot",
     Effect.gen(function* () {

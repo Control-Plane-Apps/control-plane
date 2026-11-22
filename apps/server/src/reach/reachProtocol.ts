@@ -34,6 +34,13 @@ export const ReachOp = Schema.Literals([
   "schedule.create",
   "schedule.update",
   "schedule.delete",
+  "assistant.adopt",
+  "assistant.commit",
+  "assistant.abort",
+  "assistant.moveStatus",
+  "assistant.handoff",
+  "assistant.yield",
+  "link.back",
 ]);
 export type ReachOp = typeof ReachOp.Type;
 
@@ -42,7 +49,10 @@ export const REACH_MAX_BODY_BYTES = 64 * 1024 * 1024;
 /** Most ops carry a message or a status row. */
 const DEFAULT_BODY_LIMIT = 256 * 1024;
 /** Ops that carry more, by op. */
-const BODY_LIMITS: Partial<Record<string, number>> = {};
+const BODY_LIMITS: Partial<Record<string, number>> = {
+  // Up to 200 messages and the memory file.
+  "assistant.adopt": REACH_MAX_BODY_BYTES,
+};
 
 /** The largest body accepted for one op. */
 export function reachBodyLimit(op: string): number {
@@ -71,6 +81,8 @@ export const DescribeResult = Schema.Struct({
   label: Schema.String,
   /** The live global Assistant here, or null. */
   assistant: Schema.NullOr(Schema.Struct({ threadId: Schema.String, projectId: Schema.String })),
+  /** Environment ids of the machines it has linked; absent from older builds. */
+  linked: Schema.optional(Schema.Array(Schema.String)),
 });
 export type DescribeResult = typeof DescribeResult.Type;
 
@@ -208,4 +220,61 @@ export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
   "schedule.create",
   "schedule.update",
   "schedule.delete",
+  "assistant.adopt",
+  "assistant.commit",
+  "assistant.abort",
+  "assistant.handoff",
+  "assistant.yield",
 ]);
+
+/** Everything that moves with the Assistant. */
+export const AssistantBundle = Schema.Struct({
+  moveId: Schema.String,
+  /** `ServerSettings.assistant` on the old home, encoded. */
+  settings: Schema.Unknown,
+  schedules: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      cron: Schema.String,
+      enabled: Schema.Boolean,
+      prompt: Schema.String,
+    }),
+  ),
+  memory: Schema.NullOr(Schema.String),
+  messages: Schema.Array(
+    Schema.Struct({
+      role: Schema.Literals(["user", "assistant"]),
+      text: Schema.String,
+      createdAt: Schema.String,
+    }),
+  ),
+  /** Open asks of coordinators, which the new home keeps polling for. */
+  asks: Schema.Array(
+    Schema.Struct({
+      machineId: Schema.String,
+      machineLabel: Schema.String,
+      coordinatorThreadId: Schema.String,
+      coordinatorTitle: Schema.String,
+      messageId: Schema.String,
+      askedAt: Schema.String,
+    }),
+  ),
+  modelSelection: Schema.Unknown,
+  runtimeMode: Schema.String,
+});
+export type AssistantBundle = typeof AssistantBundle.Type;
+
+export const AdoptResult = Schema.Struct({ projectId: Schema.String, threadId: Schema.String });
+export type AdoptResult = typeof AdoptResult.Type;
+
+export const HandoffInput = Schema.Struct({ to: Schema.String });
+
+export const LinkBackInput = Schema.Struct({ pairingUrl: Schema.String });
+export const LinkBackResult = Schema.Struct({ id: Schema.String, label: Schema.String });
+
+export const MoveIdInput = Schema.Struct({ moveId: Schema.String });
+export const YieldResult = Schema.Struct({ paused: Schema.Boolean });
+export const MoveStatusResult = Schema.Struct({
+  phase: Schema.Literals(["adopted", "committed", "aborted", "unknown"]),
+});

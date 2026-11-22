@@ -432,6 +432,8 @@ export function resolveScheduleRowState(input: {
       return row("missed", "Missed · could not start", { attention, linkThreadId: link });
     case "target-missing":
       return row("pick-target", "Pick target", { attention });
+    case "not-home":
+      return row("missed", "Skipped · your Assistant may run on another machine", { attention });
     case undefined:
       return row("missed", `Missed ${at(run.slot)}`, { attention });
   }

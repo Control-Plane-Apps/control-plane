@@ -141,6 +141,7 @@ function AgentMachinesBody({
   });
   const [addOpen, setAddOpen] = useState(false);
   const [unlinking, setUnlinking] = useState<string | null>(null);
+  const [linkBackTarget, setLinkBackTarget] = useState<{ id: string; label: string } | null>(null);
 
   // Starts in "checking"; the caller sets that phase for a manual refresh.
   const requestCheck = useCallback(async () => {
@@ -208,6 +209,14 @@ function AgentMachinesBody({
         onRefresh={refresh}
         onAdd={() => setAddOpen(true)}
         onUnlink={(machineId, label) => void unlink(machineId, label)}
+        onLinkBack={(id, label) => setLinkBackTarget({ id, label })}
+      />
+      <LinkBackDialog
+        target={linkBackTarget}
+        onClose={() => setLinkBackTarget(null)}
+        environmentId={environmentId}
+        environmentLabel={environment.label}
+        onLinked={(statuses) => setCheck(checkedState(statuses))}
       />
       <AddAgentMachineDialog
         open={addOpen}
@@ -224,6 +233,8 @@ function AgentMachinesBody({
  * The open section's rows, from props only so it can be rendered against a
  * fixture. `AgentMachinesBody` owns the RPC state.
  */
+const noLinkBack = () => {};
+
 export function AgentMachinesView({
   environmentLabel,
   localKind,
@@ -236,6 +247,7 @@ export function AgentMachinesView({
   onRefresh,
   onAdd,
   onUnlink,
+  onLinkBack = noLinkBack,
 }: {
   readonly environmentLabel: string;
   readonly localKind: EnvironmentMachineKind;
@@ -248,6 +260,7 @@ export function AgentMachinesView({
   readonly onRefresh: () => void;
   readonly onAdd: () => void;
   readonly onUnlink: (machineId: string, label: string) => void;
+  readonly onLinkBack?: (machineId: string, label: string) => void;
 }) {
   const balanced = placement.mode === "balanced";
   const machines = linkedAgentMachines(placement);
@@ -405,6 +418,9 @@ export function AgentMachinesView({
                 <MoreVertical />
               </MenuTrigger>
               <MenuPopup align="end">
+                <MenuItem onClick={() => onLinkBack(machine.id, machine.label)}>
+                  Let {machine.label} reach this machine
+                </MenuItem>
                 <MenuItem variant="destructive" onClick={() => onUnlink(machine.id, machine.label)}>
                   Unlink
                 </MenuItem>
@@ -493,11 +509,16 @@ function AddAgentMachineDialog({
   const [pairingUrl, setPairingUrl] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [busy, setBusy] = useState(false);
-  const canSubmit = pairingUrl.trim().length > 0 && !busy;
+  const [linkBack, setLinkBack] = useState(true);
+  const suggested = useSelfAddress(environmentId, open);
+  const [selfAddress, setSelfAddress] = useState<string | null>(null);
+  const address = (selfAddress ?? suggested ?? "").trim();
+  const canSubmit = pairingUrl.trim().length > 0 && !busy && (!linkBack || address.length > 0);
 
   const close = () => {
     setPairingUrl("");
     setBaseUrl("");
+    setSelfAddress(null);
     onOpenChange(false);
   };
 
@@ -508,16 +529,41 @@ function AddAgentMachineDialog({
       environmentId,
       input: agentMachineLinkInput(pairingUrl, baseUrl),
     });
-    setBusy(false);
     if (result._tag === "Success") {
       onLinked(result.value.machines);
+      const linked = result.value.linked;
+      if (linkBack && linked !== undefined) {
+        const back = await agentMachines({
+          environmentId,
+          input: { action: "linkBack", id: linked.id, baseUrl: address },
+        });
+        setBusy(false);
+        if (back._tag === "Success") {
+          onLinked(back.value.machines);
+          toastManager.add({
+            type: "success",
+            title: `Linked ${linked.label} both ways`,
+            description: `${environmentLabel} and ${linked.label} can now reach each other: agents, and the Assistant on either machine.`,
+          });
+        } else if (!isAtomCommandInterrupted(back)) {
+          toastManager.add({
+            type: "warning",
+            title: `Linked ${linked.label}, but not back`,
+            description: `${agentMachinesErrorMessage(squashAtomCommandFailure(back))} You can retry from the machine's menu.`,
+          });
+        }
+        close();
+        return;
+      }
+      setBusy(false);
       toastManager.add({
         type: "success",
-        title: result.value.linked ? `Linked ${result.value.linked.label}` : "Machine linked",
+        title: linked ? `Linked ${linked.label}` : "Machine linked",
         description: `Coordinators on ${environmentLabel} can now start agents there.`,
       });
       close();
     } else if (!isAtomCommandInterrupted(result)) {
+      setBusy(false);
       toastManager.add({
         type: "error",
         title: "Could not link machine",
@@ -571,6 +617,39 @@ function AddAgentMachineDialog({
                 onChange={(event) => setBaseUrl(event.target.value)}
               />
             </div>
+            <label className="flex items-start gap-2 text-sm">
+              <Switch
+                aria-label="Let that machine reach this one too"
+                checked={linkBack}
+                onCheckedChange={setLinkBack}
+              />
+              <span className="grid gap-0.5">
+                <span>Let that machine reach {environmentLabel} too</span>
+                <span className="text-xs text-muted-foreground">
+                  Needed for the Assistant and coordinators to reach each other across machines.
+                </span>
+              </span>
+            </label>
+            {linkBack ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="agent-machine-self-url">
+                  {environmentLabel}'s address, as that machine reaches it
+                </Label>
+                <Input
+                  id="agent-machine-self-url"
+                  placeholder="http://100.x.y.z:3773"
+                  autoComplete="off"
+                  value={selfAddress ?? suggested ?? ""}
+                  onChange={(event) => setSelfAddress(event.target.value)}
+                />
+                {suggested === null ? (
+                  <p className="text-xs text-muted-foreground">
+                    {environmentLabel} only listens on this computer. Turn on network access in
+                    Settings, Connections, then enter its tailnet or network address.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
             <p className="text-xs text-muted-foreground">
               Linking lets {environmentLabel} run agents on that machine with its full access.
               Access lasts 30 days, then the machine needs linking again.
@@ -583,6 +662,112 @@ function AddAgentMachineDialog({
           </Button>
           <Button onClick={() => void submit()} disabled={!canSubmit}>
             {busy ? "Linking…" : "Link machine"}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+/** This machine's best guess at its own address as a linked machine reaches it; null when it listens on loopback only. */
+function useSelfAddress(environmentId: EnvironmentId, open: boolean): string | null {
+  const assistantHome = useAtomCommand(serverEnvironment.assistantHome, { reportFailure: false });
+  const [address, setAddress] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void assistantHome({ environmentId, input: { action: "status" } }).then((result) => {
+      if (!cancelled && result._tag === "Success") setAddress(result.value.addresses[0] ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [assistantHome, environmentId, open]);
+  return address;
+}
+
+function LinkBackDialog({
+  target,
+  onClose,
+  environmentId,
+  environmentLabel,
+  onLinked,
+}: {
+  readonly target: { readonly id: string; readonly label: string } | null;
+  readonly onClose: () => void;
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly onLinked: (statuses: ReadonlyArray<AgentMachineStatus>) => void;
+}) {
+  const agentMachines = useAtomCommand(serverEnvironment.agentMachines, { reportFailure: false });
+  const suggested = useSelfAddress(environmentId, target !== null);
+  const [edited, setEdited] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const address = (edited ?? suggested ?? "").trim();
+
+  const close = () => {
+    setEdited(null);
+    onClose();
+  };
+
+  const submit = async () => {
+    if (target === null || address.length === 0) return;
+    setBusy(true);
+    const result = await agentMachines({
+      environmentId,
+      input: { action: "linkBack", id: target.id, baseUrl: address },
+    });
+    setBusy(false);
+    if (result._tag === "Success") {
+      onLinked(result.value.machines);
+      toastManager.add({
+        type: "success",
+        title: `${target.label} can reach ${environmentLabel}`,
+        description: "The Assistant and coordinators on either machine can now reach each other.",
+      });
+      close();
+    } else if (!isAtomCommandInterrupted(result)) {
+      toastManager.add({
+        type: "error",
+        title: `Could not link ${target.label} back`,
+        description: agentMachinesErrorMessage(squashAtomCommandFailure(result)),
+      });
+    }
+  };
+
+  return (
+    <Dialog open={target !== null} onOpenChange={(next) => !next && close()}>
+      <DialogPopup className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            Let {target?.label} reach {environmentLabel}
+          </DialogTitle>
+          <DialogDescription>
+            {target?.label} links {environmentLabel} with a one-time pairing link this machine
+            creates, so the Assistant and coordinators on either machine can reach each other.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <div className="grid gap-1.5">
+            <Label htmlFor="agent-machine-link-back-url">
+              {environmentLabel}'s address, as {target?.label} reaches it
+            </Label>
+            <Input
+              id="agent-machine-link-back-url"
+              placeholder="http://100.x.y.z:3773"
+              autoComplete="off"
+              value={edited ?? suggested ?? ""}
+              onChange={(event) => setEdited(event.target.value)}
+              autoFocus
+            />
+          </div>
+        </DialogPanel>
+        <DialogFooter variant="bare">
+          <Button variant="outline" onClick={close} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={() => void submit()} disabled={busy || address.length === 0}>
+            {busy ? "Linking…" : "Link back"}
           </Button>
         </DialogFooter>
       </DialogPopup>

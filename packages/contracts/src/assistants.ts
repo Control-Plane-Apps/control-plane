@@ -57,6 +57,8 @@ export const ProjectScheduleMissReason = Schema.Literals([
   "rejected",
   "not-running",
   "no-fire",
+  /** The Assistant's schedule did not run: another linked machine runs it, or that could not be ruled out. */
+  "not-home",
 ]);
 export type ProjectScheduleMissReason = typeof ProjectScheduleMissReason.Type;
 

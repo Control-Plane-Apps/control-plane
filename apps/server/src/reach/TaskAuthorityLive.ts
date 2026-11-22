@@ -27,6 +27,9 @@ import {
   type AssistantAnswer,
   decideTaskAuthority,
   hostsAssistant,
+  knownAssistantHosts,
+  noteAssistantHost,
+  registerTaskAuthorityRefresh,
   setTaskAuthority,
   type TaskAuthorityDecision,
 } from "./taskAuthority.ts";
@@ -53,14 +56,15 @@ export const TaskAuthorityLive = Layer.effectDiscard(
     const path = yield* Path.Path;
     const config = yield* ServerConfig.ServerConfig;
     const filePath = `${config.stateDir}/reach-assistants.json`;
-    const known = new Map<string, AssistantAnswer>(
-      Object.entries(
-        yield* fileSystem.readFileString(filePath).pipe(
-          Effect.flatMap(decodeKnown),
-          Effect.orElseSucceed((): Record<string, AssistantAnswer> => ({})),
-        ),
+    for (const [id, answer] of Object.entries(
+      yield* fileSystem.readFileString(filePath).pipe(
+        Effect.flatMap(decodeKnown),
+        Effect.orElseSucceed((): Record<string, AssistantAnswer> => ({})),
       ),
-    );
+    )) {
+      noteAssistantHost(id, answer);
+    }
+    const known = knownAssistantHosts();
     let last: string | null = null;
 
     const recompute = Effect.gen(function* () {
@@ -93,7 +97,7 @@ export const TaskAuthorityLive = Layer.effectDiscard(
           .call(machine, "describe", {}, { threadId: "", threadTitle: "" }, DescribeResult)
           .pipe(Effect.option);
         if (described._tag === "Some") {
-          known.set(machine.id, {
+          noteAssistantHost(machine.id, {
             hosts: described.value.assistant !== null,
             at: DateTime.toEpochMillis(yield* DateTime.now),
           });
@@ -110,6 +114,13 @@ export const TaskAuthorityLive = Layer.effectDiscard(
 
     // Before clients connect, from what is stored; then keep it fresh.
     yield* recompute;
+    registerTaskAuthorityRefresh(
+      refresh.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("task authority refresh failed", { cause: String(cause) }),
+        ),
+      ),
+    );
     yield* forkParked(
       Effect.gen(function* () {
         while (true) {
