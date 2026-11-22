@@ -56,8 +56,10 @@ export function makeScriptedReach(machines: ReadonlyArray<ScriptedMachine>) {
         }
       })();
       if (!raw.ok) {
+        // "timeout: ..." and "offline: ..." stand for a call that got no answer.
+        const [prefix] = raw.error.split(":");
         return yield* new ReachError({
-          kind: "refused",
+          kind: prefix === "timeout" ? "timeout" : prefix === "offline" ? "offline" : "refused",
           machineId: machine.id,
           machineLabel: machine.label,
           detail: raw.error,

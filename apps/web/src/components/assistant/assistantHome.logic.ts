@@ -118,3 +118,9 @@ export function toggleReach(
     : [...current, projectId];
   return allIds.every((id) => next.includes(id)) ? null : next;
 }
+
+/** A move this machine started that has not finished: the Assistant is paused meanwhile. */
+export function pendingMoveText(status: AssistantHomeStatus): string | null {
+  if (status.pendingMove === undefined) return null;
+  return `Moving your Assistant to ${status.pendingMove.label}. It is paused until ${status.pendingMove.label} confirms, and finishes on its own when it answers.`;
+}

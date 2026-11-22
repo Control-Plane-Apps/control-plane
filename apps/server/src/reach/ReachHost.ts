@@ -55,7 +55,6 @@ import {
 import { Reach } from "./Reach.ts";
 import { acceptOnce, reachInputHash, wasSent } from "./reachSent.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
-import { Reach } from "./Reach.ts";
 import { AssistantHome } from "./AssistantHome.ts";
 import {
   ConfirmInput,
@@ -63,6 +62,7 @@ import {
   REACH_VERIFIED_OPS,
   AssistantBundle,
   HandoffInput,
+  MoveIdInput,
   LinkBackInput,
   AskInput,
   AssistantNoteInput,
@@ -113,7 +113,6 @@ export const make = Effect.gen(function* () {
   const reach = yield* Reach;
   const settings = yield* ServerSettingsService;
   const scheduleCore = yield* makeScheduleCore;
-  const reach = yield* Reach;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const shell = snapshots
@@ -401,6 +400,11 @@ export const make = Effect.gen(function* () {
       return { scope, input: input.input };
     });
 
+  const peerOf = (request: ReachRequest) => ({
+    environmentId: request.caller.environmentId,
+    label: request.caller.label,
+  });
+
   const run = (request: ReachRequest): Effect.Effect<unknown, Error> => {
     switch (request.op) {
       case "describe":
@@ -438,7 +442,19 @@ export const make = Effect.gen(function* () {
         return taskDeliver(request);
       case "assistant.adopt":
         return decode(AssistantBundle)(request.input).pipe(
-          Effect.flatMap((bundle) => home.adopt(bundle, { label: request.caller.label })),
+          Effect.flatMap((bundle) => home.adopt(bundle, peerOf(request))),
+        );
+      case "assistant.commit":
+        return decode(MoveIdInput)(request.input).pipe(
+          Effect.flatMap((input) => home.commit(input.moveId)),
+        );
+      case "assistant.abort":
+        return decode(MoveIdInput)(request.input).pipe(
+          Effect.flatMap((input) => home.abort(input.moveId, peerOf(request))),
+        );
+      case "assistant.moveStatus":
+        return decode(MoveIdInput)(request.input).pipe(
+          Effect.flatMap((input) => home.moveStatus(input.moveId)),
         );
       case "assistant.handoff":
         return decode(HandoffInput)(request.input).pipe(
@@ -453,7 +469,7 @@ export const make = Effect.gen(function* () {
         );
       case "link.back":
         return decode(LinkBackInput)(request.input).pipe(
-          Effect.flatMap((input) => home.redeemLinkBack(input.pairingUrl)),
+          Effect.flatMap((input) => home.redeemLinkBack(input.pairingUrl, peerOf(request))),
         );
       case "schedule.list":
         return scheduleScope(request).pipe(Effect.flatMap(({ scope }) => scheduleCore.list(scope)));

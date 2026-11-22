@@ -35,6 +35,9 @@ export const ReachOp = Schema.Literals([
   "schedule.update",
   "schedule.delete",
   "assistant.adopt",
+  "assistant.commit",
+  "assistant.abort",
+  "assistant.moveStatus",
   "assistant.handoff",
   "link.back",
 ]);
@@ -45,7 +48,10 @@ export const REACH_MAX_BODY_BYTES = 64 * 1024 * 1024;
 /** Most ops carry a message or a status row. */
 const DEFAULT_BODY_LIMIT = 256 * 1024;
 /** Ops that carry more, by op. */
-const BODY_LIMITS: Partial<Record<string, number>> = {};
+const BODY_LIMITS: Partial<Record<string, number>> = {
+  // Up to 200 messages and the memory file.
+  "assistant.adopt": REACH_MAX_BODY_BYTES,
+};
 
 /** The largest body accepted for one op. */
 export function reachBodyLimit(op: string): number {
@@ -264,3 +270,8 @@ export const HandoffInput = Schema.Struct({ to: Schema.String });
 
 export const LinkBackInput = Schema.Struct({ pairingUrl: Schema.String });
 export const LinkBackResult = Schema.Struct({ id: Schema.String, label: Schema.String });
+
+export const MoveIdInput = Schema.Struct({ moveId: Schema.String });
+export const MoveStatusResult = Schema.Struct({
+  phase: Schema.Literals(["adopted", "committed", "aborted", "unknown"]),
+});

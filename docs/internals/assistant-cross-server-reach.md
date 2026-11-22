@@ -182,32 +182,46 @@ servers both ways with the normal pairing flow.
   they were linked), task authority already picks one (lower environment id). Settings shows
   "Your Assistant exists on two machines" with "Keep the one on X" (moves the other in, below).
 
-### Moving it (`assistant.move`, RPC on the current home)
+### Moving it (`server.assistantHome` move, run by the current home)
 
-1. **Freeze the source.** The current home archives its Assistant marker (`archivedAt`). That
-   stops its schedules (ScheduleHost skips archived Projects), holds results for it (the reactor
-   holds archived assistants), and makes `describe` report no Assistant. From here there are zero
-   Assistants, never two.
-2. **Bundle.** Assistant settings (`ServerSettings.assistant`: reach, workspaces, task access,
-   new tasks, messaging, check-in, brief), the Assistant Project's schedules and prompts, the
-   home folder's `MEMORY.md`, recent conversation (last 200 messages), and open asks from
-   `reach-requests.json`.
-3. **Adopt on the target** (new reach op `assistant.adopt`): `ensureAssistant`, apply the
-   settings, recreate schedules with the same enabled state, write `MEMORY.md`, import the
-   conversation with `thread.history.import` (shows in the thread; the new provider session
-   starts with a one-line note that the conversation moved), and take over the open asks (the
-   target polls the same machines).
-4. **Commit or roll back.** On success the source keeps its archived Assistant as read-only
-   history. On any failure the target deletes what it made and the source unarchives, so the user
-   is back where they started. The move is idempotent by move id, so a retry finishes a partial
-   move.
-5. **Everything follows:** task authority (both sides re-`describe` right after the move),
-   reach (the new home calls the same linked machines; it needs links both ways, checked before
-   step 1), and clients (descriptor and shell updates point them at the new home).
+Two phases, journaled on both sides in `assistant-moves.json` (`reach/assistantMoves.ts`), so a
+timeout or crash never leaves two Assistants, and an interrupted move finishes or undoes itself:
 
-Preconditions checked before step 1, each with a clear message: target linked and online, target
-links back to this server (else offer "Link back" below), target runs a build with reach, and no
-Assistant turn is running (or "Move after this turn").
+1. **Check** the target: linked, online, linked back, no Assistant of its own, no Assistant turn
+   running here.
+2. **Pause here.** Journal `adopting`, then archive the Assistant marker here (stops its
+   schedules, holds results, `describe` reports no Assistant).
+3. **Adopt** (`assistant.adopt`, body limit 64 MB, 60 second timeout). The target builds a
+   **paused** copy: settings, schedules with prompts, `MEMORY.md`, the last 200 messages, open
+   asks kept for later. It is idempotent by move id: a retry returns the same copy. A target that
+   already holds an archived Assistant (the A to B to A case) reuses that Project and its home
+   folder, with a fresh coordinator thread for the imported conversation; otherwise it creates one.
+   It journals what it overwrote (settings, memory) and whether it created the Project.
+4. **Commit** (`assistant.commit`): the target puts its copy live and starts polling the asks.
+   Only the source sends a commit, and only after a successful adopt, so the target's copy can
+   never be live while the source's is.
+5. **Outcomes on the source:**
+   - Adopt failed or timed out: send `assistant.abort` and resume here. Resuming is safe even if
+     the abort cannot be delivered, because the target's copy stays paused without a commit; the
+     journal keeps `abort-pending` and keeps telling the target.
+   - Commit answered: done (asks dropped here, task authority refreshed).
+   - Commit refused: abort and resume here.
+   - Commit unanswered (timeout, asleep): stay paused here (zero live, never two) and show "Moving
+     to <machine>" in Settings. The reconcile loop asks the target (`assistant.moveStatus`):
+     committed means done, a paused copy gets the commit again, anything else resumes here.
+6. **Abort on the target** puts back the settings and `MEMORY.md` it overwrote and deletes the
+   Project it created (force delete, which frees the home folder), or, when it reused an archived
+   one, points it back at its old coordinator. An abort for an unknown move id is recorded, so a
+   late adopt with that id is refused.
+7. **Reconcile** runs at startup and every minute, so a source that crashed mid-move resumes its
+   own copy (from `adopting`) or finishes (from `committing`) once the target answers.
+
+Schedules aimed at other threads of the Assistant's Project cannot exist on the target: they move
+aimed at the Assistant, paused, and the move result lists each one (shown in the success toast).
+
+Move ops and link back are verified like every write: the target confirms the request with the
+source over its own link. Link back also checks that the server behind the pairing link reports
+the environment id of the machine asking.
 
 ### Linking both ways from the normal pairing UI
 
@@ -245,6 +259,9 @@ Assistant turn is running (or "Move after this turn").
   ships with simulator screenshots per AGENTS.md.
 
 ### Built (phase 2 PR)
+
+Deferred and noted in the PR: the phone's task hand-off sheet (`useMobileTasks.ts`) lists only
+the Projects of the machine that holds Tasks, not every linked machine's.
 
 - **Server:** `reach/AssistantHome.ts` (status, move, adopt, handoff, link back, ensure guard),
   RPC `server.assistantHome` (status, move), `server.agentMachines` gains `linkBack`, reach ops

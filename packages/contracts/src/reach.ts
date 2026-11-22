@@ -94,6 +94,10 @@ export const AssistantHomeStatus = Schema.Struct({
   machines: Schema.Array(AssistantHomeMachine),
   /** Addresses linked machines can likely use to reach this one, best first. */
   addresses: Schema.Array(Schema.String),
+  /** A move from this machine that has not finished; the Assistant is paused meanwhile. */
+  pendingMove: Schema.optional(Schema.Struct({ label: Schema.String, startedAt: Schema.String })),
+  /** After a move: what did not move as it was, such as schedules aimed at other threads. */
+  notes: Schema.optional(Schema.Array(Schema.String)),
 });
 export type AssistantHomeStatus = typeof AssistantHomeStatus.Type;
 

@@ -6,6 +6,7 @@ import {
   LOCAL_HOME,
   moveBlockedReason,
   offlineHomeText,
+  pendingMoveText,
   remoteReachGroups,
   runsOnOptions,
   toggleReach,
@@ -67,6 +68,19 @@ describe("Runs on", () => {
     });
     expect(offlineHomeText(away)).toBe("Your Assistant runs on Mac mini, which is offline.");
     expect(offlineHomeText(status({}))).toBeNull();
+  });
+});
+
+describe("a move that has not finished", () => {
+  it("says the Assistant is paused until the other machine confirms", () => {
+    expect(pendingMoveText(status({}))).toBeNull();
+    expect(
+      pendingMoveText(
+        status({ pendingMove: { label: "Mac mini", startedAt: "2026-11-21T09:00:00.000Z" } }),
+      ),
+    ).toBe(
+      "Moving your Assistant to Mac mini. It is paused until Mac mini confirms, and finishes on its own when it answers.",
+    );
   });
 });
 

@@ -27,6 +27,7 @@ import {
   LOCAL_HOME,
   machineStateText,
   offlineHomeText,
+  pendingMoveText,
   runsOnOptions,
 } from "./assistantHome.logic";
 
@@ -62,12 +63,12 @@ export function useAssistantHomeStatus(environmentId: EnvironmentId | null, conn
   }, [refresh]);
 
   const move = useCallback(
-    async (to: string) => {
-      if (environmentId === null) return false;
+    async (to: string): Promise<AssistantHomeStatus | null> => {
+      if (environmentId === null) return null;
       const result = await assistantHome({ environmentId, input: { action: "move", to } });
       if (result._tag === "Success") {
         setState({ phase: "ready", status: result.value });
-        return true;
+        return result.value;
       }
       if (!isAtomCommandInterrupted(result)) {
         toastManager.add({
@@ -75,10 +76,12 @@ export function useAssistantHomeStatus(environmentId: EnvironmentId | null, conn
           title: "The Assistant did not move",
           description: agentMachinesErrorMessage(squashAtomCommandFailure(result)),
         });
+        // A move that did not finish may have left it paused here: show that.
+        void refresh();
       }
-      return false;
+      return null;
     },
-    [assistantHome, environmentId],
+    [assistantHome, environmentId, refresh],
   );
 
   return { state, refresh, move };
@@ -92,10 +95,10 @@ export function AssistantHomeSection({
   /** The machine these settings are read from. */
   readonly localLabel: string;
   readonly state: AssistantHomeState;
-  readonly onMove: (to: string) => Promise<boolean>;
+  readonly onMove: (to: string) => Promise<AssistantHomeStatus | null>;
 }) {
   const [pending, setPending] = useState<{ value: string; label: string } | null>(null);
-  const [moving, setMoving] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   if (state.phase !== "ready") {
     return (
@@ -115,18 +118,22 @@ export function AssistantHomeSection({
   const options = runsOnOptions(status, `${localLabel} (this machine)`);
   const selected = currentHome(status);
   const offline = offlineHomeText(status);
+  const moving = pendingMoveText(status);
 
   const confirm = async () => {
     if (pending === null) return;
-    setMoving(true);
+    setBusy(true);
     const moved = await onMove(pending.value);
-    setMoving(false);
+    setBusy(false);
     setPending(null);
-    if (moved) {
+    if (moved !== null) {
       toastManager.add({
         type: "success",
         title: `Your Assistant now runs on ${pending.label}`,
-        description: "Its settings, schedules, memory and recent conversation moved with it.",
+        description: [
+          "Its settings, schedules, memory and recent conversation moved with it.",
+          ...(moved.notes ?? []),
+        ].join(" "),
       });
     }
   };
@@ -141,7 +148,9 @@ export function AssistantHomeSection({
             : "The Assistant runs on one machine at a time and reaches Projects on every linked machine. An always-on machine keeps briefs and check-ins on time."
         }
         status={
-          offline !== null ? (
+          moving !== null ? (
+            <span className="text-warning">{moving}</span>
+          ) : offline !== null ? (
             <span className="text-warning">{offline}</span>
           ) : status.conflicts.length > 0 ? (
             <span className="text-warning">
@@ -154,7 +163,7 @@ export function AssistantHomeSection({
           <Select
             items={options.map(({ value, label }) => ({ value, label }))}
             value={selected ?? undefined}
-            disabled={moving || status.machines.length === 0}
+            disabled={moving !== null || busy || status.machines.length === 0}
             onValueChange={(value) => {
               if (value === null || value === selected) return;
               const option = options.find((entry) => entry.value === value);
@@ -217,11 +226,11 @@ export function AssistantHomeSection({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" disabled={moving} />}>
+            <AlertDialogClose render={<Button variant="outline" disabled={busy} />}>
               Cancel
             </AlertDialogClose>
-            <Button onClick={() => void confirm()} disabled={moving}>
-              {moving ? "Moving…" : "Move Assistant"}
+            <Button onClick={() => void confirm()} disabled={busy}>
+              {busy ? "Moving…" : "Move Assistant"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>
