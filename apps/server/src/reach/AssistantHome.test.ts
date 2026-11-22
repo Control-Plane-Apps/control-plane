@@ -460,6 +460,16 @@ describe("AssistantHome", () => {
         const returned = yield* home.adopt(
           {
             ...back,
+            // The archived copy here still has this schedule: rewriting it must still work.
+            schedules: [
+              {
+                id: "morning-brief",
+                name: "Morning brief",
+                cron: "0 8 * * 1-5",
+                enabled: true,
+                prompt: "Brief me",
+              },
+            ],
             messages: [
               { role: "user", text: "Remember: I like short answers.", createdAt: AT },
               { role: "assistant", text: "Noted.", createdAt: AT },
@@ -471,6 +481,12 @@ describe("AssistantHome", () => {
         expect(returned.projectId).toBe("old-home");
         expect(returned.threadId).not.toBe("old-assistant");
         yield* home.commit("move-back");
+        expect(
+          (yield* liveAssistant)?.assistant?.schedules?.map((schedule) => [
+            schedule.id,
+            schedule.cron,
+          ]),
+        ).toEqual([["morning-brief", "0 8 * * 1-5"]]);
         const live = yield* liveAssistant;
         expect(live?.id).toBe("old-home");
         expect(live?.assistant?.coordinatorThreadId).toBe(returned.threadId);

@@ -29,6 +29,7 @@ import {
   MessageId,
   ModelSelection,
   ProjectId,
+  ProjectScheduleId,
   RuntimeMode,
   ThreadId,
   type AssistantHomeInput,
@@ -667,7 +668,16 @@ export const make = Effect.gen(function* () {
           yield* settingsService
             .updateSettings({ assistant: settings })
             .pipe(Effect.mapError(() => fail("Could not save the Assistant's settings.")));
-          if (bundle.schedules.length > 0) {
+          // A reused Project still has its old schedules: echo each one's version, as any write must.
+          const stored = Option.getOrUndefined(
+            yield* projects
+              .getById({ projectId: ProjectId.make(home.projectId) })
+              .pipe(Effect.mapError(() => fail("Could not read the Assistant's schedules."))),
+          )?.assistant?.schedules;
+          const versionOf = new Map(
+            (stored ?? []).map((entry) => [entry.id as string, entry.updatedAt]),
+          );
+          if (bundle.schedules.length > 0 || (stored ?? []).length > 0) {
             yield* dispatch(
               {
                 type: "project.meta.update",
@@ -675,14 +685,18 @@ export const make = Effect.gen(function* () {
                 projectId: ProjectId.make(home.projectId),
                 assistant: {
                   coordinatorThreadId: ThreadId.make(home.threadId),
-                  schedules: bundle.schedules.map((schedule) => ({
-                    id: schedule.id,
-                    name: schedule.name,
-                    cron: schedule.cron,
-                    target: "coordinator" as const,
-                    enabled: schedule.enabled,
-                    prompt: schedule.prompt,
-                  })),
+                  schedules: bundle.schedules.map((schedule) => {
+                    const updatedAt = versionOf.get(schedule.id);
+                    return {
+                      id: ProjectScheduleId.make(schedule.id),
+                      name: schedule.name,
+                      cron: schedule.cron,
+                      target: "coordinator" as const,
+                      enabled: schedule.enabled,
+                      prompt: schedule.prompt,
+                      ...(updatedAt !== undefined ? { updatedAt } : {}),
+                    };
+                  }),
                 },
               },
               "Could not recreate the Assistant's schedules",
