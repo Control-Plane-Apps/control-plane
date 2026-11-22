@@ -159,6 +159,20 @@ export const ADOPT_TIMEOUT = Duration.seconds(60);
 /** Commit, abort and status checks of a move. */
 export const MOVE_STEP_TIMEOUT = Duration.seconds(15);
 export const MOVE_RECONCILE_INTERVAL = Duration.minutes(1);
+/**
+ * Whether a linked machine that could not say "no" blocks the Assistant's
+ * schedules. No answer (offline, timeout): unless it last said no, since it may
+ * have taken the Assistant back meanwhile. An answer it could not give (an
+ * older build without reach, a token that needs relinking): only if it last
+ * said it runs the Assistant, so a machine not updated yet never stops briefs.
+ */
+export function blocksSchedules(
+  kind: "offline" | "timeout" | "relink" | "refused",
+  last: boolean | undefined,
+): boolean {
+  return kind === "offline" || kind === "timeout" ? last !== false : last === true;
+}
+
 /** A confirmed home is not asked again for this long. */
 const HOME_CONFIRM_REUSE_MS = 60_000;
 
@@ -1185,7 +1199,10 @@ export const make = Effect.gen(function* () {
       if (asked._tag === "Success" && asked.success) {
         return { ok: false, detail: `${machine.label} runs your Assistant.` } as const;
       }
-      if (asked._tag === "Failure" && lastAssistantHost(machine.id) !== false) {
+      if (
+        asked._tag === "Failure" &&
+        blocksSchedules(asked.failure.kind, lastAssistantHost(machine.id))
+      ) {
         return {
           ok: false,
           detail: `Could not confirm with ${machine.label} that it does not run your Assistant: ${asked.failure.detail}`,

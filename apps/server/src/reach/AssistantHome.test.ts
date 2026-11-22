@@ -41,6 +41,7 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import { ServerSettingsService } from "../serverSettings.ts";
 import {
   AssistantHome,
+  blocksSchedules,
   faultsAllowedFor,
   make as makeAssistantHome,
   suggestedAddresses,
@@ -68,6 +69,8 @@ let statusAnswer: "adopted" | "committed" | "aborted" | "unknown" = "committed";
 const adoptedBundles: Array<AssistantBundle> = [];
 /** Whether the mini says it runs a live Assistant. */
 let miniHosts = false;
+/** When set, the mini answers `describe` with this error (an older build, a token to relink). */
+let describeError: string | null = null;
 const calls: Array<string> = [];
 
 const mini: ScriptedMachine = {
@@ -77,6 +80,7 @@ const mini: ScriptedMachine = {
   answer: (op, input) => {
     switch (op) {
       case "describe":
+        if (describeError !== null) throw new Error(describeError);
         return {
           environmentId: "env-mini",
           label: "Mac mini",
@@ -356,6 +360,7 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     statusAnswer = "committed";
     mini.online = true;
     miniHosts = false;
+    describeError = null;
     noteAssistantHost("env-mini", { hosts: false, at: 0 });
     pairingServerId = "env-mini";
     linked = [];
@@ -984,5 +989,43 @@ describe("AssistantHome", () => {
     expect(faultsAllowedFor("file:///Applications/Control Plane.app/server/dist/bin.mjs")).toBe(
       false,
     );
+  });
+  it.effect(
+    "a linked machine that answers but cannot say no blocks schedules only if it last ran the Assistant",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const home = yield* AssistantHome;
+          // An older build without reach: it answers, with an error.
+          describeError = "Unknown op: describe";
+          noteAssistantHost("env-mini", { hosts: false, at: 0 });
+          expect(yield* home.confirmHome).toEqual({ ok: true });
+        }),
+      ),
+  );
+
+  it.effect(
+    "a token that needs relinking blocks schedules only if that machine last ran the Assistant",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const home = yield* AssistantHome;
+          describeError = "relink: the token was rejected";
+          noteAssistantHost("env-mini", { hosts: true, at: 0 });
+          expect((yield* home.confirmHome).ok).toBe(false);
+        }),
+      ),
+  );
+
+  it("decides which failed answers block the Assistant's schedules", () => {
+    // Never answered (an older build, or never linked back): briefs still run.
+    expect(blocksSchedules("refused", undefined)).toBe(false);
+    expect(blocksSchedules("relink", undefined)).toBe(false);
+    expect(blocksSchedules("refused", false)).toBe(false);
+    expect(blocksSchedules("relink", true)).toBe(true);
+    // No answer at all: blocked unless it last said no.
+    expect(blocksSchedules("offline", undefined)).toBe(true);
+    expect(blocksSchedules("timeout", true)).toBe(true);
+    expect(blocksSchedules("offline", false)).toBe(false);
   });
 });

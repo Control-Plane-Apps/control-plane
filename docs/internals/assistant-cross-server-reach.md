@@ -243,7 +243,8 @@ timeout or crash never leaves two Assistants, and an interrupted move finishes o
   still runs it (move it instead).
 - **No double run after a wake.** Before any Assistant schedule runs (the OS fire, catch-up after
   sleep, or Run now), the machine asks every linked machine whether it runs the Assistant. If one
-  says yes, or one cannot be reached and its last answer was not a clear no, the run is skipped and
+  says yes, or one cannot be reached and its last answer was not a clear no, or one answers with an
+  error (an older build without reach, a token to relink) while its last answer was yes, the run is skipped and
   recorded `missed: not-home` ("Skipped · your Assistant may run on another machine"). A yes is
   reused for a minute. An always-on home with a sleeping laptop still runs on time, because the
   laptop's last answer was no. What is left: a home that slept while the other machine took the
