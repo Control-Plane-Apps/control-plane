@@ -201,6 +201,7 @@ describe("ReachHost", () => {
             environmentId: SELF,
             label: "MacBook",
             assistant: { threadId: ASSISTANT, projectId: HOME },
+            linked: [],
           },
         });
       }),

@@ -210,9 +210,10 @@ export function AssistantHomeSection({
           <AlertDialogHeader>
             <AlertDialogTitle>Move your Assistant to {pending?.label}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Its settings, schedules, memory and last 200 messages move to {pending?.label}. The
-              Assistant pauses here first, so only one ever acts for you, and the copy left here
-              stays read-only. Tasks follow it. If anything fails, it stays where it is.
+              Its settings, schedules, memory and last 200 messages move to {pending?.label}. It
+              pauses on its current machine first, so only one Assistant ever acts for you, and the
+              copy left there stays read-only. Tasks follow it. If anything fails, it stays where it
+              is.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

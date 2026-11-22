@@ -233,6 +233,8 @@ function AgentMachinesBody({
  * The open section's rows, from props only so it can be rendered against a
  * fixture. `AgentMachinesBody` owns the RPC state.
  */
+const noLinkBack = () => {};
+
 export function AgentMachinesView({
   environmentLabel,
   localKind,
@@ -245,7 +247,7 @@ export function AgentMachinesView({
   onRefresh,
   onAdd,
   onUnlink,
-  onLinkBack = () => {},
+  onLinkBack = noLinkBack,
 }: {
   readonly environmentLabel: string;
   readonly localKind: EnvironmentMachineKind;
@@ -675,7 +677,6 @@ function useSelfAddress(environmentId: EnvironmentId, open: boolean): string | n
     if (!open) return;
     let cancelled = false;
     void assistantHome({ environmentId, input: { action: "status" } }).then((result) => {
-      // oxlint-disable-next-line react/set-state-in-effect -- Set after the status RPC answers.
       if (!cancelled && result._tag === "Success") setAddress(result.value.addresses[0] ?? null);
     });
     return () => {

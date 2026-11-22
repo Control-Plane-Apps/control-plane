@@ -244,6 +244,27 @@ Assistant turn is running (or "Move after this turn").
   offline line; picker and move live in desktop/web Settings only at first. Any iPhone UI change
   ships with simulator screenshots per AGENTS.md.
 
+### Built (phase 2 PR)
+
+- **Server:** `reach/AssistantHome.ts` (status, move, adopt, handoff, link back, ensure guard),
+  RPC `server.assistantHome` (status, move), `server.agentMachines` gains `linkBack`, reach ops
+  `assistant.adopt`, `assistant.handoff`, `link.back`, and `describe` reports the machines a
+  server has linked. `server.assistantEnsure` refuses to create an Assistant while a linked
+  machine runs one, which also covers the mobile app.
+- **Move back:** choosing "This machine" on a server without the Assistant asks the current home
+  to run the move (`assistant.handoff`), so the home always runs it.
+- **Web:** Settings, Assistant has "Runs on" (picker, machine rows with state, confirmation,
+  conflict and offline lines) and "Projects on <machine>" rows in Reach. When the Assistant runs on
+  a machine this client is not connected to, the page says its settings live there instead of
+  showing stale ones. Agent machines' "Add machine" links both ways in one step (switch on by
+  default, this machine's address prefilled), and each machine's menu has "Let <machine> reach this
+  machine". `useGlobalAssistantProject` finds the Assistant on any connected environment.
+- **Mobile:** unchanged. It already picks the environment that hosts the Assistant, and the server
+  guard stops a second one.
+- **Not built yet:** the prompt after client-side environment pairing (linking from Agent
+  machines covers both directions), and a first-open "where should it run" question (first open
+  creates it here; Runs on moves it).
+
 ### Estimate
 
 Phase 1 (this PR) is done. Phase 2 adds about **5 to 7 working days**:
