@@ -51,7 +51,7 @@ export function ProposedTasks(props: {
           {label}
         </Text>
         <Text className="text-[13px] tabular-nums text-foreground-tertiary">{tasks.length}</Text>
-        {tasks.length > 1 ? (
+        {tasks.length > 1 && actions.macReachable ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={addAllLabel}
@@ -97,6 +97,27 @@ function ProposedTaskRow(props: {
           </Text>
         </View>
       </View>
+      {actions.macReachable ? (
+        <ProposalButtons task={task} actions={actions} />
+      ) : (
+        // Proposals live on the Mac: say so instead of failing on tap.
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${task.title} needs your Mac`}
+          onPress={() => void actions.respond(task, true)}
+          className="h-11 justify-center px-2"
+        >
+          <Text className="text-[14px] text-foreground-muted">Needs your Mac</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function ProposalButtons(props: { readonly task: Task; readonly actions: TaskActions }) {
+  const { task, actions } = props;
+  return (
+    <>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Add ${task.title}`}
@@ -119,6 +140,6 @@ function ProposedTaskRow(props: {
           weight="semibold"
         />
       </Pressable>
-    </View>
+    </>
   );
 }

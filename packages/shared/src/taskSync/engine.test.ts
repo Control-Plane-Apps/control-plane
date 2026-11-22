@@ -549,6 +549,45 @@ describe("TaskSyncEngine", () => {
     expect((await engine.status()).state).toBe("synced");
   });
 
+  it("offline is not an answer: a signed-in device stays signed in and syncs once back", async () => {
+    const cloud = new FakeCloud();
+    const { engine } = setup(cloud);
+    await engine.refreshAvailability(0);
+    await engine.verify("n@example.com", "123456");
+    const offline = async () => {
+      throw new TaskSyncCloudError("network");
+    };
+    const online = cloud.availability;
+    cloud.availability = offline;
+    // A fresh process (app relaunch) that has never reached the service.
+    const relaunched = new TaskSyncEngine({
+      ...(engine as unknown as { deps: ConstructorParameters<typeof TaskSyncEngine>[0] }).deps,
+    });
+    await relaunched.refreshAvailability(0);
+    await relaunched.sync();
+    expect(await relaunched.status()).toMatchObject({ state: "error" });
+    // Back online: the very next sync asks again instead of trusting "off" for hours.
+    cloud.availability = online;
+    const pulls = cloud.changeCalls;
+    await relaunched.sync();
+    expect(cloud.changeCalls).toBeGreaterThan(pulls);
+    expect((await relaunched.status()).state).toBe("synced");
+  });
+
+  it("reapply rebuilds the list from the saved mirror and outbox without the network", async () => {
+    const cloud = new FakeCloud();
+    const { engine, applied } = setup(cloud);
+    await engine.refreshAvailability(0);
+    await engine.verify("n@example.com", "123456");
+    await engine.onLocalTask("t-1", localTask("t-1", { title: "Queued here" }));
+    applied.length = 0;
+    const pulls = cloud.changeCalls;
+    expect(await engine.reapply()).toBe(true);
+    expect(cloud.changeCalls).toBe(pulls);
+    expect(cloud.pushes).toHaveLength(0);
+    expect(applied.at(-1)?.tasks.map((task) => task.title)).toEqual(["Queued here"]);
+  });
+
   it("a local preview lets this install sign in before launch, and turns off cleanly", async () => {
     const cloud = new FakeCloud();
     cloud.available = false;

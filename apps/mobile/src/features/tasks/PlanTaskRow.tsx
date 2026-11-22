@@ -565,7 +565,11 @@ function ExpandedTask(props: {
         ) : handChip === "offer" ? (
           <TaskChip
             active={false}
-            label="Hand to Assistant"
+            label={
+              context.actions.macReachable
+                ? "Hand to Assistant"
+                : "Hand to Assistant: needs your Mac"
+            }
             onPress={() => context.onHandToAssistant(task)}
           />
         ) : null}

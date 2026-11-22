@@ -35,9 +35,15 @@ import { AppState, Platform } from "react-native";
 import { uuidv4 } from "../../lib/uuid";
 
 // Fork-owned. The phone's own copy of the task list, synced straight with the
-// Control Plane account's cloud task store, so Tasks work while the Mac
-// sleeps. Same engine as the Mac (packages/shared/src/taskSync). Links,
-// proposals and hand-offs stay Mac-only: they arrive through the paired Mac.
+// Control Plane account's cloud task store. Signed in, it is the phone's one
+// source of truth for tasks and intents, Mac or no Mac (taskSource.ts). Same
+// engine as the Mac (packages/shared/src/taskSync): edits queue in its outbox
+// (state.json) and sync on launch, foreground, pull to refresh and a timer.
+// Links, proposals and hand-offs stay Mac-only: they arrive through the Mac.
+//
+// The phone never runs commitment rollover or any other automatic task write:
+// only the Mac (the task authority) does, so two devices never both roll the
+// same commitment into new-UUID memberships. Everything here is a user edit.
 
 const TOKEN_KEY = "cplane-task-sync-device-token";
 const SYNC_INTERVAL_MS = 60_000;
@@ -49,6 +55,11 @@ export interface CloudTaskSnapshot {
   readonly tasks: ReadonlyArray<Task>;
   readonly intents: ReadonlyArray<TaskIntent>;
   readonly status: TaskSyncStatus | null;
+  /**
+   * The saved sync state has a signed-in account. Read synchronously at
+   * launch, so Tasks pick the phone's copy before the engine has answered.
+   */
+  readonly savedAccount: boolean;
 }
 
 function readConfig(): TaskSyncConfig | null {
@@ -96,7 +107,12 @@ export function cloudErrorMessage(error: unknown): string {
 }
 
 class CloudTaskStore {
-  private snapshot: CloudTaskSnapshot = { tasks: [], intents: [], status: null };
+  private snapshot: CloudTaskSnapshot = {
+    tasks: [],
+    intents: [],
+    status: null,
+    savedAccount: false,
+  };
   private readonly listeners = new Set<() => void>();
   private readonly engine: TaskSyncEngine;
   private editTimer: ReturnType<typeof setTimeout> | null = null;
@@ -106,12 +122,16 @@ class CloudTaskStore {
   constructor() {
     const config = readConfig();
     const cached = readJson<{ tasks: Task[]; intents: TaskIntent[] }>("tasks.json");
-    if (cached !== null) {
-      this.snapshot = { tasks: cached.tasks, intents: cached.intents, status: null };
-    }
+    const persisted = readJson<TaskSyncPersistedState>("state.json");
+    const savedAccount = config !== null && persisted?.account !== undefined;
+    this.snapshot = {
+      tasks: cached?.tasks ?? [],
+      intents: cached?.intents ?? [],
+      status: null,
+      savedAccount,
+    };
     // Weeks follow the account's week start from the first render, before the
     // engine has loaded; the engine keeps it current from then on.
-    const persisted = readJson<TaskSyncPersistedState>("state.json");
     if (persisted !== null && typeof persisted.weekStartsOn === "number") {
       setTaskWeekStartsOn(persisted.weekStartsOn);
     }
@@ -153,19 +173,30 @@ class CloudTaskStore {
     };
   };
 
-  private emit(next: Partial<CloudTaskSnapshot>): void {
+  /** Whether the phone's copy has this task. */
+  has = (taskId: TaskId): boolean => this.snapshot.tasks.some((task) => task.id === taskId);
+
+  private emit(next: Partial<CloudTaskSnapshot>, cache = true): void {
     this.snapshot = { ...this.snapshot, ...next };
-    if (next.tasks !== undefined || next.intents !== undefined) {
-      writeJson("tasks.json", { tasks: this.snapshot.tasks, intents: this.snapshot.intents });
-    }
+    if (cache && (next.tasks !== undefined || next.intents !== undefined)) this.cacheList();
     for (const listener of this.listeners) listener();
+  }
+
+  private cacheList(): void {
+    writeJson("tasks.json", { tasks: this.snapshot.tasks, intents: this.snapshot.intents });
   }
 
   private start(): void {
     if (this.started) return;
     this.started = true;
-    // App start: ask whether Task Sync is switched on before anything else.
-    void this.recheck(0);
+    // App start: rebuild the list from the saved mirror and outbox (no
+    // network), so an edit saved just before the app was killed shows even if
+    // the list cache missed it. Then ask whether Task Sync is on, and sync.
+    void this.engine
+      .reapply()
+      .catch(() => false)
+      .then(() => this.recheck(0))
+      .catch(() => undefined);
     this.interval = setInterval(() => {
       if (AppState.currentState === "active") void this.syncNow();
     }, SYNC_INTERVAL_MS);
@@ -186,7 +217,11 @@ class CloudTaskStore {
 
   private async refreshStatus(): Promise<TaskSyncStatus> {
     const status = await this.engine.status();
-    this.emit({ status });
+    const signedIn =
+      status.state !== "signed-out" &&
+      status.state !== "unavailable" &&
+      status.state !== "coming-soon";
+    this.emit({ status, savedAccount: signedIn });
     return status;
   }
 
@@ -201,6 +236,7 @@ class CloudTaskStore {
     this.emit({ tasks: [...byId.values()], intents: [...intents.values()] });
   }
 
+  /** Push the outbox and pull, now. Pull to refresh and the Mac-only actions call this. */
   async syncNow(): Promise<TaskSyncStatus> {
     await this.engine.sync();
     return this.refreshStatus();
@@ -231,12 +267,32 @@ class CloudTaskStore {
     return this.refreshStatus();
   }
 
-  private async write(tasks: ReadonlyArray<Task>): Promise<void> {
+  /**
+   * Shows the edit at once, saves it to the engine's outbox (state.json),
+   * then caches the list. The outbox is written first: if the app dies in
+   * between, launch rebuilds the list from it (reapply), so the edit is
+   * neither lost nor left unsynced. The same task id goes up however many
+   * times it is retried, so nothing duplicates.
+   */
+  private async commit(
+    writes: ReadonlyArray<{ readonly id: TaskId; readonly task: Task | null }>,
+  ): Promise<void> {
     const byId = new Map(this.snapshot.tasks.map((task) => [task.id as string, task]));
-    for (const task of tasks) byId.set(task.id, task);
-    this.emit({ tasks: [...byId.values()] });
-    for (const task of tasks) await this.engine.onLocalTask(task.id, task);
+    for (const write of writes) {
+      if (write.task === null) byId.delete(write.id);
+      else byId.set(write.id, write.task);
+    }
+    this.emit({ tasks: [...byId.values()] }, false);
+    try {
+      for (const write of writes) await this.engine.onLocalTask(write.id, write.task);
+    } finally {
+      this.cacheList();
+    }
     this.scheduleSync();
+  }
+
+  private async write(tasks: ReadonlyArray<Task>): Promise<void> {
+    await this.commit(tasks.map((task) => ({ id: task.id, task })));
   }
 
   async create(input: LocalTaskInput): Promise<void> {
@@ -258,14 +314,7 @@ class CloudTaskStore {
       stored === undefined
         ? [{ id: taskId, task: null }]
         : deleteLocalTask(stored, scope, new Date().toISOString(), () => uuidv4() as TaskId);
-    const byId = new Map(this.snapshot.tasks.map((task) => [task.id as string, task]));
-    for (const write of writes) {
-      if (write.task === null) byId.delete(write.id);
-      else byId.set(write.id, write.task);
-    }
-    this.emit({ tasks: [...byId.values()] });
-    for (const write of writes) await this.engine.onLocalTask(write.id, write.task);
-    this.scheduleSync();
+    await this.commit(writes);
   }
 
   async setIntent(horizon: TaskHorizon, startsOn: string, text: string): Promise<void> {
@@ -287,8 +336,12 @@ class CloudTaskStore {
               } as TaskIntent,
             ]
         : [...others, { ...existing, text: trimmed, updatedAt: new Date().toISOString() }];
-    this.emit({ intents });
-    await this.engine.onLocalIntent(horizon, startsOn, trimmed.length === 0 ? null : trimmed);
+    this.emit({ intents }, false);
+    try {
+      await this.engine.onLocalIntent(horizon, startsOn, trimmed.length === 0 ? null : trimmed);
+    } finally {
+      this.cacheList();
+    }
     this.scheduleSync();
   }
 }

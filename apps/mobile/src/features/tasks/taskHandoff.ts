@@ -4,7 +4,7 @@ import { useCallback } from "react";
 import { uuidv4 } from "../../lib/uuid";
 import { useProjects } from "../../state/entities";
 import { handTasksToAssistant } from "./assistantHandoff";
-import { useMobileTasks, useTaskActions } from "./useMobileTasks";
+import { useMobileTaskStore } from "./useMobileTasks";
 
 // Fork-owned. Hand to Assistant, as on desktop: the tasks go straight to the
 // Assistant as one handoff message and the row's chip turns to "Handed to
@@ -12,8 +12,9 @@ import { useMobileTasks, useTaskActions } from "./useMobileTasks";
 
 /** Hands one or several tasks to the Assistant; proposals still waiting are skipped. */
 export function useHandToAssistant() {
-  const { environmentId } = useMobileTasks();
-  const actions = useTaskActions(environmentId);
+  // The screen's own actions: with Task Sync, a hand-off first gets the Mac
+  // level with the phone's edits, and says so when the Mac is unreachable.
+  const { actions } = useMobileTaskStore();
   const projects = useProjects();
   return useCallback(
     async (tasks: ReadonlyArray<Task>): Promise<boolean> => {

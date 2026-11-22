@@ -129,6 +129,9 @@ export interface TaskSyncEngineDeps {
 
 const PULL_PAGE_GUARD = 200;
 
+const OFFLINE_MESSAGE =
+  "Couldn't reach Control Plane's servers. Changes are saved here and will sync.";
+
 /** How long a background availability answer is trusted before asking again. */
 export const TASK_SYNC_AVAILABILITY_TTL_MS = 3 * 60 * 60 * 1000;
 
@@ -160,6 +163,8 @@ export class TaskSyncEngine {
   /** Whether `/changes` reported the account's week start since this process started. */
   private weekStartReceived = false;
   private appliedSinceNotify = false;
+  /** The last availability check could not reach the service (offline). */
+  private availabilityUnreachable = false;
   private readonly deps: TaskSyncEngineDeps;
 
   constructor(deps: TaskSyncEngineDeps) {
@@ -206,7 +211,20 @@ export class TaskSyncEngine {
     if (this.availability !== null && nowMs - this.availability.checkedAtMs < maxAgeMs) {
       return this.availability.available;
     }
-    const available = await client.availability().catch(() => false);
+    let available: boolean;
+    try {
+      available = await client.availability();
+    } catch (error) {
+      if (!(error instanceof TaskSyncCloudError && error.reason === "network")) {
+        this.availability = { available: false, checkedAtMs: nowMs };
+        return false;
+      }
+      // Offline: not an answer. Keep the last one and ask again next time,
+      // so a device that comes back online syncs straight away.
+      this.availabilityUnreachable = true;
+      return this.availability?.available ?? false;
+    }
+    this.availabilityUnreachable = false;
     this.availability = { available, checkedAtMs: nowMs };
     return available;
   }
@@ -250,7 +268,12 @@ export class TaskSyncEngine {
       ...(state.subscription !== undefined ? { subscription: state.subscription } : {}),
     };
     if (this.deps.client === null) return { state: "unavailable", ...base };
-    if (this.availability?.available !== true) return { state: "coming-soon", ...base };
+    // A signed-in device that has not reached the service yet (offline since
+    // launch) stays signed in: its edits queue and sync once it is back.
+    const unanswered = this.availability === null && state.account !== undefined;
+    if (this.availability?.available !== true && !unanswered) {
+      return { state: "coming-soon", ...base };
+    }
     if (state.account === undefined || (await this.deps.getToken()) === null) {
       return { state: "signed-out", ...base };
     }
@@ -340,7 +363,12 @@ export class TaskSyncEngine {
   /** Push the outbox, then pull until caught up. Safe to call any time. */
   async sync(): Promise<void> {
     if (this.syncing || this.deps.client === null) return;
-    if (!(await this.refreshAvailability())) return;
+    if (!(await this.refreshAvailability())) {
+      if (this.availabilityUnreachable && (await this.load()).account !== undefined) {
+        this.lastError = OFFLINE_MESSAGE;
+      }
+      return;
+    }
     const token = await this.deps.getToken();
     const state = await this.load();
     if (token === null || state.account === undefined) return;
@@ -377,7 +405,7 @@ export class TaskSyncEngine {
       } else {
         this.lastError =
           error instanceof TaskSyncCloudError && error.reason === "network"
-            ? "Couldn't reach Control Plane's servers. Changes are saved here and will sync."
+            ? OFFLINE_MESSAGE
             : "Sync failed. Changes are saved here and will sync.";
         this.deps.log?.("task sync failed", error);
       }
@@ -494,6 +522,21 @@ export class TaskSyncEngine {
     }
     if (Object.keys(state.focusRetry).length === 0) delete state.focusRetry;
     return requeued;
+  }
+
+  /**
+   * Re-applies the saved mirror (cloud records plus edits still queued here)
+   * without touching the network. A device that keeps its task list only in
+   * the mirror calls this at launch so the list matches the outbox exactly,
+   * even if the app was killed between saving an edit and caching the list.
+   * Writes nothing.
+   */
+  async reapply(): Promise<boolean> {
+    if (this.deps.client === null) return false;
+    const state = await this.load();
+    if (state.account === undefined) return false;
+    await this.applyMirror();
+    return true;
   }
 
   /** Every cloud record as Control Plane sees it, applied in one command. */
