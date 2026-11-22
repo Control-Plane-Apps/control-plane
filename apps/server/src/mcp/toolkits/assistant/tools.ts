@@ -87,6 +87,10 @@ export const AssistantOverviewProject = Schema.Struct({
   coordinatorPhase: Schema.String,
   needsYou: Schema.Array(AssistantOverviewQuestion),
   moving: Schema.Array(AssistantOverviewWorkstream),
+  /** The linked machine that runs it; absent for this machine. */
+  machine: Schema.optional(Schema.String),
+  /** The machine is offline: this is its last known state, and asks to it fail. */
+  stale: Schema.optional(Schema.Boolean),
 });
 
 export const AssistantOverviewWorkspaceThread = Schema.Struct({
@@ -95,6 +99,15 @@ export const AssistantOverviewWorkspaceThread = Schema.Struct({
   workspace: Schema.String,
   phase: Schema.String,
   updatedAt: Schema.String,
+  machine: Schema.optional(Schema.String),
+});
+
+export const AssistantOverviewMachine = Schema.Struct({
+  label: Schema.String,
+  status: Schema.Literals(["online", "offline", "needs-relink", "error"]),
+  detail: Schema.optional(Schema.String),
+  /** When it last answered, while it is not answering. */
+  lastSeenAt: Schema.optional(Schema.String),
 });
 
 export const AssistantOverviewResult = Schema.Struct({
@@ -102,6 +115,8 @@ export const AssistantOverviewResult = Schema.Struct({
   projects: Schema.Array(AssistantOverviewProject),
   /** Absent when the user keeps workspaces out of the Assistant's reach. */
   workspaces: Schema.optional(Schema.Array(AssistantOverviewWorkspaceThread)),
+  /** Linked machines whose Projects are listed, and whether each answered. Absent with none. */
+  machines: Schema.optional(Schema.Array(AssistantOverviewMachine)),
 });
 export type AssistantOverviewResult = typeof AssistantOverviewResult.Type;
 
@@ -127,6 +142,8 @@ export const AssistantAskTarget = Schema.Struct({
   coordinatorThreadId: ThreadId,
   /** False when the coordinator is busy: it gets the question when its turn ends. */
   startedNow: Schema.Boolean,
+  /** The linked machine it runs on; absent for this machine. */
+  machine: Schema.optional(Schema.String),
 });
 
 export const AssistantAskSkipped = Schema.Struct({
@@ -165,11 +182,16 @@ export const AssistantPingInput = Schema.Struct({
 });
 export type AssistantPingInput = typeof AssistantPingInput.Type;
 
-export const AssistantPingResult = Schema.Struct({ pingId: Schema.String });
+export const AssistantPingResult = Schema.Struct({
+  pingId: Schema.String,
+  /** From a coordinator: the ping went to the user's Assistant as a note, on this machine or the named one. */
+  sentToAssistant: Schema.optional(Schema.Boolean),
+  machine: Schema.optional(Schema.String),
+});
 
 const AssistantPingTool = Tool.make("cp_assistant_ping", {
   description:
-    "Assistant only. Raise a heads-up the user sees as a notification, with at most one recommended one-tap reply (Not now is always offered and sends nothing). Use it sparingly: only for something time-sensitive the user would want to hear about now.",
+    "Assistant: raise a heads-up the user sees as a notification, with at most one recommended one-tap reply (Not now is always offered and sends nothing). Use it sparingly: only for something time-sensitive the user would want to hear about now. A coordinator: send the user's Assistant a heads-up (on this machine or a linked one); it decides whether to tell the user.",
   parameters: AssistantPingInput,
   success: AssistantPingResult,
   failure: AssistantToolError,
@@ -183,7 +205,7 @@ const AssistantPingTool = Tool.make("cp_assistant_ping", {
 
 const AssistantOverviewTool = Tool.make("cp_assistant_overview", {
   description:
-    "Assistant only. What needs the user and what is moving across every Project in reach: each Project's open Status questions with recommendations, its working and queued workstreams, and recent workspace threads when allowed.",
+    "Assistant only. What needs the user and what is moving across every Project in reach, on this machine and linked ones: each Project's open Status questions with recommendations, its working and queued workstreams, and recent workspace threads when allowed. `machines` says which linked machines answered; an offline machine's Projects show their last known state with stale: true.",
   success: AssistantOverviewResult,
   failure: AssistantToolError,
   dependencies,

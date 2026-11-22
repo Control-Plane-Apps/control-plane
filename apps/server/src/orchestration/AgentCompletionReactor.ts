@@ -23,7 +23,10 @@ import {
   EventId,
   MessageId,
   canManageAgent,
+  isReachRequestId,
   isScheduleMessageId,
+  REACH_RESULT_ACTIVITY_KIND,
+  type ReachResultActivityPayload,
   isStatusMessageId,
   type OrchestrationEvent,
   type OrchestrationThreadActivityTone,
@@ -227,6 +230,41 @@ export const make = Effect.gen(function* () {
     if (agent === null || result === null) return;
     const pushId = agentPushId(agentThreadId, requestId);
     const createdAt = yield* nowIso;
+    if (isReachRequestId(requestId)) {
+      // Owed to a thread on another server, which collects it by this id.
+      // The activity is the ledger: its push id marks the request handled.
+      const text = formatAgentResult({
+        agentTitle: agent.title,
+        agentThreadId,
+        outcome: result.outcome,
+        text: result.text,
+        questions: openMessageQuestions(
+          yield* activities.listUserInputLifecycleByThreadId({ threadId: agentThreadId }),
+        ),
+        statusNote: undefined,
+      });
+      const payload: ReachResultActivityPayload = {
+        detail: "Kept for the server that asked; it collects the answer when it next checks.",
+        replyTo: owed.replyTo,
+        text,
+      };
+      yield* engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make(pushId),
+        threadId: agentThreadId,
+        activity: {
+          id: EventId.make(pushId),
+          tone: "info",
+          kind: REACH_RESULT_ACTIVITY_KIND,
+          summary: "Answer sent to the Assistant on another machine",
+          payload,
+          turnId: null,
+          createdAt,
+        },
+        createdAt,
+      });
+      return;
+    }
     const target = yield* resolveTarget(project, agent, owed.replyTo);
     if (target === agentThreadId) {
       // Set as coordinator promoted the agent, so the result has nowhere to go.

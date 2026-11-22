@@ -28,6 +28,7 @@ import {
   statusStallMinutesOf,
   statusStallOf,
   ThreadId,
+  type ReachRemoteActor,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -49,9 +50,12 @@ import {
   AgentToolFailedError,
   StatusCoordinatorOnlyError,
   type StatusListInput,
+  StatusListResult,
   StatusOtherProjectError,
   type StatusSetInput,
+  StatusSetResult,
 } from "./tools.ts";
+import { Reach, type ReachError } from "../../../reach/Reach.ts";
 
 type StatusHandlers = Pick<
   Toolkit.HandlersFrom<Toolkit.Tools<typeof AgentsToolkit>>,
@@ -155,7 +159,22 @@ export function statusChangeOf(input: StatusSetInput): ProjectStatusChange | str
   };
 }
 
-export const makeStatusHandlers = Effect.gen(function* () {
+/** Who writes a board, and whose coordinator hears about it. */
+export interface StatusWriter {
+  readonly actorThreadId: ThreadId;
+  readonly projectId: ProjectId;
+  /** Set when the Assistant writes another Project's board and may message its coordinator. */
+  readonly note: { readonly coordinatorThreadId: ThreadId; readonly assistantTitle: string } | null;
+  /** The Assistant on a linked server; `actorThreadId` is then its thread there. */
+  readonly remoteActor?: ReachRemoteActor | undefined;
+}
+
+/**
+ * Reads and writes a board on this server, for a caller already admitted:
+ * the MCP handlers below for a thread here, the reach route for the
+ * Assistant on a linked server.
+ */
+export const makeStatusCore = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const projects = yield* ProjectionProjectRepository;
@@ -176,84 +195,28 @@ export const makeStatusHandlers = Effect.gen(function* () {
       ),
     );
 
-  /**
-   * Whose board the call touches, checked live: the caller's own Project for a
-   * coordinator (a replaced one, or one whose Project was archived, is
-   * refused), and for the Assistant also any live non-global Project in its
-   * reach. `foreign` marks the Assistant crossing into another Project.
-   */
-  const requireBoard = Effect.fn("StatusTools.requireBoard")(function* (
-    requested: string | undefined,
-  ) {
-    const invocation = yield* McpInvocationContext.requireMcpCapability("agents");
-    const caller = yield* snapshots
-      .getThreadShellById(invocation.threadId)
-      .pipe(Effect.mapError(readFailed));
-    if (Option.isNone(caller)) return yield* new StatusCoordinatorOnlyError();
-    const home = yield* snapshots
-      .getProjectShellById(caller.value.projectId)
-      .pipe(Effect.mapError(readFailed));
-    if (Option.isNone(home)) return yield* new StatusCoordinatorOnlyError();
-    const own = { callerId: caller.value.id, projectId: home.value.id, foreign: false as const };
-    if (isAssistantChannel(home.value, caller.value)) {
-      if (requested === undefined || requested === home.value.id) return own;
-      const target = yield* snapshots
-        .getProjectShellById(ProjectId.make(requested))
-        .pipe(Effect.mapError(readFailed));
-      const marker = Option.getOrUndefined(target)?.assistant;
-      const { assistant } = yield* settings.getSettings.pipe(Effect.mapError(readFailed));
-      if (
-        Option.isNone(target) ||
-        marker == null ||
-        marker.scope === "global" ||
-        marker.archivedAt != null ||
-        !isProjectInAssistantReach(assistant, target.value.id)
-      ) {
-        return yield* new AgentToolFailedError({
-          detail: `'${requested}' is not a Project in your reach. Use a projectId from cp_assistant_overview.`,
-        });
-      }
-      return {
-        callerId: caller.value.id,
-        projectId: target.value.id,
-        foreign: true as const,
-        messageCoordinators: assistant.messageCoordinators,
-        coordinatorThreadId: marker.coordinatorThreadId,
-      };
-    }
-    if (agentManagerRole(home.value, caller.value) !== "coordinator") {
-      return yield* new StatusCoordinatorOnlyError();
-    }
-    if (requested !== undefined && requested !== home.value.id) {
-      return yield* new StatusOtherProjectError();
-    }
-    return own;
-  });
-
   /** Tells the owning coordinator once per window; best effort, never fails the edit. */
   const noteCoordinator = (
-    board: {
-      readonly callerId: ThreadId;
-      readonly coordinatorThreadId: ThreadId;
-    },
+    writer: StatusWriter,
+    note: NonNullable<StatusWriter["note"]>,
     change: ProjectStatusChange,
     createdAt: string,
   ) => {
     const id = assistantStatusNoteId(
-      board.coordinatorThreadId,
-      board.callerId,
+      note.coordinatorThreadId,
+      writer.actorThreadId,
       Date.parse(createdAt),
     );
     const source: OrchestrationAgentMessageSource = {
       kind: "agent",
-      threadId: board.callerId,
-      threadTitle: "Assistant",
+      threadId: writer.actorThreadId,
+      threadTitle: note.assistantTitle,
     };
     return engine
       .dispatch({
         type: "thread.message.user.append",
         commandId: CommandId.make(id),
-        threadId: board.coordinatorThreadId,
+        threadId: note.coordinatorThreadId,
         message: {
           messageId: MessageId.make(id),
           text: assistantStatusNoteText(change),
@@ -271,57 +234,164 @@ export const makeStatusHandlers = Effect.gen(function* () {
       Effect.map((row) => Option.getOrUndefined(row)?.assistant?.statuses ?? []),
     );
 
+  const list = (projectId: ProjectId) =>
+    Effect.gen(function* () {
+      const statuses = sortProjectStatuses(yield* readStatuses(projectId));
+      const minutes = yield* stallMinutes;
+      const nowMs = Date.parse(DateTime.formatIso(yield* DateTime.now));
+      const stalled = yield* Effect.forEach(statuses, (status) =>
+        agentShells(status).pipe(
+          Effect.map((agents) => {
+            const stall = statusStallOf(status, agents, nowMs, minutes);
+            return stall === null ? [] : [{ id: status.id, reason: stall.reason }];
+          }),
+        ),
+      ).pipe(Effect.map((rows) => rows.flat()));
+      return { statuses, ...(stalled.length > 0 ? { stalled } : {}) } satisfies StatusListResult;
+    });
+
+  const set = (writer: StatusWriter, input: StatusSetInput, commandKey?: string) =>
+    Effect.gen(function* () {
+      const { actorThreadId, projectId } = writer;
+      const change = statusChangeOf(input);
+      if (typeof change === "string") return yield* new AgentToolFailedError({ detail: change });
+      const key = commandKey ?? (yield* crypto.randomUUIDv4.pipe(Effect.orDie));
+      const createdAt = DateTime.formatIso(yield* DateTime.now);
+      yield* engine
+        .dispatch({
+          type: "project.status.set",
+          commandId: CommandId.make(`mcp-status:${key}`),
+          projectId,
+          actorThreadId,
+          ...(writer.remoteActor !== undefined ? { remoteActor: writer.remoteActor } : {}),
+          change,
+          createdAt,
+        })
+        .pipe(Effect.catchCause(changeFailed));
+      if (writer.note !== null) {
+        yield* noteCoordinator(writer, writer.note, change, createdAt);
+      }
+      const statuses = yield* readStatuses(projectId);
+      const saved = statuses.find((status) => status.id === input.id) ?? null;
+      const warning =
+        saved === null
+          ? undefined
+          : statusWriteWarning(saved, yield* agentShells(saved), yield* stallMinutes);
+      return {
+        id: input.id,
+        status: saved,
+        needsYou: countStatusesNeedingUser(statuses),
+        ...(warning !== undefined ? { warning } : {}),
+      } satisfies StatusSetResult;
+    });
+
+  return { list, set };
+});
+
+export const makeStatusHandlers = Effect.gen(function* () {
+  const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const settings = yield* ServerSettings.ServerSettingsService;
+  const core = yield* makeStatusCore;
+  const reach = yield* Reach;
+
+  /**
+   * Whose board the call touches, checked live: the caller's own Project for a
+   * coordinator (a replaced one, or one whose Project was archived, is
+   * refused), and for the Assistant also any live non-global Project in its
+   * reach, here or on a linked machine.
+   */
+  const requireBoard = Effect.fn("StatusTools.requireBoard")(function* (
+    requested: string | undefined,
+  ) {
+    const invocation = yield* McpInvocationContext.requireMcpCapability("agents");
+    const caller = yield* snapshots
+      .getThreadShellById(invocation.threadId)
+      .pipe(Effect.mapError(readFailed));
+    if (Option.isNone(caller)) return yield* new StatusCoordinatorOnlyError();
+    const home = yield* snapshots
+      .getProjectShellById(caller.value.projectId)
+      .pipe(Effect.mapError(readFailed));
+    if (Option.isNone(home)) return yield* new StatusCoordinatorOnlyError();
+    const own = {
+      kind: "local" as const,
+      writer: { actorThreadId: caller.value.id, projectId: home.value.id, note: null },
+    };
+    if (isAssistantChannel(home.value, caller.value)) {
+      if (requested === undefined || requested === home.value.id) return own;
+      const { assistant } = yield* settings.getSettings.pipe(Effect.mapError(readFailed));
+      const notInReach = new AgentToolFailedError({
+        detail: `'${requested}' is not a Project in your reach. Use a projectId from cp_assistant_overview.`,
+      });
+      if (!isProjectInAssistantReach(assistant, requested)) return yield* notInReach;
+      const target = yield* snapshots
+        .getProjectShellById(ProjectId.make(requested))
+        .pipe(Effect.mapError(readFailed));
+      if (Option.isNone(target)) {
+        const callerRef = { threadId: caller.value.id, threadTitle: caller.value.title };
+        const machine = yield* reach.locateProject(requested, callerRef);
+        if (Option.isNone(machine)) return yield* notInReach;
+        return { kind: "remote" as const, machine: machine.value.machine, callerRef };
+      }
+      const marker = target.value.assistant;
+      if (marker == null || marker.scope === "global" || marker.archivedAt != null) {
+        return yield* notInReach;
+      }
+      return {
+        kind: "local" as const,
+        writer: {
+          actorThreadId: caller.value.id,
+          projectId: target.value.id,
+          note: assistant.messageCoordinators
+            ? { coordinatorThreadId: marker.coordinatorThreadId, assistantTitle: "Assistant" }
+            : null,
+        },
+      };
+    }
+    if (agentManagerRole(home.value, caller.value) !== "coordinator") {
+      return yield* new StatusCoordinatorOnlyError();
+    }
+    if (requested !== undefined && requested !== home.value.id) {
+      return yield* new StatusOtherProjectError();
+    }
+    return own;
+  });
+
+  const reachFailed = (error: ReachError) => new AgentToolFailedError({ detail: error.detail });
+
   return {
     cp_status_list: (input: StatusListInput) =>
       Effect.gen(function* () {
-        const { projectId } = yield* requireBoard(input.projectId);
-        const statuses = sortProjectStatuses(yield* readStatuses(projectId));
-        const minutes = yield* stallMinutes;
-        const nowMs = Date.parse(DateTime.formatIso(yield* DateTime.now));
-        const stalled = yield* Effect.forEach(statuses, (status) =>
-          agentShells(status).pipe(
-            Effect.map((agents) => {
-              const stall = statusStallOf(status, agents, nowMs, minutes);
-              return stall === null ? [] : [{ id: status.id, reason: stall.reason }];
-            }),
-          ),
-        ).pipe(Effect.map((rows) => rows.flat()));
-        return { statuses, ...(stalled.length > 0 ? { stalled } : {}) };
+        const board = yield* requireBoard(input.projectId);
+        if (board.kind === "remote") {
+          return yield* reach
+            .call(
+              board.machine,
+              "status.list",
+              { projectId: input.projectId },
+              board.callerRef,
+              StatusListResult,
+            )
+            .pipe(Effect.mapError(reachFailed));
+        }
+        return yield* core.list(board.writer.projectId);
       }),
 
     cp_status_set: (input) =>
       Effect.gen(function* () {
         const board = yield* requireBoard(input.projectId);
-        const { callerId, projectId } = board;
-        const change = statusChangeOf(input);
-        if (typeof change === "string") return yield* new AgentToolFailedError({ detail: change });
-        const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-        const createdAt = DateTime.formatIso(yield* DateTime.now);
-        yield* engine
-          .dispatch({
-            type: "project.status.set",
-            commandId: CommandId.make(`mcp-status:${uuid}`),
-            projectId,
-            actorThreadId: callerId,
-            change,
-            createdAt,
-          })
-          .pipe(Effect.catchCause(changeFailed));
-        if (board.foreign && board.messageCoordinators) {
-          yield* noteCoordinator(board, change, createdAt);
+        if (board.kind === "remote") {
+          const { assistant } = yield* settings.getSettings.pipe(Effect.mapError(readFailed));
+          return yield* reach
+            .call(
+              board.machine,
+              "status.set",
+              { projectId: input.projectId, input, note: assistant.messageCoordinators },
+              board.callerRef,
+              StatusSetResult,
+            )
+            .pipe(Effect.mapError(reachFailed));
         }
-        const statuses = yield* readStatuses(projectId);
-        const saved = statuses.find((status) => status.id === input.id) ?? null;
-        const warning =
-          saved === null
-            ? undefined
-            : statusWriteWarning(saved, yield* agentShells(saved), yield* stallMinutes);
-        return {
-          id: input.id,
-          status: saved,
-          needsYou: countStatusesNeedingUser(statuses),
-          ...(warning !== undefined ? { warning } : {}),
-        };
+        return yield* core.set(board.writer, input);
       }),
   } satisfies StatusHandlers;
 });

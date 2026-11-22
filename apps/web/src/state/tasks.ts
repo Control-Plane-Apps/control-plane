@@ -57,6 +57,7 @@ export const taskEnvironmentIdAtom = Atom.make((get): EnvironmentId | null => {
       environmentId,
       isPrimary: entry?.target._tag === "PrimaryConnectionTarget",
       supportsTasks: config === null ? null : config.environment.capabilities.tasks === true,
+      defersTasks: config?.environment.capabilities.tasksDeferred === true,
       taskRecordCount: Option.isSome(snapshot)
         ? (snapshot.value.tasks?.length ?? 0) + (snapshot.value.taskIntents?.length ?? 0)
         : 0,

@@ -20,6 +20,7 @@ import {
 import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -37,6 +38,7 @@ import {
   fetchPeerShell,
   fetchPeerThread,
   PeerError,
+  postPeerReach,
   requirePeerIdentity,
   validatePeerBaseUrl,
   type PeerCommand,
@@ -104,7 +106,27 @@ export interface AgentMachinesShape {
   readonly isReachable: (machineId: string) => Effect.Effect<boolean>;
   /** How this machine is named to a linked one. */
   readonly homeLabel: Effect.Effect<string>;
+  /** Every linked machine, enabled for placement or not: all are in the Assistant's reach. */
+  readonly linked: Effect.Effect<ReadonlyArray<{ readonly id: string; readonly label: string }>>;
+  /** Posts one cross-server reach op; fails fast for a few seconds after a failed call. */
+  readonly reach: (
+    machineId: string,
+    body: unknown,
+    options?: { readonly timeout?: Duration.Duration; readonly fresh?: boolean },
+  ) => Effect.Effect<unknown, PeerError>;
+  /** The last known health of a linked machine, and when it last answered. */
+  readonly healthOf: (machineId: string) => Effect.Effect<MachineHealth>;
 }
+
+export interface MachineHealth {
+  readonly status: AgentMachineStatus["status"] | "unknown";
+  readonly detail: string | null;
+  /** ISO time of the last successful call, or null when none this run. */
+  readonly lastSeenAt: string | null;
+}
+
+/** After a failed reach call, further calls to that machine fail at once for this long. */
+const REACH_OFFLINE_TTL_MS = 10_000;
 
 export class AgentMachines extends Context.Service<AgentMachines, AgentMachinesShape>()(
   "t3/agentMachines/AgentMachines",
@@ -114,6 +136,8 @@ interface Health {
   status: AgentMachineStatus["status"];
   detail?: string;
   checkedAtMs: number;
+  /** The failure was a timeout: the peer may be slow, not gone. */
+  timedOut?: boolean;
 }
 
 const make = Effect.gen(function* () {
@@ -125,6 +149,7 @@ const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
 
   const health = new Map<string, Health>();
+  const lastSeen = new Map<string, number>();
   const shells = new Map<string, { snapshot: OrchestrationShellSnapshot; atMs: number }>();
   const identities = new Map<string, number>();
 
@@ -192,6 +217,7 @@ const make = Effect.gen(function* () {
       }
       const result = yield* use({ baseUrl: config.baseUrl, token: stored.value.token, config });
       yield* record(machineId, { status: "connected" });
+      lastSeen.set(machineId, yield* nowMs);
       return result;
     }).pipe(
       withHttp,
@@ -206,6 +232,7 @@ const make = Effect.gen(function* () {
                   ? "wrong-environment"
                   : "offline",
           detail: error.detail,
+          ...(error.kind === "timeout" ? { timedOut: true } : {}),
         }).pipe(Effect.tap(() => Effect.sync(() => identities.delete(machineId)))),
       ),
     );
@@ -492,6 +519,46 @@ const make = Effect.gen(function* () {
         detail: "The linked machine refused the token.",
       }).pipe(Effect.asVoid),
     homeLabel: environment.getDescriptor.pipe(Effect.map((descriptor) => descriptor.label)),
+    linked: settingsService.getSettings.pipe(
+      Effect.map((settings) =>
+        Object.entries(settings.agentPlacement.machines).map(([id, config]) => ({
+          id,
+          label: config.label,
+        })),
+      ),
+      Effect.orElseSucceed(() => []),
+    ),
+    reach: (machineId, body, options) =>
+      Effect.gen(function* () {
+        const failed = health.get(machineId);
+        const now = yield* nowMs;
+        // After a timeout the next call still goes out: a move's abort or commit must not be held back.
+        if (
+          failed !== undefined &&
+          failed.status !== "connected" &&
+          failed.timedOut !== true &&
+          options?.fresh !== true &&
+          now - failed.checkedAtMs < REACH_OFFLINE_TTL_MS
+        ) {
+          return yield* new PeerError({
+            kind: failed.status === "needs-relink" ? "unauthorized" : "unreachable",
+            detail: failed.detail ?? "The linked machine is unavailable.",
+          });
+        }
+        return yield* withPeer(machineId, ({ baseUrl, token }) =>
+          postPeerReach(baseUrl, token, body, options?.timeout),
+        );
+      }),
+    healthOf: (machineId) =>
+      Effect.sync(() => {
+        const known = health.get(machineId);
+        const seen = lastSeen.get(machineId);
+        return {
+          status: known?.status ?? "unknown",
+          detail: known?.detail ?? null,
+          lastSeenAt: seen === undefined ? null : DateTime.formatIso(DateTime.makeUnsafe(seen)),
+        } satisfies MachineHealth;
+      }),
     isReachable: (machineId) =>
       Effect.sync(() => health.get(machineId)?.status).pipe(
         Effect.map((status) => status === undefined || status === "connected"),

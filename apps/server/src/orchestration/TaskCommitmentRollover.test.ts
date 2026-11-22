@@ -30,6 +30,7 @@ import {
   TaskCommitmentRollover,
   layer as rolloverLayer,
 } from "./TaskCommitmentRollover.ts";
+import { setTaskAuthority } from "../reach/taskAuthority.ts";
 
 const AT = "2026-11-01T00:00:00.000Z";
 
@@ -279,6 +280,23 @@ describe("TaskCommitmentRollover", () => {
       });
       yield* TestClock.setTime(noonToday);
       const moved = yield* runOnce.pipe(Effect.provide(layer));
+      assert.strictEqual(moved, 0);
+      assert.deepStrictEqual(yield* Ref.get(dispatched), []);
+      assert.deepStrictEqual(yield* Ref.get(syncRuns), []);
+    }),
+  );
+
+  it.effect("does nothing on a server that defers Tasks to the Assistant's server", () =>
+    Effect.gen(function* () {
+      const { dispatched, syncRuns, layer } = yield* harness(true, {
+        sync: { state: "done", syncedTaskIds: new Set(), created: 0, retired: 0 },
+      });
+      yield* TestClock.setTime(noonToday);
+      setTaskAuthority({ authority: false, deferTo: { id: "env-mini", label: "Mac mini" } });
+      const moved = yield* runOnce.pipe(
+        Effect.provide(layer),
+        Effect.ensuring(Effect.sync(() => setTaskAuthority({ authority: true }))),
+      );
       assert.strictEqual(moved, 0);
       assert.deepStrictEqual(yield* Ref.get(dispatched), []);
       assert.deepStrictEqual(yield* Ref.get(syncRuns), []);

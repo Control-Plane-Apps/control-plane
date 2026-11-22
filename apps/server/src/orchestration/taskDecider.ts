@@ -490,12 +490,17 @@ const handOff = Effect.fn("handOff")(function* (
     const { handoff: _handoff, ...rest } = stored;
     return yield* taskEvent(command, stored.id, { ...rest, updatedAt: command.createdAt });
   }
-  const links = resolveLinks(readModel, {
-    ...(stored.links?.statusId !== undefined && stored.links.projectId !== undefined
-      ? { statusId: stored.links.statusId }
-      : {}),
-    threadId: command.handoff.threadId,
-  });
+  // A thread on a linked server is not in this read model: the task keeps
+  // its own links, and the handoff names the machine.
+  const links =
+    command.handoff.machine !== undefined
+      ? stored.links
+      : resolveLinks(readModel, {
+          ...(stored.links?.statusId !== undefined && stored.links.projectId !== undefined
+            ? { statusId: stored.links.statusId }
+            : {}),
+          threadId: command.handoff.threadId,
+        });
   if (typeof links === "string") return yield* invariant(command.type, links);
   return yield* taskEvent(command, stored.id, {
     ...stored,

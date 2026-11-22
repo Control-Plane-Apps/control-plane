@@ -168,6 +168,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server stores personal Tasks (`tasks` on the shell snapshot). Absent on older
       and upstream servers, so clients hide Tasks. */
   tasks: Schema.optionalKey(Schema.Boolean),
+  /** Server keeps Tasks, but a linked server (the one running the user's
+      Assistant) is the task authority: it alone rolls commitments, and
+      clients connected to both use its list. */
+  tasksDeferred: Schema.optionalKey(Schema.Boolean),
   /** Server understands regenerateTitle on thread.meta.update. Absent on
       older servers, so clients hide the action instead of sending it. */
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),

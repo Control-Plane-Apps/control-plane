@@ -561,7 +561,7 @@ it.layer(NodeServices.layer)("schedule decider", (it) => {
           yield* expectRejected(
             readModel,
             agentChange(pause, actor),
-            "Only the Project's coordinator can manage schedules.",
+            "Only the Project's coordinator or the user's Assistant can manage schedules.",
           );
         }
         yield* expectRejected(

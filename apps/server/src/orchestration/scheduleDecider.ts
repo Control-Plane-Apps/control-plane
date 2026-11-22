@@ -13,6 +13,7 @@ import {
   PROJECT_SCHEDULE_NAME_MAX,
   PROJECT_SCHEDULE_PROMPT_MAX,
   agentManagerRole,
+  isAssistantChannel,
   isStandingAgent,
   type OrchestrationCommand,
   type OrchestrationReadModel,
@@ -341,13 +342,36 @@ export const decideAgentScheduleChange = Effect.fn("decideAgentScheduleChange")(
   }
   const actor = readModel.threads.find((thread) => thread.id === command.actorThreadId);
   // The schedule tools check this too; the decider keeps it true for any caller.
+  // The user's Assistant also manages a Project's schedules: here (a channel of
+  // the global Assistant Project) or on a linked server (`remoteActor`, which
+  // the reach route admitted by token).
+  const actorProject =
+    actor === undefined
+      ? undefined
+      : readModel.projects.find((entry) => entry.id === actor.projectId);
+  const assistantActor =
+    current.scope !== "global" &&
+    ((command.remoteActor !== undefined &&
+      command.remoteActor.threadId === command.actorThreadId &&
+      actor === undefined) ||
+      (actor !== undefined &&
+        actor.deletedAt === null &&
+        actor.archivedAt === null &&
+        actorProject !== undefined &&
+        actorProject.id !== project.id &&
+        actorProject.deletedAt === null &&
+        isAssistantChannel(actorProject, actor)));
   if (
-    actor === undefined ||
-    actor.deletedAt !== null ||
-    actor.archivedAt !== null ||
-    agentManagerRole(project, actor) !== "coordinator"
+    !assistantActor &&
+    (actor === undefined ||
+      actor.deletedAt !== null ||
+      actor.archivedAt !== null ||
+      agentManagerRole(project, actor) !== "coordinator")
   ) {
-    return yield* invariant(command.type, "Only the Project's coordinator can manage schedules.");
+    return yield* invariant(
+      command.type,
+      "Only the Project's coordinator or the user's Assistant can manage schedules.",
+    );
   }
   const assistant = yield* applyAgentScheduleChange({
     readModel,

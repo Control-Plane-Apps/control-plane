@@ -1,4 +1,5 @@
 import {
+  REACH_RESULT_ACTIVITY_KIND,
   CommandId,
   EventId,
   MessageId,
@@ -369,6 +370,56 @@ const M = (id: string) => MessageId.make(id);
 const A = (id: string) => ThreadId.make(id);
 
 describe("AgentCompletionReactor", () => {
+  test(
+    "keeps a coordinator's answer to the Assistant on another server instead of appending it",
+    Effect.gen(function* () {
+      const f = yield* makeFixture;
+      yield* f.createProject;
+      // The Assistant's thread lives on a linked server: it is not a thread here.
+      const remoteAssistant = A("assistant-on-mini");
+      const requestId = M(`cp-send:${COORDINATOR}:ask:abc123def456:reach:r1`);
+      yield* f.dispatch({
+        type: "thread.message.user.append",
+        commandId: CommandId.make(requestId),
+        threadId: COORDINATOR,
+        message: {
+          messageId: requestId,
+          text: "What is blocked?",
+          attachments: [],
+          source: {
+            kind: "agent",
+            threadId: remoteAssistant,
+            threadTitle: "Assistant (on Mac mini)",
+            replyTo: remoteAssistant,
+          },
+        },
+        createdAt: yield* f.now,
+      });
+
+      yield* f.withReactor((drain) =>
+        Effect.gen(function* () {
+          yield* drain;
+          yield* f.finishTurn(COORDINATOR, T("turn-1"), "Nothing is blocked.");
+          yield* drain;
+        }),
+      );
+
+      const pushId = pushIdOf(COORDINATOR, requestId);
+      // The held request started, and no result was appended anywhere here.
+      assert.deepStrictEqual(yield* f.receipts("cp-start:"), [`accepted cp-start:${requestId}`]);
+      assert.deepStrictEqual(
+        (yield* f.userMessages(COORDINATOR)).map((message) => message.id),
+        [requestId],
+      );
+      const kept = yield* f.activities(COORDINATOR, REACH_RESULT_ACTIVITY_KIND);
+      assert.deepStrictEqual(
+        kept.map((row) => row.id),
+        [pushId],
+      );
+      assert.deepStrictEqual(yield* f.receipts("cp-push:"), [`accepted ${pushId}`]);
+    }),
+  );
+
   test(
     "pushes a coordinator's request into the coordinator, starts it, and leaves the agent unsettled",
     Effect.gen(function* () {

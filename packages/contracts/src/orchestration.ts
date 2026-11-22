@@ -37,6 +37,7 @@ import {
   ProjectStatusId,
 } from "./projectStatus.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { ReachRemoteActor } from "./reach.ts";
 import {
   Task,
   TaskHandoff,
@@ -1971,6 +1972,8 @@ const ProjectScheduleAgentChangeCommand = Schema.Struct({
   commandId: CommandId,
   projectId: ProjectId,
   actorThreadId: ThreadId,
+  /** The user's Assistant on a linked server; then `actorThreadId` is its thread there. */
+  remoteActor: Schema.optional(ReachRemoteActor),
   change: ProjectScheduleAgentChange,
   createdAt: IsoDateTime,
 });
@@ -1981,6 +1984,8 @@ const ProjectStatusSetCommand = Schema.Struct({
   commandId: CommandId,
   projectId: ProjectId,
   actorThreadId: ThreadId,
+  /** The user's Assistant on a linked server; then `actorThreadId` is its thread there. */
+  remoteActor: Schema.optional(ReachRemoteActor),
   change: ProjectStatusChange,
   createdAt: IsoDateTime,
 });

@@ -9,6 +9,8 @@ setting. Code: `apps/server/src/agentMachines/` and `apps/server/src/mcp/toolkit
 - **One server, one event log.** A Project and its threads belong to one environment
   ([remote](./remote.md)). Servers never call each other; only clients hold connections to several.
   So `cp_agent_create` can only dispatch to the local engine (`handlers.ts`).
+  The same link also carries the user's Assistant across servers: see
+  [Assistant reach across servers](./assistant-cross-server-reach.md).
 - **Client load balancing is invisible to the server.** `loadBalancingEnabled` and
   `loadBalancingWeights` are client settings that pick an environment for a composer draft
   (`ChatView.tsx`, `load-balancing.ts`). An MCP call has no client, so agent placement needs

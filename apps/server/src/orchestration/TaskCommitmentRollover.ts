@@ -37,6 +37,7 @@ import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { currentTaskAuthority } from "../reach/taskAuthority.ts";
 import { forkParked } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TaskSyncService } from "../taskSync/TaskSyncService.ts";
@@ -117,6 +118,10 @@ export const make = Effect.gen(function* () {
   const catchUp = Effect.gen(function* () {
     const settings = yield* settingsService.getSettings;
     if (!rolloverEnabled(settings)) return 0;
+    // Only the task authority (the Assistant's server) rolls: two servers on
+    // one Task Sync account would each create a new membership for the same
+    // commitment.
+    if (!currentTaskAuthority().authority) return 0;
     const now = yield* DateTime.now;
     const createdAt = DateTime.formatIso(now);
     const day = localTaskDate(DateTime.toEpochMillis(now));

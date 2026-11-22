@@ -25,6 +25,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 
 /** Orchestration protocol this build speaks; a peer that differs is refused. */
@@ -36,6 +37,8 @@ export class PeerError extends Schema.TaggedError<PeerError>()("PeerError", {
   kind: Schema.Literals([
     "invalid-url",
     "unreachable",
+    /** Sent, but no answer in time: the peer may still finish it. */
+    "timeout",
     "unauthorized",
     "incompatible",
     "wrong-environment",
@@ -131,7 +134,7 @@ export function classifyPeerFailure(error: unknown): PeerError {
   }
   if (tag === "TimeoutError") {
     return new PeerError({
-      kind: "unreachable",
+      kind: "timeout",
       detail: "The linked machine did not answer in time.",
     });
   }
@@ -285,3 +288,49 @@ export const dispatchPeerCommand = (baseUrl: string, token: string, command: Pee
           detail: `Command ${(command as { type: string }).type} is not allowed on a linked machine.`,
         }),
       );
+
+/** Path of the cross-server reach route every server serves. */
+export const REACH_ROUTE_PATH = "/api/reach";
+/** A reach op may read several snapshots on the peer, so it gets longer than a probe. */
+export const REACH_REQUEST_TIMEOUT = Duration.seconds(8);
+
+/**
+ * Posts one reach op. Answers with the peer's JSON body; a 401 or 403 is
+ * `unauthorized`, any other non-2xx `rejected`, a transport failure or
+ * timeout `unreachable`.
+ */
+export const postPeerReach = (
+  baseUrl: string,
+  token: string,
+  body: unknown,
+  timeout: Duration.Duration = REACH_REQUEST_TIMEOUT,
+): Effect.Effect<unknown, PeerError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const request = HttpClientRequest.post(new URL(REACH_ROUTE_PATH, baseUrl).toString()).pipe(
+      HttpClientRequest.setHeader("authorization", `Bearer ${token}`),
+      HttpClientRequest.bodyJsonUnsafe(body),
+    );
+    const response = yield* client.execute(request);
+    if (response.status === 401 || response.status === 403) {
+      return yield* new PeerError({
+        kind: "unauthorized",
+        detail: "The linked machine rejected the token.",
+      });
+    }
+    if (response.status === 404) {
+      return yield* new PeerError({
+        kind: "incompatible",
+        detail: "The linked machine does not serve cross-server reach yet. Update it.",
+      });
+    }
+    if (response.status < 200 || response.status >= 300) {
+      const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+      const reason = text.trim().slice(0, 200);
+      return yield* new PeerError({
+        kind: "rejected",
+        detail: `The linked machine refused the request (${response.status}${reason.length > 0 ? `: ${reason}` : ""}).`,
+      });
+    }
+    return yield* response.json;
+  }).pipe(Effect.timeout(timeout), noRedirects, Effect.mapError(classifyPeerFailure));
