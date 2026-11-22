@@ -32,8 +32,10 @@ rollover contract with Lucive). So exactly one server is the **task authority**:
   every 5 minutes and stores who hosts an Assistant in `reach-assistants.json`. The decision is
   made from that file at startup, before clients connect, and a machine that does not answer keeps
   its stored answer, so the MacBook keeps deferring while the mini sleeps or after a restart. An
-  answer expires three days after the machine last gave it, so a retired machine that stays
-  linked does not stop every other server from rolling commitments forever.
+  answer expires three days after the machine last gave it, for task authority only, so a retired
+  machine that stays linked does not stop every other server from rolling commitments forever.
+  Guarding against a second Assistant, Settings' "Runs on" and taking the Assistant back use the
+  last answer with no expiry: a host off for a week still runs the Assistant.
 - **Rollover** (`TaskCommitmentRollover.ts`): a server that is not the authority never rolls, with
   or without Task Sync. Rollover is the only automatic task write; Task Sync's own pull and push and
   writes a person or agent asks for (coordinator proposals, push-notification actions) still run.
@@ -227,16 +229,26 @@ timeout or crash never leaves two Assistants, and an interrupted move finishes o
 
 ### When the Assistant's machine is gone
 
-- **Opening the Assistant** on a machine that holds the archived copy (it moved away from here)
-  brings that copy back instead of creating a second, but only after every linked machine without
-  a fresh answer says, asked now, that it runs none. One that cannot be asked blocks it with a
-  pointer to taking it back.
+- **Opening the Assistant** is refused while any linked machine last said it runs the Assistant,
+  however long ago, unless that machine answers now that it runs none; one that cannot be reached
+  gets a pointer to taking it back. A machine that holds the archived copy (it moved away from
+  here) brings that copy back instead of creating a second, and only after every linked machine
+  that might run one says so now.
 - **"Take the Assistant back to this machine"** (Settings, Assistant, shown while the machine that
   runs it cannot be reached): after a confirm that warns that anything learned there since stays
   there, this machine revives its archived copy (or lets the client create one) and journals a
   `reclaim` entry owing that machine a yield. Reconcile sends `assistant.yield` until it answers;
   the old home pauses its copy only if the caller runs a live Assistant when asked, so a stray yield
-  can never leave none. Refused while that machine answers and still runs it (move it instead).
+  can never leave none, and stops a turn already running. Refused while that machine answers and
+  still runs it (move it instead).
+- **No double run after a wake.** Before any Assistant schedule runs (the OS fire, catch-up after
+  sleep, or Run now), the machine asks every linked machine whether it runs the Assistant. If one
+  says yes, or one cannot be reached and its last answer was not a clear no, the run is skipped and
+  recorded `missed: not-home` ("Skipped · your Assistant may run on another machine"). A yes is
+  reused for a minute. An always-on home with a sleeping laptop still runs on time, because the
+  laptop's last answer was no. What is left: a home that slept while the other machine took the
+  Assistant back, then wakes while that machine is also unreachable, runs until either the yield
+  arrives or that machine answers.
 
 Schedules aimed at other threads of the Assistant's Project cannot exist on the target: they move
 aimed at the Assistant, paused, and the move result lists each one (shown in the success toast).

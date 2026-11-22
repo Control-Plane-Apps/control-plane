@@ -93,11 +93,14 @@ export function withTaskAuthority(
 /** What each linked machine last said about hosting the Assistant, by machine id. */
 const knownHosts = new Map<string, AssistantAnswer>();
 
-/** Whether a linked machine hosts the Assistant, by its last fresh answer; undefined when unknown. */
-export function knownAssistantHost(machineId: string, nowMs: number): boolean | undefined {
-  const answer = knownHosts.get(machineId);
-  if (answer === undefined || nowMs - answer.at >= ASSISTANT_ANSWER_TTL_MS) return undefined;
-  return answer.hosts;
+/**
+ * Whether a linked machine hosts the Assistant, by its last answer however
+ * old; undefined when it never answered. The 3-day expiry is only for task
+ * authority: guarding against a second Assistant and offering to take it
+ * back must remember a host that has been off for a week.
+ */
+export function lastAssistantHost(machineId: string): boolean | undefined {
+  return knownHosts.get(machineId)?.hosts;
 }
 
 export function knownAssistantHosts(): ReadonlyMap<string, AssistantAnswer> {
@@ -107,6 +110,23 @@ export function knownAssistantHosts(): ReadonlyMap<string, AssistantAnswer> {
 export function noteAssistantHost(machineId: string, answer: AssistantAnswer): void {
   knownHosts.set(machineId, answer);
 }
+
+/** Whether this machine is the Assistant's home right now, or why that is not confirmed. */
+export type HomeCheck = { readonly ok: true } | { readonly ok: false; readonly detail: string };
+
+let homeCheck: Effect.Effect<HomeCheck> = Effect.succeed({ ok: true });
+
+/** Set by the live AssistantHome layer. */
+export function registerAssistantHomeCheck(check: Effect.Effect<HomeCheck>): void {
+  homeCheck = check;
+}
+
+/**
+ * Asked before any Assistant schedule runs. A machine that was asleep or off
+ * may have had the Assistant taken back meanwhile: it runs nothing until its
+ * linked machines confirm none of them runs the Assistant.
+ */
+export const confirmAssistantHome: Effect.Effect<HomeCheck> = Effect.suspend(() => homeCheck);
 
 let refreshHook: Effect.Effect<void> = Effect.void;
 

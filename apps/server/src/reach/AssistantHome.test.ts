@@ -39,7 +39,12 @@ import { ProjectionThreadMessageRepository } from "../persistence/Services/Proje
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { AssistantHome, make as makeAssistantHome, suggestedAddresses } from "./AssistantHome.ts";
+import {
+  AssistantHome,
+  faultsAllowedFor,
+  make as makeAssistantHome,
+  suggestedAddresses,
+} from "./AssistantHome.ts";
 import { MoveRecord } from "./assistantMoves.ts";
 import { ReachBridge, type ReachAskRecord } from "./ReachBridge.ts";
 import type { AssistantBundle } from "./reachProtocol.ts";
@@ -724,9 +729,16 @@ describe("AssistantHome", () => {
     run(
       Effect.gen(function* () {
         noteAssistantHost("env-mini", { hosts: true, at: 0 });
+        miniHosts = true;
         const home = yield* AssistantHome;
         const outcome = yield* home.guardEnsure.pipe(Effect.flip);
         expect(outcome.detail).toContain("Your Assistant runs on Mac mini");
+        // Off, as last heard running it: still refused, pointing at taking it back.
+        mini.online = false;
+        expect((yield* home.guardEnsure.pipe(Effect.flip)).detail).toContain(
+          "which cannot be reached",
+        );
+        expect(yield* liveAssistant).toBeUndefined();
       }),
     ),
   );
@@ -864,11 +876,11 @@ describe("AssistantHome", () => {
         expect((yield* home.guardEnsure.pipe(Effect.flip)).detail).toContain(
           "Your Assistant runs on Mac mini",
         );
-        // That answer expired and the mini is offline: cannot check, so it points at taking it back.
+        // Last heard running it a week ago, and offline: still refused, never expired.
         noteAssistantHost("env-mini", { hosts: true, at: LONG_AGO });
         mini.online = false;
         expect((yield* home.guardEnsure.pipe(Effect.flip)).detail).toContain(
-          "take the Assistant back in Settings, Assistant",
+          "take it back in Settings, Assistant",
         );
         expect(yield* liveAssistant).toBeUndefined();
         // The mini answers that it runs none: the archived copy comes back, no second one made.
@@ -925,4 +937,52 @@ describe("AssistantHome", () => {
       }),
     ),
   );
+  it.effect(
+    "a host off for more than 3 days still blocks a second Assistant and offers take-back",
+    () =>
+      run(
+        Effect.gen(function* () {
+          // This machine never had the Assistant; the mini ran it and has been off a week.
+          noteAssistantHost("env-mini", { hosts: true, at: LONG_AGO });
+          mini.online = false;
+          const home = yield* AssistantHome;
+          expect((yield* home.guardEnsure.pipe(Effect.flip)).detail).toContain(
+            "Your Assistant runs on Mac mini, which cannot be reached",
+          );
+          const status = yield* home.manage({ action: "status" });
+          expect(status.elsewhere?.id).toBe("env-mini");
+          expect(status.canReclaim).toBe(true);
+          // Taking it back owes the mini a yield, then a client may create it here.
+          yield* home.manage({ action: "reclaim" });
+          yield* home.guardEnsure;
+        }),
+      ),
+  );
+
+  it.effect("runs Assistant schedules only once no linked machine runs it, or could", () =>
+    run(
+      Effect.gen(function* () {
+        const home = yield* AssistantHome;
+        // The mini says it runs the Assistant (it took it back while this machine slept).
+        miniHosts = true;
+        expect(yield* home.confirmHome).toEqual({
+          ok: false,
+          detail: "Mac mini runs your Assistant.",
+        });
+        // Unreachable, last heard running it: not confirmed.
+        mini.online = false;
+        expect((yield* home.confirmHome).ok).toBe(false);
+        // Unreachable, last heard not running it: fine (an always-on home with a sleeping laptop).
+        noteAssistantHost("env-mini", { hosts: false, at: 0 });
+        expect(yield* home.confirmHome).toEqual({ ok: true });
+      }),
+    ),
+  );
+
+  it("fires the crash hook only from source, never from a bundled build", () => {
+    expect(faultsAllowedFor("file:///repo/apps/server/src/reach/AssistantHome.ts")).toBe(true);
+    expect(faultsAllowedFor("file:///Applications/Control Plane.app/server/dist/bin.mjs")).toBe(
+      false,
+    );
+  });
 });

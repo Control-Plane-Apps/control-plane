@@ -81,7 +81,18 @@ import {
   type AssistantBundle,
   type OverviewResult,
 } from "./reachProtocol.ts";
-import { knownAssistantHost, noteAssistantHost, refreshTaskAuthority } from "./taskAuthority.ts";
+import {
+  type HomeCheck,
+  lastAssistantHost,
+  noteAssistantHost,
+  refreshTaskAuthority,
+  registerAssistantHomeCheck,
+} from "./taskAuthority.ts";
+
+/** True only when this module runs from source, never in a packaged (bundled) build. */
+export const faultsAllowedFor = (moduleUrl: string) =>
+  moduleUrl.endsWith("/reach/AssistantHome.ts");
+const FAULTS_ALLOWED = faultsAllowedFor(import.meta.url);
 
 /** Recent conversation that moves with the Assistant. */
 export const MOVED_MESSAGE_LIMIT = 200;
@@ -131,6 +142,8 @@ export interface AssistantHomeShape {
   ) => Effect.Effect<{ readonly id: string; readonly label: string }, AssistantHomeError>;
   /** Finishes or undoes interrupted moves; runs at start and every minute. */
   readonly reconcile: Effect.Effect<void>;
+  /** Before an Assistant schedule runs: no linked machine runs the Assistant, or could. */
+  readonly confirmHome: Effect.Effect<HomeCheck>;
 }
 
 export interface MovePeer {
@@ -146,6 +159,8 @@ export const ADOPT_TIMEOUT = Duration.seconds(60);
 /** Commit, abort and status checks of a move. */
 export const MOVE_STEP_TIMEOUT = Duration.seconds(15);
 export const MOVE_RECONCILE_INTERVAL = Duration.minutes(1);
+/** A confirmed home is not asked again for this long. */
+const HOME_CONFIRM_REUSE_MS = 60_000;
 
 const unavailable = Effect.fail(
   new AssistantHomeError({ detail: "This server cannot move the Assistant." }),
@@ -164,6 +179,7 @@ export const AssistantHome = Context.Reference<AssistantHomeShape>("t3/reach/Ass
     moveStatus: () => Effect.succeed({ phase: "unknown" as const }),
     handoff: () => unavailable,
     yieldTo: () => unavailable,
+    confirmHome: Effect.succeed({ ok: true } as const),
     redeemLinkBack: () => unavailable,
     reconcile: Effect.void,
   }),
@@ -223,9 +239,13 @@ export const make = Effect.gen(function* () {
     getTarget: (moveId: string) => readable(rawJournal.getTarget(moveId)),
     put: (record: MoveRecord) => readable(rawJournal.put(record)),
   };
-  /** Test hook for the live two-server run: dies hard at a named point. Off unless set. */
+  /**
+   * Test hook for the live two-server run: dies hard at a named point. Only
+   * when running from source (`node src/bin.ts`, tests); a packaged build runs
+   * the bundled `.mjs`, where it never fires.
+   */
   const testFault = (point: string) =>
-    process.env.CPLANE_REACH_FAULT === point
+    FAULTS_ALLOWED && process.env.CPLANE_REACH_FAULT === point
       ? Effect.logError(`CPLANE_REACH_FAULT: killing the server at ${point}`).pipe(
           Effect.andThen(Effect.sync(() => process.kill(process.pid, "SIGKILL"))),
         )
@@ -314,8 +334,8 @@ export const make = Effect.gen(function* () {
               : "offline",
         detail: error.detail,
         ...(health.lastSeenAt !== null ? { lastSeenAt: health.lastSeenAt } : {}),
-        hostsAssistant:
-          knownAssistantHost(machine.id, DateTime.toEpochMillis(yield* DateTime.now)) ?? null,
+        // Its last answer, however old: an Assistant host off for a week still runs it.
+        hostsAssistant: lastAssistantHost(machine.id) ?? null,
         linksBack: null,
         projects: projectsSeen,
       } satisfies AssistantHomeMachine;
@@ -1118,39 +1138,63 @@ export const make = Effect.gen(function* () {
         return yield* fail("Your Assistant is moving. It is back when the move finishes.");
       }
       const owed = yield* yieldOwed;
-      const now = DateTime.toEpochMillis(yield* DateTime.now);
-      const unknown: Array<ReachMachine> = [];
+      const archived = yield* archivedAssistant;
       for (const machine of yield* reach.machines) {
         if (owed.has(machine.id)) continue;
-        const known = knownAssistantHost(machine.id, now);
-        if (known === true) {
-          const health = yield* reach.healthOf(machine.id);
-          const offline = health.status !== "connected" && health.status !== "unknown";
-          return yield* fail(
-            `Your Assistant runs on ${machine.label}${offline ? ", which is offline" : ""}. Open it there, move it here, or take it back in Settings, Assistant.`,
-          );
-        }
-        if (known === undefined) unknown.push(machine);
-      }
-      const archived = yield* archivedAssistant;
-      if (archived === undefined) return;
-      // Reviving the copy that moved away: only once nothing else can be running it.
-      for (const machine of unknown) {
-        const hosts = yield* askHosts(machine).pipe(Effect.result);
-        if (hosts._tag === "Failure") {
-          return yield* fail(
-            `Could not check whether ${machine.label} runs your Assistant: ${hosts.failure.detail} If it is gone for good, take the Assistant back in Settings, Assistant.`,
-          );
-        }
-        if (hosts.success) {
+        const last = lastAssistantHost(machine.id);
+        // Nothing says it runs one, and there is no copy here to bring back: a first Assistant.
+        if (last === false || (last === undefined && archived === undefined)) continue;
+        const asked = yield* askHosts(machine).pipe(Effect.result);
+        if (asked._tag === "Success" && !asked.success) continue;
+        if (asked._tag === "Success") {
           return yield* fail(
             `Your Assistant runs on ${machine.label}. Open it there, or move it here in Settings, Assistant.`,
           );
         }
+        return yield* fail(
+          last === true
+            ? `Your Assistant runs on ${machine.label}, which cannot be reached. Open it there when it is back, or take it back in Settings, Assistant.`
+            : `Could not check whether ${machine.label} runs your Assistant: ${asked.failure.detail} If it is gone for good, take the Assistant back in Settings, Assistant.`,
+        );
       }
+      if (archived === undefined) return;
       yield* setArchived(archived.project.id, archived.threadId, false);
     }),
   );
+
+  /**
+   * Whether this machine may run the Assistant's schedules now: every linked
+   * machine is asked. One that answers it runs the Assistant, or cannot be
+   * reached while its last answer was not a clear no, means skip. A yes is
+   * reused for a minute, so a burst of due runs asks once.
+   */
+  let confirmedAt = Number.NEGATIVE_INFINITY;
+  const confirmHome: Effect.Effect<HomeCheck> = Effect.gen(function* () {
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    if (nowMs - confirmedAt < HOME_CONFIRM_REUSE_MS) return { ok: true } as const;
+    const answers = yield* Effect.forEach(
+      yield* reach.machines,
+      (machine) =>
+        askHosts(machine).pipe(
+          Effect.result,
+          Effect.map((asked) => ({ machine, asked })),
+        ),
+      { concurrency: 4 },
+    );
+    for (const { machine, asked } of answers) {
+      if (asked._tag === "Success" && asked.success) {
+        return { ok: false, detail: `${machine.label} runs your Assistant.` } as const;
+      }
+      if (asked._tag === "Failure" && lastAssistantHost(machine.id) !== false) {
+        return {
+          ok: false,
+          detail: `Could not confirm with ${machine.label} that it does not run your Assistant: ${asked.failure.detail}`,
+        } as const;
+      }
+    }
+    confirmedAt = nowMs;
+    return { ok: true } as const;
+  });
 
   /** Tells the machine the Assistant was taken back from to pause its copy. */
   const tellYield = (record: ReclaimMove) =>
@@ -1190,7 +1234,7 @@ export const make = Effect.gen(function* () {
       }
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       const hosts = (yield* reach.machines).filter(
-        (machine) => knownAssistantHost(machine.id, now) === true,
+        (machine) => lastAssistantHost(machine.id) === true,
       );
       for (const machine of hosts) {
         const answer = yield* askHosts(machine).pipe(Effect.result);
@@ -1245,6 +1289,20 @@ export const make = Effect.gen(function* () {
         const { project, thread } = yield* localAssistant;
         if (project === undefined) return { paused: false };
         yield* setArchived(project.id, project.assistant.coordinatorThreadId, true);
+        const phase = thread?.session?.status;
+        if (thread !== undefined && (phase === "running" || phase === "starting")) {
+          // Pausing stops new work; a turn already running stops here too.
+          const at = yield* nowIso;
+          yield* dispatch(
+            {
+              type: "thread.turn.interrupt",
+              commandId: CommandId.make(`assistant-home:yield-interrupt:${thread.id}:${at}`),
+              threadId: thread.id,
+              createdAt: at,
+            },
+            "Could not stop the Assistant's turn",
+          ).pipe(Effect.ignore);
+        }
         if (thread !== undefined) yield* bridge.dropFor(thread.id);
         yield* note(
           project.assistant.coordinatorThreadId,
@@ -1333,6 +1391,7 @@ export const make = Effect.gen(function* () {
     yieldTo,
     redeemLinkBack,
     reconcile,
+    confirmHome,
   } satisfies AssistantHomeShape;
 });
 
@@ -1340,6 +1399,7 @@ export const AssistantHomeLive = Layer.effect(
   AssistantHome,
   Effect.gen(function* () {
     const home = yield* make;
+    registerAssistantHomeCheck(home.confirmHome);
     // Finish or undo a move a crash, timeout or sleep interrupted, now and then every minute.
     yield* forkParked(
       Effect.gen(function* () {

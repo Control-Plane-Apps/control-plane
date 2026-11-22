@@ -57,6 +57,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { isDeliveryIdle } from "../orchestration/agentPushes.ts";
+import { confirmAssistantHome } from "../reach/taskAuthority.ts";
 import {
   OrchestrationCommandPreviouslyRejectedError,
   isOrchestrationCommandRejection,
@@ -346,6 +347,25 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const messageId = MessageId.make(scheduleMessageId(held.runKey));
       const threadId = ready.target.threadId;
+      if (ready.assistant.scope === "global") {
+        // After a sleep the Assistant may have been taken back by another machine.
+        const home = yield* confirmAssistantHome;
+        if (!home.ok) {
+          yield* Effect.logWarning("Assistant schedule skipped", {
+            scheduleId: held.scheduleId,
+            detail: home.detail,
+          });
+          yield* record(held.projectId, held.scheduleId, held.runKey, {
+            slot: held.slot,
+            at: now,
+            trigger: held.trigger,
+            outcome: "missed",
+            reason: "not-home",
+            threadId,
+          });
+          return "missed" as const;
+        }
+      }
       const coordinatorId = ready.assistant.coordinatorThreadId;
       const accepted = yield* engine
         .dispatch({
