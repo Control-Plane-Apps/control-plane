@@ -136,6 +136,8 @@ interface Health {
   status: AgentMachineStatus["status"];
   detail?: string;
   checkedAtMs: number;
+  /** The failure was a timeout: the peer may be slow, not gone. */
+  timedOut?: boolean;
 }
 
 const make = Effect.gen(function* () {
@@ -220,20 +222,18 @@ const make = Effect.gen(function* () {
     }).pipe(
       withHttp,
       Effect.tapError((error) =>
-        // A timeout says nothing about whether the machine is up; keep its health.
-        error.kind === "timeout"
-          ? Effect.void
-          : record(machineId, {
-              status:
-                error.kind === "unauthorized"
-                  ? "needs-relink"
-                  : error.kind === "incompatible"
-                    ? "incompatible"
-                    : error.kind === "wrong-environment"
-                      ? "wrong-environment"
-                      : "offline",
-              detail: error.detail,
-            }).pipe(Effect.tap(() => Effect.sync(() => identities.delete(machineId)))),
+        record(machineId, {
+          status:
+            error.kind === "unauthorized"
+              ? "needs-relink"
+              : error.kind === "incompatible"
+                ? "incompatible"
+                : error.kind === "wrong-environment"
+                  ? "wrong-environment"
+                  : "offline",
+          detail: error.detail,
+          ...(error.kind === "timeout" ? { timedOut: true } : {}),
+        }).pipe(Effect.tap(() => Effect.sync(() => identities.delete(machineId)))),
       ),
     );
 
@@ -532,9 +532,11 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const failed = health.get(machineId);
         const now = yield* nowMs;
+        // After a timeout the next call still goes out: a move's abort or commit must not be held back.
         if (
           failed !== undefined &&
           failed.status !== "connected" &&
+          failed.timedOut !== true &&
           now - failed.checkedAtMs < REACH_OFFLINE_TTL_MS
         ) {
           return yield* new PeerError({

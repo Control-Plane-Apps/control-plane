@@ -149,8 +149,8 @@ describe("classifyPeerFailure", () => {
     expect(kindOf({ _tag: "ResponseError", response: { status: 403 } })).toBe("unauthorized");
   });
 
-  it("maps a timeout to unreachable", () => {
-    expect(kindOf({ _tag: "TimeoutError" })).toBe("unreachable");
+  it("maps a timeout to its own kind: the peer may still finish", () => {
+    expect(kindOf({ _tag: "TimeoutError" })).toBe("timeout");
   });
 
   it("maps other environment errors to rejected", () => {
@@ -417,7 +417,7 @@ describe("fetchPeerShell", () => {
     );
   });
 
-  it.effect("a peer that never answers is unreachable after the request timeout", () =>
+  it.effect("a peer that never answers times out after the request timeout", () =>
     Effect.gen(function* () {
       const silent = Layer.succeed(
         HttpClient.HttpClient,
@@ -430,7 +430,7 @@ describe("fetchPeerShell", () => {
       );
       yield* TestClock.adjust(Duration.sum(PEER_REQUEST_TIMEOUT, Duration.millis(1)));
       const error = yield* Fiber.join(fiber);
-      expect(error.kind).toBe("unreachable");
+      expect(error.kind).toBe("timeout");
     }),
   );
 });
