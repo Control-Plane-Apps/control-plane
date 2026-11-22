@@ -19,7 +19,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useState } from "react";
 
 import { newMessageId } from "~/lib/utils";
-import { usePrimaryEnvironment } from "~/state/environments";
+import { useEnvironment, usePrimaryEnvironment } from "~/state/environments";
 import { useProjects } from "~/state/entities";
 import { serverEnvironment } from "~/state/server";
 import { threadEnvironment } from "~/state/threads";
@@ -30,18 +30,29 @@ import { toastManager } from "../ui/toast";
 
 // Fork-owned. Hooks that find, open and act for the cross-Project Assistant.
 
-/** The Assistant's Project on the primary environment, once it exists. */
+/**
+ * The Assistant's Project on whichever connected environment runs it: this
+ * machine's first, else a linked machine the client is also connected to.
+ * Exactly one server runs it; another server's archived copy never counts.
+ */
 export function useGlobalAssistantProject(): EnvironmentProject | null {
   const projects = useProjects();
   const environment = usePrimaryEnvironment();
   return useMemo(() => {
-    if (environment === null) return null;
-    return (
-      findGlobalAssistantProject(
-        projects.filter((project) => project.environmentId === environment.environmentId),
-      ) ?? null
+    const primaryId = environment?.environmentId ?? null;
+    const primary = findGlobalAssistantProject(
+      projects.filter((project) => project.environmentId === primaryId),
     );
+    return primary ?? findGlobalAssistantProject(projects) ?? null;
   }, [environment, projects]);
+}
+
+/** The environment whose settings and machines the Assistant pages use: its home if connected, else this machine. */
+export function useAssistantHomeEnvironment() {
+  const project = useGlobalAssistantProject();
+  const primary = usePrimaryEnvironment();
+  const home = useEnvironment(project?.environmentId ?? null);
+  return home ?? primary;
 }
 
 /** Every Project except the Assistant, across environments. */
@@ -67,7 +78,12 @@ export function useOpenAssistant() {
         params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
       });
     if (existing?.assistant != null) {
-      await go(existing.assistant.coordinatorThreadId);
+      await navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(
+          scopeThreadRef(existing.environmentId, existing.assistant.coordinatorThreadId),
+        ),
+      });
       return;
     }
     const settings = environment.serverConfig?.settings;

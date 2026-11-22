@@ -92,6 +92,7 @@ import { RemoteAgentStoreLive } from "./agentMachines/RemoteAgentStore.ts";
 import { ReachLive } from "./reach/Reach.ts";
 import { ReachBridgeLive } from "./reach/ReachBridge.ts";
 import { TaskAuthorityLive } from "./reach/TaskAuthorityLive.ts";
+import { AssistantHomeLive } from "./reach/AssistantHome.ts";
 import { reachRouteLayer } from "./reach/route.ts";
 import * as AgentCompletionReactor from "./orchestration/AgentCompletionReactor.ts";
 import * as StatusDeadlineReactor from "./orchestration/StatusDeadlineReactor.ts";
@@ -275,7 +276,7 @@ const BaseReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(RemoteAgentsLive),
   // Cross-server reach for the Assistant rides the same machine links.
   Layer.provideMerge(
-    Layer.mergeAll(ReachBridgeLive, TaskAuthorityLive).pipe(
+    Layer.mergeAll(ReachBridgeLive, TaskAuthorityLive, AssistantHomeLive).pipe(
       Layer.provideMerge(ReachLive),
       Layer.provideMerge(AgentMachinesLive.pipe(Layer.provide(ServerSecretStore.layer))),
     ),

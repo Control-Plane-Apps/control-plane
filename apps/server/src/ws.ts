@@ -82,6 +82,8 @@ import {
   WORKTREE_SETUP_ACTIVITY_KIND,
   worktreeSetupActivityId,
   type WorktreeSetupSnapshot,
+  AgentMachinesError,
+  AssistantEnsureError,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
@@ -158,6 +160,7 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import { AgentMachines } from "./agentMachines/AgentMachines.ts";
+import { AssistantHome } from "./reach/AssistantHome.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -678,6 +681,7 @@ const makeWsRpcLayer = (
       const sessions = yield* SessionStore.SessionStore;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const agentMachines = yield* AgentMachines;
+      const assistantHome = yield* AssistantHome;
       const hostResources = yield* HostResources.HostResources;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
@@ -2711,7 +2715,22 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "server",
           }),
         [WS_METHODS.serverAgentMachines]: (input) =>
-          observeRpcEffect(WS_METHODS.serverAgentMachines, agentMachines.manage(input), {
+          observeRpcEffect(
+            WS_METHODS.serverAgentMachines,
+            input.action === "linkBack"
+              ? assistantHome.linkBack(input).pipe(
+                  Effect.mapError((error) => new AgentMachinesError({ detail: error.detail })),
+                  Effect.flatMap((linked) =>
+                    agentMachines
+                      .manage({ action: "check" })
+                      .pipe(Effect.map((result) => ({ ...result, linked }))),
+                  ),
+                )
+              : agentMachines.manage(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverAssistantHome]: (input) =>
+          observeRpcEffect(WS_METHODS.serverAssistantHome, assistantHome.manage(input), {
             "rpc.aggregate": "server",
           }),
         [WS_METHODS.serverGlobalInstructions]: (input) =>
@@ -2723,12 +2742,18 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverAssistantEnsure]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverAssistantEnsure,
-            ensureAssistant({
-              stateDir: config.stateDir,
-              request: input,
-              engine: orchestrationEngine,
-              snapshots: projectionSnapshotQuery,
-            }),
+            // Never a second Assistant while a linked machine runs one.
+            assistantHome.guardEnsure.pipe(
+              Effect.mapError((error) => new AssistantEnsureError({ detail: error.detail })),
+              Effect.andThen(
+                ensureAssistant({
+                  stateDir: config.stateDir,
+                  request: input,
+                  engine: orchestrationEngine,
+                  snapshots: projectionSnapshotQuery,
+                }),
+              ),
+            ),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverReportClientActivity]: (input, metadata) =>

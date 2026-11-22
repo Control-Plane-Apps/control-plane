@@ -494,6 +494,9 @@ const make = Effect.gen(function* () {
           const linked = yield* link(input);
           return { linked, machines: yield* check };
         }
+        case "linkBack":
+          // Needs this server's own pairing and the reach route; ws.ts sends it to AssistantHome.
+          return yield* new AgentMachinesError({ detail: "Link back is not available here." });
         case "unlink": {
           yield* unlink(input.id);
           return { machines: yield* check };

@@ -18,14 +18,19 @@ import { useMemo } from "react";
 
 import { useUpdateEnvironmentSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
-import { usePrimaryEnvironment } from "~/state/environments";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useScheduleActions } from "../schedules/useScheduleActions";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { useGlobalAssistantProject, useProjectsWithoutAssistant } from "./useAssistant";
+import { AssistantHomeSection, useAssistantHomeStatus } from "./AssistantHomeSection";
+import { remoteReachGroups, toggleReach } from "./assistantHome.logic";
+import {
+  useAssistantHomeEnvironment,
+  useGlobalAssistantProject,
+  useProjectsWithoutAssistant,
+} from "./useAssistant";
 
 // Fork-owned. Settings, Assistant: the morning brief, what the Assistant can
 // reach, and what it may do for the user. The brief and check-ins are
@@ -53,7 +58,8 @@ const CHECK_IN_LABEL: Record<string, string> = {
 };
 
 export function AssistantSettingsPage() {
-  const environment = usePrimaryEnvironment();
+  // The Assistant's own machine when this client is connected to it, else this one.
+  const environment = useAssistantHomeEnvironment();
   const assistantProject = useGlobalAssistantProject();
   const projects = useProjectsWithoutAssistant();
   const scheduleActions = useScheduleActions();
@@ -117,15 +123,25 @@ export function AssistantSettingsPage() {
     });
   };
 
+  const home = useAssistantHomeStatus(environmentId, environment?.connection.phase === "connected");
+  const remoteGroups = remoteReachGroups(home.state.phase === "ready" ? home.state.status : null);
   const reach = settings.projects;
   const toggleProject = (projectId: string) => {
-    const all = liveProjects.map((project) => project.id as string);
-    const current = reach ?? all;
-    const next = current.includes(projectId)
-      ? current.filter((id) => id !== projectId)
-      : [...current, projectId];
-    patch({ projects: all.every((id) => next.includes(id)) ? null : next });
+    const all = [
+      ...liveProjects.map((project) => project.id as string),
+      ...remoteGroups.flatMap((group) => group.projects.map((project) => project.projectId)),
+    ];
+    patch({ projects: toggleReach(reach, all, projectId) });
   };
+
+  // Runs on a machine this client is not connected to: its settings are there, not here.
+  const awayLabel =
+    assistantProject === null &&
+    home.state.phase === "ready" &&
+    !home.state.status.here &&
+    home.state.status.elsewhere !== null
+      ? home.state.status.elsewhere.label
+      : null;
 
   const navigate = useNavigate();
   const needsAssistant = assistantProject === null;
@@ -135,272 +151,330 @@ export function AssistantSettingsPage() {
     <SettingsPageContainer>
       <h1 className="px-3 text-xl font-semibold text-foreground sm:px-4">Assistant</h1>
 
-      <SettingsSection title="Morning brief">
-        <SettingsRow
-          title="Send a morning brief"
-          description={
-            needsAssistant
-              ? "Open the Assistant once to set this up."
-              : "Runs the Assistant on a schedule, which uses your model plan."
-          }
-          control={
-            <Switch
-              aria-label="Send a morning brief"
-              checked={briefEnabled}
-              disabled={needsAssistant}
-              onCheckedChange={(checked) =>
-                saveBrief({
-                  enabled: checked === true,
-                  time: settings.briefTime,
-                  days: settings.briefDays,
-                })
+      <AssistantHomeSection
+        localLabel={environment?.label ?? "This machine"}
+        state={home.state}
+        onMove={home.move}
+      />
+
+      {awayLabel !== null ? (
+        <SettingsSection title="Settings">
+          <SettingsRow
+            title={`Your Assistant's settings live on ${awayLabel}`}
+            description={`Add ${awayLabel} under Settings, Connections, Environments to change its brief, reach and permissions from here.`}
+          />
+        </SettingsSection>
+      ) : (
+        <>
+          <SettingsSection title="Morning brief">
+            <SettingsRow
+              title="Send a morning brief"
+              description={
+                needsAssistant
+                  ? "Open the Assistant once to set this up."
+                  : "Runs the Assistant on a schedule, which uses your model plan."
+              }
+              control={
+                <Switch
+                  aria-label="Send a morning brief"
+                  checked={briefEnabled}
+                  disabled={needsAssistant}
+                  onCheckedChange={(checked) =>
+                    saveBrief({
+                      enabled: checked === true,
+                      time: settings.briefTime,
+                      days: settings.briefDays,
+                    })
+                  }
+                />
               }
             />
-          }
-        />
-        <SettingsRow
-          title="Time"
-          control={
-            <Select
-              value={settings.briefTime}
-              onValueChange={(value) => {
-                const time = String(value);
-                patch({ briefTime: time });
-                if (brief) saveBrief({ enabled: brief.enabled, time, days: settings.briefDays });
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-32" aria-label="Brief time">
-                <SelectValue>{formatTime(settings.briefTime)}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {TIME_OPTIONS.map((time) => (
-                  <SelectItem key={time} hideIndicator value={time}>
-                    {formatTime(time)}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Days"
-          control={
-            <Select
-              value={settings.briefDays}
-              onValueChange={(value) => {
-                const days = value as AssistantBriefDays;
-                patch({ briefDays: days });
-                if (brief) saveBrief({ enabled: brief.enabled, time: settings.briefTime, days });
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-32" aria-label="Brief days">
-                <SelectValue>{DAYS_LABEL[settings.briefDays]}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="weekdays">
-                  Weekdays
-                </SelectItem>
-                <SelectItem hideIndicator value="every-day">
-                  Every day
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Reach">
-        <SettingsRow
-          title="Projects"
-          control={
-            <div className="flex flex-wrap justify-end gap-1.5">
-              {liveProjects.length === 0 ? (
-                <span className="text-xs text-muted-foreground">No Projects yet</span>
-              ) : (
-                liveProjects.map((project) => {
-                  const on = reach === null || reach.includes(project.id);
-                  return (
-                    <button
-                      key={project.id}
-                      type="button"
-                      aria-pressed={on}
-                      onClick={() => toggleProject(project.id)}
-                      className={cn(
-                        "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-xs",
-                        on
-                          ? "border-input bg-popover text-foreground"
-                          : "border-dashed border-border text-muted-foreground line-through",
-                      )}
-                    >
-                      <ProjectFavicon project={project} className="size-3.5" />
-                      {project.title}
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          }
-        />
-        <SettingsRow
-          title="Workspaces"
-          control={
-            <Select
-              value={settings.workspaces}
-              onValueChange={(value) =>
-                patch({ workspaces: value as AssistantSettings["workspaces"] })
+            <SettingsRow
+              title="Time"
+              control={
+                <Select
+                  value={settings.briefTime}
+                  onValueChange={(value) => {
+                    const time = String(value);
+                    patch({ briefTime: time });
+                    if (brief)
+                      saveBrief({ enabled: brief.enabled, time, days: settings.briefDays });
+                  }}
+                >
+                  <SelectTrigger size="sm" className="w-full sm:w-32" aria-label="Brief time">
+                    <SelectValue>{formatTime(settings.briefTime)}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    {TIME_OPTIONS.map((time) => (
+                      <SelectItem key={time} hideIndicator value={time}>
+                        {formatTime(time)}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
               }
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Workspaces">
-                <SelectValue>{settings.workspaces === "read" ? "Read only" : "Off"}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="read">
-                  Read only
-                </SelectItem>
-                <SelectItem hideIndicator value="off">
-                  Off
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Tasks"
-          control={
-            <Select
-              value={settings.tasks}
-              onValueChange={(value) => patch({ tasks: value as AssistantSettings["tasks"] })}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Tasks">
-                <SelectValue>
-                  {settings.tasks === "edit"
-                    ? "Read and edit"
-                    : settings.tasks === "read"
-                      ? "Read only"
-                      : "Off"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="edit">
-                  Read and edit
-                </SelectItem>
-                <SelectItem hideIndicator value="read">
-                  Read only
-                </SelectItem>
-                <SelectItem hideIndicator value="off">
-                  Off
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Acting for you">
-        <SettingsRow
-          title="Message Project coordinators"
-          control={
-            <Switch
-              aria-label="Message Project coordinators"
-              checked={settings.messageCoordinators}
-              onCheckedChange={(checked) => patch({ messageCoordinators: checked === true })}
             />
-          }
-        />
-        <SettingsRow
-          title="New tasks"
-          control={
-            <Select
-              value={settings.newTasks}
-              onValueChange={(value) => patch({ newTasks: value as AssistantSettings["newTasks"] })}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="New tasks">
-                <SelectValue>
-                  {settings.newTasks === "propose" ? "Propose first" : "Add directly"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="propose">
-                  Propose first
-                </SelectItem>
-                <SelectItem hideIndicator value="create">
-                  Add directly
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Answer questions for you"
-          description="The Assistant never answers a Project's Status question for you."
-          control={
-            <Select value="never" disabled>
-              <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Answer questions">
-                <SelectValue>Never</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="never">
-                  Never
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Check in every"
-          description="Each check-in runs the Assistant and any coordinator it asks."
-          control={
-            <Select
-              value={String(settings.checkInHours)}
-              disabled={needsAssistant}
-              onValueChange={(value) => saveCheckIn(Number(value) as AssistantCheckInHours)}
-            >
-              <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Check in every">
-                <SelectValue>{CHECK_IN_LABEL[String(settings.checkInHours)]}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {(["0", "1", "2", "4"] as const).map((value) => (
-                  <SelectItem key={value} hideIndicator value={value}>
-                    {CHECK_IN_LABEL[value]}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-      </SettingsSection>
+            <SettingsRow
+              title="Days"
+              control={
+                <Select
+                  value={settings.briefDays}
+                  onValueChange={(value) => {
+                    const days = value as AssistantBriefDays;
+                    patch({ briefDays: days });
+                    if (brief)
+                      saveBrief({ enabled: brief.enabled, time: settings.briefTime, days });
+                  }}
+                >
+                  <SelectTrigger size="sm" className="w-full sm:w-32" aria-label="Brief days">
+                    <SelectValue>{DAYS_LABEL[settings.briefDays]}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem hideIndicator value="weekdays">
+                      Weekdays
+                    </SelectItem>
+                    <SelectItem hideIndicator value="every-day">
+                      Every day
+                    </SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
+          </SettingsSection>
 
-      <SettingsSection title="Schedules">
-        <SettingsRow
-          title="All schedules"
-          description="Every schedule across your Projects and the Assistant, in one list."
-          control={
-            <Button
-              size="sm"
-              variant="outline"
-              type="button"
-              onClick={() => void navigate({ to: "/schedules" })}
-            >
-              <ClockIcon />
-              Open
-            </Button>
-          }
-        />
-      </SettingsSection>
+          <SettingsSection title="Reach">
+            <SettingsRow
+              title="Projects"
+              control={
+                <div className="flex flex-wrap justify-end gap-1.5">
+                  {liveProjects.length === 0 ? (
+                    <span className="text-xs text-muted-foreground">No Projects yet</span>
+                  ) : (
+                    liveProjects.map((project) => {
+                      const on = reach === null || reach.includes(project.id);
+                      return (
+                        <button
+                          key={project.id}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() => toggleProject(project.id)}
+                          className={cn(
+                            "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-xs",
+                            on
+                              ? "border-input bg-popover text-foreground"
+                              : "border-dashed border-border text-muted-foreground line-through",
+                          )}
+                        >
+                          <ProjectFavicon project={project} className="size-3.5" />
+                          {project.title}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              }
+            />
+            {remoteGroups.map((group) => (
+              <SettingsRow
+                key={group.machineId}
+                title={`Projects on ${group.label}`}
+                description={
+                  group.online
+                    ? undefined
+                    : `${group.state}. Its Projects show their last known state.`
+                }
+                control={
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    {group.projects.map((project) => {
+                      const on = reach === null || reach.includes(project.projectId);
+                      return (
+                        <button
+                          key={project.projectId}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() => toggleProject(project.projectId)}
+                          className={cn(
+                            "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-xs",
+                            on
+                              ? "border-input bg-popover text-foreground"
+                              : "border-dashed border-border text-muted-foreground line-through",
+                            !group.online && "opacity-60",
+                          )}
+                        >
+                          {project.title}
+                        </button>
+                      );
+                    })}
+                  </div>
+                }
+              />
+            ))}
+            <SettingsRow
+              title="Workspaces"
+              control={
+                <Select
+                  value={settings.workspaces}
+                  onValueChange={(value) =>
+                    patch({ workspaces: value as AssistantSettings["workspaces"] })
+                  }
+                >
+                  <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Workspaces">
+                    <SelectValue>
+                      {settings.workspaces === "read" ? "Read only" : "Off"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem hideIndicator value="read">
+                      Read only
+                    </SelectItem>
+                    <SelectItem hideIndicator value="off">
+                      Off
+                    </SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
+            <SettingsRow
+              title="Tasks"
+              control={
+                <Select
+                  value={settings.tasks}
+                  onValueChange={(value) => patch({ tasks: value as AssistantSettings["tasks"] })}
+                >
+                  <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Tasks">
+                    <SelectValue>
+                      {settings.tasks === "edit"
+                        ? "Read and edit"
+                        : settings.tasks === "read"
+                          ? "Read only"
+                          : "Off"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem hideIndicator value="edit">
+                      Read and edit
+                    </SelectItem>
+                    <SelectItem hideIndicator value="read">
+                      Read only
+                    </SelectItem>
+                    <SelectItem hideIndicator value="off">
+                      Off
+                    </SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
+          </SettingsSection>
 
-      <SettingsSection title="Model">
-        <SettingsRow
-          title="Assistant model"
-          description="New Assistant sessions use the default model for new threads."
-          control={
-            <span className="font-mono text-xs text-muted-foreground">
-              {assistantProject?.defaultModelSelection?.model ??
-                environment?.serverConfig?.settings.defaultModelSelection?.model ??
-                "Default"}
-            </span>
-          }
-        />
-      </SettingsSection>
+          <SettingsSection title="Acting for you">
+            <SettingsRow
+              title="Message Project coordinators"
+              control={
+                <Switch
+                  aria-label="Message Project coordinators"
+                  checked={settings.messageCoordinators}
+                  onCheckedChange={(checked) => patch({ messageCoordinators: checked === true })}
+                />
+              }
+            />
+            <SettingsRow
+              title="New tasks"
+              control={
+                <Select
+                  value={settings.newTasks}
+                  onValueChange={(value) =>
+                    patch({ newTasks: value as AssistantSettings["newTasks"] })
+                  }
+                >
+                  <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="New tasks">
+                    <SelectValue>
+                      {settings.newTasks === "propose" ? "Propose first" : "Add directly"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem hideIndicator value="propose">
+                      Propose first
+                    </SelectItem>
+                    <SelectItem hideIndicator value="create">
+                      Add directly
+                    </SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
+            <SettingsRow
+              title="Answer questions for you"
+              description="The Assistant never answers a Project's Status question for you."
+              control={
+                <Select value="never" disabled>
+                  <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Answer questions">
+                    <SelectValue>Never</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem hideIndicator value="never">
+                      Never
+                    </SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
+            <SettingsRow
+              title="Check in every"
+              description="Each check-in runs the Assistant and any coordinator it asks."
+              control={
+                <Select
+                  value={String(settings.checkInHours)}
+                  disabled={needsAssistant}
+                  onValueChange={(value) => saveCheckIn(Number(value) as AssistantCheckInHours)}
+                >
+                  <SelectTrigger size="sm" className="w-full sm:w-36" aria-label="Check in every">
+                    <SelectValue>{CHECK_IN_LABEL[String(settings.checkInHours)]}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    {(["0", "1", "2", "4"] as const).map((value) => (
+                      <SelectItem key={value} hideIndicator value={value}>
+                        {CHECK_IN_LABEL[value]}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              }
+            />
+          </SettingsSection>
+
+          <SettingsSection title="Schedules">
+            <SettingsRow
+              title="All schedules"
+              description="Every schedule across your Projects and the Assistant, in one list."
+              control={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  type="button"
+                  onClick={() => void navigate({ to: "/schedules" })}
+                >
+                  <ClockIcon />
+                  Open
+                </Button>
+              }
+            />
+          </SettingsSection>
+
+          <SettingsSection title="Model">
+            <SettingsRow
+              title="Assistant model"
+              description="New Assistant sessions use the default model for new threads."
+              control={
+                <span className="font-mono text-xs text-muted-foreground">
+                  {assistantProject?.defaultModelSelection?.model ??
+                    environment?.serverConfig?.settings.defaultModelSelection?.model ??
+                    "Default"}
+                </span>
+              }
+            />
+          </SettingsSection>
+        </>
+      )}
     </SettingsPageContainer>
   );
 }

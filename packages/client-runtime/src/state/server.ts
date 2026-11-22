@@ -1125,6 +1125,15 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId }) => environmentId,
       },
     }),
+    // Where the Assistant runs, and moving it between linked machines.
+    assistantHome: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:assistant-home",
+      tag: WS_METHODS.serverAssistantHome,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
+    }),
     refreshUsageRates: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-usage-rates",
       tag: WS_METHODS.serverRefreshUsageRates,

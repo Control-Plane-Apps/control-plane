@@ -55,10 +55,15 @@ import {
 import { Reach } from "./Reach.ts";
 import { acceptOnce, reachInputHash, wasSent } from "./reachSent.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
+import { Reach } from "./Reach.ts";
+import { AssistantHome } from "./AssistantHome.ts";
 import {
   ConfirmInput,
   ConfirmResult,
   REACH_VERIFIED_OPS,
+  AssistantBundle,
+  HandoffInput,
+  LinkBackInput,
   AskInput,
   AssistantNoteInput,
   ProjectInput,
@@ -104,6 +109,8 @@ export const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const sql = yield* SqlClient.SqlClient;
   const statusCore = yield* makeStatusCore;
+  const home = yield* AssistantHome;
+  const reach = yield* Reach;
   const settings = yield* ServerSettingsService;
   const scheduleCore = yield* makeScheduleCore;
   const reach = yield* Reach;
@@ -193,6 +200,7 @@ export const make = Effect.gen(function* () {
     return {
       environmentId: descriptor.environmentId,
       label: descriptor.label,
+      linked: (yield* reach.machines).map((machine) => machine.id),
       assistant:
         assistant?.assistant == null
           ? null
@@ -428,6 +436,25 @@ export const make = Effect.gen(function* () {
         return assistantNote(request);
       case "task.deliver":
         return taskDeliver(request);
+      case "assistant.adopt":
+        return decode(AssistantBundle)(request.input).pipe(
+          Effect.flatMap((bundle) => home.adopt(bundle, { label: request.caller.label })),
+        );
+      case "assistant.handoff":
+        return decode(HandoffInput)(request.input).pipe(
+          Effect.flatMap((input): Effect.Effect<void, Error> =>
+            input.to === request.caller.environmentId
+              ? home.handoff(input.to)
+              : Effect.fail(
+                  opFailed("A machine can only ask for the Assistant to move to itself."),
+                ),
+          ),
+          Effect.as({ moved: true }),
+        );
+      case "link.back":
+        return decode(LinkBackInput)(request.input).pipe(
+          Effect.flatMap((input) => home.redeemLinkBack(input.pairingUrl)),
+        );
       case "schedule.list":
         return scheduleScope(request).pipe(Effect.flatMap(({ scope }) => scheduleCore.list(scope)));
       case "schedule.create":

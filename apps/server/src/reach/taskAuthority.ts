@@ -18,6 +18,7 @@
  * @module taskAuthority
  */
 import type { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 
 export interface TaskAuthorityMachine {
   readonly id: string;
@@ -88,3 +89,31 @@ export function withTaskAuthority(
   if (current.authority) return descriptor;
   return { ...descriptor, capabilities: { ...descriptor.capabilities, tasksDeferred: true } };
 }
+
+/** What each linked machine last said about hosting the Assistant, by machine id. */
+const knownHosts = new Map<string, AssistantAnswer>();
+
+/** Whether a linked machine hosts the Assistant, by its last fresh answer; undefined when unknown. */
+export function knownAssistantHost(machineId: string, nowMs: number): boolean | undefined {
+  const answer = knownHosts.get(machineId);
+  if (answer === undefined || nowMs - answer.at >= ASSISTANT_ANSWER_TTL_MS) return undefined;
+  return answer.hosts;
+}
+
+export function knownAssistantHosts(): ReadonlyMap<string, AssistantAnswer> {
+  return knownHosts;
+}
+
+export function noteAssistantHost(machineId: string, answer: AssistantAnswer): void {
+  knownHosts.set(machineId, answer);
+}
+
+let refreshHook: Effect.Effect<void> = Effect.void;
+
+/** Set by the live layer: asks every linked machine again and recomputes. */
+export function registerTaskAuthorityRefresh(refresh: Effect.Effect<void>): void {
+  refreshHook = refresh;
+}
+
+/** Re-asks linked machines and recomputes now, as after the Assistant moves. */
+export const refreshTaskAuthority: Effect.Effect<void> = Effect.suspend(() => refreshHook);

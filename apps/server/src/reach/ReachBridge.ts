@@ -60,6 +60,8 @@ const encodeStoreFile = Schema.encodeSync(StoreFileJson);
 export interface ReachBridgeShape {
   readonly track: (record: ReachAskRecord) => Effect.Effect<void>;
   readonly open: Effect.Effect<ReadonlyArray<ReachAskRecord>>;
+  /** Stops waiting for answers owed to a thread, as when the Assistant moves away. */
+  readonly dropFor: (replyTo: string) => Effect.Effect<void>;
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   /** One pass over every machine with open asks. Exposed for tests. */
   readonly pollOnce: Effect.Effect<void>;
@@ -69,6 +71,7 @@ export interface ReachBridgeShape {
 export const ReachBridge = Context.Reference<ReachBridgeShape>("t3/reach/ReachBridge", {
   defaultValue: () => ({
     track: () => Effect.void,
+    dropFor: () => Effect.void,
     open: Effect.succeed([]),
     start: () => Effect.void,
     pollOnce: Effect.void,
@@ -283,9 +286,17 @@ export const makeReachBridge = Effect.gen(function* () {
     }
   });
 
+  const dropFor = (replyTo: string) =>
+    open.pipe(
+      Effect.flatMap((records) =>
+        drop(new Set(records.filter((entry) => entry.replyTo === replyTo).map(keyOf))),
+      ),
+    );
+
   return {
     track,
     open,
+    dropFor,
     start: () => forkParked(loop),
     pollOnce,
   } satisfies ReachBridgeShape;
