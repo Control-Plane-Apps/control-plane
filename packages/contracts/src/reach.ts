@@ -58,6 +58,11 @@ export const AssistantHomeInput = Schema.Union([
   Schema.Struct({ action: Schema.Literal("status") }),
   /** Moves the Assistant to a linked machine id, or `"local"` for this machine. */
   Schema.Struct({ action: Schema.Literal("move"), to: TrimmedNonEmptyString }),
+  /**
+   * Runs the Assistant here again while the machine that runs it is
+   * unreachable; that machine pauses its copy when it is back.
+   */
+  Schema.Struct({ action: Schema.Literal("reclaim") }),
 ]);
 export type AssistantHomeInput = typeof AssistantHomeInput.Type;
 
@@ -94,6 +99,8 @@ export const AssistantHomeStatus = Schema.Struct({
   machines: Schema.Array(AssistantHomeMachine),
   /** Addresses linked machines can likely use to reach this one, best first. */
   addresses: Schema.Array(Schema.String),
+  /** The machine that runs the Assistant is unreachable, so it can be taken back here. */
+  canReclaim: Schema.optional(Schema.Boolean),
   /** A move from this machine that has not finished; the Assistant is paused meanwhile. */
   pendingMove: Schema.optional(Schema.Struct({ label: Schema.String, startedAt: Schema.String })),
   /** After a move: what did not move as it was, such as schedules aimed at other threads. */

@@ -61,7 +61,14 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { buildPairingUrl, isLoopbackHost, isWildcardHost } from "../startupAccess.ts";
 import { Reach, type ReachMachine } from "./Reach.ts";
 import { ReachBridge, type ReachAskRecord } from "./ReachBridge.ts";
-import { makeMoveJournal, type SourceMove, type TargetMove } from "./assistantMoves.ts";
+import {
+  makeMoveJournal,
+  type MoveJournalUnreadable,
+  type MoveRecord,
+  type ReclaimMove,
+  type SourceMove,
+  type TargetMove,
+} from "./assistantMoves.ts";
 import { fetchPeerDescriptor } from "../agentMachines/AgentMachineClient.ts";
 import { forkParked } from "../serverActivation.ts";
 import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
@@ -71,6 +78,7 @@ import {
   DescribeResult,
   MoveStatusResult,
   LinkBackResult,
+  YieldResult,
   type AssistantBundle,
   type OverviewResult,
 } from "./reachProtocol.ts";
@@ -96,13 +104,31 @@ export interface AssistantHomeShape {
     bundle: AssistantBundle,
     from: MovePeer,
   ) => Effect.Effect<AdoptResult, AssistantHomeError>;
-  readonly commit: (moveId: string) => Effect.Effect<MoveStatus, AssistantHomeError>;
+  /** Only the machine named in the move record may commit or abort it. */
+  readonly commit: (
+    moveId: string,
+    from: MovePeer,
+  ) => Effect.Effect<MoveStatus, AssistantHomeError>;
   readonly abort: (moveId: string, from: MovePeer) => Effect.Effect<MoveStatus, AssistantHomeError>;
-  readonly moveStatus: (moveId: string) => Effect.Effect<MoveStatus>;
+  readonly moveStatus: (moveId: string) => Effect.Effect<MoveStatus, AssistantHomeError>;
+  /**
+   * Another machine took the Assistant back while this one was unreachable:
+   * pause the copy here. Only that machine may ask.
+   */
+  readonly yieldTo: (
+    from: MovePeer,
+  ) => Effect.Effect<{ readonly paused: boolean }, AssistantHomeError>;
   readonly handoff: (toEnvironmentId: string) => Effect.Effect<void, AssistantHomeError>;
+  /**
+   * Redeems a link-back pairing URL from a machine that asked. `confirm` asks
+   * that machine, over the link, whether it sent this request: before
+   * redeeming when the link already exists, right after when it is new (and
+   * the new link is removed again when the machine says no or cannot answer).
+   */
   readonly redeemLinkBack: (
     pairingUrl: string,
     from: MovePeer,
+    confirm: Effect.Effect<void, Error>,
   ) => Effect.Effect<{ readonly id: string; readonly label: string }, AssistantHomeError>;
   /** Finishes or undoes interrupted moves; runs at start and every minute. */
   readonly reconcile: Effect.Effect<void>;
@@ -138,6 +164,7 @@ export const AssistantHome = Context.Reference<AssistantHomeShape>("t3/reach/Ass
     abort: () => unavailable,
     moveStatus: () => Effect.succeed({ phase: "unknown" as const }),
     handoff: () => unavailable,
+    yieldTo: () => unavailable,
     redeemLinkBack: () => unavailable,
     reconcile: Effect.void,
   }),
@@ -188,7 +215,22 @@ export const make = Effect.gen(function* () {
   const bridge = yield* ReachBridge;
   const httpClient = yield* HttpClient.HttpClient;
   const lock = yield* Semaphore.make(1);
-  const journal = yield* makeMoveJournal(config.stateDir);
+  const rawJournal = yield* makeMoveJournal(config.stateDir);
+  const readable = <A>(effect: Effect.Effect<A, MoveJournalUnreadable>) =>
+    effect.pipe(Effect.mapError((error) => fail(error.detail)));
+  const journal = {
+    list: readable(rawJournal.list),
+    get: (moveId: string, role: MoveRecord["role"]) => readable(rawJournal.get(moveId, role)),
+    getTarget: (moveId: string) => readable(rawJournal.getTarget(moveId)),
+    put: (record: MoveRecord) => readable(rawJournal.put(record)),
+  };
+  /** Test hook for the live two-server run: dies hard at a named point. Off unless set. */
+  const testFault = (point: string) =>
+    process.env.CPLANE_REACH_FAULT === point
+      ? Effect.logError(`CPLANE_REACH_FAULT: killing the server at ${point}`).pipe(
+          Effect.andThen(Effect.sync(() => process.kill(process.pid, "SIGKILL"))),
+        )
+      : Effect.void;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const memoryPath = NodePath.join(config.stateDir, ASSISTANT_HOME_DIR, "MEMORY.md");
@@ -293,12 +335,16 @@ export const make = Effect.gen(function* () {
       .toSorted((a, b) => a.id.localeCompare(b.id))
       .map(({ id, label }) => ({ id, label }));
     const pending = yield* pendingMove;
+    const elsewhere = project === undefined ? (hosts[0] ?? null) : null;
+    const homeMachine = machines.find((machine) => machine.id === elsewhere?.id);
     return {
       here: project !== undefined,
+      canReclaim:
+        pending === undefined && homeMachine !== undefined && homeMachine.state !== "online",
       ...(pending !== undefined
         ? { pendingMove: { label: pending.peerLabel, startedAt: pending.startedAt } }
         : {}),
-      elsewhere: project === undefined ? (hosts[0] ?? null) : null,
+      elsewhere,
       conflicts: project === undefined ? hosts.slice(1) : hosts,
       machines,
       addresses: suggestedAddresses({
@@ -401,6 +447,60 @@ export const make = Effect.gen(function* () {
         ),
       ),
     );
+
+  /** A new global Assistant Project, archived from its first marker write: never live. */
+  const createPausedAssistant = (input: {
+    readonly projectId: string;
+    readonly threadId: string;
+    readonly modelSelection: typeof ModelSelection.Type;
+    readonly runtimeMode: typeof RuntimeMode.Type;
+  }) =>
+    Effect.gen(function* () {
+      const home = NodePath.dirname(memoryPath);
+      yield* fileSystem.makeDirectory(home, { recursive: true }).pipe(Effect.ignore);
+      const createdAt = yield* nowIso;
+      const projectId = ProjectId.make(input.projectId);
+      const threadId = ThreadId.make(input.threadId);
+      const what = "Could not prepare the Assistant here";
+      yield* dispatch(
+        {
+          type: "project.create",
+          commandId: CommandId.make(`assistant-home:project:${input.projectId}`),
+          projectId,
+          title: "Assistant",
+          workspaceRoot: home,
+          createWorkspaceRootIfMissing: true,
+          createdAt,
+        },
+        what,
+      );
+      yield* dispatch(
+        {
+          type: "thread.create",
+          commandId: CommandId.make(`assistant-home:thread:${input.threadId}`),
+          threadId,
+          projectId,
+          title: "Assistant",
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        },
+        what,
+      );
+      yield* dispatch(
+        {
+          type: "project.meta.update",
+          commandId: CommandId.make(`assistant-home:marker:${input.projectId}`),
+          projectId,
+          defaultModelSelection: input.modelSelection,
+          assistant: { coordinatorThreadId: threadId, scope: "global", archived: true },
+        },
+        what,
+      );
+    });
 
   const note = (threadId: string, id: string, summary: string, detail: string) =>
     Effect.gen(function* () {
@@ -564,7 +664,11 @@ export const make = Effect.gen(function* () {
         const known = yield* journal.getTarget(bundle.moveId);
         if (Option.isSome(known)) {
           if (known.value.phase === "aborted") return yield* fail("That move was cancelled.");
-          return { projectId: known.value.projectId, threadId: known.value.threadId };
+          if (known.value.phase !== "preparing") {
+            return { projectId: known.value.projectId, threadId: known.value.threadId };
+          }
+          // A crash or failure left a half-built copy: remove it and build again.
+          yield* undoTarget(known.value);
         }
         const existing = yield* localAssistant;
         if (existing.project !== undefined) {
@@ -587,84 +691,66 @@ export const make = Effect.gen(function* () {
           .pipe(Effect.orElseSucceed(() => null));
         // An Assistant that moved away from here before holds the home folder: reuse it.
         const archived = yield* archivedAssistant;
-        const home =
+        const projectId =
           archived !== undefined
-            ? yield* Effect.gen(function* () {
-                // A fresh coordinator thread in the archived Project: the conversation
-                // lands in an empty thread, and the old one stays as history.
-                const threadId = ThreadId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
-                yield* dispatch(
-                  {
-                    type: "thread.create",
-                    commandId: CommandId.make(`assistant-home:thread:${bundle.moveId}`),
-                    threadId,
-                    projectId: archived.project.id,
-                    title: "Assistant",
-                    modelSelection,
-                    runtimeMode,
-                    interactionMode: "default",
-                    branch: null,
-                    worktreePath: null,
-                    createdAt: yield* nowIso,
-                  },
-                  "Could not prepare the Assistant here",
-                );
-                yield* dispatch(
-                  {
-                    type: "project.meta.update",
-                    commandId: CommandId.make(`assistant-home:coordinator:${bundle.moveId}`),
-                    projectId: archived.project.id,
-                    assistant: { coordinatorThreadId: threadId, archived: true },
-                  },
-                  "Could not prepare the Assistant here",
-                );
-                return {
-                  projectId: archived.project.id as string,
-                  threadId: threadId as string,
-                  created: false,
-                  previousThreadId: archived.threadId as string,
-                };
-              })
-            : yield* ensureAssistant({
-                stateDir: config.stateDir,
-                request: { modelSelection, runtimeMode },
-                engine,
-                snapshots,
-              }).pipe(
-                Effect.provideService(FileSystem.FileSystem, fileSystem),
-                Effect.provideService(Crypto.Crypto, crypto),
-                Effect.mapError((error) => fail(error.message)),
-                Effect.map((made) => ({
-                  projectId: made.projectId as string,
-                  threadId: made.threadId as string,
-                  created: true,
-                  previousThreadId: undefined,
-                })),
-              );
-        // Paused until the source commits: never live alongside the source's copy.
-        if (home.created) yield* setArchived(home.projectId, home.threadId, true);
+            ? (archived.project.id as string)
+            : yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+        const threadId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
         const record: TargetMove = {
           role: "target",
           moveId: bundle.moveId,
           peerId: from.environmentId,
           peerLabel: from.label,
-          phase: "adopted",
-          projectId: home.projectId,
-          threadId: home.threadId,
-          created: home.created,
-          ...(home.previousThreadId !== undefined
-            ? { previousThreadId: home.previousThreadId }
-            : {}),
+          phase: "preparing",
+          projectId,
+          threadId,
+          created: archived === undefined,
+          ...(archived !== undefined ? { previousThreadId: archived.threadId as string } : {}),
           previousSettings,
           previousMemory,
           asks: bundle.asks,
           startedAt: yield* nowIso,
         };
+        // Journaled before anything exists, so an abort or a retry always finds what was made.
+        yield* journal.put(record);
+        const build = Effect.gen(function* () {
+          // Made paused (archived) from the first command: never live beside the source's copy.
+          if (archived === undefined) {
+            yield* createPausedAssistant({ projectId, threadId, modelSelection, runtimeMode });
+          } else {
+            yield* dispatch(
+              {
+                type: "thread.create",
+                commandId: CommandId.make(`assistant-home:thread:${threadId}`),
+                threadId: ThreadId.make(threadId),
+                projectId: archived.project.id,
+                title: "Assistant",
+                modelSelection,
+                runtimeMode,
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                createdAt: yield* nowIso,
+              },
+              "Could not prepare the Assistant here",
+            );
+            yield* dispatch(
+              {
+                type: "project.meta.update",
+                commandId: CommandId.make(`assistant-home:coordinator:${threadId}`),
+                projectId: archived.project.id,
+                assistant: { coordinatorThreadId: ThreadId.make(threadId), archived: true },
+              },
+              "Could not prepare the Assistant here",
+            );
+          }
+          yield* testFault("crash-after-target-create");
+        });
+        const home = { projectId, threadId };
         const steps = Effect.gen(function* () {
           const settings = yield* decodeAssistantSettings(bundle.settings).pipe(
             Effect.mapError(() => fail("The Assistant's settings could not be read.")),
           );
-          yield* journal.put(record);
           yield* settingsService
             .updateSettings({ assistant: settings })
             .pipe(Effect.mapError(() => fail("Could not save the Assistant's settings.")));
@@ -681,7 +767,9 @@ export const make = Effect.gen(function* () {
             yield* dispatch(
               {
                 type: "project.meta.update",
-                commandId: CommandId.make(`assistant-home:schedules:${bundle.moveId}`),
+                commandId: CommandId.make(
+                  `assistant-home:schedules:${bundle.moveId}:${home.threadId}`,
+                ),
                 projectId: ProjectId.make(home.projectId),
                 assistant: {
                   coordinatorThreadId: ThreadId.make(home.threadId),
@@ -721,7 +809,9 @@ export const make = Effect.gen(function* () {
             yield* dispatch(
               {
                 type: "thread.history.import",
-                commandId: CommandId.make(`assistant-home:history:${bundle.moveId}`),
+                commandId: CommandId.make(
+                  `assistant-home:history:${bundle.moveId}:${home.threadId}`,
+                ),
                 threadId: ThreadId.make(home.threadId),
                 messages: [first, ...rest],
               },
@@ -729,13 +819,18 @@ export const make = Effect.gen(function* () {
             );
           }
         });
-        yield* steps.pipe(Effect.tapError(() => abortTarget(record)));
+        yield* Effect.andThen(build, steps).pipe(Effect.tapError(() => abortTarget(record)));
+        yield* journal.put({ ...record, phase: "adopted" });
         return { projectId: home.projectId, threadId: home.threadId } satisfies AdoptResult;
       }),
     );
 
-  /** Undoes an adopted copy: settings and memory back as they were, a made project deleted. */
-  const abortTarget = (record: TargetMove) =>
+  /**
+   * Undoes a copy, whole or half-built: settings and memory back as they were
+   * (a moved MEMORY.md removed when there was none), a made project deleted.
+   * Each step tolerates the part never having been made.
+   */
+  const undoTarget = (record: TargetMove) =>
     Effect.gen(function* () {
       const previous = yield* decodeAssistantSettings(record.previousSettings).pipe(Effect.option);
       if (previous._tag === "Some") {
@@ -743,6 +838,8 @@ export const make = Effect.gen(function* () {
       }
       if (record.previousMemory !== null) {
         yield* fileSystem.writeFileString(memoryPath, record.previousMemory).pipe(Effect.ignore);
+      } else {
+        yield* fileSystem.remove(memoryPath, { force: true }).pipe(Effect.ignore);
       }
       if (record.created) {
         // Removes the coordinator thread and the marker with it, and frees the home folder.
@@ -781,8 +878,20 @@ export const make = Effect.gen(function* () {
           "Could not remove the cancelled copy",
         ).pipe(Effect.ignore);
       }
-      yield* journal.put({ ...record, phase: "aborted" });
     });
+
+  const abortTarget = (record: TargetMove) =>
+    undoTarget(record).pipe(Effect.andThen(journal.put({ ...record, phase: "aborted" })));
+
+  const fromMovePeer = (
+    record: { readonly peerId: string; readonly peerLabel: string },
+    from: MovePeer,
+  ) =>
+    record.peerId === from.environmentId
+      ? Effect.void
+      : Effect.fail(
+          fail(`Only ${record.peerLabel}, which started this move, can finish or cancel it.`),
+        );
 
   const abort: AssistantHomeShape["abort"] = (moveId, from) =>
     lock.withPermits(1)(
@@ -806,23 +915,26 @@ export const make = Effect.gen(function* () {
           });
           return { phase: "aborted" as const };
         }
+        yield* fromMovePeer(known.value, from);
         if (known.value.phase === "committed") {
           return yield* fail("That move already finished; move the Assistant back instead.");
         }
-        if (known.value.phase === "adopted") yield* abortTarget(known.value);
+        if (known.value.phase === "adopted" || known.value.phase === "preparing") {
+          yield* abortTarget(known.value);
+        }
         return { phase: "aborted" as const };
       }),
     );
 
-  const commit: AssistantHomeShape["commit"] = (moveId) =>
+  const commit: AssistantHomeShape["commit"] = (moveId, from) =>
     lock.withPermits(1)(
       Effect.gen(function* () {
         const known = yield* journal.getTarget(moveId);
-        if (Option.isNone(known) || known.value.phase === "aborted") {
-          return yield* fail("There is no such move to finish here.");
-        }
+        if (Option.isNone(known)) return yield* fail("There is no such move to finish here.");
         const record = known.value;
+        yield* fromMovePeer(record, from);
         if (record.phase === "committed") return { phase: "committed" as const };
+        if (record.phase !== "adopted") return yield* fail("There is no such move to finish here.");
         yield* setArchived(record.projectId, record.threadId, false);
         const asks = Array.isArray(record.asks) ? (record.asks as ReadonlyArray<MovedAsk>) : [];
         for (const ask of asks) yield* bridge.track({ ...ask, replyTo: record.threadId });
@@ -843,15 +955,15 @@ export const make = Effect.gen(function* () {
     );
 
   const moveStatus: AssistantHomeShape["moveStatus"] = (moveId) =>
-    journal
-      .get(moveId, "target")
-      .pipe(
-        Effect.map((known) =>
-          Option.isNone(known)
-            ? ({ phase: "unknown" } as const)
-            : ({ phase: known.value.phase } as MoveStatus),
-        ),
-      );
+    journal.get(moveId, "target").pipe(
+      Effect.map((known): MoveStatus => {
+        if (Option.isNone(known) || known.value.role !== "target") return { phase: "unknown" };
+        // A half-built copy is not ready: the source treats it as not adopted and rolls back.
+        return known.value.phase === "preparing"
+          ? { phase: "unknown" }
+          : { phase: known.value.phase };
+      }),
+    );
 
   /**
    * Finishes or undoes moves a timeout, crash or sleep interrupted. A source
@@ -864,7 +976,15 @@ export const make = Effect.gen(function* () {
     .withPermits(1)(
       Effect.gen(function* () {
         for (const record of yield* journal.list) {
-          if (record.role !== "source") continue;
+          // Under the lock no adopt is running: a `preparing` copy is what a crash left behind.
+          if (record.role === "target") {
+            if (record.phase === "preparing") yield* abortTarget(record);
+            continue;
+          }
+          if (record.role === "reclaim") {
+            if (record.phase === "yield-pending") yield* tellYield(record);
+            continue;
+          }
           if (record.phase === "done" || record.phase === "rolled-back") continue;
           const machine = (yield* reach.machines).find((entry) => entry.id === record.peerId) ?? {
             id: record.peerId,
@@ -924,6 +1044,11 @@ export const make = Effect.gen(function* () {
   const manage: AssistantHomeShape["manage"] = (input) =>
     Effect.gen(function* () {
       if (input.action === "status") return yield* status;
+      if (input.action === "reclaim") {
+        yield* reclaim;
+        yield* refreshTaskAuthority;
+        return yield* status;
+      }
       const { project } = yield* localAssistant;
       if (input.to === "local") {
         if (project !== undefined) return yield* status;
@@ -949,19 +1074,189 @@ export const make = Effect.gen(function* () {
       return { ...(yield* status), ...(notes.length > 0 ? { notes } : {}) };
     });
 
-  const guardEnsure = Effect.gen(function* () {
-    const { project } = yield* localAssistant;
-    if (project !== undefined) return;
-    for (const machine of yield* reach.machines) {
-      if (knownAssistantHost(machine.id, DateTime.toEpochMillis(yield* DateTime.now)) === true) {
-        const health = yield* reach.healthOf(machine.id);
-        const offline = health.status !== "connected" && health.status !== "unknown";
-        return yield* fail(
-          `Your Assistant runs on ${machine.label}${offline ? ", which is offline" : ""}. Open it there, or move it here in Settings, Assistant.`,
+  /** Linked machines this one took the Assistant back from, still owed a yield. */
+  const yieldOwed = journal.list.pipe(
+    Effect.map(
+      (moves) =>
+        new Set(
+          moves
+            .filter((move) => move.role === "reclaim" && move.phase === "yield-pending")
+            .map((move) => move.peerId),
+        ),
+    ),
+  );
+
+  const askHosts = (machine: ReachMachine) =>
+    reach
+      .call(machine, "describe", {}, caller, DescribeResult, {
+        timeout: MOVE_STEP_TIMEOUT,
+        fresh: true,
+      })
+      .pipe(
+        Effect.tap((described) =>
+          DateTime.now.pipe(
+            Effect.map((now) =>
+              noteAssistantHost(machine.id, {
+                hosts: described.assistant !== null,
+                at: DateTime.toEpochMillis(now),
+              }),
+            ),
+          ),
+        ),
+        Effect.map((described) => described.assistant !== null),
+      );
+
+  /**
+   * Before a client creates the Assistant here: refuses while a linked machine
+   * runs it, and brings back the copy that moved away from here (archived)
+   * instead of making a second, once every linked machine says it runs none.
+   */
+  const guardEnsure = lock.withPermits(1)(
+    Effect.gen(function* () {
+      const { project } = yield* localAssistant;
+      if (project !== undefined) return;
+      if ((yield* pendingMove) !== undefined) {
+        return yield* fail("Your Assistant is moving. It is back when the move finishes.");
+      }
+      const owed = yield* yieldOwed;
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const unknown: Array<ReachMachine> = [];
+      for (const machine of yield* reach.machines) {
+        if (owed.has(machine.id)) continue;
+        const known = knownAssistantHost(machine.id, now);
+        if (known === true) {
+          const health = yield* reach.healthOf(machine.id);
+          const offline = health.status !== "connected" && health.status !== "unknown";
+          return yield* fail(
+            `Your Assistant runs on ${machine.label}${offline ? ", which is offline" : ""}. Open it there, move it here, or take it back in Settings, Assistant.`,
+          );
+        }
+        if (known === undefined) unknown.push(machine);
+      }
+      const archived = yield* archivedAssistant;
+      if (archived === undefined) return;
+      // Reviving the copy that moved away: only once nothing else can be running it.
+      for (const machine of unknown) {
+        const hosts = yield* askHosts(machine).pipe(Effect.result);
+        if (hosts._tag === "Failure") {
+          return yield* fail(
+            `Could not check whether ${machine.label} runs your Assistant: ${hosts.failure.detail} If it is gone for good, take the Assistant back in Settings, Assistant.`,
+          );
+        }
+        if (hosts.success) {
+          return yield* fail(
+            `Your Assistant runs on ${machine.label}. Open it there, or move it here in Settings, Assistant.`,
+          );
+        }
+      }
+      yield* setArchived(archived.project.id, archived.threadId, false);
+    }),
+  );
+
+  /** Tells the machine the Assistant was taken back from to pause its copy. */
+  const tellYield = (record: ReclaimMove) =>
+    Effect.gen(function* () {
+      const machine = (yield* reach.machines).find((entry) => entry.id === record.peerId);
+      if (machine === undefined) {
+        // Unlinked since: nothing to tell.
+        yield* journal.put({ ...record, phase: "done" });
+        return;
+      }
+      const { thread } = yield* localAssistant;
+      const told = yield* reach
+        .call(machine, "assistant.yield", {}, yield* selfCaller(thread?.id ?? ""), YieldResult, {
+          timeout: MOVE_STEP_TIMEOUT,
+        })
+        .pipe(Effect.result);
+      if (told._tag === "Success") {
+        noteAssistantHost(record.peerId, {
+          hosts: false,
+          at: DateTime.toEpochMillis(yield* DateTime.now),
+        });
+        yield* journal.put({ ...record, phase: "done" });
+      }
+    });
+
+  /**
+   * The user takes the Assistant back to this machine while the machine that
+   * runs it is unreachable. The copy here (or a new one) goes live now; the
+   * other machine is told to pause its copy whenever it answers.
+   */
+  const reclaim = lock.withPermits(1)(
+    Effect.gen(function* () {
+      const { project } = yield* localAssistant;
+      if (project !== undefined) return;
+      if ((yield* pendingMove) !== undefined) {
+        return yield* fail("Your Assistant is moving. Wait for the move to finish.");
+      }
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const hosts = (yield* reach.machines).filter(
+        (machine) => knownAssistantHost(machine.id, now) === true,
+      );
+      for (const machine of hosts) {
+        const answer = yield* askHosts(machine).pipe(Effect.result);
+        if (answer._tag === "Success" && answer.success) {
+          return yield* fail(
+            `${machine.label} is online and runs your Assistant. Move it here instead.`,
+          );
+        }
+      }
+      const startedAt = yield* nowIso;
+      for (const machine of hosts) {
+        const moveId = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "");
+        yield* journal.put({
+          role: "reclaim",
+          moveId,
+          peerId: machine.id,
+          peerLabel: machine.label,
+          phase: "yield-pending",
+          startedAt,
+        });
+        noteAssistantHost(machine.id, { hosts: false, at: now });
+      }
+      const archived = yield* archivedAssistant;
+      if (archived !== undefined) {
+        yield* setArchived(archived.project.id, archived.threadId, false);
+        yield* note(
+          archived.threadId as string,
+          `assistant-home:reclaimed:${startedAt}`,
+          "Assistant taken back to this machine",
+          hosts.length === 0
+            ? "It runs here again."
+            : `It runs here again. ${hosts.map((machine) => machine.label).join(", ")} pauses its copy when it is back online.`,
         );
       }
-    }
-  });
+      for (const record of (yield* journal.list).filter(
+        (move): move is ReclaimMove => move.role === "reclaim" && move.phase === "yield-pending",
+      )) {
+        yield* tellYield(record);
+      }
+    }),
+  );
+
+  const yieldTo: AssistantHomeShape["yieldTo"] = (from) =>
+    lock.withPermits(1)(
+      Effect.gen(function* () {
+        const machine = yield* linkedMachine(from.environmentId);
+        // Only to a machine that runs one now, so a stray request cannot leave none.
+        const hosts = yield* askHosts(machine).pipe(Effect.mapError((error) => fail(error.detail)));
+        if (!hosts) {
+          return yield* fail(`${machine.label} does not run an Assistant, so the one here stays.`);
+        }
+        const { project, thread } = yield* localAssistant;
+        if (project === undefined) return { paused: false };
+        yield* setArchived(project.id, project.assistant.coordinatorThreadId, true);
+        if (thread !== undefined) yield* bridge.dropFor(thread.id);
+        yield* note(
+          project.assistant.coordinatorThreadId,
+          `assistant-home:yielded:${yield* nowIso}`,
+          `Assistant taken back by ${machine.label}`,
+          `This copy is read-only. Your Assistant runs on ${machine.label}, which took it back while this machine was unreachable.`,
+        );
+        yield* Effect.forkDetach(refreshTaskAuthority);
+        return { paused: true };
+      }),
+    );
 
   const linkBack: AssistantHomeShape["linkBack"] = ({ id, baseUrl }) =>
     Effect.gen(function* () {
@@ -990,7 +1285,7 @@ export const make = Effect.gen(function* () {
       return linked;
     });
 
-  const redeemLinkBack: AssistantHomeShape["redeemLinkBack"] = (pairingUrl, from) =>
+  const redeemLinkBack: AssistantHomeShape["redeemLinkBack"] = (pairingUrl, from, confirm) =>
     Effect.gen(function* () {
       // The link must lead to the machine that asked, not wherever the body points.
       const target = yield* Effect.try({
@@ -1004,15 +1299,24 @@ export const make = Effect.gen(function* () {
       if (descriptor.environmentId !== from.environmentId) {
         return yield* fail("The pairing link is for a different machine than the one asking.");
       }
-    }).pipe(
-      Effect.andThen(agentMachines.manage({ action: "link", pairingUrl })),
-      Effect.mapError((error) => fail(error.detail)),
-      Effect.flatMap((result) =>
-        result.linked === undefined
-          ? Effect.fail(fail("The link was not saved."))
-          : Effect.succeed(result.linked),
-      ),
-    );
+      const confirmed = confirm.pipe(Effect.mapError((error) => fail(error.message)));
+      const existed = (yield* reach.machines).some((machine) => machine.id === from.environmentId);
+      if (existed) yield* confirmed;
+      const result = yield* agentMachines
+        .manage({ action: "link", pairingUrl })
+        .pipe(Effect.mapError((error) => fail(error.detail)));
+      if (result.linked === undefined) return yield* fail("The link was not saved.");
+      const linked = result.linked;
+      if (!existed) {
+        // New link: now this machine can ask the one that asked. Undo it unless that machine sent this.
+        yield* confirmed.pipe(
+          Effect.tapError(() =>
+            agentMachines.manage({ action: "unlink", id: linked.id }).pipe(Effect.ignore),
+          ),
+        );
+      }
+      return linked;
+    });
 
   const handoff: AssistantHomeShape["handoff"] = (toEnvironmentId) =>
     linkedMachine(toEnvironmentId).pipe(Effect.flatMap(moveFromHere), Effect.asVoid);
@@ -1027,6 +1331,7 @@ export const make = Effect.gen(function* () {
     abort,
     moveStatus,
     handoff,
+    yieldTo,
     redeemLinkBack,
     reconcile,
   } satisfies AssistantHomeShape;

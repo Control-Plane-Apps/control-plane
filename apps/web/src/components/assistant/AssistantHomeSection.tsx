@@ -28,6 +28,7 @@ import {
   machineStateText,
   offlineHomeText,
   pendingMoveText,
+  reclaimWarning,
   runsOnOptions,
 } from "./assistantHome.logic";
 
@@ -84,20 +85,41 @@ export function useAssistantHomeStatus(environmentId: EnvironmentId | null, conn
     [assistantHome, environmentId, refresh],
   );
 
-  return { state, refresh, move };
+  const reclaim = useCallback(async (): Promise<AssistantHomeStatus | null> => {
+    if (environmentId === null) return null;
+    const result = await assistantHome({ environmentId, input: { action: "reclaim" } });
+    if (result._tag === "Success") {
+      setState({ phase: "ready", status: result.value });
+      return result.value;
+    }
+    if (!isAtomCommandInterrupted(result)) {
+      toastManager.add({
+        type: "error",
+        title: "The Assistant was not taken back",
+        description: agentMachinesErrorMessage(squashAtomCommandFailure(result)),
+      });
+      void refresh();
+    }
+    return null;
+  }, [assistantHome, environmentId, refresh]);
+
+  return { state, refresh, move, reclaim };
 }
 
 export function AssistantHomeSection({
   localLabel,
   state,
   onMove,
+  onReclaim,
 }: {
   /** The machine these settings are read from. */
   readonly localLabel: string;
   readonly state: AssistantHomeState;
   readonly onMove: (to: string) => Promise<AssistantHomeStatus | null>;
+  readonly onReclaim: () => Promise<AssistantHomeStatus | null>;
 }) {
   const [pending, setPending] = useState<{ value: string; label: string } | null>(null);
+  const [reclaiming, setReclaiming] = useState(false);
   const [busy, setBusy] = useState(false);
 
   if (state.phase !== "ready") {
@@ -119,6 +141,20 @@ export function AssistantHomeSection({
   const selected = currentHome(status);
   const offline = offlineHomeText(status);
   const moving = pendingMoveText(status);
+  const takeBack = reclaimWarning(status);
+
+  const confirmReclaim = async () => {
+    setBusy(true);
+    const done = await onReclaim();
+    setBusy(false);
+    setReclaiming(false);
+    if (done !== null) {
+      toastManager.add({
+        type: "success",
+        title: `Your Assistant runs on ${localLabel} again`,
+      });
+    }
+  };
 
   const confirm = async () => {
     if (pending === null) return;
@@ -194,6 +230,17 @@ export function AssistantHomeSection({
           </Select>
         }
       />
+      {takeBack !== null ? (
+        <SettingsRow
+          title="Take the Assistant back"
+          description={`${status.elsewhere?.label} cannot be reached. Run the Assistant on ${localLabel} instead.`}
+          control={
+            <Button size="xs" variant="outline" disabled={busy} onClick={() => setReclaiming(true)}>
+              Take it back
+            </Button>
+          }
+        />
+      ) : null}
       {status.machines.map((machine) => (
         <SettingsRow
           key={machine.id}
@@ -231,6 +278,22 @@ export function AssistantHomeSection({
             </AlertDialogClose>
             <Button onClick={() => void confirm()} disabled={busy}>
               {busy ? "Moving…" : "Move Assistant"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <AlertDialog open={reclaiming} onOpenChange={(open) => !open && setReclaiming(false)}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Take the Assistant back to {localLabel}?</AlertDialogTitle>
+            <AlertDialogDescription>{takeBack}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={busy} />}>
+              Cancel
+            </AlertDialogClose>
+            <Button variant="destructive" onClick={() => void confirmReclaim()} disabled={busy}>
+              {busy ? "Taking it back…" : "Take it back"}
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>

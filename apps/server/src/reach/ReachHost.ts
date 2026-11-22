@@ -446,7 +446,7 @@ export const make = Effect.gen(function* () {
         );
       case "assistant.commit":
         return decode(MoveIdInput)(request.input).pipe(
-          Effect.flatMap((input) => home.commit(input.moveId)),
+          Effect.flatMap((input) => home.commit(input.moveId, peerOf(request))),
         );
       case "assistant.abort":
         return decode(MoveIdInput)(request.input).pipe(
@@ -467,9 +467,13 @@ export const make = Effect.gen(function* () {
           ),
           Effect.as({ moved: true }),
         );
+      case "assistant.yield":
+        return home.yieldTo(peerOf(request));
       case "link.back":
         return decode(LinkBackInput)(request.input).pipe(
-          Effect.flatMap((input) => home.redeemLinkBack(input.pairingUrl, peerOf(request))),
+          Effect.flatMap((input) =>
+            home.redeemLinkBack(input.pairingUrl, peerOf(request), verifyCaller(request)),
+          ),
         );
       case "schedule.list":
         return scheduleScope(request).pipe(Effect.flatMap(({ scope }) => scheduleCore.list(scope)));

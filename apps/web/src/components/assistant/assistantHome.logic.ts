@@ -124,3 +124,13 @@ export function pendingMoveText(status: AssistantHomeStatus): string | null {
   if (status.pendingMove === undefined) return null;
   return `Moving your Assistant to ${status.pendingMove.label}. It is paused until ${status.pendingMove.label} confirms, and finishes on its own when it answers.`;
 }
+
+/**
+ * The machine that runs the Assistant is unreachable: the warning before
+ * taking it back here, or null when that is not offered.
+ */
+export function reclaimWarning(status: AssistantHomeStatus): string | null {
+  if (status.canReclaim !== true || status.elsewhere === null) return null;
+  const label = status.elsewhere.label;
+  return `Your Assistant starts running here again from the copy this machine last had, so anything it learned or said on ${label} since stays there. When ${label} is back online it pauses its copy, so only one Assistant acts for you. Use this only if ${label} is gone or off for a long time; otherwise wait for it.`;
+}

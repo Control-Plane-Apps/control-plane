@@ -7,6 +7,7 @@ import {
   moveBlockedReason,
   offlineHomeText,
   pendingMoveText,
+  reclaimWarning,
   remoteReachGroups,
   runsOnOptions,
   toggleReach,
@@ -81,6 +82,17 @@ describe("a move that has not finished", () => {
     ).toBe(
       "Moving your Assistant to Mac mini. It is paused until Mac mini confirms, and finishes on its own when it answers.",
     );
+  });
+});
+
+describe("taking the Assistant back", () => {
+  it("is offered only while its machine cannot be reached, with what it costs", () => {
+    const away = { here: false, elsewhere: { id: "env-mini", label: "Mac mini" } };
+    expect(reclaimWarning(status(away))).toBeNull();
+    expect(reclaimWarning(status({ canReclaim: true }))).toBeNull();
+    const warning = reclaimWarning(status({ ...away, canReclaim: true }));
+    expect(warning).toContain("anything it learned or said on Mac mini since stays there");
+    expect(warning).toContain("When Mac mini is back online it pauses its copy");
   });
 });
 

@@ -6,13 +6,21 @@
  * - The source records `adopting` before it pauses its Assistant, then
  *   `committing`, then `done` or `rolled-back`. `abort-pending` means it
  *   resumed its own Assistant but still owes the target an abort.
- * - The target records `adopted` (a paused copy is ready), then `committed`
- *   or `aborted`. An `aborted` entry refuses a late adopt with the same id.
+ * - The target records `preparing` before it creates anything, `adopted`
+ *   once the paused copy is complete, then `committed` or `aborted`. An
+ *   `aborted` entry refuses a late adopt with the same id.
+ * - A `reclaim` entry: the user took the Assistant back here while its home
+ *   machine was unreachable; `yield-pending` keeps telling that machine to
+ *   pause its copy until it answers.
+ *
+ * An unreadable journal fails every call (fail closed): rolling back without
+ * knowing what the other machine did could leave two live Assistants.
  *
  * Fork-owned; see docs/internals/assistant-cross-server-reach.md.
  *
  * @module assistantMoves
  */
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -29,7 +37,8 @@ export const SourcePhase = Schema.Literals([
   "done",
   "rolled-back",
 ]);
-export const TargetPhase = Schema.Literals(["adopted", "committed", "aborted"]);
+export const TargetPhase = Schema.Literals(["preparing", "adopted", "committed", "aborted"]);
+export const ReclaimPhase = Schema.Literals(["yield-pending", "done"]);
 
 export const MoveRecord = Schema.Union([
   Schema.Struct({
@@ -61,10 +70,25 @@ export const MoveRecord = Schema.Union([
     asks: Schema.Unknown,
     startedAt: Schema.String,
   }),
+  Schema.Struct({
+    role: Schema.Literal("reclaim"),
+    moveId: Schema.String,
+    /** The machine that ran the Assistant and must pause its copy. */
+    peerId: Schema.String,
+    peerLabel: Schema.String,
+    phase: ReclaimPhase,
+    startedAt: Schema.String,
+  }),
 ]);
 export type MoveRecord = typeof MoveRecord.Type;
 export type SourceMove = Extract<MoveRecord, { role: "source" }>;
 export type TargetMove = Extract<MoveRecord, { role: "target" }>;
+export type ReclaimMove = Extract<MoveRecord, { role: "reclaim" }>;
+
+/** The journal exists but cannot be read or parsed. */
+export class MoveJournalUnreadable extends Data.TaggedError("MoveJournalUnreadable")<{
+  readonly detail: string;
+}> {}
 
 const FileJson = Schema.fromJsonString(
   Schema.Struct({ version: Schema.Literal(1), moves: Schema.Array(MoveRecord) }),
@@ -85,9 +109,24 @@ export const makeMoveJournal = (stateDir: string) =>
 
     const load = Effect.gen(function* () {
       if (cache !== null) return cache;
-      const raw = yield* fileSystem.readFileString(filePath).pipe(Effect.orElseSucceed(() => ""));
-      const decoded = raw.length === 0 ? Option.none() : decodeFile(raw);
-      cache = Option.isSome(decoded) ? [...decoded.value.moves] : [];
+      const unreadable = new MoveJournalUnreadable({
+        detail: `The Assistant move journal (${filePath}) cannot be read, so no move is finished or undone until it is fixed or removed.`,
+      });
+      const exists = yield* fileSystem.exists(filePath).pipe(Effect.mapError(() => unreadable));
+      if (!exists) {
+        cache = [];
+        return cache;
+      }
+      const raw = yield* fileSystem
+        .readFileString(filePath)
+        .pipe(Effect.mapError(() => unreadable));
+      if (raw.trim().length === 0) {
+        cache = [];
+        return cache;
+      }
+      const decoded = decodeFile(raw);
+      if (Option.isNone(decoded)) return yield* unreadable;
+      cache = [...decoded.value.moves];
       return cache;
     });
 
@@ -128,7 +167,12 @@ export const makeMoveJournal = (stateDir: string) =>
         Effect.map(Option.filter((move): move is TargetMove => move.role === "target")),
       );
 
-    return { list, get, getTarget, put };
+    const getReclaim = (moveId: string) =>
+      get(moveId, "reclaim").pipe(
+        Effect.map(Option.filter((move): move is ReclaimMove => move.role === "reclaim")),
+      );
+
+    return { list, get, getTarget, getReclaim, put };
   });
 
 export type MoveJournal = Effect.Success<ReturnType<typeof makeMoveJournal>>;

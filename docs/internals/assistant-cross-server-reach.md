@@ -125,7 +125,7 @@ are linked both ways; the answers are collected by the asking server, which only
   `orchestration:operate`, which only pairing this server issues.
 - **Caller identity is verified, not claimed.** The body names the caller, but before any op that
   acts for it (ask, status writes, thread sends, notes, task handoffs, schedule writes, and in
-  phase 2 the move ops) the callee asks that machine over the callee's own link, whose identity is
+  phase 2 the move ops and `assistant.yield`) the callee asks that machine over the callee's own link, whose identity is
   pinned by descriptor, whether it sent this exact request (`confirm` op, `reach/reachSent.ts`):
   the same request id, op and input hash, sent to this receiver, within five minutes. So a machine
   that received a real request cannot replay it to another machine, or with another op or input,
@@ -191,13 +191,17 @@ timeout or crash never leaves two Assistants, and an interrupted move finishes o
    running here.
 2. **Pause here.** Journal `adopting`, then archive the Assistant marker here (stops its
    schedules, holds results, `describe` reports no Assistant).
-3. **Adopt** (`assistant.adopt`, body limit 64 MB, 60 second timeout). The target builds a
-   **paused** copy: settings, schedules with prompts, `MEMORY.md`, the last 200 messages, open
+3. **Adopt** (`assistant.adopt`, body limit 64 MB, 60 second timeout). The target first journals
+   `preparing` with the ids it is about to use and what it will overwrite (settings, memory,
+   whether it creates the Project), then builds a copy that is **paused from its first command**
+   (the Assistant marker is written already archived), and journals `adopted` once it is whole.
+   A crash in between leaves a `preparing` entry naming everything made: reconcile on restart, an
+   abort, or a retried adopt with the same id removes it first. The copy holds: settings, schedules with prompts, `MEMORY.md`, the last 200 messages, open
    asks kept for later. It is idempotent by move id: a retry returns the same copy. A target that
    already holds an archived Assistant (the A to B to A case) reuses that Project and its home
    folder, with a fresh coordinator thread for the imported conversation; otherwise it creates one.
-   It journals what it overwrote (settings, memory) and whether it created the Project.
-4. **Commit** (`assistant.commit`): the target puts its copy live and starts polling the asks.
+4. **Commit** (`assistant.commit`): only from the machine named in the target's journal entry
+   (commit and abort from any other linked machine are refused). The target puts its copy live and starts polling the asks.
    Only the source sends a commit, and only after a successful adopt, so the target's copy can
    never be live while the source's is.
 5. **Outcomes on the source:**
@@ -209,19 +213,43 @@ timeout or crash never leaves two Assistants, and an interrupted move finishes o
    - Commit unanswered (timeout, asleep): stay paused here (zero live, never two) and show "Moving
      to <machine>" in Settings. The reconcile loop asks the target (`assistant.moveStatus`):
      committed means done, a paused copy gets the commit again, anything else resumes here.
-6. **Abort on the target** puts back the settings and `MEMORY.md` it overwrote and deletes the
+6. **Abort on the target** puts back the settings and `MEMORY.md` it overwrote (removing the moved
+   `MEMORY.md` when there was none) and deletes the
    Project it created (force delete, which frees the home folder), or, when it reused an archived
    one, points it back at its old coordinator. An abort for an unknown move id is recorded, so a
    late adopt with that id is refused.
 7. **Reconcile** runs at startup and every minute, so a source that crashed mid-move resumes its
-   own copy (from `adopting`) or finishes (from `committing`) once the target answers.
+   own copy (from `adopting`) or finishes (from `committing`) once the target answers, and a target
+   removes a `preparing` copy a crash left.
+8. **Fail closed.** A journal that exists but cannot be read or parsed fails every move call and
+   reconcile instead of reading as empty: rolling back without knowing whether the target went live
+   could leave two Assistants. Settings shows the error until the file is fixed or removed.
+
+### When the Assistant's machine is gone
+
+- **Opening the Assistant** on a machine that holds the archived copy (it moved away from here)
+  brings that copy back instead of creating a second, but only after every linked machine without
+  a fresh answer says, asked now, that it runs none. One that cannot be asked blocks it with a
+  pointer to taking it back.
+- **"Take the Assistant back to this machine"** (Settings, Assistant, shown while the machine that
+  runs it cannot be reached): after a confirm that warns that anything learned there since stays
+  there, this machine revives its archived copy (or lets the client create one) and journals a
+  `reclaim` entry owing that machine a yield. Reconcile sends `assistant.yield` until it answers;
+  the old home pauses its copy only if the caller runs a live Assistant when asked, so a stray yield
+  can never leave none. Refused while that machine answers and still runs it (move it instead).
 
 Schedules aimed at other threads of the Assistant's Project cannot exist on the target: they move
 aimed at the Assistant, paused, and the move result lists each one (shown in the success toast).
 
-Move ops and link back are verified like every write: the target confirms the request with the
-source over its own link. Link back also checks that the server behind the pairing link reports
-the environment id of the machine asking.
+Move ops and `assistant.yield` are verified like every write: the target confirms the request
+with the source over its own link. `link.back` is the one write that cannot be checked first when
+the link is new, since the link it would ask over does not exist yet. It is checked in two steps:
+the server behind the pairing link must report the environment id of the machine asking, and right
+after the link is saved this machine asks the asker over it (the same `confirm`, single-use id)
+whether it sent this exact request. If it says no or cannot answer, the new link is removed and
+nothing else happened. When the link already exists, it is confirmed before redeeming, like any
+write. What an attacker with a stolen bearer token could still do: make this machine hold a link to
+the genuine asking machine for the moment before the confirm fails.
 
 ### Linking both ways from the normal pairing UI
 

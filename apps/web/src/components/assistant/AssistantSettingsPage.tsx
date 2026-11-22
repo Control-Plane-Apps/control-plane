@@ -155,6 +155,7 @@ export function AssistantSettingsPage() {
         localLabel={environment?.label ?? "This machine"}
         state={home.state}
         onMove={home.move}
+        onReclaim={home.reclaim}
       />
 
       {awayLabel !== null ? (

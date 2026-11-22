@@ -1,4 +1,5 @@
 import {
+  AssistantHomeError,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -15,6 +16,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 
@@ -38,6 +40,7 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { AssistantHome, make as makeAssistantHome, suggestedAddresses } from "./AssistantHome.ts";
+import { MoveRecord } from "./assistantMoves.ts";
 import { ReachBridge, type ReachAskRecord } from "./ReachBridge.ts";
 import type { AssistantBundle } from "./reachProtocol.ts";
 import { noteAssistantHost } from "./taskAuthority.ts";
@@ -58,6 +61,8 @@ let commitAnswer: "committed" | "timeout" | "refuse" = "committed";
 let abortAnswer: "aborted" | "offline" = "aborted";
 let statusAnswer: "adopted" | "committed" | "aborted" | "unknown" = "committed";
 const adoptedBundles: Array<AssistantBundle> = [];
+/** Whether the mini says it runs a live Assistant. */
+let miniHosts = false;
 const calls: Array<string> = [];
 
 const mini: ScriptedMachine = {
@@ -67,7 +72,12 @@ const mini: ScriptedMachine = {
   answer: (op, input) => {
     switch (op) {
       case "describe":
-        return { environmentId: "env-mini", label: "Mac mini", assistant: null, linked: [SELF] };
+        return {
+          environmentId: "env-mini",
+          label: "Mac mini",
+          assistant: miniHosts ? { threadId: "mini-assistant", projectId: "mini-home" } : null,
+          linked: [SELF],
+        };
       case "overview":
         return { projects: [], workspaces: [] };
       case "assistant.adopt":
@@ -80,6 +90,7 @@ const mini: ScriptedMachine = {
         calls.push(op);
         if (commitAnswer === "timeout") throw new Error("timeout: no answer");
         if (commitAnswer === "refuse") throw new Error("There is no such move to finish here.");
+        miniHosts = true;
         return { phase: "committed" };
       case "assistant.abort":
         calls.push(op);
@@ -88,6 +99,9 @@ const mini: ScriptedMachine = {
       case "assistant.moveStatus":
         calls.push(op);
         return { phase: statusAnswer };
+      case "assistant.yield":
+        calls.push(op);
+        return { paused: true };
       default:
         throw new Error(`unexpected ${op}`);
     }
@@ -293,6 +307,29 @@ const briefUpdatedAt = Effect.flatMap(ProjectionSnapshotQuery, (snapshots) =>
     ),
 );
 
+const journalPath = Effect.map(ServerConfig, (config) => `${config.stateDir}/assistant-moves.json`);
+const JournalJson = Schema.fromJsonString(
+  Schema.Struct({ version: Schema.Literal(1), moves: Schema.Array(MoveRecord) }),
+);
+const readJournal = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const raw = yield* fs.readFileString(yield* journalPath);
+  return (yield* Schema.decodeUnknownEffect(JournalJson)(raw)).moves;
+});
+const writeJournal = (moves: ReadonlyArray<MoveRecord>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const contents = yield* Schema.encodeEffect(JournalJson)({ version: 1, moves });
+    yield* fs.writeFileString(yield* journalPath, contents);
+  });
+const projectIds = Effect.flatMap(ProjectionSnapshotQuery, (snapshots) =>
+  snapshots
+    .getShellSnapshot()
+    .pipe(Effect.map((snapshot) => snapshot.projects.map((p) => p.id as string))),
+);
+/** Long enough ago that what a machine said has expired. */
+const LONG_AGO = -4 * 24 * 60 * 60 * 1000;
+
 const liveAssistant = Effect.flatMap(ProjectionSnapshotQuery, (snapshots) =>
   snapshots
     .getShellSnapshot()
@@ -311,6 +348,7 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     abortAnswer = "aborted";
     statusAnswer = "committed";
     mini.online = true;
+    miniHosts = false;
     noteAssistantHost("env-mini", { hosts: false, at: 0 });
     pairingServerId = "env-mini";
     linked = [];
@@ -405,12 +443,12 @@ describe("AssistantHome", () => {
         expect(tracked).toEqual([]);
         expect(yield* home.moveStatus("move1")).toEqual({ phase: "adopted" });
 
-        expect(yield* home.commit("move1")).toEqual({ phase: "committed" });
+        expect(yield* home.commit("move1", FROM)).toEqual({ phase: "committed" });
         const project = yield* liveAssistant;
         expect(project?.id).toBe(created.projectId);
         expect(project?.assistant?.schedules?.map((schedule) => schedule.id)).toEqual(["check-in"]);
         expect(tracked.map((record) => record.replyTo)).toEqual([created.threadId]);
-        expect(yield* home.commit("move1")).toEqual({ phase: "committed" });
+        expect(yield* home.commit("move1", FROM)).toEqual({ phase: "committed" });
 
         const again = yield* home.adopt(bundle("move2"), FROM).pipe(Effect.flip);
         expect(again.detail).toBe("This machine already runs an Assistant.");
@@ -480,7 +518,7 @@ describe("AssistantHome", () => {
         );
         expect(returned.projectId).toBe("old-home");
         expect(returned.threadId).not.toBe("old-assistant");
-        yield* home.commit("move-back");
+        yield* home.commit("move-back", FROM);
         expect(
           (yield* liveAssistant)?.assistant?.schedules?.map((schedule) => [
             schedule.id,
@@ -623,18 +661,58 @@ describe("AssistantHome", () => {
         const url = "http://127.0.0.1:47781/pair#token=ABCDEF123456";
         pairingServerId = "env-attacker";
         const refused = yield* home
-          .redeemLinkBack(url, { environmentId: "env-mini", label: "Mac mini" })
+          .redeemLinkBack(url, { environmentId: "env-mini", label: "Mac mini" }, Effect.void)
           .pipe(Effect.flip);
         expect(refused.detail).toBe(
           "The pairing link is for a different machine than the one asking.",
         );
         expect(linked).toEqual([]);
         pairingServerId = "env-mini";
-        const done = yield* home.redeemLinkBack(url, {
-          environmentId: "env-mini",
-          label: "Mac mini",
-        });
+        const done = yield* home.redeemLinkBack(
+          url,
+          { environmentId: "env-mini", label: "Mac mini" },
+          Effect.void,
+        );
         expect(done).toEqual({ id: "env-mini", label: "Mac mini" });
+        expect(linked).toEqual(["link"]);
+      }),
+    ),
+  );
+
+  it.effect("checks who asked for a link back: first when linked, over the new link when not", () =>
+    run(
+      Effect.gen(function* () {
+        const home = yield* AssistantHome;
+        const url = "http://127.0.0.1:47781/pair#token=ABCDEF123456";
+        const order: Array<string> = [];
+        const says = (sent: boolean) =>
+          Effect.sync(() => void order.push(`confirm after ${linked.length} link calls`)).pipe(
+            Effect.andThen(
+              sent
+                ? Effect.void
+                : Effect.fail(
+                    new AssistantHomeError({
+                      detail: "Mac mini did not send this request, so nothing was done.",
+                    }),
+                  ),
+            ),
+          );
+        // Already linked: confirmed before anything changes; a no changes nothing.
+        const refused = yield* home
+          .redeemLinkBack(url, { environmentId: "env-mini", label: "Mac mini" }, says(false))
+          .pipe(Effect.flip);
+        expect(refused.detail).toContain("did not send this request");
+        expect(order).toEqual(["confirm after 0 link calls"]);
+        expect(linked).toEqual([]);
+        // A new machine: the link has to exist to ask it, so it is removed again on a no.
+        pairingServerId = "env-new";
+        const fromNew = { environmentId: "env-new", label: "New Mac" };
+        yield* home.redeemLinkBack(url, fromNew, says(false)).pipe(Effect.flip);
+        expect(linked).toEqual(["link", "unlink"]);
+        linked = [];
+        expect(yield* home.redeemLinkBack(url, fromNew, says(true))).toMatchObject({
+          id: "env-new",
+        });
         expect(linked).toEqual(["link"]);
       }),
     ),
@@ -647,6 +725,201 @@ describe("AssistantHome", () => {
         const home = yield* AssistantHome;
         const outcome = yield* home.guardEnsure.pipe(Effect.flip);
         expect(outcome.detail).toContain("Your Assistant runs on Mac mini");
+      }),
+    ),
+  );
+  it.effect("a crash mid-adopt leaves a paused, journaled copy that reconcile removes", () =>
+    run(
+      Effect.gen(function* () {
+        const home = yield* AssistantHome;
+        const created = yield* home.adopt(bundle("crash1"), FROM);
+        // Never live, even before the commit.
+        expect(yield* liveAssistant).toBeUndefined();
+        // As if the server died before it recorded `adopted`: the journal already names the copy.
+        const moves = yield* readJournal;
+        expect(moves.find((move) => move.moveId === "crash1")).toMatchObject({
+          role: "target",
+          projectId: created.projectId,
+        });
+        yield* writeJournal(
+          moves.map((move) =>
+            move.moveId === "crash1" ? ({ ...move, phase: "preparing" } as MoveRecord) : move,
+          ),
+        );
+        // The restarted server reconciles: the half-built copy and its memory are gone.
+        const restarted = yield* makeAssistantHome;
+        expect(yield* restarted.moveStatus("crash1")).toEqual({ phase: "unknown" });
+        yield* restarted.reconcile;
+        expect(yield* projectIds).not.toContain(created.projectId);
+        expect(yield* readMemory).toBeNull();
+        expect(yield* restarted.moveStatus("crash1")).toEqual({ phase: "aborted" });
+        expect(yield* liveAssistant).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect(
+    "a retried adopt after a crash rebuilds the copy instead of returning a broken one",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const home = yield* AssistantHome;
+          const first = yield* home.adopt(bundle("crash2"), FROM);
+          yield* writeJournal(
+            (yield* readJournal).map((move) =>
+              move.moveId === "crash2" ? ({ ...move, phase: "preparing" } as MoveRecord) : move,
+            ),
+          );
+          const restarted = yield* makeAssistantHome;
+          const second = yield* restarted.adopt(bundle("crash2"), FROM);
+          expect(second.projectId).not.toBe(first.projectId);
+          expect(yield* projectIds).not.toContain(first.projectId);
+          expect(yield* restarted.moveStatus("crash2")).toEqual({ phase: "adopted" });
+          expect(yield* liveAssistant).toBeUndefined();
+        }),
+      ),
+  );
+
+  it.effect("a failed adopt removes what it made", () =>
+    run(
+      Effect.gen(function* () {
+        const home = yield* AssistantHome;
+        const before = yield* projectIds;
+        const failed = yield* home
+          .adopt({ ...bundle("bad"), settings: { messageCoordinators: "yes" } }, FROM)
+          .pipe(Effect.flip);
+        expect(failed.detail).toContain("settings could not be read");
+        expect(yield* projectIds).toEqual(before);
+        expect(yield* home.moveStatus("bad")).toEqual({ phase: "aborted" });
+      }),
+    ),
+  );
+
+  it.effect("an unreadable journal fails closed: no rollback, no adopt", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const home = yield* AssistantHome;
+        commitAnswer = "timeout";
+        yield* home.manage({ action: "move", to: "env-mini" }).pipe(Effect.flip);
+        expect(yield* liveAssistant).toBeUndefined();
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(yield* journalPath, "{ not json");
+        statusAnswer = "aborted";
+        const restarted = yield* makeAssistantHome;
+        yield* restarted.reconcile;
+        // Still paused: it cannot know the target did not go live.
+        expect(yield* liveAssistant).toBeUndefined();
+        const refused = yield* restarted.adopt(bundle("other"), FROM).pipe(Effect.flip);
+        expect(refused.detail).toContain("cannot be read");
+        expect((yield* restarted.manage({ action: "status" }).pipe(Effect.flip)).detail).toContain(
+          "cannot be read",
+        );
+      }),
+    ),
+  );
+
+  it.effect("only the machine that started a move can commit or abort it", () =>
+    run(
+      Effect.gen(function* () {
+        const home = yield* AssistantHome;
+        yield* home.adopt(bundle("mine"), FROM);
+        const stranger = { environmentId: "env-other", label: "Other" };
+        expect((yield* home.commit("mine", stranger).pipe(Effect.flip)).detail).toBe(
+          "Only MacBook Air, which started this move, can finish or cancel it.",
+        );
+        expect((yield* home.abort("mine", stranger).pipe(Effect.flip)).detail).toContain(
+          "Only MacBook Air",
+        );
+        expect(yield* home.moveStatus("mine")).toEqual({ phase: "adopted" });
+        expect(yield* liveAssistant).toBeUndefined();
+        expect(yield* home.commit("mine", FROM)).toEqual({ phase: "committed" });
+      }),
+    ),
+  );
+
+  it.effect("abort removes the moved memory when this machine had none", () =>
+    run(
+      Effect.gen(function* () {
+        const home = yield* AssistantHome;
+        expect(yield* readMemory).toBeNull();
+        yield* home.adopt(bundle("nomem"), FROM);
+        expect(yield* readMemory).toBe("# Big memory");
+        yield* home.abort("nomem", FROM);
+        expect(yield* readMemory).toBeNull();
+      }),
+    ),
+  );
+
+  it.effect("opening the Assistant brings back the archived copy once no machine runs one", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const home = yield* AssistantHome;
+        yield* home.manage({ action: "move", to: "env-mini" });
+        expect(yield* liveAssistant).toBeUndefined();
+        // While the mini is known to run it: refused.
+        expect((yield* home.guardEnsure.pipe(Effect.flip)).detail).toContain(
+          "Your Assistant runs on Mac mini",
+        );
+        // That answer expired and the mini is offline: cannot check, so it points at taking it back.
+        noteAssistantHost("env-mini", { hosts: true, at: LONG_AGO });
+        mini.online = false;
+        expect((yield* home.guardEnsure.pipe(Effect.flip)).detail).toContain(
+          "take the Assistant back in Settings, Assistant",
+        );
+        expect(yield* liveAssistant).toBeUndefined();
+        // The mini answers that it runs none: the archived copy comes back, no second one made.
+        mini.online = true;
+        miniHosts = false;
+        yield* home.guardEnsure;
+        expect((yield* liveAssistant)?.id).toBe("old-home");
+      }),
+    ),
+  );
+
+  it.effect("takes the Assistant back while its machine is gone; that machine yields later", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const home = yield* AssistantHome;
+        yield* home.manage({ action: "move", to: "env-mini" });
+        // Online and running it: move it instead.
+        expect((yield* home.manage({ action: "reclaim" }).pipe(Effect.flip)).detail).toContain(
+          "Mac mini is online and runs your Assistant",
+        );
+        mini.online = false;
+        const status = yield* home.manage({ action: "status" });
+        expect(status.canReclaim).toBe(true);
+        calls.length = 0;
+        const after = yield* home.manage({ action: "reclaim" });
+        expect(after.here).toBe(true);
+        expect((yield* liveAssistant)?.id).toBe("old-home");
+        expect(calls).toEqual([]);
+        // The mini comes back: reconcile tells it to pause its copy, once.
+        mini.online = true;
+        yield* home.reconcile;
+        expect(calls).toEqual(["assistant.yield"]);
+        yield* home.reconcile;
+        expect(calls).toEqual(["assistant.yield"]);
+      }),
+    ),
+  );
+
+  it.effect("yields its Assistant only to a machine that runs one", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const home = yield* AssistantHome;
+        const fromMini = { environmentId: "env-mini", label: "Mac mini" };
+        expect((yield* home.yieldTo(fromMini).pipe(Effect.flip)).detail).toBe(
+          "Mac mini does not run an Assistant, so the one here stays.",
+        );
+        expect((yield* liveAssistant)?.id).toBe("old-home");
+        miniHosts = true;
+        expect(yield* home.yieldTo(fromMini)).toEqual({ paused: true });
+        expect(yield* liveAssistant).toBeUndefined();
+        expect(dropped).toEqual(["old-assistant"]);
       }),
     ),
   );

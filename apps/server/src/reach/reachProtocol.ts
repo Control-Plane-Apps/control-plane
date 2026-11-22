@@ -39,6 +39,7 @@ export const ReachOp = Schema.Literals([
   "assistant.abort",
   "assistant.moveStatus",
   "assistant.handoff",
+  "assistant.yield",
   "link.back",
 ]);
 export type ReachOp = typeof ReachOp.Type;
@@ -223,6 +224,7 @@ export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
   "assistant.commit",
   "assistant.abort",
   "assistant.handoff",
+  "assistant.yield",
 ]);
 
 /** Everything that moves with the Assistant. */
@@ -272,6 +274,7 @@ export const LinkBackInput = Schema.Struct({ pairingUrl: Schema.String });
 export const LinkBackResult = Schema.Struct({ id: Schema.String, label: Schema.String });
 
 export const MoveIdInput = Schema.Struct({ moveId: Schema.String });
+export const YieldResult = Schema.Struct({ paused: Schema.Boolean });
 export const MoveStatusResult = Schema.Struct({
   phase: Schema.Literals(["adopted", "committed", "aborted", "unknown"]),
 });
