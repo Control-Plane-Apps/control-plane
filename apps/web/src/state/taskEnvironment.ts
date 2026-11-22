@@ -10,6 +10,8 @@ export interface TaskEnvironmentCandidate {
    * still reconnecting after a restart.
    */
   readonly supportsTasks: boolean | null;
+  /** Its server defers Tasks to a linked server running the user's Assistant. */
+  readonly defersTasks?: boolean;
   /** Tasks plus intents in the environment's (possibly cached) shell snapshot. */
   readonly taskRecordCount: number;
 }
@@ -35,7 +37,10 @@ export function resolveTaskEnvironmentId(input: {
   readonly candidates: ReadonlyArray<TaskEnvironmentCandidate>;
   readonly rememberedEnvironmentId: EnvironmentId | null;
 }): EnvironmentId | null {
-  const capable = input.candidates.filter((candidate) => candidate.supportsTasks === true);
+  const allCapable = input.candidates.filter((candidate) => candidate.supportsTasks === true);
+  // The task authority's list when this client reaches it; a deferring server only otherwise.
+  const authorities = allCapable.filter((candidate) => candidate.defersTasks !== true);
+  const capable = authorities.length > 0 ? authorities : allCapable;
   const withTasks = capable.filter((candidate) => candidate.taskRecordCount > 0);
   const populated = withTasks.find((candidate) => candidate.isPrimary) ?? withTasks.at(0) ?? null;
   if (populated !== null) return populated.environmentId;
@@ -44,7 +49,11 @@ export function resolveTaskEnvironmentId(input: {
     const remembered = input.candidates.find(
       (candidate) => candidate.environmentId === input.rememberedEnvironmentId,
     );
-    if (remembered !== undefined && remembered.supportsTasks !== false) {
+    if (
+      remembered !== undefined &&
+      remembered.supportsTasks !== false &&
+      !(remembered.defersTasks === true && authorities.length > 0)
+    ) {
       return remembered.environmentId;
     }
   }

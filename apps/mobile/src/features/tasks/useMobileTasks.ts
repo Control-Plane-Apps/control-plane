@@ -82,10 +82,15 @@ const taskStateAtom = Atom.family((environmentId: EnvironmentId) =>
 export function useTaskEnvironmentId(): EnvironmentId | null {
   const configs = useServerConfigs();
   return useMemo(() => {
+    // The task authority (the server running the user's Assistant) first;
+    // a server that defers Tasks to it only when it is the only one paired.
+    let deferring: EnvironmentId | null = null;
     for (const [environmentId, config] of configs) {
-      if (config.environment.capabilities.tasks === true) return environmentId;
+      if (config.environment.capabilities.tasks !== true) continue;
+      if (config.environment.capabilities.tasksDeferred !== true) return environmentId;
+      deferring ??= environmentId;
     }
-    return null;
+    return deferring;
   }, [configs]);
 }
 

@@ -48,9 +48,12 @@ describe("withTaskAuthority", () => {
     capabilities: { tasks: true },
   } as unknown as ExecutionEnvironmentDescriptor;
 
-  it("stops offering Tasks while deferring, so clients pick the authority", () => {
-    expect(withTaskAuthority(descriptor).capabilities.tasks).toBe(true);
+  it("keeps Tasks but marks them deferred, so clients prefer the authority", () => {
+    expect(withTaskAuthority(descriptor).capabilities.tasksDeferred).toBeUndefined();
     setTaskAuthority({ authority: false, deferTo: { id: "env-mini", label: "Mac mini" } });
-    expect(withTaskAuthority(descriptor).capabilities.tasks).toBe(false);
+    expect(withTaskAuthority(descriptor).capabilities).toEqual({
+      tasks: true,
+      tasksDeferred: true,
+    });
   });
 });

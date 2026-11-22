@@ -35,11 +35,12 @@ rollover contract with Lucive). So exactly one server is the **task authority**:
 - **Rollover** (`TaskCommitmentRollover.ts`): a server that is not the authority never rolls, with
   or without Task Sync. Rollover is the only automatic task write; Task Sync's own pull and push and
   writes a person or agent asks for (coordinator proposals, push-notification actions) still run.
-- **Clients:** a deferring server reports `capabilities.tasks: false` in its descriptor. The web
-  client's `resolveTaskEnvironmentId` and the mobile `useTaskEnvironmentId` (first server with the
-  tasks capability) both skip it, so every client uses the Assistant's server for Tasks. A phone
-  paired only with the MacBook falls back to its own cloud copy, as when the Mac is unreachable.
-  Clients read the descriptor when they connect, so a change of authority shows after reconnect.
+- **Clients:** a deferring server keeps `capabilities.tasks: true` and adds `tasksDeferred:
+true`. The web client's `resolveTaskEnvironmentId` and the mobile `useTaskEnvironmentId` prefer a
+  Tasks server that does not defer, so a client connected to the Assistant's server uses its list.
+  A client connected only to the deferring server keeps showing that server's list (the same list
+  when Task Sync is on), so Tasks never disappear. Clients read the descriptor when they connect,
+  so a change of authority shows after reconnect.
 
 ## Transport
 

@@ -59,13 +59,13 @@ export function setTaskAuthority(decision: TaskAuthorityDecision): void {
 }
 
 /**
- * The descriptor clients see: a server that defers does not offer Tasks, so
- * the web and mobile clients pick the authority's list (both skip a server
- * whose `capabilities.tasks` is false).
+ * The descriptor clients see: a server that defers still offers Tasks (a
+ * client connected only to it keeps its list, which Task Sync shares), but
+ * says so, and clients connected to the authority too use the authority's.
  */
 export function withTaskAuthority(
   descriptor: ExecutionEnvironmentDescriptor,
 ): ExecutionEnvironmentDescriptor {
   if (current.authority) return descriptor;
-  return { ...descriptor, capabilities: { ...descriptor.capabilities, tasks: false } };
+  return { ...descriptor, capabilities: { ...descriptor.capabilities, tasksDeferred: true } };
 }

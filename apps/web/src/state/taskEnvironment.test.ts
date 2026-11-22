@@ -15,6 +15,29 @@ function candidate(
 }
 
 describe("resolveTaskEnvironmentId", () => {
+  it("prefers the task authority over a primary that defers Tasks to it", () => {
+    expect(
+      resolveTaskEnvironmentId({
+        candidates: [
+          candidate(MACBOOK, { isPrimary: true, taskRecordCount: 9, defersTasks: true }),
+          candidate(MINI, { taskRecordCount: 9 }),
+        ],
+        rememberedEnvironmentId: MACBOOK,
+      }),
+    ).toBe(MINI);
+  });
+
+  it("keeps a deferring server's Tasks when the authority is not connected", () => {
+    expect(
+      resolveTaskEnvironmentId({
+        candidates: [
+          candidate(MACBOOK, { isPrimary: true, taskRecordCount: 9, defersTasks: true }),
+        ],
+        rememberedEnvironmentId: null,
+      }),
+    ).toBe(MACBOOK);
+  });
+
   it("keeps Tasks on the primary when it holds them", () => {
     expect(
       resolveTaskEnvironmentId({
