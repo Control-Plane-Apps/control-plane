@@ -1,6 +1,7 @@
 import { EnvironmentId, type AssistantNeedsYouResult } from "@t3tools/contracts";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { act } from "react";
+import * as Cause from "effect/Cause";
 import { RegistryContext } from "@effect/atom-react";
 import { AtomRegistry } from "effect/unstable/reactivity";
 import { create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
@@ -14,6 +15,7 @@ const source = vi.hoisted(() => ({
   sequences: new Map<string, number>(),
   refreshers: [] as Array<(registry: AtomRegistry.AtomRegistry) => void>,
   aggregate: { items: [], machines: [] } as AssistantNeedsYouResult,
+  failure: null as Cause.Cause<never> | null,
 }));
 vi.mock("~/connection/catalog", async () => {
   const { Atom } = await import("effect/unstable/reactivity");
@@ -59,7 +61,11 @@ vi.mock("~/state/shell", async () => {
 });
 vi.mock("~/state/server", async () => {
   const { Atom, AsyncResult } = await import("effect/unstable/reactivity");
-  const aggregate = Atom.make(() => AsyncResult.success(source.aggregate));
+  const aggregate = Atom.make(() =>
+    source.failure === null
+      ? AsyncResult.success(source.aggregate)
+      : AsyncResult.failure(source.failure),
+  );
   source.refreshers.push((registry) => registry.refresh(aggregate));
   return { serverEnvironment: { assistantNeedsYou: () => aggregate, assistantNeedsYouReply: {} } };
 });
@@ -392,4 +398,98 @@ it("keeps badge and Overview on the freshest MacBook snapshot through stale peer
   );
   await act(async () => renderer.unmount());
   registry.dispose();
+});
+
+it("falls back to connected Projects without an outage warning only when the aggregate RPC is absent", async () => {
+  source.homePhase = "connected";
+  source.peerPhase = "connected";
+  source.reach = null;
+  source.sequences = new Map();
+  source.aggregate = { items: [], machines: [] };
+  source.projects = [
+    {
+      id: "hometrace",
+      title: "Hometrace",
+      environmentId: "macbook",
+      assistant: {
+        coordinatorThreadId: "hometrace-coordinator",
+        statuses: [
+          {
+            id: "review",
+            title: "Review",
+            state: "needs-you",
+            updatedAt: "2026-11-23T21:21:00.000Z",
+            decision: {
+              question: "Review the inspection?",
+              recommendation: "Review",
+              openedAt: "2026-11-23T21:21:00.000Z",
+            },
+          },
+        ],
+      },
+    } as unknown as EnvironmentProject,
+  ];
+  source.failure = Cause.die("Unknown request tag: server.assistantNeedsYou");
+  function Harness() {
+    const state = useAssistantNeedsYouState();
+    return (
+      <>
+        <SidebarAssistantRow isActive />
+        <AssistantOverview
+          assistant={{ assistant: { statuses: [] } } as unknown as EnvironmentProject}
+          needsYou={state.items}
+          needsYouStatus={state}
+          asks={[]}
+        />
+      </>
+    );
+  }
+  const registry = AtomRegistry.make();
+  const view = () => (
+    <RegistryContext.Provider value={registry}>
+      <Harness />
+    </RegistryContext.Provider>
+  );
+  let renderer!: ReactTestRenderer;
+  await act(async () => {
+    renderer = create(view());
+  });
+  const assertWarning = (count: number) =>
+    expect(
+      renderer.root.findAllByProps({ "data-testid": "assistant-needs-you-stale" }),
+    ).toHaveLength(count);
+  const update = () =>
+    act(async () => {
+      for (const refresh of source.refreshers) refresh(registry);
+      renderer.update(view());
+    });
+  assertWarning(0);
+  expect(renderedText(renderer.toJSON())).not.toContain("Could not refresh questions");
+  expect(renderer.root.findAllByProps({ "data-testid": "assistant-needs-you-row" })).toHaveLength(
+    1,
+  );
+  expect(renderer.root.findByProps({ "aria-label": "1 question needs you" }).children).toEqual([
+    "1",
+  ]);
+
+  // A real failure, or an unknown tag for a different method, is still an outage.
+  source.failure = Cause.die(new Error("Connection lost"));
+  await update();
+  assertWarning(1);
+  expect(renderedText(renderer.toJSON())).toContain("Could not refresh questions");
+  source.failure = Cause.die("Unknown request tag: server.anotherMethod");
+  await update();
+  assertWarning(1);
+
+  source.failure = Cause.die(new Error("Unknown request tag: server.assistantNeedsYou"));
+  await update();
+  assertWarning(0);
+  source.peerPhase = "connecting";
+  await update();
+  // Unsupported aggregation does not make a disconnected client snapshot fresh.
+  assertWarning(1);
+  expect(renderedText(renderer.toJSON())).toContain("Last known question");
+  await act(async () => renderer.unmount());
+  registry.dispose();
+  source.failure = null;
 });

@@ -6,6 +6,8 @@ import type {
   AssistantNeedsYouResult,
   EnvironmentId,
 } from "@t3tools/contracts";
+import { WS_METHODS } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useContext, useMemo } from "react";
@@ -16,6 +18,19 @@ import { environmentPresentations } from "~/state/presentation";
 import { serverEnvironment } from "~/state/server";
 import { environmentShell } from "~/state/shell";
 import { useAssistantHomeEnvironment, useGlobalAssistantProject } from "./useAssistant";
+
+function isUnsupportedNeedsYou(cause: Cause.Cause<unknown>): boolean {
+  const message = `Unknown request tag: ${WS_METHODS.serverAssistantNeedsYou}`;
+  return (
+    cause.reasons.length > 0 &&
+    cause.reasons.every(
+      (reason) =>
+        Cause.isDieReason(reason) &&
+        (reason.defect === message ||
+          (reason.defect instanceof Error && reason.defect.message === message)),
+    )
+  );
+}
 
 const sourcesAtom = Atom.make((get) => {
   const catalog = get(environmentCatalog.catalogValueAtom);
@@ -67,10 +82,14 @@ export function useAssistantNeedsYouState(): AssistantNeedsYouState {
   );
   const result = useAtomValue(query);
   const { liveEnvironmentIds, machineLabels, clientSnapshotSequences } = useAtomValue(sourcesAtom);
-  const aggregate = result === null ? null : Option.getOrNull(AsyncResult.value(result));
+  // Old servers reject unknown RPC tags as defects. Their connected Project
+  // shells still work, so an absent aggregate capability is not an outage.
+  const unsupported = result?._tag === "Failure" && isUnsupportedNeedsYou(result.cause);
+  const aggregate =
+    result === null || unsupported ? null : Option.getOrNull(AsyncResult.value(result));
   const homeUnavailable = homeId !== null && home?.connection.phase !== "connected";
   const failed =
-    result?._tag === "Failure" ||
+    (result?._tag === "Failure" && !unsupported) ||
     (homeUnavailable && (aggregate !== null || home?.connection.phase !== "connecting"));
   const aggregateItems = useMemo(
     () =>
