@@ -2229,10 +2229,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               : `Thread '${command.threadId}' must be active and empty before history can be imported.`,
         });
       }
-      // A page sent again (a retried move) adds nothing twice.
-      const present = new Set(thread.messages.map((message) => message.id));
-      const incoming = command.messages.filter((message) => !present.has(message.messageId));
-      const firstMessage = incoming[0] ?? command.messages[0];
+      // A page sent again (a retried move) adds nothing twice. A backfill may
+      // give a message already here the attachments an older move left behind.
+      const present = new Map(thread.messages.map((message) => [message.id, message] as const));
+      const incoming = command.messages.flatMap((message) => {
+        const known = present.get(message.messageId);
+        if (known === undefined) return [{ message, turnId: null }];
+        if (backfill && (message.attachments?.length ?? 0) > (known.attachments?.length ?? 0)) {
+          return [{ message: { ...message, text: known.text }, turnId: known.turnId }];
+        }
+        return [];
+      });
+      const firstMessage = incoming[0]?.message ?? command.messages[0];
       if (firstMessage === undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2241,7 +2249,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
 
       const events: Array<PlannedOrchestrationEvent> = [];
-      for (const message of incoming) {
+      for (const { message, turnId } of incoming) {
         events.push({
           ...(yield* withEventBase({
             aggregateKind: "thread",
@@ -2259,7 +2267,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ...(message.attachments !== undefined && message.attachments.length > 0
               ? { attachments: message.attachments }
               : {}),
-            turnId: null,
+            turnId,
             streaming: false,
             createdAt: message.createdAt,
             updatedAt: message.createdAt,

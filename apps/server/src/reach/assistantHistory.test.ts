@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  attachmentFileThreadSegment,
   historyDigest,
+  legacyCoverage,
   movedAttachmentId,
   orderHistory,
   paginateHistory,
@@ -52,5 +54,43 @@ describe("assistantHistory", () => {
     expect(movedAttachmentId({ moveId: "m1", threadId: "new-thread", attachmentId: "../x" })).toBe(
       null,
     );
+  });
+
+  it("counts a message with the same words but fewer attachments as not yet here", () => {
+    const at = "2025-01-01T00:00:00.000Z";
+    const file = { type: "image", id: "t-0b1e8d2a-1234-4abc-9def-0123456789ab-png" };
+    const local = [
+      { messageId: "moved:a:0", role: "user", createdAt: at, text: "look", attachmentCount: 0 },
+      {
+        messageId: "moved:a:1",
+        role: "assistant",
+        createdAt: at,
+        text: "nice",
+        attachmentCount: 0,
+      },
+    ];
+    const remote: MovingMessage[] = [
+      { messageId: "r1", role: "user", createdAt: at, text: "look", attachments: [file] },
+      { messageId: "r2", role: "assistant", createdAt: at, text: "nice" },
+      { messageId: "r3", role: "user", createdAt: at, text: "new" },
+    ];
+    const coverage = legacyCoverage(local, remote);
+    expect(coverage.missing.map((entry) => entry.messageId)).toEqual(["r3"]);
+    expect(coverage.thin.map((entry) => [entry.message.messageId, entry.local.messageId])).toEqual([
+      ["r1", "moved:a:0"],
+    ]);
+    // Once the local message holds the attachment, it is covered.
+    const filled = legacyCoverage(
+      [{ ...local[0]!, attachmentCount: 1 }, local[1]!],
+      remote.slice(0, 2),
+    );
+    expect(filled).toEqual({ missing: [], thin: [] });
+  });
+
+  it("reads the thread segment of a stored attachment file, finished or partial", () => {
+    const parse = (id: string) => (id.startsWith("seg-") ? "seg" : null);
+    expect(attachmentFileThreadSegment("seg-abc-png.png", parse)).toBe("seg");
+    expect(attachmentFileThreadSegment("seg-abc-png.png.part", parse)).toBe("seg");
+    expect(attachmentFileThreadSegment("other-abc.png", parse)).toBeNull();
   });
 });

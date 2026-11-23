@@ -19,7 +19,6 @@ import * as Effect from "effect/Effect";
 import { TestClock } from "effect/testing";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
@@ -77,7 +76,7 @@ let statusAnswer: "adopted" | "committed" | "aborted" | "unknown" = "committed";
 const adoptedBundles: Array<AssistantBundle> = [];
 const historyPages: Array<{ page: number; messages: ReadonlyArray<unknown> }> = [];
 const rollsDuringMove: Array<boolean> = [];
-const legacyMessages = [
+const LEGACY_DEFAULT = [
   {
     messageId: "old-1",
     role: "user" as const,
@@ -91,6 +90,9 @@ const legacyMessages = [
     createdAt: "2025-01-01T00:00:01.000Z",
   },
 ];
+let legacyMessages: ReadonlyArray<Record<string, unknown>> = LEGACY_DEFAULT;
+/** Bytes the mini serves for an older copy's attachment. */
+const LEGACY_FILE = Buffer.from("roof-photo-bytes");
 let verifyAnswer: "ok" | "short" = "ok";
 /** Whether the mini says it runs a live Assistant. */
 let miniHosts = false;
@@ -148,6 +150,14 @@ const mini: ScriptedMachine = {
         };
       case "assistant.legacy.page":
         return { messages: legacyMessages };
+      case "assistant.legacy.attachment": {
+        const offset = (input as { offset: number }).offset;
+        return {
+          data: LEGACY_FILE.subarray(offset).toString("base64"),
+          totalBytes: LEGACY_FILE.length,
+          sha256: sha256Hex(new Uint8Array(LEGACY_FILE)),
+        };
+      }
       case "assistant.legacy.remove":
         calls.push(op);
         return { removed: true };
@@ -406,6 +416,7 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     historyPages.length = 0;
     rollsDuringMove.length = 0;
     verifyAnswer = "ok";
+    legacyMessages = LEGACY_DEFAULT;
     calls.length = 0;
     adoptAnswer = "ok";
     commitAnswer = "committed";
@@ -713,17 +724,27 @@ describe("AssistantHome", () => {
           });
           yield* home.manage({ action: "move", to: "env-mini" });
           yield* asOlderBuildCopy;
-          const listed = yield* home.legacyList;
-          expect(listed.copies).toHaveLength(1);
-          const copy = listed.copies[0]!;
-          expect(copy.projectId).toBe("old-home");
-          const page = yield* home.legacyPage({ projectId: "old-home", page: 0 });
-          expect(page.messages).toHaveLength(copy.count);
           const asker = { environmentId: "env-mini", label: "Mac mini" };
+          // Only the machine that runs the Assistant may read it out.
+          miniHosts = false;
+          noteAssistantHost("env-mini", { hosts: false, at: 0 });
+          expect((yield* home.legacyList(asker).pipe(Effect.flip)).detail).toContain(
+            "does not run your Assistant",
+          );
+          expect(
+            (yield* home.legacyPage({ projectId: "old-home", page: 0 }, asker).pipe(Effect.flip))
+              .detail,
+          ).toContain("does not run your Assistant");
           noteAssistantHost("env-mini", {
             hosts: true,
             at: DateTime.toEpochMillis(yield* DateTime.now),
           });
+          const listed = yield* home.legacyList(asker);
+          expect(listed.copies).toHaveLength(1);
+          const copy = listed.copies[0]!;
+          expect(copy.projectId).toBe("old-home");
+          const page = yield* home.legacyPage({ projectId: "old-home", page: 0 }, asker);
+          expect(page.messages).toHaveLength(copy.count);
           expect(
             (yield* home
               .legacyRemove({ projectId: "old-home", count: copy.count, digest: "changed" }, asker)
@@ -735,12 +756,305 @@ describe("AssistantHome", () => {
               asker,
             )).removed,
           ).toBe(true);
-          expect((yield* home.legacyList).copies).toEqual([]);
+          expect((yield* home.legacyList(asker)).copies).toEqual([]);
           // Its own file is gone with it; the other thread's file stays.
           expect(yield* fs.exists(`${config.attachmentsDir}/${owned}.png`)).toBe(false);
           expect(yield* fs.exists(`${config.attachmentsDir}/${foreign}.png`)).toBe(true);
         }),
       ),
+  );
+
+  const roofPhoto = {
+    type: "image" as const,
+    id: "legacy_thread-2b1e8d2a-1234-4abc-9def-0123456789ab-png",
+    name: "roof.png",
+    mimeType: "image/png",
+    sizeBytes: 16,
+  };
+
+  it.effect(
+    "brings in the picture an older move left out of a message that is here, before removing the copy",
+    () =>
+      run(
+        Effect.gen(function* () {
+          yield* seedAssistant;
+          const home = yield* AssistantHome;
+          const config = yield* ServerConfig;
+          // An older build moved this message as words only.
+          yield* (yield* OrchestrationEngineService).dispatch({
+            type: "thread.history.import",
+            commandId: CommandId.make("test:words-only"),
+            threadId: ThreadId.make("old-assistant"),
+            messages: [
+              {
+                messageId: MessageId.make("moved:old:0"),
+                role: "user",
+                text: "Photo of the roof",
+                createdAt: "2025-02-01T00:00:00.000Z",
+              },
+            ] as never,
+            append: true,
+          });
+          legacyMessages = [
+            {
+              messageId: "legacy-roof",
+              role: "user",
+              text: "Photo of the roof",
+              createdAt: "2025-02-01T00:00:00.000Z",
+              attachments: [roofPhoto],
+            },
+          ];
+          // Same words and time, but its picture is not here: removing is refused.
+          expect(
+            (yield* home
+              .manage({ action: "removeLegacy", machineId: "env-mini", projectId: "legacy-1" })
+              .pipe(Effect.flip)).detail,
+          ).toContain("attachments that are not here yet");
+          expect(calls).toEqual([]);
+          yield* home.manage({ action: "backfill", machineId: "env-mini", projectId: "legacy-1" });
+          // Again: the picture is not added twice.
+          yield* home.manage({ action: "backfill", machineId: "env-mini", projectId: "legacy-1" });
+          const rows = yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
+            threadId: ThreadId.make("old-assistant"),
+          });
+          const roof = rows.filter((row) => row.text === "Photo of the roof");
+          expect(roof).toHaveLength(1);
+          expect(roof[0]?.messageId).toBe("moved:old:0");
+          expect(roof[0]?.attachments).toHaveLength(1);
+          const stored = yield* (yield* FileSystem.FileSystem).readFile(
+            `${config.attachmentsDir}/${roof[0]!.attachments![0]!.id}.png`,
+          );
+          expect(Buffer.from(stored).toString()).toBe("roof-photo-bytes");
+          yield* home.manage({
+            action: "removeLegacy",
+            machineId: "env-mini",
+            projectId: "legacy-1",
+          });
+          expect(calls).toEqual(["assistant.legacy.remove"]);
+        }),
+      ),
+  );
+
+  it.effect("a cancelled move onto an older copy leaves it listed, and never expires it", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const home = yield* AssistantHome;
+        yield* home.manage({ action: "move", to: "env-mini" });
+        yield* asOlderBuildCopy;
+        yield* home.adopt(bundle("move-back"), FROM);
+        yield* home.abort("move-back", FROM);
+        expect(yield* projectState("old-home")).toBe("archived");
+        const asker = { environmentId: "env-mini", label: "Mac mini" };
+        noteAssistantHost("env-mini", {
+          hosts: true,
+          at: DateTime.toEpochMillis(yield* DateTime.now),
+        });
+        expect((yield* home.legacyList(asker)).copies.map((copy) => copy.projectId)).toEqual([
+          "old-home",
+        ]);
+        yield* TestClock.adjust("8 days");
+        noteAssistantHost("env-mini", {
+          hosts: true,
+          at: DateTime.toEpochMillis(yield* DateTime.now),
+        });
+        yield* home.reconcile;
+        expect(yield* projectState("old-home")).toBe("archived");
+      }),
+    ),
+  );
+
+  const addOtherConversation = Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    yield* engine.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("test:other-thread"),
+      threadId: ThreadId.make("other-thread"),
+      projectId: ProjectId.make("old-home"),
+      title: "Assistant (previous)",
+      modelSelection: { instanceId: CODEX, model: "gpt-5.4" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: AT,
+    });
+    yield* engine.dispatch({
+      type: "thread.history.import",
+      commandId: CommandId.make("test:other-history"),
+      threadId: ThreadId.make("other-thread"),
+      messages: [
+        {
+          messageId: MessageId.make("only-here"),
+          role: "user",
+          text: "Said only in the previous thread",
+          createdAt: AT,
+        },
+      ] as never,
+    });
+  });
+
+  it.effect(
+    "never deletes a copy that holds another conversation: expiry shows it, Remove refuses",
+    () =>
+      run(
+        Effect.gen(function* () {
+          yield* seedAssistant;
+          yield* addOtherConversation;
+          const home = yield* AssistantHome;
+          yield* home.manage({ action: "move", to: "env-mini" });
+          expect(yield* projectState("old-home")).toBe("retired");
+          yield* TestClock.adjust("8 days");
+          noteAssistantHost("env-mini", {
+            hosts: true,
+            at: DateTime.toEpochMillis(yield* DateTime.now),
+          });
+          yield* home.reconcile;
+          // Kept, and visible again as an older copy.
+          expect(yield* projectState("old-home")).toBe("archived");
+          expect((yield* threadState("other-thread")).deleted).toBe(false);
+          const asker = { environmentId: "env-mini", label: "Mac mini" };
+          const copy = (yield* home.legacyList(asker)).copies[0]!;
+          expect(
+            (yield* home
+              .legacyRemove(
+                { projectId: "old-home", count: copy.count, digest: copy.digest },
+                asker,
+              )
+              .pipe(Effect.flip)).detail,
+          ).toContain("also holds 1 other conversation");
+          expect(yield* projectState("old-home")).toBe("archived");
+        }),
+      ),
+  );
+
+  it.effect("moving back keeps a hidden copy that holds another conversation, and shows it", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        yield* addOtherConversation;
+        const home = yield* AssistantHome;
+        yield* home.manage({ action: "move", to: "env-mini" });
+        const returned = yield* home.adopt(bundle("move-back-kept"), FROM);
+        expect(returned.projectId).not.toBe("old-home");
+        expect(yield* projectState("old-home")).toBe("archived");
+        expect((yield* threadState("other-thread")).deleted).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect(
+    "keeps a hidden copy past the grace period while no machine says it runs the Assistant",
+    () =>
+      run(
+        Effect.gen(function* () {
+          yield* seedAssistant;
+          const home = yield* AssistantHome;
+          yield* home.manage({ action: "move", to: "env-mini" });
+          yield* TestClock.adjust("8 days");
+          // The mini said so 8 days ago, at the move, and not since: it may be gone.
+          yield* home.reconcile;
+          expect(yield* projectState("old-home")).toBe("retired");
+          noteAssistantHost("env-mini", {
+            hosts: false,
+            at: DateTime.toEpochMillis(yield* DateTime.now),
+          });
+          yield* home.reconcile;
+          expect(yield* projectState("old-home")).toBe("retired");
+          noteAssistantHost("env-mini", {
+            hosts: true,
+            at: DateTime.toEpochMillis(yield* DateTime.now),
+          });
+          yield* home.reconcile;
+          expect(yield* projectState("old-home")).toBe("gone");
+        }),
+      ),
+  );
+
+  it.effect("reads the conversation only once the Assistant is paused here", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const real = yield* ProjectionThreadMessageRepository;
+        const liveAtRead: Array<boolean> = [];
+        const spy = {
+          ...real,
+          listByThreadId: (input: Parameters<typeof real.listByThreadId>[0]) =>
+            liveAssistant.pipe(
+              Effect.tap((project) =>
+                Effect.sync(() => {
+                  if (input.threadId === "old-assistant") liveAtRead.push(project !== undefined);
+                }),
+              ),
+              Effect.andThen(real.listByThreadId(input)),
+            ),
+        } as typeof real;
+        const home = yield* makeAssistantHome.pipe(
+          Effect.provideService(ProjectionThreadMessageRepository, spy),
+        );
+        yield* home.manage({ action: "move", to: "env-mini" });
+        expect(liveAtRead.length).toBeGreaterThan(0);
+        expect(liveAtRead.every((live) => !live)).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect("a cancelled move removes the attachment files it wrote, finished or partial", () =>
+    run(
+      Effect.gen(function* () {
+        const home = yield* AssistantHome;
+        const config = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const image = (n: number) => ({
+          type: "image" as const,
+          id: `src_thread-${n}b1e8d2a-1234-4abc-9def-0123456789ab-png`,
+          name: "shot.png",
+          mimeType: "image/png",
+          sizeBytes: 10,
+        });
+        const first = {
+          ...bundle("cancel-files"),
+          messages: [
+            {
+              messageId: "m-1",
+              role: "user" as const,
+              text: "Hi",
+              createdAt: AT,
+              attachments: [image(1), image(2)],
+            },
+          ],
+          history: { count: 1, digest: "x", attachments: 2 },
+        };
+        yield* home.adopt(first, FROM);
+        const bytes = Buffer.from("0123456789");
+        const sha256 = sha256Hex(new Uint8Array(bytes));
+        const chunk = (n: number, offset: number, data: Buffer) =>
+          home.attachmentChunk(
+            {
+              moveId: "cancel-files",
+              attachment: image(n),
+              offset,
+              totalBytes: 10,
+              sha256,
+              data: data.toString("base64"),
+            },
+            FROM,
+          );
+        yield* chunk(1, 0, bytes);
+        yield* chunk(2, 0, bytes.subarray(0, 4));
+        const foreign = `${config.attachmentsDir}/someone_else-3b1e8d2a-1234-4abc-9def-0123456789ab.png`;
+        yield* fs.writeFileString(foreign, "keep");
+        const before = (yield* fs.readDirectory(config.attachmentsDir)).filter(
+          (name) => !name.startsWith("someone_else"),
+        );
+        expect(before.some((name) => name.endsWith(".part"))).toBe(true);
+        expect(before.some((name) => name.endsWith(".png"))).toBe(true);
+        yield* home.abort("cancel-files", FROM);
+        expect(yield* fs.readDirectory(config.attachmentsDir)).toEqual([
+          "someone_else-3b1e8d2a-1234-4abc-9def-0123456789ab.png",
+        ]);
+      }),
+    ),
   );
 
   it.effect("keeps the Assistant here when the target fails to adopt it", () =>
@@ -872,6 +1186,10 @@ describe("AssistantHome", () => {
         yield* home.reconcile;
         expect(yield* projectState("old-home")).toBe("retired");
         yield* TestClock.adjust("8 days");
+        noteAssistantHost("env-mini", {
+          hosts: true,
+          at: DateTime.toEpochMillis(yield* DateTime.now),
+        });
         yield* home.reconcile;
         expect(yield* projectState("old-home")).toBe("gone");
       }),

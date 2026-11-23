@@ -251,6 +251,10 @@ export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
   "assistant.history",
   "assistant.attachment",
   "assistant.verify",
+  // An older copy's conversation and files: only for the Assistant's machine, confirmed.
+  "assistant.legacy.list",
+  "assistant.legacy.page",
+  "assistant.legacy.attachment",
   "assistant.legacy.remove",
 ]);
 

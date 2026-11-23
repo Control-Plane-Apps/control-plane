@@ -69,7 +69,9 @@ import {
 } from "../attachmentStore.ts";
 import {
   ATTACHMENT_CHUNK_BYTES,
+  attachmentFileThreadSegment,
   historyDigest,
+  legacyCoverage,
   movedAttachmentId,
   orderHistory,
   paginateHistory,
@@ -117,6 +119,7 @@ import {
   type HomeCheck,
   describeTaskState,
   setRolloverMoveHold,
+  knownAssistantHosts,
   lastAssistantHost,
   noteAssistantHost,
   refreshTaskAuthority,
@@ -155,12 +158,17 @@ export interface AssistantHomeShape {
   ) => Effect.Effect<MoveStatus, AssistantHomeError>;
   readonly abort: (moveId: string, from: MovePeer) => Effect.Effect<MoveStatus, AssistantHomeError>;
   /** Older copies an earlier build left here, for the Assistant's machine to bring over. */
-  readonly legacyList: Effect.Effect<typeof LegacyListResult.Type, AssistantHomeError>;
+  /** Each read is only for the machine that runs the Assistant now. */
+  readonly legacyList: (
+    from: MovePeer,
+  ) => Effect.Effect<typeof LegacyListResult.Type, AssistantHomeError>;
   readonly legacyPage: (
     input: typeof LegacyPageInput.Type,
+    from: MovePeer,
   ) => Effect.Effect<typeof LegacyPageResult.Type, AssistantHomeError>;
   readonly legacyAttachment: (
     input: typeof LegacyAttachmentInput.Type,
+    from: MovePeer,
   ) => Effect.Effect<typeof LegacyAttachmentResult.Type, AssistantHomeError>;
   /** Removes an older copy; only when its conversation is unchanged since it was brought over. */
   readonly legacyRemove: (
@@ -222,6 +230,12 @@ export const ADOPT_TIMEOUT = Duration.seconds(60);
 export const MOVE_STEP_TIMEOUT = Duration.seconds(15);
 /** How long a copy a move left behind stays as a hidden rollback snapshot. */
 export const RETIRED_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * And only while a linked machine said this recently that it runs the
+ * Assistant (or it runs here again): a copy is never removed while the
+ * machine it moved to may be gone.
+ */
+export const HOST_CONFIRM_FRESH_MS = 60 * 60 * 1000;
 /** One page of conversation or one attachment chunk. */
 export const HISTORY_STEP_TIMEOUT = Duration.seconds(60);
 
@@ -260,7 +274,7 @@ export const AssistantHome = Context.Reference<AssistantHomeShape>("t3/reach/Ass
     commit: () => unavailable,
     abort: () => unavailable,
     historyPage: () => unavailable,
-    legacyList: unavailable,
+    legacyList: () => unavailable,
     legacyPage: () => unavailable,
     legacyAttachment: () => unavailable,
     legacyRemove: () => unavailable,
@@ -377,6 +391,27 @@ export const make = Effect.gen(function* () {
       )[0];
     if (project?.assistant == null) return undefined;
     return { project, threadId: project.assistant.coordinatorThreadId };
+  });
+
+  /** A thread as the shell sees it now, whether or not its Project is archived. */
+  const localAssistantThread = (threadId: string) =>
+    snapshots.getShellSnapshot().pipe(
+      Effect.map((snapshot) => snapshot.threads.find((entry) => entry.id === threadId)),
+      Effect.mapError(() => fail("Could not read this machine's Projects.")),
+    );
+
+  /** Projects a move into this machine is still building: never removed meanwhile. */
+  const copiesBeingMoved = Effect.map(journal.list, (records) => {
+    const ids = new Set<string>();
+    for (const record of records) {
+      if (
+        record.role === "target" &&
+        (record.phase === "preparing" || record.phase === "adopted")
+      ) {
+        ids.add((record as TargetMove).projectId);
+      }
+    }
+    return ids;
   });
 
   const caller = { threadId: "", threadTitle: "Assistant" };
@@ -512,9 +547,33 @@ export const make = Effect.gen(function* () {
     });
 
   /**
+   * Other conversations a copy's Project holds besides its coordinator: a
+   * previous coordinator a reuse archived, or agents. Deleting the Project
+   * would delete them too, and nothing checked that they are anywhere else.
+   */
+  const otherConversations = (projectId: ProjectId | string, coordinatorThreadId: string) =>
+    Effect.gen(function* () {
+      const model = yield* snapshots
+        .getCommandReadModel()
+        .pipe(Effect.mapError(() => fail("Could not read this machine's Projects.")));
+      let count = 0;
+      for (const thread of model.threads) {
+        if (thread.projectId !== projectId || thread.deletedAt !== null) continue;
+        if ((thread.id as string) === coordinatorThreadId) continue;
+        const rows = yield* messageRows
+          .listByThreadId({ threadId: thread.id })
+          .pipe(Effect.mapError(() => fail("Could not read a conversation here.")));
+        if (rows.some((row) => row.role === "user" || row.role === "assistant")) count += 1;
+      }
+      return count;
+    });
+
+  /**
    * Deletes a copy of the Assistant (its Project, threads and rows), then the
    * attachment files its thread owned: only files named for that thread, and
-   * only once its rows are gone, so nothing still points at them.
+   * only once its rows are gone, so nothing still points at them. A copy that
+   * holds other conversations is kept (`removed: false`): only the
+   * coordinator's conversation is ever checked against the live Assistant.
    */
   const removeCopy = (input: {
     readonly projectId: ProjectId | string;
@@ -523,6 +582,8 @@ export const make = Effect.gen(function* () {
     readonly what: string;
   }) =>
     Effect.gen(function* () {
+      const others = yield* otherConversations(input.projectId, input.threadId as string);
+      if (others > 0) return { removed: false as const, others };
       const segment = toSafeThreadAttachmentSegment(input.threadId);
       const owned =
         segment === null
@@ -549,7 +610,49 @@ export const make = Effect.gen(function* () {
       for (const path of owned) {
         yield* Effect.promise(() => NodeFSP.rm(path, { force: true }).catch(() => undefined));
       }
-      return owned.length;
+      return { removed: true as const, files: owned.length };
+    });
+
+  /**
+   * A hidden copy that cannot be removed safely becomes a visible older copy
+   * again (archived, not retired): listed in Archived here, and offered to the
+   * Assistant's machine to bring over.
+   */
+  const unretire = (projectId: ProjectId | string, threadId: ThreadId | string, why: string) =>
+    dispatch(
+      {
+        type: "project.meta.update",
+        commandId: CommandId.make(`assistant-home:unretire:${projectId}:${why}`),
+        projectId: ProjectId.make(projectId),
+        assistant: { coordinatorThreadId: ThreadId.make(threadId), retired: false },
+      },
+      "Could not keep the old copy here",
+    ).pipe(
+      Effect.tapError((error) => Effect.logWarning(error.detail)),
+      Effect.ignore,
+    );
+
+  /**
+   * Attachment files a cancelled move wrote for its new thread, finished or
+   * partial. That thread is new to this move, so nothing else names them.
+   */
+  const removeThreadFiles = (threadId: string) =>
+    Effect.gen(function* () {
+      const segment = toSafeThreadAttachmentSegment(threadId);
+      if (segment === null) return;
+      const names = yield* Effect.promise(() =>
+        NodeFSP.readdir(config.attachmentsDir).catch(() => [] as string[]),
+      );
+      for (const name of names) {
+        if (attachmentFileThreadSegment(name, parseThreadSegmentFromAttachmentId) !== segment) {
+          continue;
+        }
+        yield* Effect.promise(() =>
+          NodeFSP.rm(NodePath.join(config.attachmentsDir, name), { force: true }).catch(
+            () => undefined,
+          ),
+        );
+      }
     });
 
   /** Collects everything that moves, and notes what cannot move as it was. */
@@ -915,7 +1018,6 @@ export const make = Effect.gen(function* () {
           return yield* fail("The Assistant is working. Move it when its turn ends.");
         }
         const moveId = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "");
-        const { bundle, notes, laterPages, files } = yield* bundleOf(project, thread.id, moveId);
         const record: SourceMove = {
           role: "source",
           moveId,
@@ -931,6 +1033,21 @@ export const make = Effect.gen(function* () {
         // Rollover stops here for the move: the target takes it over with the commit.
         setRolloverMoveHold(true);
         yield* setArchived(project.id, thread.id, true);
+        // Read only once paused: a message that lands now is in what moves,
+        // never left behind on a copy that is later removed.
+        const read = yield* Effect.gen(function* () {
+          const after = (yield* localAssistantThread(thread.id))?.session?.status;
+          if (after === "running" || after === "starting") {
+            return yield* fail("The Assistant started working. Move it when its turn ends.");
+          }
+          return yield* bundleOf(project, thread.id, moveId);
+        }).pipe(Effect.result);
+        if (read._tag === "Failure") {
+          yield* setArchived(project.id, thread.id, false);
+          yield* journal.put({ ...record, phase: "rolled-back" });
+          return yield* fail(`Not moved: ${read.failure.detail} Your Assistant stays here.`);
+        }
+        const { bundle, notes, laterPages, files } = read.success;
         const adopted = yield* reach
           .call(machine, "assistant.adopt", bundle, yield* selfCaller(thread.id), AdoptResult, {
             timeout: ADOPT_TIMEOUT,
@@ -1000,14 +1117,22 @@ export const make = Effect.gen(function* () {
         // the live Assistant (with its whole conversation) comes back: remove it
         // and build fresh, so nothing old shows. A copy left by an older build
         // (not retired, possibly holding history the mover lacks) is reused instead.
+        // One that holds other conversations is kept, as a visible older copy.
         const found = yield* archivedAssistant;
-        if (found !== undefined && isRetiredAssistant(found.project)) {
-          yield* removeCopy({
+        if (
+          found !== undefined &&
+          isRetiredAssistant(found.project) &&
+          !(yield* copiesBeingMoved).has(found.project.id)
+        ) {
+          const dropped = yield* removeCopy({
             projectId: found.project.id,
             threadId: found.threadId,
             commandId: `assistant-home:drop-retired:${bundle.moveId}`,
             what: "Could not clear the old copy here",
           });
+          if (!dropped.removed) {
+            yield* unretire(found.project.id, found.threadId, `kept:${bundle.moveId}`);
+          }
         }
         const archived =
           found !== undefined && !isRetiredAssistant(found.project) ? found : undefined;
@@ -1189,9 +1314,11 @@ export const make = Effect.gen(function* () {
             type: "project.meta.update",
             commandId: CommandId.make(`assistant-home:abort-coordinator:${record.moveId}`),
             projectId: ProjectId.make(record.projectId),
+            // Back as it was: an older copy, listed and offered, never left hidden.
             assistant: {
               coordinatorThreadId: ThreadId.make(record.previousThreadId),
               archived: true,
+              retired: false,
             },
           },
           "Could not restore the archived Assistant",
@@ -1205,6 +1332,8 @@ export const make = Effect.gen(function* () {
           "Could not remove the cancelled copy",
         ).pipe(Effect.ignore);
       }
+      // What the move wrote for its new thread, finished or partial.
+      if (record.threadId !== "") yield* removeThreadFiles(record.threadId);
     });
 
   const abortTarget = (record: TargetMove) =>
@@ -1494,30 +1623,75 @@ export const make = Effect.gen(function* () {
       return { project: copy, threadId: copy.assistant.coordinatorThreadId };
     });
 
-  const legacyList: AssistantHomeShape["legacyList"] = Effect.gen(function* () {
-    const copies = [];
-    for (const project of yield* legacyCopies) {
-      if (project.assistant == null) continue;
-      const all = yield* conversationOf(project.assistant.coordinatorThreadId);
-      copies.push({
-        projectId: project.id as string,
-        count: all.length,
-        digest: historyDigest(all),
-        pages: paginateHistory(all).length,
-      });
-    }
-    return { copies };
-  });
-
-  const legacyPage: AssistantHomeShape["legacyPage"] = (input) =>
+  /** Only the machine that runs the Assistant now may read or remove an older copy. */
+  const requireAssistantHost = (from: MovePeer) =>
     Effect.gen(function* () {
+      if (lastAssistantHost(from.environmentId) === true) return;
+      yield* refreshTaskAuthority;
+      if (lastAssistantHost(from.environmentId) === true) return;
+      return yield* fail(`${from.label} does not run your Assistant, so this copy stays.`);
+    });
+
+  /** An older copy's conversation as it is offered: attachments whose file is gone here are left out. */
+  const offeredConversation = (threadId: ThreadId | string) =>
+    Effect.gen(function* () {
+      const all = yield* conversationOf(threadId);
+      return yield* Effect.forEach(all, (message) =>
+        Effect.gen(function* () {
+          if (message.files.length === 0) return message;
+          const present: ChatAttachment[] = [];
+          for (const file of message.files) {
+            const path = resolveAttachmentPath({
+              attachmentsDir: config.attachmentsDir,
+              attachment: file,
+            });
+            if (
+              path !== null &&
+              (yield* fileSystem.exists(path).pipe(Effect.orElseSucceed(() => false)))
+            ) {
+              present.push(file);
+            }
+          }
+          const { attachments: _attachments, ...rest } = message;
+          return {
+            ...rest,
+            files: present,
+            ...(present.length > 0
+              ? { attachments: present.map((file) => encodeChatAttachment(file)) }
+              : {}),
+          };
+        }),
+      );
+    });
+
+  const legacyList: AssistantHomeShape["legacyList"] = (from) =>
+    Effect.gen(function* () {
+      yield* requireAssistantHost(from);
+      const copies = [];
+      for (const project of yield* legacyCopies) {
+        if (project.assistant == null) continue;
+        const all = yield* conversationOf(project.assistant.coordinatorThreadId);
+        copies.push({
+          projectId: project.id as string,
+          count: all.length,
+          digest: historyDigest(all),
+          pages: paginateHistory(all).length,
+        });
+      }
+      return { copies };
+    });
+
+  const legacyPage: AssistantHomeShape["legacyPage"] = (input, from) =>
+    Effect.gen(function* () {
+      yield* requireAssistantHost(from);
       const { threadId } = yield* legacyCopy(input.projectId);
-      const page = paginateHistory(yield* conversationOf(threadId))[input.page] ?? [];
+      const page = paginateHistory(yield* offeredConversation(threadId))[input.page] ?? [];
       return { messages: page.map(({ files: _files, ...message }) => message) };
     });
 
-  const legacyAttachment: AssistantHomeShape["legacyAttachment"] = (input) =>
+  const legacyAttachment: AssistantHomeShape["legacyAttachment"] = (input, from) =>
     Effect.gen(function* () {
+      yield* requireAssistantHost(from);
       const { threadId } = yield* legacyCopy(input.projectId);
       const asked = yield* decodeChatAttachment(input.attachment).pipe(
         Effect.mapError(() => fail("That attachment could not be read.")),
@@ -1548,45 +1722,44 @@ export const make = Effect.gen(function* () {
     lock.withPermits(1)(
       Effect.gen(function* () {
         // Asked by the machine that runs the Assistant now, which holds all of it.
-        if (lastAssistantHost(from.environmentId) !== true) {
-          yield* refreshTaskAuthority;
-          if (lastAssistantHost(from.environmentId) !== true) {
-            return yield* fail(`${from.label} does not run your Assistant, so this copy stays.`);
-          }
-        }
+        yield* requireAssistantHost(from);
         const { project, threadId } = yield* legacyCopy(input.projectId);
         const all = yield* conversationOf(threadId);
         if (all.length !== input.count || historyDigest(all) !== input.digest) {
           return yield* fail("This copy changed since it was brought over, so it stays.");
         }
-        yield* removeCopy({
+        const removed = yield* removeCopy({
           projectId: project.id,
           threadId,
           commandId: `assistant-home:remove-legacy:${project.id}`,
           what: "Could not remove the older copy",
         });
+        if (!removed.removed) {
+          return yield* fail(
+            `This copy also holds ${removed.others} other conversation${removed.others === 1 ? "" : "s"}, so it stays. Open it in Archived on this machine to keep what you need.`,
+          );
+        }
         return { removed: true };
       }),
     );
 
   // The Assistant's machine: brings an older copy over, then may remove it there.
 
-  /** How many of an older copy's messages are not here, by (role, time, text). */
+  /** How many of an older copy's messages are not here (null: not checked yet). */
   let legacyMissing = new Map<string, number>();
-  const legacyKey = (message: { role: string; createdAt: string; text: string }) =>
-    `${message.role}\u0000${message.createdAt}\u0000${message.text}`;
 
-  const pullLegacy = (machine: ReachMachine, projectId: string) =>
+  const pullLegacy = (machine: ReachMachine, projectId: string, threadId: string) =>
     Effect.gen(function* () {
+      const asker = yield* selfCaller(threadId);
       const listed = yield* reach
-        .call(machine, "assistant.legacy.list", {}, caller, LegacyListResult)
+        .call(machine, "assistant.legacy.list", {}, asker, LegacyListResult)
         .pipe(Effect.mapError((error) => fail(error.detail)));
       const copy = listed.copies.find((entry) => entry.projectId === projectId);
       if (copy === undefined) return yield* fail(`${machine.label} no longer has that copy.`);
       const messages: Array<(typeof LegacyPageResult.Type)["messages"][number]> = [];
       for (let page = 0; page < copy.pages; page += 1) {
         const got = yield* reach
-          .call(machine, "assistant.legacy.page", { projectId, page }, caller, LegacyPageResult, {
+          .call(machine, "assistant.legacy.page", { projectId, page }, asker, LegacyPageResult, {
             timeout: HISTORY_STEP_TIMEOUT,
           })
           .pipe(Effect.mapError((error) => fail(error.detail)));
@@ -1595,81 +1768,135 @@ export const make = Effect.gen(function* () {
       return { copy, messages };
     });
 
+  /** What of an older copy the Assistant here still lacks: whole messages, and attachments of ones it has. */
+  const legacyGaps = (
+    threadId: string,
+    messages: ReadonlyArray<(typeof LegacyPageResult.Type)["messages"][number]>,
+  ) =>
+    Effect.map(conversationOf(threadId), (here) =>
+      legacyCoverage(
+        here.map((message) => ({ ...message, attachmentCount: message.files.length })),
+        messages,
+      ),
+    );
+
+  /** Pulls one attachment of an older copy and stores it under its id for this thread. */
+  const pullLegacyAttachment = (
+    machine: ReachMachine,
+    projectId: string,
+    threadId: string,
+    raw: unknown,
+    backfillId: string,
+  ) =>
+    Effect.gen(function* () {
+      const file = yield* decodeChatAttachment(raw).pipe(Effect.option);
+      if (Option.isNone(file)) return;
+      const id = movedAttachmentId({
+        moveId: backfillId,
+        threadId,
+        attachmentId: file.value.id,
+      });
+      const path =
+        id === null
+          ? null
+          : resolveAttachmentPath({
+              attachmentsDir: config.attachmentsDir,
+              attachment: { ...file.value, id } as ChatAttachment,
+            });
+      if (path === null) return;
+      const asker = yield* selfCaller(threadId);
+      const chunks: Uint8Array[] = [];
+      let offset = 0;
+      let total = 0;
+      let sha256 = "";
+      do {
+        const got = yield* reach
+          .call(
+            machine,
+            "assistant.legacy.attachment",
+            { projectId, attachment: raw, offset },
+            asker,
+            LegacyAttachmentResult,
+            { timeout: HISTORY_STEP_TIMEOUT },
+          )
+          .pipe(Effect.mapError((error) => fail(error.detail)));
+        const chunk = new Uint8Array(Buffer.from(got.data, "base64"));
+        chunks.push(chunk);
+        offset += chunk.length;
+        total = got.totalBytes;
+        sha256 = got.sha256;
+        if (chunk.length === 0) break;
+      } while (offset < total);
+      const whole = new Uint8Array(Buffer.concat(chunks));
+      if (sha256Hex(whole) !== sha256) {
+        return yield* fail("An attachment arrived damaged; nothing was brought over.");
+      }
+      yield* Effect.tryPromise({
+        try: async () => {
+          await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+          await NodeFSP.writeFile(path, whole);
+        },
+        catch: () => fail("Could not store an attachment here."),
+      });
+    });
+
   const backfill = (machineId: string, projectId: string) =>
     lock.withPermits(1)(
       Effect.gen(function* () {
         const { thread } = yield* localAssistant;
         if (thread === undefined) return yield* fail("The Assistant does not run on this machine.");
         const machine = yield* linkedMachine(machineId);
-        const { copy, messages } = yield* pullLegacy(machine, projectId);
-        const here = new Set((yield* conversationOf(thread.id)).map(legacyKey));
-        const missing = messages.filter((message) => !here.has(legacyKey(message)));
+        const { messages } = yield* pullLegacy(machine, projectId, thread.id);
+        const { missing, thin } = yield* legacyGaps(thread.id, messages);
         const backfillId = `backfill-${projectId}`;
         // Attachments first, so a message never points at a file that is not here.
-        for (const message of missing) {
+        for (const message of [...missing, ...thin.map((entry) => entry.message)]) {
           for (const raw of message.attachments ?? []) {
-            const file = yield* decodeChatAttachment(raw).pipe(Effect.option);
-            if (Option.isNone(file)) continue;
-            const id = movedAttachmentId({
-              moveId: backfillId,
-              threadId: thread.id,
-              attachmentId: file.value.id,
-            });
-            const path =
-              id === null
-                ? null
-                : resolveAttachmentPath({
-                    attachmentsDir: config.attachmentsDir,
-                    attachment: { ...file.value, id } as ChatAttachment,
-                  });
-            if (path === null) continue;
-            const chunks: Uint8Array[] = [];
-            let offset = 0;
-            let total = 0;
-            let sha256 = "";
-            do {
-              const got = yield* reach
-                .call(
-                  machine,
-                  "assistant.legacy.attachment",
-                  { projectId, attachment: raw, offset },
-                  caller,
-                  LegacyAttachmentResult,
-                  { timeout: HISTORY_STEP_TIMEOUT },
-                )
-                .pipe(Effect.mapError((error) => fail(error.detail)));
-              const chunk = new Uint8Array(Buffer.from(got.data, "base64"));
-              chunks.push(chunk);
-              offset += chunk.length;
-              total = got.totalBytes;
-              sha256 = got.sha256;
-              if (chunk.length === 0) break;
-            } while (offset < total);
-            const whole = new Uint8Array(Buffer.concat(chunks));
-            if (sha256Hex(whole) !== sha256) {
-              return yield* fail("An attachment arrived damaged; nothing was brought over.");
-            }
-            yield* Effect.tryPromise({
-              try: async () => {
-                await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
-                await NodeFSP.writeFile(path, whole);
-              },
-              catch: () => fail("Could not store an attachment here."),
-            });
+            yield* pullLegacyAttachment(machine, projectId, thread.id, raw, backfillId);
           }
         }
         const imported = yield* Effect.forEach(missing, (message, index) =>
           importedMessage(message, backfillId, thread.id, `${backfillId}:${index}`),
         );
-        for (const [index, page] of paginateHistory(imported).entries()) {
+        // A message here that an older move brought without its attachments
+        // keeps its id and words and gains them (ids are stable per backfill,
+        // so bringing it again adds nothing twice).
+        const filled = (yield* Effect.forEach(thin, ({ message, local }) =>
+          Effect.map(
+            importedMessage(message, backfillId, thread.id, local.messageId),
+            (brought) => {
+              const own = local.files;
+              const seen = new Set(own.map((file) => file.id as string));
+              const added = (brought.attachments ?? []).filter((file) => !seen.has(file.id));
+              return added.length === 0
+                ? []
+                : [
+                    {
+                      ...brought,
+                      messageId: MessageId.make(local.messageId),
+                      text: local.text,
+                      attachments: [...own, ...added],
+                    },
+                  ];
+            },
+          ),
+        )).flat();
+        for (const page of paginateHistory(orderHistory([...imported, ...filled]))) {
           const [first, ...rest] = page;
           if (first === undefined) continue;
+          // Named for exactly these messages, so a retry after a partial run
+          // never reuses an id for different content.
+          const pageKey = sha256Hex(
+            new TextEncoder().encode(
+              page
+                .map((message) => `${message.messageId}\u0000${message.attachments?.length ?? 0}`)
+                .join("\u0001"),
+            ),
+          ).slice(0, 32);
           yield* dispatch(
             {
               type: "thread.history.import",
-              commandId: CommandId.make(
-                `assistant-home:backfill:${projectId}:${copy.digest.slice(0, 16)}:${index}`,
-              ),
+              commandId: CommandId.make(`assistant-home:backfill:${projectId}:${pageKey}`),
               threadId: thread.id,
               messages: [first, ...rest],
               backfill: true,
@@ -1677,7 +1904,11 @@ export const make = Effect.gen(function* () {
             "Could not bring the older conversation in",
           );
         }
-        legacyMissing = new Map(legacyMissing).set(`${machineId}:${projectId}`, 0);
+        const after = yield* legacyGaps(thread.id, messages);
+        legacyMissing = new Map(legacyMissing).set(
+          `${machineId}:${projectId}`,
+          after.missing.length + after.thin.length,
+        );
       }),
     );
 
@@ -1686,12 +1917,16 @@ export const make = Effect.gen(function* () {
       const { thread } = yield* localAssistant;
       if (thread === undefined) return yield* fail("The Assistant does not run on this machine.");
       const machine = yield* linkedMachine(machineId);
-      const { copy, messages } = yield* pullLegacy(machine, projectId);
-      const here = new Set((yield* conversationOf(thread.id)).map(legacyKey));
-      const missing = messages.filter((message) => !here.has(legacyKey(message))).length;
-      if (missing > 0) {
+      const { copy, messages } = yield* pullLegacy(machine, projectId, thread.id);
+      const { missing, thin } = yield* legacyGaps(thread.id, messages);
+      if (missing.length > 0) {
         return yield* fail(
-          `${missing} messages of that copy are not here yet. Bring it over first.`,
+          `${missing.length} messages of that copy are not here yet. Bring it over first.`,
+        );
+      }
+      if (thin.length > 0) {
+        return yield* fail(
+          `${thin.length} messages of that copy have attachments that are not here yet. Bring it over first.`,
         );
       }
       yield* reach
@@ -1715,7 +1950,13 @@ export const make = Effect.gen(function* () {
       const rows = [];
       for (const machine of (yield* reach.machines).filter((entry) => onlineIds.has(entry.id))) {
         const listed = yield* reach
-          .call(machine, "assistant.legacy.list", {}, caller, LegacyListResult)
+          .call(
+            machine,
+            "assistant.legacy.list",
+            {},
+            yield* selfCaller(thread.id),
+            LegacyListResult,
+          )
           .pipe(Effect.option);
         if (Option.isNone(listed)) continue;
         for (const copy of listed.value.copies) {
@@ -1784,28 +2025,32 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.orElseSucceed(() => undefined));
     if (snapshot === undefined) return;
     const now = DateTime.toEpochMillis(yield* DateTime.now);
+    const linkedIds = new Set((yield* reach.machines).map((machine) => machine.id));
+    const confirmed =
+      findGlobalAssistantProject(snapshot.projects) !== undefined ||
+      [...knownAssistantHosts()].some(
+        ([id, answer]) =>
+          linkedIds.has(id) && answer.hosts && now - answer.at <= HOST_CONFIRM_FRESH_MS,
+      );
+    if (!confirmed) return;
     // A copy still being moved here waits for its commit or abort, however long.
-    const moving = new Set(
-      (yield* journal.list)
-        .filter(
-          (record) =>
-            record.role === "target" &&
-            (record.phase === "preparing" || record.phase === "adopted"),
-        )
-        .map((record) => (record as TargetMove).projectId),
-    );
+    const moving = yield* copiesBeingMoved;
     for (const project of snapshot.projects) {
       if (moving.has(project.id)) continue;
       const retiredAt = project.assistant?.retiredAt;
       if (retiredAt == null || project.assistant?.archivedAt == null) continue;
       const at = Date.parse(retiredAt);
       if (!Number.isFinite(at) || now - at < RETIRED_GRACE_MS) continue;
+      const coordinatorThreadId = project.assistant.coordinatorThreadId;
       yield* removeCopy({
         projectId: project.id,
-        threadId: project.assistant.coordinatorThreadId,
+        threadId: coordinatorThreadId,
         commandId: `assistant-home:expire-retired:${project.id}`,
         what: "Could not remove an old copy",
       }).pipe(
+        Effect.flatMap((result) =>
+          result.removed ? Effect.void : unretire(project.id, coordinatorThreadId, "expiry"),
+        ),
         Effect.tapError((error) => Effect.logWarning(error.detail)),
         Effect.ignore,
       );

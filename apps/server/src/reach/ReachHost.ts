@@ -472,12 +472,14 @@ export const make = Effect.gen(function* () {
           Effect.flatMap((input) => home.abort(input.moveId, peerOf(request))),
         );
       case "assistant.legacy.list":
-        return home.legacyList;
+        return home.legacyList(peerOf(request));
       case "assistant.legacy.page":
-        return decode(LegacyPageInput)(request.input).pipe(Effect.flatMap(home.legacyPage));
+        return decode(LegacyPageInput)(request.input).pipe(
+          Effect.flatMap((input) => home.legacyPage(input, peerOf(request))),
+        );
       case "assistant.legacy.attachment":
         return decode(LegacyAttachmentInput)(request.input).pipe(
-          Effect.flatMap(home.legacyAttachment),
+          Effect.flatMap((input) => home.legacyAttachment(input, peerOf(request))),
         );
       case "assistant.legacy.remove":
         return decode(LegacyRemoveInput)(request.input).pipe(

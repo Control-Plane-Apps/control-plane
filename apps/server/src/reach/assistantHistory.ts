@@ -98,3 +98,58 @@ export function movedAttachmentId(input: {
 export function sha256Hex(bytes: Uint8Array): string {
   return NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 }
+
+/** The key older builds' moves kept: role, time and text (their message ids were renamed). */
+export function legacyKey(message: {
+  readonly role: string;
+  readonly createdAt: string;
+  readonly text: string;
+}): string {
+  return `${message.role}\u0000${message.createdAt}\u0000${message.text}`;
+}
+
+/**
+ * Which messages of an older copy the Assistant here lacks. A message here
+ * with the same role, time and text covers one there only when it also holds
+ * at least as many attachments: older builds moved text alone, so a picture
+ * sent with words arrived as words only. Those come back as `thin`, the local
+ * message they belong to, so its attachments can be brought in.
+ */
+export function legacyCoverage<
+  L extends { readonly messageId: string; readonly attachmentCount: number },
+  R extends MovingMessage,
+>(
+  local: ReadonlyArray<
+    L & { readonly role: string; readonly createdAt: string; readonly text: string }
+  >,
+  remote: ReadonlyArray<R>,
+): { readonly missing: R[]; readonly thin: Array<{ readonly message: R; readonly local: L }> } {
+  const byKey = new Map<string, L>();
+  for (const message of local) {
+    const key = legacyKey(message);
+    const known = byKey.get(key);
+    if (known === undefined || message.attachmentCount > known.attachmentCount) {
+      byKey.set(key, message);
+    }
+  }
+  const missing: R[] = [];
+  const thin: Array<{ readonly message: R; readonly local: L }> = [];
+  for (const message of remote) {
+    const match = byKey.get(legacyKey(message));
+    if (match === undefined) missing.push(message);
+    else if (match.attachmentCount < (message.attachments?.length ?? 0)) {
+      thin.push({ message, local: match });
+    }
+  }
+  return { missing, thin };
+}
+
+/** Is this attachment file name (with `.part` or not) one of the given thread segment's? */
+export function attachmentFileThreadSegment(
+  fileName: string,
+  parse: (attachmentId: string) => string | null,
+): string | null {
+  const base = fileName.endsWith(".part") ? fileName.slice(0, -".part".length) : fileName;
+  const dot = base.lastIndexOf(".");
+  return parse(dot === -1 ? base : base.slice(0, dot));
+}

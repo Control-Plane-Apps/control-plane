@@ -257,18 +257,29 @@ timeout or crash never leaves two Assistants, and an interrupted move finishes o
    page adds nothing twice. Tool-call activity rows stay behind.
    **Nothing left behind (#134):** on commit the source marks its paused copy `retiredAt`: a hidden
    rollback snapshot listed nowhere (not the sidebar, not Archived), kept 7 days
-   (`RETIRED_GRACE_MS`) and then force-deleted by reconcile. Taking the Assistant back within that
-   time revives it. A move back onto a machine holding a retired copy deletes it and builds a fresh
-   Project in the same home folder, so no "(previous)" thread exists. A copy an older build left
+   (`RETIRED_GRACE_MS`) and then deleted by reconcile, but only while a linked machine said within
+   the last hour (`HOST_CONFIRM_FRESH_MS`) that it runs the Assistant (or it runs here again): a
+   copy is never removed while the machine it moved to may be gone. Taking the Assistant back
+   within that time revives it. A move back onto a machine holding a retired copy deletes it and
+   builds a fresh Project in the same home folder, so no "(previous)" thread exists. The source
+   pauses its copy before it reads the conversation, so nothing said during the move stays behind.
+   **A copy is deleted only when its coordinator is all it holds.** Expiry, a move back and "Remove
+   the old copy" check only the coordinator's conversation, so a copy whose Project has any other
+   thread with messages (a previous coordinator a reuse archived, an agent) is kept: expiry and a
+   move back un-retire it (archived, listed as an older copy), Remove refuses. A cancelled move
+   onto a reused older copy puts it back archived and not retired, and removes the attachment files
+   (finished or `.part`) it wrote for its new thread. A copy an older build left
    (archived, not retired, possibly holding history the mover lacks) is still reused as below until
    the one-time history backfill.
    **History backfill (#134):** while the Assistant runs here, Settings, Assistant lists older copies
    on online linked machines ("Older conversation on <machine>"). "Bring it here" pulls that copy's
-   conversation (read ops `assistant.legacy.list/page/attachment`; the old machine only serves files
-   that belong to that copy) and imports the messages not already here, matched by (role, time,
-   text), into the live thread (`thread.history.import` with `backfill: true`: allowed on a thread
+   conversation (read ops `assistant.legacy.list/page/attachment`, verified and only for the machine
+   that runs the Assistant; the old machine only serves files that belong to that copy and still
+   exist) and imports the messages not already here, matched by (role, time, text), into the live
+   thread. A message here with the same key but fewer attachments (older builds moved words only)
+   keeps its id and words and gains the missing attachments (`thread.history.import` with `backfill: true`: allowed on a thread
    with turns but not while one runs, settle state untouched). "Remove the old copy" runs only on the
-   user's click, only when every message is here, and the old machine deletes it only for the
+   user's click, only when every message and every attachment is here, and the old machine deletes it only for the
    machine that runs the Assistant and only if the copy's digest is unchanged
    (`assistant.legacy.remove`, a verified write).
    When the copy reused an archived Project (A to B to A), the coordinator swap leaves the old
