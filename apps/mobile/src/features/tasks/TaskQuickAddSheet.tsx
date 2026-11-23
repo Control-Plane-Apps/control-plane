@@ -1,4 +1,5 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { selectTaskProjectOptions } from "@t3tools/client-runtime/state/assistants";
 import {
   formatTaskHome,
   formatTaskRecurrence,
@@ -142,9 +143,10 @@ export function TaskQuickAddSheet({ route }: StaticScreenProps<TaskQuickAddParam
           ) : null}
           <ControlPillMenu
             actions={[
-              ...projects
-                .filter((candidate) => candidate.assistant != null)
-                .map((candidate) => ({ id: candidate.id, title: candidate.title })),
+              ...selectTaskProjectOptions(projects).map((candidate) => ({
+                id: candidate.id,
+                title: candidate.title,
+              })),
               ...(project !== null ? [{ id: "none", title: "No project" }] : []),
             ]}
             onPressAction={({ nativeEvent }) =>

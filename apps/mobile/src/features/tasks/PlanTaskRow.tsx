@@ -1,3 +1,4 @@
+import { selectTaskProjectOptions } from "@t3tools/client-runtime/state/assistants";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   formatTaskHome,
@@ -441,7 +442,7 @@ function ExpandedTask(props: {
     task.links?.statusId === undefined
       ? undefined
       : project?.assistant?.statuses?.find((s) => s.id === task.links!.statusId);
-  const assistantProjects = context.projects.filter((p) => p.assistant != null);
+  const assistantProjects = selectTaskProjectOptions(context.projects);
   const globalAssistant = findGlobalAssistantProject(context.projects) ?? null;
   const assistantThreadId = globalAssistant?.assistant?.coordinatorThreadId ?? null;
   const handChip = assistantChip(task, assistantThreadId);

@@ -23,6 +23,7 @@ import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { resolveShortcutCommand } from "../../keybindings";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import { cn } from "../../lib/utils";
+import { selectTaskProjectOptions } from "@t3tools/client-runtime/state/assistants";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useTaskToday, useTasks } from "../../state/tasks";
@@ -94,7 +95,7 @@ function QuickAddForm(props: { readonly onDone: () => void }) {
   const navigate = useNavigate();
   const { environmentId } = useTasks();
   const actions = useTaskActions(environmentId);
-  const projects = useProjects().filter((project) => project.assistant != null);
+  const projects = selectTaskProjectOptions(useProjects());
   const threads = useThreadShells();
   const routeParams = useRouterState({
     select: (state) => state.matches[state.matches.length - 1]?.params ?? {},

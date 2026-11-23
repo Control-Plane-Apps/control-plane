@@ -81,6 +81,28 @@ export function selectWorkspaceProjects<
 }
 
 /**
+ * Projects a task can be filed under: live, non-global Projects, one per
+ * Project identity. The global Assistant (and its archived predecessors, e.g.
+ * after moving it between machines) is the user's agent, not a place to file
+ * tasks, so it never appears in a Tasks project picker. Tasks already linked
+ * to it still resolve through the full project list and keep their chip.
+ */
+export function selectTaskProjectOptions<
+  P extends { readonly id: ProjectId; readonly assistant?: ProjectAssistant | null | undefined },
+>(projects: readonly P[]): readonly P[] {
+  const seen = new Set<string>();
+  const options: P[] = [];
+  for (const project of projects) {
+    if (project.assistant == null) continue;
+    if (isGlobalAssistant(project) || isArchivedAssistant(project)) continue;
+    if (seen.has(project.id)) continue;
+    seen.add(project.id);
+    options.push(project);
+  }
+  return options;
+}
+
+/**
  * Splits the shell into Projects and plain workspaces. Threads of a Project,
  * archived or not, never reach `workspaceThreads`, so they cannot land in a
  * Tasks folder or the global lists.

@@ -1,4 +1,5 @@
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { selectTaskProjectOptions } from "@t3tools/client-runtime/state/assistants";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   allTasks,
@@ -792,13 +793,11 @@ export function PlanTasksScreen({ route }: StaticScreenProps<PlanTasksParams>) {
               title: "All projects",
               state: projectFilter === null ? "on" : undefined,
             },
-            ...projects
-              .filter((project) => project.assistant != null)
-              .map((project) => ({
-                id: project.id,
-                title: project.title,
-                state: projectFilter === project.id ? ("on" as const) : undefined,
-              })),
+            ...selectTaskProjectOptions(projects).map((project) => ({
+              id: project.id,
+              title: project.title,
+              state: projectFilter === project.id ? ("on" as const) : undefined,
+            })),
             {
               id: "none",
               title: "No project",

@@ -45,6 +45,7 @@ import {
 } from "../../keybindings";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import { cn } from "../../lib/utils";
+import { selectTaskProjectOptions } from "@t3tools/client-runtime/state/assistants";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useTaskEnvironmentStatus, useTaskToday, useTasks } from "../../state/tasks";
@@ -97,7 +98,7 @@ function ProjectFilterMenu(props: {
   readonly value: string | null;
   readonly onChange: (value: string | null) => void;
 }) {
-  const projects = useProjects().filter((project) => project.assistant != null);
+  const projects = selectTaskProjectOptions(useProjects());
   const selected =
     props.value === "none"
       ? "No project"
@@ -282,7 +283,23 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   const quickAddShortcut = shortcutLabelForCommand(keybindings, "tasks.quickAdd");
   const { expandedId, toggle } = useExpandedTask();
   const [showCompleted, setShowCompleted] = useState(false);
-  const projectFilter = search.project ?? null;
+  // A link that names an excluded Project (the Assistant, an archived Project)
+  // falls back to All projects, in the filter and in the URL.
+  const projectFilterExcluded =
+    search.project !== undefined &&
+    search.project !== "none" &&
+    projects.some((project) => project.id === search.project) &&
+    !selectTaskProjectOptions(projects).some((project) => project.id === search.project);
+  const projectFilter = projectFilterExcluded ? null : (search.project ?? null);
+  useEffect(() => {
+    if (!projectFilterExcluded) return;
+    void navigate({
+      to: "/tasks/$view",
+      params: { view },
+      search: tasksSearch(search, { project: undefined }),
+      replace: true,
+    });
+  }, [projectFilterExcluded, navigate, search, view]);
   const tasks = useMemo(
     () => filterTasksByProject(allTaskRecords, projectFilter),
     [allTaskRecords, projectFilter],
