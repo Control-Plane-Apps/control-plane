@@ -157,6 +157,8 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
     ...(options.environmentThemes === true ? { environmentThemes: true } : {}),
     ...(options.usageLimitSources === true ? { usageLimitSources: true } : {}),
     ...(options.usageLimitsCommand === true ? { usageLimitsCommand: true } : {}),
+    // This runtime projects descriptor changes (task authority) itself.
+    environmentUpdates: true,
   };
 
   const connect = Effect.fnUntraced(function* (connection: PreparedConnection) {

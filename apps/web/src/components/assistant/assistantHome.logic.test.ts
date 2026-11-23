@@ -5,6 +5,7 @@ import {
   currentHome,
   LOCAL_HOME,
   moveBlockedReason,
+  moveTaskNote,
   offlineHomeText,
   pendingMoveText,
   reclaimWarning,
@@ -110,5 +111,36 @@ describe("reach on linked machines", () => {
     const all = ["local-1", "ht"];
     expect(toggleReach(null, all, "ht")).toEqual(["local-1"]);
     expect(toggleReach(["local-1"], all, "ht")).toBeNull();
+  });
+});
+
+describe("moveTaskNote", () => {
+  const base = {
+    here: true,
+    elsewhere: null,
+    conflicts: [],
+    addresses: [],
+    taskSynced: true,
+    machines: [
+      {
+        id: "env-mini",
+        label: "Mac mini",
+        state: "online" as const,
+        hostsAssistant: false,
+        linksBack: true,
+        projects: [],
+        taskSynced: false,
+      },
+    ],
+  };
+  it("warns that tasks stay put when the target is not signed in to Task Sync", () => {
+    expect(moveTaskNote(base, "env-mini", "Mac mini")).toContain("isn't signed in to Task Sync");
+    expect(
+      moveTaskNote(
+        { ...base, machines: [{ ...base.machines[0]!, taskSynced: true }] },
+        "env-mini",
+        "Mac mini",
+      ),
+    ).toBe("Your tasks follow it through Task Sync.");
   });
 });

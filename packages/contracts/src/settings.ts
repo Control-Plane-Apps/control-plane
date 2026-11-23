@@ -1299,6 +1299,13 @@ export const ServerSettings = Schema.Struct({
   taskRolloverToCurrentPeriod: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  /**
+   * When `taskRolloverToCurrentPeriod` was last set on purpose (ISO). Servers
+   * on one Task Sync account share the setting: the most recent choice on any
+   * of them wins, so it follows task authority between machines. Absent: never
+   * set here. Fork-owned; written by the server, never by a patch.
+   */
+  taskRolloverSetAt: Schema.optionalKey(Schema.String),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 

@@ -1,4 +1,4 @@
-import type { TaskSyncStatus } from "@t3tools/contracts";
+import type { EnvironmentId, TaskSyncStatus } from "@t3tools/contracts";
 import { CloudIcon, RefreshCwIcon } from "lucide-react";
 import { useState, type FormEvent } from "react";
 
@@ -14,8 +14,11 @@ function formatWhen(iso: string | undefined): string | null {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(ms);
 }
 
-function SignInForm(props: { readonly compact: boolean }) {
-  const sync = useTaskSync();
+function SignInForm(props: {
+  readonly compact: boolean;
+  readonly environmentId?: EnvironmentId | null | undefined;
+}) {
+  const sync = useTaskSync(props.environmentId);
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [codeSentTo, setCodeSentTo] = useState<string | null>(null);
@@ -99,8 +102,11 @@ function SignInForm(props: { readonly compact: boolean }) {
   );
 }
 
-function AccountLine(props: { readonly status: TaskSyncStatus }) {
-  const sync = useTaskSync();
+function AccountLine(props: {
+  readonly status: TaskSyncStatus;
+  readonly environmentId?: EnvironmentId | null | undefined;
+}) {
+  const sync = useTaskSync(props.environmentId);
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground text-xs">
       <span>Control Plane account</span>
@@ -156,9 +162,16 @@ function ComingSoon(props: { readonly onPreview: () => void }) {
  * Sign-in, subscription and sync state for Task Sync. `compact` fits the
  * Tasks page aside; the full card sits in Settings.
  */
-export function TaskSyncCard(props: { readonly compact?: boolean }) {
+export function TaskSyncCard(props: {
+  readonly compact?: boolean;
+  /** The server to show and sign in; the Tasks server by default. */
+  readonly environmentId?: EnvironmentId | null | undefined;
+  /** The server's name, when the card targets one other than this machine. */
+  readonly serverLabel?: string;
+}) {
   const compact = props.compact === true;
-  const sync = useTaskSync();
+  const sync = useTaskSync(props.environmentId);
+  const machine = props.serverLabel ?? "this Mac";
   const status = sync.status;
   const [error, setError] = useState<string | null>(null);
   if (status === null) return null;
@@ -207,10 +220,10 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
           Sign in to sync tasks
         </h3>
         <p className={body}>
-          Sign in with your Control Plane account to keep tasks on all your devices, including your
-          phone while this Mac sleeps.
+          Sign in {machine} with your Control Plane account to keep tasks on all your devices,
+          including your phone while it sleeps.
         </p>
-        <SignInForm compact={compact} />
+        <SignInForm compact={compact} environmentId={props.environmentId} />
         {previewNote}
       </section>
     );
@@ -251,7 +264,7 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
             </Button>
           ) : null}
         </div>
-        <AccountLine status={status} />
+        <AccountLine status={status} environmentId={props.environmentId} />
         {previewNote}
         {error !== null ? <p className="text-destructive text-xs">{error}</p> : null}
       </section>
@@ -315,7 +328,7 @@ export function TaskSyncCard(props: { readonly compact?: boolean }) {
           </Button>
         ) : null}
       </div>
-      <AccountLine status={status} />
+      <AccountLine status={status} environmentId={props.environmentId} />
       {previewNote}
       {error !== null ? <p className="text-destructive text-xs">{error}</p> : null}
     </section>

@@ -726,6 +726,25 @@ export const ServerConfigStreamUsageLimitSourcesUpdatedEvent = Schema.Struct({
 export type ServerConfigStreamUsageLimitSourcesUpdatedEvent =
   typeof ServerConfigStreamUsageLimitSourcesUpdatedEvent.Type;
 
+export const ServerConfigEnvironmentUpdatedPayload = Schema.Struct({
+  environment: ExecutionEnvironmentDescriptor,
+});
+export type ServerConfigEnvironmentUpdatedPayload =
+  typeof ServerConfigEnvironmentUpdatedPayload.Type;
+
+/**
+ * The environment descriptor changed while connected, e.g. the server
+ * started or stopped deferring Tasks to another server (`tasksDeferred`).
+ * Sent only to subscribers that ask (`environmentUpdates`). Fork-owned.
+ */
+export const ServerConfigStreamEnvironmentUpdatedEvent = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("environmentUpdated"),
+  payload: ServerConfigEnvironmentUpdatedPayload,
+});
+export type ServerConfigStreamEnvironmentUpdatedEvent =
+  typeof ServerConfigStreamEnvironmentUpdatedEvent.Type;
+
 export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSnapshotEvent,
   ServerConfigStreamKeybindingsUpdatedEvent,
@@ -733,6 +752,7 @@ export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSettingsUpdatedEvent,
   ServerConfigStreamEnvironmentThemesUpdatedEvent,
   ServerConfigStreamUsageLimitSourcesUpdatedEvent,
+  ServerConfigStreamEnvironmentUpdatedEvent,
 ]);
 export type ServerConfigStreamEvent = typeof ServerConfigStreamEvent.Type;
 

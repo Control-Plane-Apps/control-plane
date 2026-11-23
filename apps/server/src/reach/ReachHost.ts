@@ -53,6 +53,7 @@ import {
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
 import { Reach } from "./Reach.ts";
+import { describeTaskState, pokeTaskAuthority } from "./taskAuthority.ts";
 import { acceptOnce, reachInputHash, wasAccepted, wasSent } from "./reachSent.ts";
 import { linkSubjectHolder } from "../agentMachines/linkToken.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
@@ -202,9 +203,11 @@ export const make = Effect.gen(function* () {
     const descriptor = yield* environment.getDescriptor;
     const snapshot = yield* shell;
     const assistant = findGlobalAssistantProject(snapshot.projects);
+    const tasks = describeTaskState(DateTime.toEpochMillis(yield* DateTime.now));
     return {
       environmentId: descriptor.environmentId,
       label: descriptor.label,
+      ...(tasks === undefined ? {} : { tasks }),
       linked: (yield* reach.machines).map((machine) => machine.id),
       assistant:
         assistant?.assistant == null
@@ -415,6 +418,10 @@ export const make = Effect.gen(function* () {
     switch (request.op) {
       case "describe":
         return describe;
+      case "authority.poke":
+        // A linked machine's Task Sync account or Assistant changed: look again
+        // now instead of at the next 5-minute refresh. Read-only, rate limited.
+        return pokeTaskAuthority.pipe(Effect.as({ ok: true }));
       case "confirm":
         return decode(ConfirmInput)(request.input).pipe(
           Effect.flatMap((input) =>

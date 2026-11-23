@@ -428,6 +428,8 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
       ...(subscription.environmentThemes === true ? { environmentThemes: true } : {}),
       ...(subscription.usageLimitSources === true ? { usageLimitSources: true } : {}),
       ...(subscription.usageLimitsCommand === true ? { usageLimitsCommand: true } : {}),
+      // This runtime projects descriptor changes (task authority) itself.
+      environmentUpdates: true,
     }).pipe(
       Stream.runForEach((event) =>
         Effect.gen(function* () {

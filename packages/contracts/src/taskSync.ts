@@ -32,6 +32,44 @@ export const TaskSyncSubscription = Schema.Struct({
 });
 export type TaskSyncSubscription = typeof TaskSyncSubscription.Type;
 
+/**
+ * Task authority as one server sees it. Exactly one server on a Task Sync
+ * account rolls commitments: the synced server that runs the Assistant, else
+ * the lowest-id synced one. Fork-owned.
+ */
+export const TaskAuthorityStatus = Schema.Struct({
+  /** This server is the task authority. */
+  authority: Schema.Boolean,
+  /** The linked server it defers to, when it is not the authority. */
+  deferTo: Schema.optional(Schema.Struct({ id: Schema.String, label: Schema.String })),
+  /** This server is signed in and synced to the account (past its first merge). */
+  synced: Schema.Boolean,
+  /** The user's Assistant runs on this server. */
+  assistantHere: Schema.Boolean,
+  /** The Assistant runs here but this server is not signed in, while another one is. */
+  signInNeeded: Schema.Boolean,
+  /** This server rolls commitments right now. */
+  rolls: Schema.Boolean,
+  /** The account-wide rollover setting (latest choice on any synced server). */
+  rolloverEnabled: Schema.Boolean,
+  /** Rollover is on, yet no server has been rolling for a while. */
+  rolloverGap: Schema.Boolean,
+  /** Each linked server, as last described. */
+  machines: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      label: Schema.String,
+      /** null: an older build that does not say. */
+      synced: Schema.NullOr(Schema.Boolean),
+      hasAssistant: Schema.Boolean,
+      rolls: Schema.Boolean,
+      /** When it last answered, epoch ms; null if never. */
+      answeredAt: Schema.NullOr(Schema.Number),
+    }),
+  ),
+});
+export type TaskAuthorityStatus = typeof TaskAuthorityStatus.Type;
+
 export const TaskSyncStatus = Schema.Struct({
   state: TaskSyncState,
   account: Schema.optional(Schema.Struct({ email: TrimmedNonEmptyString })),
@@ -45,6 +83,8 @@ export const TaskSyncStatus = Schema.Struct({
   weekStartsOn: Schema.Number,
   /** This install treats Task Sync as available before launch (local preview). */
   preview: Schema.optional(Schema.Boolean),
+  /** Which linked server holds the task list and rolls commitments; absent from older servers. */
+  authority: Schema.optional(TaskAuthorityStatus),
 });
 export type TaskSyncStatus = typeof TaskSyncStatus.Type;
 

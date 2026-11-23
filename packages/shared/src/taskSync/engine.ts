@@ -244,6 +244,20 @@ export class TaskSyncEngine {
   }
 
   /**
+   * The account this device holds the synced task list for: signed in, past
+   * its first merge and not inactive. Null otherwise (signed out, sync off, a
+   * fresh sign-in still merging), when this device's list is not the account's.
+   */
+  async syncedAccount(): Promise<string | null> {
+    if (this.deps.client === null) return null;
+    const state = await this.load();
+    if (state.account === undefined || state.initialMergeDone !== true) return null;
+    if (state.inactive === true) return null;
+    if ((await this.deps.getToken()) === null) return null;
+    return state.account.email;
+  }
+
+  /**
    * Ids of the live tasks this device keeps in step with the synced account
    * (pulled, or queued for upload). Empty when signed out or sync is off.
    */

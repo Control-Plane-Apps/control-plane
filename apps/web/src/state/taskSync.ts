@@ -1,4 +1,4 @@
-import { setTaskWeekStartsOn, type TaskSyncStatus } from "@t3tools/contracts";
+import { setTaskWeekStartsOn, type EnvironmentId, type TaskSyncStatus } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -13,17 +13,25 @@ import { useAtomCommand } from "./use-atom-command";
 
 const STATUS_POLL_MS = 30_000;
 
-/** The last status any surface read, shared so Settings and Tasks agree. */
+/**
+ * The last status any surface read, per server, shared so Settings and Tasks
+ * agree. The Tasks server's status also sets the week start.
+ */
 const useTaskSyncStatusStore = create<{
-  readonly status: TaskSyncStatus | null;
-  readonly set: (status: TaskSyncStatus) => void;
+  readonly statuses: Readonly<Record<string, TaskSyncStatus>>;
+  readonly set: (environmentId: EnvironmentId, status: TaskSyncStatus, isTasks: boolean) => void;
 }>()((set) => ({
-  status: null,
-  set: (status) => {
-    setTaskWeekStartsOn(status.weekStartsOn);
-    set({ status });
+  statuses: {},
+  set: (environmentId, status, isTasks) => {
+    if (isTasks) setTaskWeekStartsOn(status.weekStartsOn);
+    set((state) => ({ statuses: { ...state.statuses, [environmentId]: status } }));
   },
 }));
+
+/** Every server's last read Task Sync status, by environment id. */
+export function useTaskSyncStatuses(): Readonly<Record<string, TaskSyncStatus>> {
+  return useTaskSyncStatusStore((state) => state.statuses);
+}
 
 export function taskSyncErrorMessage(result: unknown, fallback: string): string {
   const error = squashAtomCommandFailure(result as never);
@@ -35,14 +43,26 @@ type Result<A> =
   | { readonly ok: false; readonly message: string };
 
 /**
- * Task Sync for this machine's server: status (polled, and refreshed when
- * the window regains focus, as after checkout), sign-in, sign-out and the
- * subscription's checkout and portal pages.
+ * Task Sync for one server (by default the server that holds Tasks): status
+ * (polled, and refreshed when the window regains focus, as after checkout),
+ * sign-in, sign-out and the subscription's checkout and portal pages. Each
+ * server signs in on its own; Settings can target any connected server, so the
+ * machine that runs the Assistant can be signed in from any client.
  */
-export function useTaskSync() {
-  const environmentId = useTaskEnvironmentId();
-  const status = useTaskSyncStatusStore((state) => state.status);
-  const setStatus = useTaskSyncStatusStore((state) => state.set);
+export function useTaskSync(target?: EnvironmentId | null) {
+  const tasksEnvironmentId = useTaskEnvironmentId();
+  const environmentId = target ?? tasksEnvironmentId;
+  const isTasks = environmentId === tasksEnvironmentId;
+  const status = useTaskSyncStatusStore((state) =>
+    environmentId === null ? null : (state.statuses[environmentId] ?? null),
+  );
+  const storeStatus = useTaskSyncStatusStore((state) => state.set);
+  const setStatus = useCallback(
+    (next: TaskSyncStatus) => {
+      if (environmentId !== null) storeStatus(environmentId, next, isTasks);
+    },
+    [environmentId, isTasks, storeStatus],
+  );
   const statusCommand = useAtomCommand(projectEnvironment.taskSyncStatus, { reportFailure: false });
   const requestCodeCommand = useAtomCommand(projectEnvironment.taskSyncRequestCode, {
     reportFailure: false,
@@ -116,6 +136,7 @@ export function useTaskSync() {
 
   const env = environmentId;
   return {
+    environmentId: env,
     available: env !== null && status !== null && status.state !== "unavailable",
     status,
     busy,

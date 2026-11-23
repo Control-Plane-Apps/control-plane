@@ -84,6 +84,7 @@ import {
 } from "./reachProtocol.ts";
 import {
   type HomeCheck,
+  describeTaskState,
   lastAssistantHost,
   noteAssistantHost,
   refreshTaskAuthority,
@@ -320,15 +321,19 @@ export const make = Effect.gen(function* () {
         title,
       }));
       if (described._tag === "Success") {
+        const at = DateTime.toEpochMillis(yield* DateTime.now);
+        const tasks = described.success.tasks;
         noteAssistantHost(machine.id, {
           hosts: described.success.assistant !== null,
-          at: DateTime.toEpochMillis(yield* DateTime.now),
+          at,
+          ...(tasks === undefined ? {} : { task: { at, ...tasks } }),
         });
         return {
           id: machine.id,
           label: machine.label,
           state: "online",
           hostsAssistant: described.success.assistant !== null,
+          taskSynced: tasks === undefined ? null : tasks.account !== null,
           linksBack:
             described.success.linked === undefined
               ? null
@@ -371,8 +376,10 @@ export const make = Effect.gen(function* () {
     const pending = yield* pendingMove;
     const elsewhere = project === undefined ? (hosts[0] ?? null) : null;
     const homeMachine = machines.find((machine) => machine.id === elsewhere?.id);
+    const ownTasks = describeTaskState(DateTime.toEpochMillis(yield* DateTime.now));
     return {
       here: project !== undefined,
+      ...(ownTasks === undefined ? {} : { taskSynced: ownTasks.account !== null }),
       canReclaim:
         pending === undefined && homeMachine !== undefined && homeMachine.state !== "online",
       ...(pending !== undefined

@@ -41,6 +41,7 @@ export const ReachOp = Schema.Literals([
   "assistant.handoff",
   "assistant.yield",
   "link.back",
+  "authority.poke",
 ]);
 export type ReachOp = typeof ReachOp.Type;
 
@@ -83,6 +84,18 @@ export const DescribeResult = Schema.Struct({
   assistant: Schema.NullOr(Schema.Struct({ threadId: Schema.String, projectId: Schema.String })),
   /** Environment ids of the machines it has linked; absent from older builds. */
   linked: Schema.optional(Schema.Array(Schema.String)),
+  /**
+   * Its tasks, for task authority: its Task Sync account key when synced
+   * (a hash, never the address) else null, whether it rolls commitments now,
+   * and its rollover setting with when it was chosen. Absent from older builds.
+   */
+  tasks: Schema.optional(
+    Schema.Struct({
+      account: Schema.NullOr(Schema.String),
+      rolls: Schema.Boolean,
+      rollover: Schema.Struct({ enabled: Schema.Boolean, setAt: Schema.NullOr(Schema.String) }),
+    }),
+  ),
 });
 export type DescribeResult = typeof DescribeResult.Type;
 

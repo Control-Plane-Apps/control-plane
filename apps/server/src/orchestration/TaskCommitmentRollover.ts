@@ -3,7 +3,9 @@
  * unfinished commitments move to the period of the same horizon that holds
  * today, by the rule agreed with Lucive so both apps move them the same way.
  *
- * Gated by `taskRolloverToCurrentPeriod` (off by default). Synced tasks are
+ * Gated by `taskRolloverToCurrentPeriod` (off by default; across servers on
+ * one Task Sync account the latest choice wins) and by task authority: only
+ * one server rolls (`taskRolloverPermit`). Synced tasks are
  * moved by Task Sync on its own planning records: the old commitment is
  * retired and a new one created, the task row is never rewritten, and the
  * result reaches the event store like a pull. Tasks only this machine holds
@@ -37,7 +39,11 @@ import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
-import { currentTaskAuthority } from "../reach/taskAuthority.ts";
+import {
+  ensureFreshTaskAuthority,
+  onRolloverPermitGained,
+  taskRolloverPermit,
+} from "../reach/taskAuthority.ts";
 import { forkParked } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TaskSyncService } from "../taskSync/TaskSyncService.ts";
@@ -117,11 +123,21 @@ export const make = Effect.gen(function* () {
 
   const catchUp = Effect.gen(function* () {
     const settings = yield* settingsService.getSettings;
-    if (!rolloverEnabled(settings)) return 0;
-    // Only the task authority (the Assistant's server) rolls: two servers on
-    // one Task Sync account would each create a new membership for the same
+    // A machine that slept looks at its linked machines again before rolling
+    // on what it knew before.
+    yield* ensureFreshTaskAuthority;
+    // Only the task authority rolls, only with the account-wide setting on,
+    // and never while another server still says it rolls: two servers on one
+    // Task Sync account would each create a new membership for the same
     // commitment.
-    if (!currentTaskAuthority().authority) return 0;
+    const permit = taskRolloverPermit(
+      {
+        enabled: rolloverEnabled(settings),
+        setAt: settings.taskRolloverSetAt ?? null,
+      },
+      DateTime.toEpochMillis(yield* DateTime.now),
+    );
+    if (!permit.rolls) return 0;
     const now = yield* DateTime.now;
     const createdAt = DateTime.formatIso(now);
     const day = localTaskDate(DateTime.toEpochMillis(now));
@@ -206,6 +222,14 @@ export const make = Effect.gen(function* () {
   });
 
   yield* forkParked(runCatchUp);
+  // This server just took over rolling (a handover finished): catch up now
+  // rather than at the next date check.
+  const context = yield* Effect.context<never>();
+  const runForkNow = Effect.runForkWith(context);
+  yield* Effect.acquireRelease(
+    Effect.sync(() => onRolloverPermitGained(() => void runForkNow(runCatchUp))),
+    (unsubscribe) => Effect.sync(unsubscribe),
+  );
   yield* forkParked(
     onTick.pipe(Effect.repeat(Schedule.spaced(DATE_CHECK_INTERVAL)), Effect.asVoid),
   );

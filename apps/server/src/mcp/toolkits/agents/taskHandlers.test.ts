@@ -41,6 +41,7 @@ import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerR
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { AgentsToolkitHandlersLive } from "./handlers.ts";
+import { setTaskAuthority } from "../../../reach/taskAuthority.ts";
 import {
   planTaskReorder,
   resolveTaskHome,
@@ -515,6 +516,33 @@ describe("cp_task_list", () => {
         useAssistant({ tasks: "off" });
         expect((yield* errorOf(tools.list(ASSISTANT))).tag).toBe("TaskAccessDeniedError");
       }),
+    ),
+  );
+  it.effect("refuses loudly on a server that is not signed in while a linked one is", () =>
+    run(
+      Effect.gen(function* () {
+        useAssistant({ tasks: "edit" });
+        setTaskAuthority({
+          authority: false,
+          deferTo: { id: "env-macbook", label: "MacBook" },
+          reason: "unsynced",
+        });
+        const listed = yield* errorOf(tools.list(ASSISTANT));
+        expect(listed.tag).toBe("AgentToolFailedError");
+        expect(listed.message).toContain("not signed in to Task Sync");
+        expect(listed.message).toContain("MacBook");
+        // Writes too, so nothing lands on a list nobody sees.
+        expect((yield* errorOf(tools.propose(ACME_COORD, { title: "Lost" }))).tag).toBe(
+          "AgentToolFailedError",
+        );
+        // Deferring to the Assistant's server for rollover alone does not block tools.
+        setTaskAuthority({
+          authority: false,
+          deferTo: { id: "env-mini", label: "Mac mini" },
+          reason: "synced",
+        });
+        expect((yield* tools.list(ASSISTANT)).tasks.length).toBeGreaterThan(0);
+      }).pipe(Effect.ensuring(Effect.sync(() => setTaskAuthority({ authority: true })))),
     ),
   );
 });

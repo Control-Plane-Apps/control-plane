@@ -86,6 +86,12 @@ export function applyServerConfigProjection(
         latestEvent: event,
         source: "live",
       }));
+    case "environmentUpdated":
+      return Option.map(current, (projection) => ({
+        config: { ...projection.config, environment: event.payload.environment },
+        latestEvent: event,
+        source: "live",
+      }));
     case "usageLimitSourcesUpdated":
       return Option.map(current, (projection) => ({
         config: {
