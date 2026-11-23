@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { TestClock } from "effect/testing";
 import * as FileSystem from "effect/FileSystem";
@@ -75,6 +76,20 @@ let statusAnswer: "adopted" | "committed" | "aborted" | "unknown" = "committed";
 const adoptedBundles: Array<AssistantBundle> = [];
 const historyPages: Array<{ page: number; messages: ReadonlyArray<unknown> }> = [];
 const rollsDuringMove: Array<boolean> = [];
+const legacyMessages = [
+  {
+    messageId: "old-1",
+    role: "user" as const,
+    text: "From last year",
+    createdAt: "2025-01-01T00:00:00.000Z",
+  },
+  {
+    messageId: "old-2",
+    role: "assistant" as const,
+    text: "Noted then",
+    createdAt: "2025-01-01T00:00:01.000Z",
+  },
+];
 let verifyAnswer: "ok" | "short" = "ok";
 /** Whether the mini says it runs a live Assistant. */
 let miniHosts = false;
@@ -126,6 +141,15 @@ const mini: ScriptedMachine = {
         return { count: (input as { messages: ReadonlyArray<unknown> }).messages.length };
       case "assistant.attachment":
         return { received: (input as { totalBytes: number }).totalBytes };
+      case "assistant.legacy.list":
+        return {
+          copies: [{ projectId: "legacy-1", count: legacyMessages.length, digest: "d", pages: 1 }],
+        };
+      case "assistant.legacy.page":
+        return { messages: legacyMessages };
+      case "assistant.legacy.remove":
+        calls.push(op);
+        return { removed: true };
       case "assistant.verify": {
         calls.push(op);
         const asked = input as { count: number; digest: string; attachments: number };
@@ -609,6 +633,75 @@ describe("AssistantHome", () => {
             `${config.attachmentsDir}/${moved.id}.png`,
           );
           expect(Buffer.from(stored).toString()).toBe("0123456789");
+        }),
+      ),
+  );
+
+  it.effect(
+    "brings an older copy's conversation in once, then removes that copy only when all of it is here",
+    () =>
+      run(
+        Effect.gen(function* () {
+          yield* seedAssistant;
+          const home = yield* AssistantHome;
+          // Removing before bringing it over is refused: nothing is lost.
+          expect(
+            (yield* home
+              .manage({ action: "removeLegacy", machineId: "env-mini", projectId: "legacy-1" })
+              .pipe(Effect.flip)).detail,
+          ).toContain("2 messages of that copy are not here yet");
+          expect(calls).toEqual([]);
+          yield* home.manage({ action: "backfill", machineId: "env-mini", projectId: "legacy-1" });
+          // Again: nothing doubles.
+          yield* home.manage({ action: "backfill", machineId: "env-mini", projectId: "legacy-1" });
+          const rows = yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
+            threadId: ThreadId.make("old-assistant"),
+          });
+          expect(rows.filter((row) => row.text === "From last year")).toHaveLength(1);
+          // Older messages sort before the live conversation.
+          expect(rows[0]?.text).toBe("From last year");
+          yield* home.manage({
+            action: "removeLegacy",
+            machineId: "env-mini",
+            projectId: "legacy-1",
+          });
+          expect(calls).toEqual(["assistant.legacy.remove"]);
+        }),
+      ),
+  );
+
+  it.effect(
+    "reads out an older copy, and removes it only for the Assistant's machine with an unchanged digest",
+    () =>
+      run(
+        Effect.gen(function* () {
+          yield* seedAssistant;
+          const home = yield* AssistantHome;
+          yield* home.manage({ action: "move", to: "env-mini" });
+          yield* asOlderBuildCopy;
+          const listed = yield* home.legacyList;
+          expect(listed.copies).toHaveLength(1);
+          const copy = listed.copies[0]!;
+          expect(copy.projectId).toBe("old-home");
+          const page = yield* home.legacyPage({ projectId: "old-home", page: 0 });
+          expect(page.messages).toHaveLength(copy.count);
+          const asker = { environmentId: "env-mini", label: "Mac mini" };
+          noteAssistantHost("env-mini", {
+            hosts: true,
+            at: DateTime.toEpochMillis(yield* DateTime.now),
+          });
+          expect(
+            (yield* home
+              .legacyRemove({ projectId: "old-home", count: copy.count, digest: "changed" }, asker)
+              .pipe(Effect.flip)).detail,
+          ).toContain("changed since");
+          expect(
+            (yield* home.legacyRemove(
+              { projectId: "old-home", count: copy.count, digest: copy.digest },
+              asker,
+            )).removed,
+          ).toBe(true);
+          expect((yield* home.legacyList).copies).toEqual([]);
         }),
       ),
   );

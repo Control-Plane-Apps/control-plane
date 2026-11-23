@@ -28,6 +28,7 @@ import {
   currentHome,
   LOCAL_HOME,
   machineStateText,
+  legacyCopyText,
   moveNeedsTaskSync,
   moveTaskNote,
   offlineHomeText,
@@ -107,7 +108,37 @@ export function useAssistantHomeStatus(environmentId: EnvironmentId | null, conn
     return null;
   }, [assistantHome, environmentId, refresh]);
 
-  return { state, refresh, move, reclaim };
+  const legacy = useCallback(
+    async (
+      action: "backfill" | "removeLegacy",
+      machineId: string,
+      projectId: string,
+    ): Promise<AssistantHomeStatus | null> => {
+      if (environmentId === null) return null;
+      const result = await assistantHome({
+        environmentId,
+        input: { action, machineId, projectId },
+      });
+      if (result._tag === "Success") {
+        setState({ phase: "ready", status: result.value });
+        return result.value;
+      }
+      if (!isAtomCommandInterrupted(result)) {
+        toastManager.add({
+          type: "error",
+          title:
+            action === "backfill"
+              ? "The older conversation was not brought over"
+              : "The older copy was not removed",
+          description: agentMachinesErrorMessage(squashAtomCommandFailure(result)),
+        });
+      }
+      return null;
+    },
+    [assistantHome, environmentId],
+  );
+
+  return { state, refresh, move, reclaim, legacy };
 }
 
 export function AssistantHomeSection({
@@ -115,16 +146,28 @@ export function AssistantHomeSection({
   state,
   onMove,
   onReclaim,
+  onLegacy,
 }: {
   /** The machine these settings are read from. */
   readonly localLabel: string;
   readonly state: AssistantHomeState;
   readonly onMove: (to: string) => Promise<AssistantHomeStatus | null>;
   readonly onReclaim: () => Promise<AssistantHomeStatus | null>;
+  /** Brings an older copy's conversation over, or removes that copy once it is all here. */
+  readonly onLegacy?: (
+    action: "backfill" | "removeLegacy",
+    machineId: string,
+    projectId: string,
+  ) => Promise<AssistantHomeStatus | null>;
 }) {
   const [pending, setPending] = useState<{ value: string; label: string } | null>(null);
   const serverConfigs = useServerConfigs();
   const [reclaiming, setReclaiming] = useState(false);
+  const [removing, setRemoving] = useState<{
+    readonly machineId: string;
+    readonly machineLabel: string;
+    readonly projectId: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
 
   if (state.phase !== "ready") {
@@ -269,6 +312,66 @@ export function AssistantHomeSection({
           }
         />
       ))}
+      {(status.legacyCopies ?? []).map((copy) => (
+        <SettingsRow
+          key={`${copy.machineId}:${copy.projectId}`}
+          title={`Older conversation on ${copy.machineLabel}`}
+          description={legacyCopyText(copy)}
+          control={
+            onLegacy === undefined ? null : copy.missing === 0 ? (
+              <Button size="xs" variant="outline" disabled={busy} onClick={() => setRemoving(copy)}>
+                Remove the old copy
+              </Button>
+            ) : (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true);
+                  void onLegacy("backfill", copy.machineId, copy.projectId).finally(() =>
+                    setBusy(false),
+                  );
+                }}
+              >
+                Bring it here
+              </Button>
+            )
+          }
+        />
+      ))}
+      <AlertDialog open={removing !== null} onOpenChange={(open) => !open && setRemoving(null)}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove the old copy on {removing?.machineLabel}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Its whole conversation is in your Assistant here, so nothing is lost. The old copy and
+              its files are deleted on {removing?.machineLabel}.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={busy} />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              disabled={busy || onLegacy === undefined}
+              onClick={() => {
+                if (removing === null || onLegacy === undefined) return;
+                setBusy(true);
+                void onLegacy("removeLegacy", removing.machineId, removing.projectId).finally(
+                  () => {
+                    setBusy(false);
+                    setRemoving(null);
+                  },
+                );
+              }}
+            >
+              {busy ? "Removing…" : "Remove"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <AlertDialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
         <AlertDialogPopup>
           <AlertDialogHeader>

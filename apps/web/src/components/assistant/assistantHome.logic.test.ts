@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   currentHome,
   LOCAL_HOME,
+  legacyCopyText,
   moveBlockedReason,
   moveNeedsTaskSync,
   moveTaskNote,
@@ -171,5 +172,15 @@ describe("moveNeedsTaskSync", () => {
     expect(moveNeedsTaskSync(status(true, true), "env-mini", "Mac mini")).toBeNull();
     expect(moveNeedsTaskSync(status(false, false), "env-mini", "Mac mini")).toBeNull();
     expect(moveNeedsTaskSync(status(true, false), LOCAL_HOME, "This Mac")).toBeNull();
+  });
+});
+
+describe("legacyCopyText", () => {
+  it("says what is left to bring over, and when the old copy can go", () => {
+    expect(legacyCopyText({ count: 2142, missing: null })).toContain("2142 messages from before");
+    expect(legacyCopyText({ count: 2142, missing: 1940 })).toBe(
+      "1940 of its 2142 messages are not here yet.",
+    );
+    expect(legacyCopyText({ count: 2142, missing: 0 })).toContain("You can remove the old copy");
   });
 });

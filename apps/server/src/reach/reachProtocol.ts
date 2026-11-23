@@ -45,6 +45,10 @@ export const ReachOp = Schema.Literals([
   "assistant.history",
   "assistant.attachment",
   "assistant.verify",
+  "assistant.legacy.list",
+  "assistant.legacy.page",
+  "assistant.legacy.attachment",
+  "assistant.legacy.remove",
 ]);
 export type ReachOp = typeof ReachOp.Type;
 
@@ -247,6 +251,7 @@ export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
   "assistant.history",
   "assistant.attachment",
   "assistant.verify",
+  "assistant.legacy.remove",
 ]);
 
 /** Everything that moves with the Assistant. */
@@ -336,6 +341,37 @@ export const AttachmentChunkInput = Schema.Struct({
   data: Schema.String,
 });
 export const AttachmentChunkResult = Schema.Struct({ received: Schema.Number });
+
+/** Older Assistant copies an earlier build left here (archived, not retired). */
+export const LegacyListResult = Schema.Struct({
+  copies: Schema.Array(
+    Schema.Struct({
+      projectId: Schema.String,
+      count: Schema.Number,
+      digest: Schema.String,
+      pages: Schema.Number,
+    }),
+  ),
+});
+export const LegacyPageInput = Schema.Struct({ projectId: Schema.String, page: Schema.Number });
+export const LegacyPageResult = Schema.Struct({ messages: Schema.Array(HistoryMessage) });
+export const LegacyAttachmentInput = Schema.Struct({
+  projectId: Schema.String,
+  attachment: Schema.Unknown,
+  offset: Schema.Number,
+});
+export const LegacyAttachmentResult = Schema.Struct({
+  data: Schema.String,
+  totalBytes: Schema.Number,
+  sha256: Schema.String,
+});
+/** Removes an older copy; refused unless its conversation still has this digest. */
+export const LegacyRemoveInput = Schema.Struct({
+  projectId: Schema.String,
+  count: Schema.Number,
+  digest: Schema.String,
+});
+export const LegacyRemoveResult = Schema.Struct({ removed: Schema.Boolean });
 
 /** What the target must hold before commit: message count and a digest of the conversation. */
 export const HistoryVerifyInput = Schema.Struct({

@@ -156,6 +156,7 @@ export function AssistantSettingsPage() {
         state={home.state}
         onMove={home.move}
         onReclaim={home.reclaim}
+        onLegacy={home.legacy}
       />
 
       {awayLabel !== null ? (

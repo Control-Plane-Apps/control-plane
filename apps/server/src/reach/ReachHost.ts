@@ -60,6 +60,9 @@ import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
 import { AssistantHome } from "./AssistantHome.ts";
 import {
   AttachmentChunkInput,
+  LegacyAttachmentInput,
+  LegacyPageInput,
+  LegacyRemoveInput,
   HistoryPageInput,
   HistoryVerifyInput,
   ConfirmInput,
@@ -467,6 +470,18 @@ export const make = Effect.gen(function* () {
       case "assistant.abort":
         return decode(MoveIdInput)(request.input).pipe(
           Effect.flatMap((input) => home.abort(input.moveId, peerOf(request))),
+        );
+      case "assistant.legacy.list":
+        return home.legacyList;
+      case "assistant.legacy.page":
+        return decode(LegacyPageInput)(request.input).pipe(Effect.flatMap(home.legacyPage));
+      case "assistant.legacy.attachment":
+        return decode(LegacyAttachmentInput)(request.input).pipe(
+          Effect.flatMap(home.legacyAttachment),
+        );
+      case "assistant.legacy.remove":
+        return decode(LegacyRemoveInput)(request.input).pipe(
+          Effect.flatMap((input) => home.legacyRemove(input, peerOf(request))),
         );
       case "assistant.history":
         return decode(HistoryPageInput)(request.input).pipe(

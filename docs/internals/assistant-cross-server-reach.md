@@ -262,6 +262,15 @@ timeout or crash never leaves two Assistants, and an interrupted move finishes o
    Project in the same home folder, so no "(previous)" thread exists. A copy an older build left
    (archived, not retired, possibly holding history the mover lacks) is still reused as below until
    the one-time history backfill.
+   **History backfill (#134):** while the Assistant runs here, Settings, Assistant lists older copies
+   on online linked machines ("Older conversation on <machine>"). "Bring it here" pulls that copy's
+   conversation (read ops `assistant.legacy.list/page/attachment`; the old machine only serves files
+   that belong to that copy) and imports the messages not already here, matched by (role, time,
+   text), into the live thread (`thread.history.import` with `backfill: true`: allowed on a thread
+   with turns but not while one runs, settle state untouched). "Remove the old copy" runs only on the
+   user's click, only when every message is here, and the old machine deletes it only for the
+   machine that runs the Assistant and only if the copy's digest is unchanged
+   (`assistant.legacy.remove`, a verified write).
    When the copy reused an archived Project (A to B to A), the coordinator swap leaves the old
    coordinator pinned as "Assistant (previous)"; on commit the target unpins and archives it
    (`retirePreviousThread`), and reconcile does the same for moves committed by older builds. Only

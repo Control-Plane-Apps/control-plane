@@ -2206,18 +2206,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const backfill = command.backfill === true;
+      const running =
+        thread.session !== null &&
+        (thread.session.status === "starting" || thread.session.status === "running");
       if (
         thread.deletedAt !== null ||
         thread.archivedAt !== null ||
-        (command.append !== true && thread.messages.length > 0) ||
-        thread.latestTurn !== null ||
-        thread.session !== null ||
+        (backfill
+          ? running
+          : (command.append !== true && thread.messages.length > 0) ||
+            thread.latestTurn !== null ||
+            thread.session !== null) ||
         openRequests(thread).size > 0
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail:
-            command.append === true
+          detail: backfill
+            ? `Thread '${command.threadId}' is busy; bring older history in when its turn ends.`
+            : command.append === true
               ? `Thread '${command.threadId}' must be active and have no turns before more history can be imported.`
               : `Thread '${command.threadId}' must be active and empty before history can be imported.`,
         });
@@ -2258,6 +2265,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             updatedAt: message.createdAt,
           },
         });
+      }
+      if (backfill) {
+        if (events.length === 0) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "All of that history is already here.",
+          });
+        }
+        // A live thread keeps its own settle state.
+        return events;
       }
       const settledAt = command.messages.reduce(
         (latest, message) =>

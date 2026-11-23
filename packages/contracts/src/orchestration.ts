@@ -1854,6 +1854,13 @@ const ThreadHistoryImportCommand = Schema.Struct({
    * skipped. Fork-owned.
    */
   append: Schema.optional(Schema.Boolean),
+  /**
+   * Older history brought into a live thread (the Assistant's conversation
+   * from a copy left on another machine). Allowed while the thread has turns,
+   * but not while one runs; messages already present are skipped and the
+   * thread's settle state is left alone. Fork-owned.
+   */
+  backfill: Schema.optional(Schema.Boolean),
 });
 
 /**

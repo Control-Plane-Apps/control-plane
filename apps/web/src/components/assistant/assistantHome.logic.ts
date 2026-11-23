@@ -173,3 +173,17 @@ export function moveNeedsTaskSync(
     ? `Sign ${targetLabel} in to Task Sync first, so your Assistant can see your tasks there.`
     : `${targetLabel} has not said whether it is signed in to Task Sync. Update it first.`;
 }
+
+/** One line for an older copy of the Assistant left on a linked machine. */
+export function legacyCopyText(copy: {
+  readonly count: number;
+  readonly missing: number | null;
+}): string {
+  if (copy.missing === 0) {
+    return `All ${copy.count} messages are here. You can remove the old copy.`;
+  }
+  if (copy.missing === null) {
+    return `${copy.count} messages from before the Assistant moved. Bring them here, then remove the old copy.`;
+  }
+  return `${copy.missing} of its ${copy.count} messages are not here yet.`;
+}
