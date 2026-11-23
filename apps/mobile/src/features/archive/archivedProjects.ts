@@ -1,4 +1,9 @@
-import { isArchivedAssistant, type EnvironmentId, type ProjectAssistant } from "@t3tools/contracts";
+import {
+  isArchivedAssistant,
+  isRetiredAssistant,
+  type EnvironmentId,
+  type ProjectAssistant,
+} from "@t3tools/contracts";
 
 import type { ArchivedThreadSortOrder } from "./archivedThreadList";
 
@@ -50,6 +55,7 @@ export function selectArchivedProjectRows<P extends ArchivedProjectInput>(input:
       .filter(
         (project) =>
           isArchivedAssistant(project) &&
+          !isRetiredAssistant(project) &&
           (input.environmentId === null || project.environmentId === input.environmentId) &&
           (query.length === 0 ||
             project.title.toLocaleLowerCase().includes(query) ||

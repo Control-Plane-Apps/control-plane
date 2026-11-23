@@ -294,6 +294,13 @@ export const decideAssistantMetaUpdate = Effect.fn("decideAssistantMetaUpdate")(
         : patch.archived
           ? (current?.archivedAt ?? occurredAt)
           : null;
+    // A retired copy (left behind by a move) stays retired until it is brought back.
+    const retiredAt =
+      patch.retired === true
+        ? (current?.retiredAt ?? occurredAt)
+        : patch.retired === false || archivedAt === null
+          ? null
+          : current?.retiredAt;
     // The global marker is set when the Assistant's Project is created and never moves.
     const scope = current?.scope ?? (current === null ? patch.scope : undefined);
     next = {
@@ -301,6 +308,7 @@ export const decideAssistantMetaUpdate = Effect.fn("decideAssistantMetaUpdate")(
       ...(scope !== undefined ? { scope } : {}),
       ...(formerTitle !== undefined ? { formerTitle } : {}),
       ...(archivedAt !== undefined ? { archivedAt } : {}),
+      ...(retiredAt !== undefined && retiredAt !== null ? { retiredAt } : {}),
       // Users never write Status; the coordinator's board survives meta updates.
       ...(current?.statuses !== undefined
         ? {

@@ -174,6 +174,91 @@ it.layer(NodeServices.layer)("thread history import", (it) => {
     }),
   );
 
+  it.effect(
+    "a backfill gives a message already here the attachments it lacked, and adds nothing twice",
+    () =>
+      Effect.gen(function* () {
+        const createdAt = "2026-08-24T10:00:00.000Z";
+        const threadId = ThreadId.make("assistant-thread");
+        let readModel = yield* projectEvent(createEmptyReadModel(createdAt), {
+          sequence: 1,
+          eventId: EventId.make("event-thread-created"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          type: "thread.created",
+          occurredAt: createdAt,
+          commandId: CommandId.make("command-thread-created"),
+          causationEventId: null,
+          correlationId: CommandId.make("command-thread-created"),
+          metadata: {},
+          payload: {
+            threadId,
+            projectId: ProjectId.make("project-1"),
+            title: "Assistant",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        });
+        const words = {
+          messageId: MessageId.make("moved:old:0"),
+          role: "user" as const,
+          text: "Photo of the roof",
+          createdAt,
+        };
+        const first = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.history.import",
+            commandId: CommandId.make("command-import"),
+            threadId,
+            messages: [words],
+          },
+          readModel,
+        });
+        for (const [index, event] of (Array.isArray(first) ? first : [first]).entries()) {
+          readModel = yield* projectEvent(readModel, { ...event, sequence: index + 2 });
+        }
+        const picture = {
+          type: "image" as const,
+          id: "assistant-thread-0b1e8d2a-1234-4abc-9def-0123456789ab-png",
+          name: "roof.png",
+          mimeType: "image/png",
+          sizeBytes: 10,
+        };
+        const backfill = (messages: ReadonlyArray<typeof words & { attachments?: never[] }>) =>
+          decideOrchestrationCommand({
+            command: {
+              type: "thread.history.import",
+              commandId: CommandId.make(`command-backfill-${messages.length}`),
+              threadId,
+              messages: messages as never,
+              backfill: true,
+            },
+            readModel,
+          });
+        const filled = yield* backfill([
+          { ...words, text: "ignored", attachments: [picture] as never[] },
+        ]);
+        expect(filled).toMatchObject([
+          {
+            type: "thread.message-sent",
+            payload: {
+              messageId: "moved:old:0",
+              text: "Photo of the roof",
+              attachments: [{ id: picture.id }],
+            },
+          },
+        ]);
+        // The same words without more attachments: nothing to bring.
+        const again = yield* backfill([words]).pipe(Effect.flip);
+        expect(String(again.message ?? again)).toContain("already here");
+      }),
+  );
+
   it.effect("allows a thread with a newly imported user message to be settled", () =>
     Effect.gen(function* () {
       const createdAt = "2026-08-24T10:00:00.000Z";

@@ -1844,8 +1844,23 @@ const ThreadHistoryImportCommand = Schema.Struct({
       role: Schema.Literals(["user", "assistant"]),
       text: Schema.String,
       createdAt: IsoDateTime,
+      /** Already stored under this server's attachments dir. Fork-owned. */
+      attachments: Schema.optional(Schema.Array(ChatAttachment)),
     }),
   ).check(Schema.isNonEmpty()),
+  /**
+   * A further page of an import into a thread that has no turns yet (the
+   * Assistant's full history arrives in pages). Messages already present are
+   * skipped. Fork-owned.
+   */
+  append: Schema.optional(Schema.Boolean),
+  /**
+   * Older history brought into a live thread (the Assistant's conversation
+   * from a copy left on another machine). Allowed while the thread has turns,
+   * but not while one runs; messages already present are skipped and the
+   * thread's settle state is left alone. Fork-owned.
+   */
+  backfill: Schema.optional(Schema.Boolean),
 });
 
 /**

@@ -2206,20 +2206,41 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const backfill = command.backfill === true;
+      const running =
+        thread.session !== null &&
+        (thread.session.status === "starting" || thread.session.status === "running");
       if (
         thread.deletedAt !== null ||
         thread.archivedAt !== null ||
-        thread.messages.length > 0 ||
-        thread.latestTurn !== null ||
-        thread.session !== null ||
+        (backfill
+          ? running
+          : (command.append !== true && thread.messages.length > 0) ||
+            thread.latestTurn !== null ||
+            thread.session !== null) ||
         openRequests(thread).size > 0
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: `Thread '${command.threadId}' must be active and empty before history can be imported.`,
+          detail: backfill
+            ? `Thread '${command.threadId}' is busy; bring older history in when its turn ends.`
+            : command.append === true
+              ? `Thread '${command.threadId}' must be active and have no turns before more history can be imported.`
+              : `Thread '${command.threadId}' must be active and empty before history can be imported.`,
         });
       }
-      const firstMessage = command.messages[0];
+      // A page sent again (a retried move) adds nothing twice. A backfill may
+      // give a message already here the attachments an older move left behind.
+      const present = new Map(thread.messages.map((message) => [message.id, message] as const));
+      const incoming = command.messages.flatMap((message) => {
+        const known = present.get(message.messageId);
+        if (known === undefined) return [{ message, turnId: null }];
+        if (backfill && (message.attachments?.length ?? 0) > (known.attachments?.length ?? 0)) {
+          return [{ message: { ...message, text: known.text }, turnId: known.turnId }];
+        }
+        return [];
+      });
+      const firstMessage = incoming[0]?.message ?? command.messages[0];
       if (firstMessage === undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2228,7 +2249,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
 
       const events: Array<PlannedOrchestrationEvent> = [];
-      for (const message of command.messages) {
+      for (const { message, turnId } of incoming) {
         events.push({
           ...(yield* withEventBase({
             aggregateKind: "thread",
@@ -2243,12 +2264,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             messageId: message.messageId,
             role: message.role,
             text: message.text,
-            turnId: null,
+            ...(message.attachments !== undefined && message.attachments.length > 0
+              ? { attachments: message.attachments }
+              : {}),
+            turnId,
             streaming: false,
             createdAt: message.createdAt,
             updatedAt: message.createdAt,
           },
         });
+      }
+      if (backfill) {
+        if (events.length === 0) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "All of that history is already here.",
+          });
+        }
+        // A live thread keeps its own settle state.
+        return events;
       }
       const settledAt = command.messages.reduce(
         (latest, message) =>

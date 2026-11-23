@@ -63,6 +63,18 @@ export const AssistantHomeInput = Schema.Union([
    * unreachable; that machine pauses its copy when it is back.
    */
   Schema.Struct({ action: Schema.Literal("reclaim") }),
+  /** Brings an older copy's conversation from a linked machine into the Assistant here. */
+  Schema.Struct({
+    action: Schema.Literal("backfill"),
+    machineId: TrimmedNonEmptyString,
+    projectId: TrimmedNonEmptyString,
+  }),
+  /** Removes that older copy on the linked machine, once all of it is here. User-confirmed only. */
+  Schema.Struct({
+    action: Schema.Literal("removeLegacy"),
+    machineId: TrimmedNonEmptyString,
+    projectId: TrimmedNonEmptyString,
+  }),
 ]);
 export type AssistantHomeInput = typeof AssistantHomeInput.Type;
 
@@ -110,6 +122,22 @@ export const AssistantHomeStatus = Schema.Struct({
   canReclaim: Schema.optional(Schema.Boolean),
   /** A move from this machine that has not finished; the Assistant is paused meanwhile. */
   pendingMove: Schema.optional(Schema.Struct({ label: Schema.String, startedAt: Schema.String })),
+  /**
+   * Older copies of the Assistant left on linked machines by earlier builds,
+   * with how many of their messages are not in the Assistant here (null: not
+   * checked yet). Only while the Assistant runs here.
+   */
+  legacyCopies: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        machineId: Schema.String,
+        machineLabel: Schema.String,
+        projectId: Schema.String,
+        count: Schema.Number,
+        missing: Schema.NullOr(Schema.Number),
+      }),
+    ),
+  ),
   /** After a move: what did not move as it was, such as schedules aimed at other threads. */
   notes: Schema.optional(Schema.Array(Schema.String)),
 });
