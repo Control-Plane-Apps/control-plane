@@ -25,7 +25,7 @@ rpc() { (cd "$SERVER_DIR" && node scripts/task-authority-e2e/rpc.ts "$(url "$1")
 start_server() {
   local name=$1
   (cd "$SERVER_DIR" && nohup node src/bin.ts serve --base-dir "$DIR/$name" \
-    --port "$(port "$name")" --host 127.0.0.1 "$DIR/ws-$name" >"$DIR/$name.log" 2>&1 &
+    --port "$(port "$name")" --host "${TA_E2E_HOST:-127.0.0.1}" "$DIR/ws-$name" >"$DIR/$name.log" 2>&1 &
     echo $! >"$DIR/$name.pid")
   for _ in $(seq 1 120); do
     curl -sf -m 3 "$(url "$name")/.well-known/t3/environment" >/dev/null 2>&1 && return 0
