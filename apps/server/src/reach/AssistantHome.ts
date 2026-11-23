@@ -637,7 +637,13 @@ export const make = Effect.gen(function* () {
           commandId: CommandId.make(`assistant-home:marker:${input.projectId}`),
           projectId,
           defaultModelSelection: input.modelSelection,
-          assistant: { coordinatorThreadId: threadId, scope: "global", archived: true },
+          // Paused and unlisted until the move commits (commit unarchives, which clears it).
+          assistant: {
+            coordinatorThreadId: threadId,
+            scope: "global",
+            archived: true,
+            retired: true,
+          },
         },
         what,
       );
@@ -1012,7 +1018,11 @@ export const make = Effect.gen(function* () {
                 type: "project.meta.update",
                 commandId: CommandId.make(`assistant-home:coordinator:${threadId}`),
                 projectId: archived.project.id,
-                assistant: { coordinatorThreadId: ThreadId.make(threadId), archived: true },
+                assistant: {
+                  coordinatorThreadId: ThreadId.make(threadId),
+                  archived: true,
+                  retired: true,
+                },
               },
               "Could not prepare the Assistant here",
             );
@@ -1735,7 +1745,18 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.orElseSucceed(() => undefined));
     if (snapshot === undefined) return;
     const now = DateTime.toEpochMillis(yield* DateTime.now);
+    // A copy still being moved here waits for its commit or abort, however long.
+    const moving = new Set(
+      (yield* journal.list)
+        .filter(
+          (record) =>
+            record.role === "target" &&
+            (record.phase === "preparing" || record.phase === "adopted"),
+        )
+        .map((record) => (record as TargetMove).projectId),
+    );
     for (const project of snapshot.projects) {
+      if (moving.has(project.id)) continue;
       const retiredAt = project.assistant?.retiredAt;
       if (retiredAt == null || project.assistant?.archivedAt == null) continue;
       const at = Date.parse(retiredAt);

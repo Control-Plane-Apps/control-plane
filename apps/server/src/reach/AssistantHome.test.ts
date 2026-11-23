@@ -594,6 +594,8 @@ describe("AssistantHome", () => {
             { ...first, history: { ...first.history, digest } },
             FROM,
           );
+          // The copy being built is paused and listed nowhere until it commits.
+          expect(yield* projectState(adopted.projectId)).toBe("retired");
           // Not everything is here yet: no commit.
           expect((yield* home.commit("full", FROM).pipe(Effect.flip)).detail).toContain(
             "has not fully arrived",
@@ -623,6 +625,7 @@ describe("AssistantHome", () => {
           );
           expect(verified).toMatchObject({ ok: true, count: 3, attachments: 1 });
           expect(yield* home.commit("full", FROM)).toEqual({ phase: "committed" });
+          expect(yield* projectState(adopted.projectId)).toBe("live");
           const rows = yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
             threadId: ThreadId.make(adopted.threadId),
           });
