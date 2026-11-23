@@ -31,6 +31,7 @@ import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import { HomeSectionList } from "./HomeSectionList";
 import type { HomeProjectSortOrder } from "./homeThreadList";
 import { useHomeSections } from "./useHomeSections";
+import { useConnectionStatusVisible } from "../connection/useConnectionStatusVisible";
 
 /* ─── Types ──────────────────────────────────────────────────────────── */
 
@@ -199,6 +200,19 @@ export function HomeScreen(props: HomeScreenProps) {
     ) : null;
   useThreadJumpShortcuts(model.sections.jumpThreads, props.onSelectThread);
 
+  // Cold launch reads the cached shell from disk a beat after the environments
+  // register, so "Loading"/"Connecting" would flash before the cached threads
+  // land. Hold that text back for the connection grace period; phone offline
+  // and every settled state (no environments, unavailable) still show at once.
+  const loadingEmptyState = !props.catalogState.hasLoadedShellSnapshot
+    ? deriveEmptyState(props.catalogState).loading
+    : false;
+  const loadingTextVisible = useConnectionStatusVisible(
+    loadingEmptyState,
+    props.catalogState.networkStatus === "offline",
+    props.environments.map((environment) => environment.environmentId).join(","),
+  );
+
   const hasSavedEnvironment =
     props.catalogState.hasConnections || Object.keys(props.savedConnectionsById).length > 0;
   const showComposer = hasSavedEnvironment || props.catalogState.hasReadyEnvironment;
@@ -227,34 +241,40 @@ export function HomeScreen(props: HomeScreenProps) {
             paddingTop: NATIVE_LIQUID_GLASS_SUPPORTED ? insets.top + 72 : 0,
           }}
         >
-          <View className="w-full max-w-[430px]">
-            <EmptyState
-              title={emptyState.title}
-              detail={emptyState.detail}
-              actionLabel={!props.catalogState.hasReadyEnvironment ? "Add environment" : undefined}
-              onAction={!props.catalogState.hasReadyEnvironment ? props.onAddConnection : undefined}
-              action={
-                Platform.OS === "android" && !props.catalogState.hasReadyEnvironment ? (
-                  <MaterialFloatingActionButton
-                    label="Add environment"
-                    icon="plus"
-                    variant="extended"
-                    tone="primary"
-                    onPress={props.onAddConnection}
-                  />
-                ) : undefined
-              }
-              variant="plain"
-            />
-            {!props.catalogState.isLoadingConnections && !props.catalogState.hasConnections ? (
-              <TryDemoButton />
-            ) : null}
-            {emptyState.loading ? (
-              <View className="mt-4 items-center">
-                <ActivityIndicator colorClassName="accent-icon-muted" />
-              </View>
-            ) : null}
-          </View>
+          {emptyState.loading && !loadingTextVisible ? null : (
+            <View className="w-full max-w-[430px]">
+              <EmptyState
+                title={emptyState.title}
+                detail={emptyState.detail}
+                actionLabel={
+                  !props.catalogState.hasReadyEnvironment ? "Add environment" : undefined
+                }
+                onAction={
+                  !props.catalogState.hasReadyEnvironment ? props.onAddConnection : undefined
+                }
+                action={
+                  Platform.OS === "android" && !props.catalogState.hasReadyEnvironment ? (
+                    <MaterialFloatingActionButton
+                      label="Add environment"
+                      icon="plus"
+                      variant="extended"
+                      tone="primary"
+                      onPress={props.onAddConnection}
+                    />
+                  ) : undefined
+                }
+                variant="plain"
+              />
+              {!props.catalogState.isLoadingConnections && !props.catalogState.hasConnections ? (
+                <TryDemoButton />
+              ) : null}
+              {emptyState.loading ? (
+                <View className="mt-4 items-center">
+                  <ActivityIndicator colorClassName="accent-icon-muted" />
+                </View>
+              ) : null}
+            </View>
+          )}
         </View>
         {showComposer ? <HomeComposerBar lockedProject={lockedProject} /> : null}
       </View>

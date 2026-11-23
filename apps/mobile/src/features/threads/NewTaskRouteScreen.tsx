@@ -22,6 +22,7 @@ import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { useProjects } from "../../state/entities";
 import type { WorkspaceState } from "../../state/workspaceModel";
 import { useWorkspaceState } from "../../state/workspace";
+import { useConnectionStatusVisible } from "../connection/useConnectionStatusVisible";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 import { useNewTaskFlow } from "./new-task-flow-provider";
@@ -109,6 +110,11 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
     : null;
   const screenTitle = incomingShare ? "Start a task" : "Choose workspace";
   const projectEmptyState = deriveProjectEmptyState(catalogState);
+  // Same quiet period as Home: hold "Loading"/"Connecting" back for five seconds.
+  const loadingTextVisible = useConnectionStatusVisible(
+    projectEmptyState.loading,
+    catalogState.networkStatus === "offline",
+  );
   const resumedDestinationKeyRef = useRef<string | null>(null);
   const reservedDestinationProject = incomingShare?.destination
     ? (projects.find(
@@ -248,7 +254,9 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               : {}),
           }}
         >
-          {projectScopes.length === 0 ? (
+          {projectScopes.length === 0 &&
+          projectEmptyState.loading &&
+          !loadingTextVisible ? null : projectScopes.length === 0 ? (
             <View
               collapsable={false}
               className={cn(
