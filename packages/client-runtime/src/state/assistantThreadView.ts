@@ -4,7 +4,7 @@ import {
   isAgentPeerMessageId,
   isAgentPushMessageId,
   type AssistantThreadRole,
-  type OrchestrationAgentMessageSource,
+  type OrchestrationMessageSource,
   type ThreadId,
 } from "@t3tools/contracts";
 
@@ -84,12 +84,12 @@ export function resolveAgentMessagePresentation(input: {
   readonly message: {
     readonly id: string;
     readonly role: string;
-    readonly source?: OrchestrationAgentMessageSource | undefined;
+    readonly source?: OrchestrationMessageSource | undefined;
   };
   readonly assistantTimeline: AgentMessageTimeline | null | undefined;
 }): AgentMessagePresentation {
   const { message, assistantTimeline: timeline } = input;
-  const source = message.source;
+  const source = message.source?.kind === "agent" ? message.source : undefined;
   // A schedule has no sender thread, so it wins before any handoff reading.
   if (isAgentOriginatedUserMessage(message) && source?.scheduleId !== undefined) {
     return { kind: "scheduled", name: source.threadTitle ?? "Schedule" };

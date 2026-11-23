@@ -2327,6 +2327,11 @@ function UserTimelineRow({
           <span className="min-w-0 truncate">{attribution.displayName}</span>
         </button>
       ) : null}
+      {row.message.source?.kind === "remote-user" ? (
+        <p className="max-w-[80%] pe-1 text-muted-foreground text-xs">
+          You via Assistant on {row.message.source.label}
+        </p>
+      ) : null}
       {scheduledLabel !== null ? (
         <p className="flex max-w-[80%] items-center gap-1.5 pe-1 text-muted-foreground text-xs">
           <ClockIcon aria-hidden="true" className="size-3 shrink-0" />

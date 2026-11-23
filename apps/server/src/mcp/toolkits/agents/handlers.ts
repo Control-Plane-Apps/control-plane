@@ -799,7 +799,9 @@ const make = Effect.gen(function* () {
           const ownRequest = Option.filter(
             request,
             (message) =>
-              message.threadId === agent.id && message.source?.replyTo === manager.caller.id,
+              message.threadId === agent.id &&
+              message.source?.kind === "agent" &&
+              message.source.replyTo === manager.caller.id,
           );
           yield* dispatch(
             {

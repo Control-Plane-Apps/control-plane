@@ -226,7 +226,8 @@ export function heldRequestIds(input: {
       (message) =>
         message.role === "user" &&
         message.messageId.startsWith(heldPrefix) &&
-        (message.source?.replyTo === input.managerId || isAgentPeerMessageId(message.messageId)) &&
+        ((message.source?.kind === "agent" && message.source.replyTo === input.managerId) ||
+          isAgentPeerMessageId(message.messageId)) &&
         !started.has(message.messageId),
     )
     .map((message) => message.messageId);

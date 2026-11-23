@@ -15,6 +15,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { ServerConfig } from "../config.ts";
@@ -57,6 +58,7 @@ const SELF = "env-macbook";
 const MINI = { environmentId: "env-mini", label: "Mac mini" };
 
 let confirms = true;
+let assistantOnMini = true;
 const confirmsAsked: Array<unknown> = [];
 // The Mac mini, as this server's own link reaches it: it vouches for its requests.
 const scripted = makeScriptedReach([
@@ -65,10 +67,27 @@ const scripted = makeScriptedReach([
     label: "Mac mini",
     online: true,
     answer: (op, input) => {
+      if (op === "describe") {
+        return {
+          assistant: assistantOnMini
+            ? { threadId: "mini-assistant", projectId: "mini-home" }
+            : null,
+        };
+      }
       if (op === "confirm") {
         confirmsAsked.push(input);
         return { sent: confirms };
       }
+      throw new Error(`unexpected ${op}`);
+    },
+  },
+  {
+    id: "env-linked-peer",
+    label: "Other linked peer",
+    online: true,
+    answer: (op) => {
+      if (op === "confirm") return { sent: true };
+      if (op === "describe") return { assistant: null };
       throw new Error(`unexpected ${op}`);
     },
   },
@@ -177,11 +196,10 @@ const call = <A, I>(
   });
 
 const run = <A, E, R>(effect: Effect.Effect<A, E, R>, withAssistant = false) =>
-  Effect.sync(() => void (confirms = true)).pipe(
-    Effect.andThen(seed(withAssistant)),
-    Effect.andThen(effect),
-    Effect.provide(TestLayer),
-  );
+  Effect.sync(() => {
+    confirms = true;
+    assistantOnMini = true;
+  }).pipe(Effect.andThen(seed(withAssistant)), Effect.andThen(effect), Effect.provide(TestLayer));
 
 describe("ReachHost", () => {
   it.effect("refuses a call from its own environment", () =>
@@ -206,7 +224,7 @@ describe("ReachHost", () => {
             environmentId: SELF,
             label: "MacBook",
             assistant: { threadId: ASSISTANT, projectId: HOME },
-            linked: ["env-mini"],
+            linked: ["env-mini", "env-linked-peer"],
           },
         });
       }),
@@ -360,48 +378,148 @@ describe("ReachHost", () => {
     ),
   );
 
-  it.effect("accepts a verified remote user reply as the user and refuses a duplicate answer", () =>
+  it.effect(
+    "accepts the Assistant machine user reply with persisted provenance and refuses a duplicate answer",
+    () =>
+      run(
+        Effect.gen(function* () {
+          yield* dispatch({
+            type: "project.status.set",
+            commandId: cid(),
+            projectId: ACME,
+            actorThreadId: ACME_COORD,
+            change: {
+              kind: "upsert",
+              id: "question",
+              title: "Approve",
+              state: "needs-you",
+              summary: "Waiting",
+              question: "Proceed?",
+              recommendation: "Proceed",
+              answer: "Proceed",
+            },
+            createdAt: AT,
+          });
+          const input = {
+            environmentId: SELF,
+            projectId: ACME,
+            coordinatorThreadId: ACME_COORD,
+            statusId: "question",
+            openedAt: AT,
+            text: "Yes, proceed",
+          };
+          expect(
+            yield* call("status.reply", input, AssistantNeedsYouReplyResult, {
+              environmentId: MINI.environmentId,
+              label: "Claimed sender label",
+            }),
+          ).toEqual({
+            ok: true,
+            value: { queued: false },
+          });
+          expect((yield* call("status.reply", input, AssistantNeedsYouReplyResult)).ok).toBe(false);
+          const messages = yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
+            threadId: ACME_COORD,
+          });
+          expect(messages).toHaveLength(1);
+          const source = {
+            kind: "remote-user",
+            environmentId: MINI.environmentId,
+            label: MINI.label,
+            threadId: "mini-assistant",
+          };
+          expect(messages[0]?.source).toEqual(source);
+          expect(messages[0]?.text).toContain("Yes, proceed");
+          const project = Option.getOrThrow(
+            yield* (yield* ProjectionProjectRepository).getById({ projectId: ACME }),
+          );
+          expect(project.assistant?.statuses?.[0]?.decision).toMatchObject({
+            answeredWith: "reply",
+            answerSource: source,
+          });
+        }),
+      ),
+  );
+  it.effect("refuses a confirmed linked peer that does not run the Assistant", () =>
     run(
       Effect.gen(function* () {
-        yield* dispatch({
-          type: "project.status.set",
-          commandId: cid(),
-          projectId: ACME,
-          actorThreadId: ACME_COORD,
-          change: {
-            kind: "upsert",
-            id: "question",
-            title: "Approve",
-            state: "needs-you",
-            summary: "Waiting",
-            question: "Proceed?",
-            recommendation: "Proceed",
-            answer: "Proceed",
+        const result = yield* call(
+          "status.reply",
+          {
+            environmentId: SELF,
+            projectId: ACME,
+            coordinatorThreadId: ACME_COORD,
+            statusId: "question",
+            openedAt: AT,
+            text: "Forged user answer",
           },
-          createdAt: AT,
+          AssistantNeedsYouReplyResult,
+          {
+            environmentId: "env-linked-peer",
+            label: "Other linked peer",
+          },
+        );
+        expect(result).toEqual({
+          ok: false,
+          error: "Only the machine running the Assistant may send a user answer.",
         });
-        const input = {
-          environmentId: SELF,
-          projectId: ACME,
-          coordinatorThreadId: ACME_COORD,
-          statusId: "question",
-          openedAt: AT,
-          text: "Yes, proceed",
-        };
-        expect(yield* call("status.reply", input, AssistantNeedsYouReplyResult)).toEqual({
-          ok: true,
-          value: { queued: false },
-        });
-        expect((yield* call("status.reply", input, AssistantNeedsYouReplyResult)).ok).toBe(false);
-        const messages = yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
-          threadId: ACME_COORD,
-        });
-        expect(messages).toHaveLength(1);
-        expect(messages[0]?.source).toBeUndefined();
-        expect(messages[0]?.text).toContain("Yes, proceed");
+        expect(
+          yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
+            threadId: ACME_COORD,
+          }),
+        ).toHaveLength(0);
       }),
     ),
   );
+
+  it.effect("refuses a remote user answer when no linked machine runs the Assistant", () =>
+    run(
+      Effect.gen(function* () {
+        assistantOnMini = false;
+        const result = yield* call(
+          "status.reply",
+          {
+            environmentId: SELF,
+            projectId: ACME,
+            coordinatorThreadId: ACME_COORD,
+            statusId: "question",
+            openedAt: AT,
+            text: "Yes",
+          },
+          AssistantNeedsYouReplyResult,
+        );
+        expect(result).toEqual({
+          ok: false,
+          error: "Only the machine running the Assistant may send a user answer.",
+        });
+      }),
+    ),
+  );
+
+  it.effect("refuses a remote user answer when this machine runs the Assistant", () =>
+    run(
+      Effect.gen(function* () {
+        const result = yield* call(
+          "status.reply",
+          {
+            environmentId: SELF,
+            projectId: ACME,
+            coordinatorThreadId: ACME_COORD,
+            statusId: "question",
+            openedAt: AT,
+            text: "Yes",
+          },
+          AssistantNeedsYouReplyResult,
+        );
+        expect(result).toEqual({
+          ok: false,
+          error: "Only the machine running the Assistant may send a user answer.",
+        });
+      }),
+      true,
+    ),
+  );
+
   it.effect("refuses an unconfirmed or misrouted user reply without writing", () =>
     run(
       Effect.gen(function* () {

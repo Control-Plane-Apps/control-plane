@@ -118,6 +118,24 @@ describe("resolveAgentMessagePresentation", () => {
     },
   });
 
+  it("keeps a forwarded user answer out of agent attribution even when thread ids collide", () => {
+    expect(
+      resolveAgentMessagePresentation({
+        message: {
+          id: "cp-status:answer",
+          role: "user",
+          source: {
+            kind: "remote-user",
+            environmentId: "assistant-machine",
+            label: "Mac mini",
+            threadId: coordinatorThreadId,
+          },
+        },
+        assistantTimeline: timeline("agent"),
+      }),
+    ).toEqual({ kind: "default" });
+  });
+
   it("attributes the coordinator's message in an agent thread to the Project", () => {
     expect(
       resolveAgentMessagePresentation({

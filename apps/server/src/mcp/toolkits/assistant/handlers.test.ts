@@ -195,7 +195,7 @@ describe("cp_assistant_*", () => {
         });
         const request = messages.find((message) => assistantAskIdOf(message.messageId) !== null);
         expect(assistantAskIdOf(request!.messageId)).toBe(result.askId);
-        expect(request?.source?.replyTo).toBe(ASSISTANT);
+        expect(request?.source).toMatchObject({ kind: "agent", replyTo: ASSISTANT });
         const activities = yield* (yield* ProjectionThreadActivityRepository).listByThreadId({
           threadId: ASSISTANT,
         });

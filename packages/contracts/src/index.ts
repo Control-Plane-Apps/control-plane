@@ -29,6 +29,7 @@ export * from "./sourceControl.ts";
 export * from "./projectClone.ts";
 export * from "./pullRequest.ts";
 export * from "./orchestration.ts";
+export * from "./remoteUserSource.ts";
 export * from "./assistants.ts";
 export * from "./schedules.ts";
 export * from "./projectStatus.ts";

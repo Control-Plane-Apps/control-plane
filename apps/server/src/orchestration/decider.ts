@@ -1689,7 +1689,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ? yield* statusReplyEvents(readModel, {
             threadId: command.threadId,
             text: command.message.text,
-            hasSource: command.message.source !== undefined,
+            source: command.message.source,
             commandId: command.commandId,
             createdAt: command.createdAt,
           })
@@ -1747,7 +1747,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const statusReplies = yield* statusReplyEvents(readModel, {
         threadId: command.threadId,
         text: command.message.text,
-        hasSource: command.message.source !== undefined,
+        source: command.message.source,
         commandId: command.commandId,
         createdAt: command.createdAt,
       });

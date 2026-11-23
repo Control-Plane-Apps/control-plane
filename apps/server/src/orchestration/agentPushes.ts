@@ -11,7 +11,7 @@
  */
 import {
   MessageId,
-  OrchestrationAgentMessageSource,
+  OrchestrationMessageSource,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -73,7 +73,7 @@ export interface AgentDelivery {
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
   readonly text: string;
-  readonly source: OrchestrationAgentMessageSource | null;
+  readonly source: OrchestrationMessageSource | null;
   readonly started: boolean;
   /** The receiving thread's modes, which its turn start carries. */
   readonly runtimeMode: RuntimeMode;
@@ -107,7 +107,7 @@ const AgentDeliveryRow = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
   text: Schema.String,
-  source: Schema.NullOr(Schema.fromJsonString(OrchestrationAgentMessageSource)),
+  source: Schema.NullOr(Schema.fromJsonString(OrchestrationMessageSource)),
   started: Schema.BooleanFromBit,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,

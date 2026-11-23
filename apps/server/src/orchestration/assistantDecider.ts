@@ -8,7 +8,7 @@ import {
   isReachRequestId,
   isStandingAgent,
   type MessageId,
-  type OrchestrationAgentMessageSource,
+  type OrchestrationMessageSource,
   type OrchestrationCommand,
   type OrchestrationProject,
   type OrchestrationReadModel,
@@ -123,11 +123,11 @@ export function requireReplyTo(
   threadId: ThreadId,
   message: {
     readonly messageId: MessageId;
-    readonly source?: OrchestrationAgentMessageSource | undefined;
+    readonly source?: OrchestrationMessageSource | undefined;
   } | null,
   commandType: OrchestrationCommand["type"],
 ): Effect.Effect<void, OrchestrationCommandInvariantError> {
-  const replyTo = message?.source?.replyTo;
+  const replyTo = message?.source?.kind === "agent" ? message.source.replyTo : undefined;
   if (message === null || replyTo === undefined) return Effect.void;
   if (isAgentPushMessageId(message.messageId)) {
     return Effect.fail(invariant(commandType, "A pushed result cannot be a request."));

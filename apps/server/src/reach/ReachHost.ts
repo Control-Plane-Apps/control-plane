@@ -3,7 +3,7 @@
  * against this server's own Projects, coordinators and Assistant. Ops act
  * only here and never call another server, so a call cannot loop. Agent
  * messages use held `cp-send:` appends; explicit user answers use version-checked
- * `cp-status:` appends without an agent source. The AgentCompletionReactor
+ * `cp-status:` appends with user provenance. The AgentCompletionReactor
  * starts held messages once their thread is idle. Fork-owned; see
  * docs/internals/assistant-cross-server-reach.md.
  *
@@ -459,7 +459,25 @@ export const make = Effect.gen(function* () {
       case "thread.find":
         return threadFind(request);
       case "status.reply":
-        return decode(StatusReplyInput)(request.input).pipe(Effect.flatMap(statusQuestionReply));
+        return Effect.gen(function* () {
+          const input = yield* decode(StatusReplyInput)(request.input);
+          const assistant = yield* reach.findAssistant;
+          if (
+            findGlobalAssistantProject((yield* shell).projects) !== undefined ||
+            Option.isNone(assistant) ||
+            assistant.value.machineId !== request.caller.environmentId
+          ) {
+            return yield* opFailed(
+              "Only the machine running the Assistant may send a user answer.",
+            );
+          }
+          return yield* statusQuestionReply(input, {
+            kind: "remote-user",
+            environmentId: assistant.value.machineId,
+            label: assistant.value.machineLabel,
+            threadId: ThreadId.make(assistant.value.threadId),
+          });
+        });
       case "thread.send":
         return threadSend(request);
       case "assistant.note":

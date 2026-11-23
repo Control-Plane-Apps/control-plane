@@ -6,6 +6,7 @@ import {
   statusAnswerMessageId,
   statusReplyText,
   type AssistantNeedsYouReplyInput,
+  type OrchestrationRemoteUserMessageSource,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -23,7 +24,7 @@ export const makeStatusQuestionReply = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const turns = yield* ProjectionTurnRepository;
   const environment = yield* ServerEnvironment.ServerEnvironment;
-  return (input: AssistantNeedsYouReplyInput) =>
+  return (input: AssistantNeedsYouReplyInput, source?: OrchestrationRemoteUserMessageSource) =>
     Effect.gen(function* () {
       const self = yield* environment.getEnvironmentId;
       if (input.environmentId !== self) {
@@ -94,6 +95,7 @@ export const makeStatusQuestionReply = Effect.gen(function* () {
               openedAt: decision.openedAt,
             }),
             attachments: [],
+            ...(source === undefined ? {} : { source }),
           },
           createdAt,
         })

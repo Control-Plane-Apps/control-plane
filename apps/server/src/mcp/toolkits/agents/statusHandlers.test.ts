@@ -1132,7 +1132,6 @@ describe("StatusDeadlineReactor", () => {
         statusReplyEvents(readModel(state), {
           threadId: COORDINATOR,
           text: statusReplyText("PDF export", "Ship it.", { statusId: "pdf", openedAt }),
-          hasSource: false,
           commandId: nextCommandId(),
           createdAt: openedAt,
         });

@@ -803,7 +803,10 @@ it.layer(NodeServices.layer)("assistant decider", (it) => {
           ] as const) {
             const events = yield* decide(readModel, build(target, replyTo));
             const sent = events.find((event) => event.type === "thread.message-sent");
-            expect(payloadOf(sent, "thread.message-sent").source?.replyTo).toBe(replyTo);
+            expect(payloadOf(sent, "thread.message-sent").source).toMatchObject({
+              kind: "agent",
+              replyTo,
+            });
           }
         }),
       );

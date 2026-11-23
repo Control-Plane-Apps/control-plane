@@ -7,7 +7,7 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import {
   ChatAttachment,
-  OrchestrationAgentMessageSource,
+  OrchestrationMessageSource,
   OrchestrationMessageContext,
 } from "@t3tools/contracts";
 
@@ -28,7 +28,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
     context: Schema.NullOr(Schema.fromJsonString(OrchestrationMessageContext)),
-    source: Schema.NullOr(Schema.fromJsonString(OrchestrationAgentMessageSource)),
+    source: Schema.NullOr(Schema.fromJsonString(OrchestrationMessageSource)),
   }),
 );
 const ProjectionThreadMessageExistsDbRowSchema = Schema.Struct({ exists: Schema.Number });
