@@ -3,17 +3,20 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   countStatusesNeedingUser,
   type ProjectStatus,
+  STATUS_REFRESH_PROMPT,
   statusStallMinutesOf,
   type ThreadId,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { useServerConfigs, useThreadShell } from "~/state/entities";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { ProjectStatusPanelContent } from "../status/ProjectStatusPanel";
 import { recommendationKey } from "../status/projectStatus.logic";
+import { StatusRefreshButton } from "../status/StatusRefreshButton";
+import { useStatusRefresh } from "../status/useStatusRefresh";
 import { statusReplyTagFor, useStatusReplyStore } from "../status/statusReplyStore";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { useAssistantOverviewStore } from "./assistantOverviewStore";
@@ -89,12 +92,49 @@ export function AssistantStatusBoard(props: {
             ))}
           </SelectPopup>
         </Select>
+        <div className="ms-auto -me-1.5">
+          <CoordinatorRefresh key={projectKey(selected)} project={selected} />
+        </div>
       </div>
       <div className="min-h-0 flex-1">
         <CoordinatorBoard key={projectKey(selected)} project={selected} />
       </div>
     </div>
   );
+}
+
+/**
+ * The refresh icon for the selected Project's coordinator. It sends through
+ * the same cross-server path as Overview's rows, so a Project on another
+ * machine is reached the same way; it is disabled while that machine is away.
+ */
+function CoordinatorRefresh({ project }: { project: EnvironmentProject }) {
+  const send = useSendToThread();
+  const coordinatorId = project.assistant!.coordinatorThreadId as ThreadId;
+  const coordinatorRef = useMemo(
+    () => scopeThreadRef(project.environmentId, coordinatorId),
+    [coordinatorId, project.environmentId],
+  );
+  const coordinator = useThreadShell(coordinatorRef);
+  const runtimeMode = coordinator?.runtimeMode ?? null;
+  const request = useCallback(
+    () =>
+      runtimeMode === null
+        ? Promise.resolve(false)
+        : send({
+            environmentId: project.environmentId,
+            threadId: coordinatorId,
+            text: STATUS_REFRESH_PROMPT,
+            runtimeMode,
+          }),
+    [coordinatorId, project.environmentId, runtimeMode, send],
+  );
+  const refresh = useStatusRefresh({
+    environmentId: project.environmentId,
+    statuses: project.assistant?.statuses,
+    send: request,
+  });
+  return <StatusRefreshButton refresh={refresh} />;
 }
 
 function CoordinatorBoard({ project }: { project: EnvironmentProject }) {

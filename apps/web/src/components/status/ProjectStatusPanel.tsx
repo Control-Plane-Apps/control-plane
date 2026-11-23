@@ -53,6 +53,8 @@ import {
   statusStallFor,
   type StatusGroup,
 } from "./projectStatus.logic";
+import { StatusRefreshButton } from "./StatusRefreshButton";
+import { useStatusRefresh } from "./useStatusRefresh";
 import { useQueuedMessages } from "../../queuedMessageStore";
 import { useTasks } from "../../state/tasks";
 import { useTaskActions } from "../tasks/useTaskActions";
@@ -68,6 +70,11 @@ export interface ProjectStatusActions {
   readonly onGoWithRecommendation: (status: ProjectStatus) => void;
   /** "Go with recommendation" messages already in the thread, by question version. */
   readonly sentRecommendations: ReadonlySet<string>;
+  /**
+   * Sends the coordinator the "refresh the board" message; true when accepted.
+   * Absent where the caller draws the refresh icon itself (the Assistant).
+   */
+  readonly onRequestRefresh?: () => boolean | Promise<boolean>;
 }
 
 /** A minute tick while `active`: ages and deadlines move, nothing animates. */
@@ -146,6 +153,13 @@ export function ProjectStatusPanelContent(
     () => groupProjectStatuses(project.assistant?.statuses ?? [], new Set(stalls.keys())),
     [project.assistant?.statuses, stalls],
   );
+  const refresh = useStatusRefresh({
+    environmentId: project.environmentId,
+    statuses: project.assistant?.statuses,
+    send: props.onRequestRefresh ?? (() => false),
+  });
+  const refreshButton =
+    props.onRequestRefresh === undefined ? null : <StatusRefreshButton refresh={refresh} />;
   const threadKey = scopedThreadKey(threadRef);
   const queuedMessages = useQueuedMessages(threadKey);
   const { environmentId: taskEnvironmentId, tasks } = useTasks();
@@ -256,6 +270,9 @@ export function ProjectStatusPanelContent(
       <ScrollArea className="min-h-0 flex-1">
         {groups.length === 0 ? (
           <div className="flex flex-col gap-1 px-3 py-4 text-muted-foreground">
+            {refreshButton !== null ? (
+              <div className="-mt-2 -me-1.5 flex justify-end">{refreshButton}</div>
+            ) : null}
             {hiddenCount > 0 ? (
               <p>Nothing open. You checked off every finished workstream.</p>
             ) : (
@@ -270,18 +287,22 @@ export function ProjectStatusPanelContent(
           </div>
         ) : (
           <div className="flex flex-col pb-3">
-            {groups.map(({ group, statuses: members }) => (
+            {groups.map(({ group, statuses: members }, index) => (
               <section key={group} aria-labelledby={`${groupIdPrefix}-${group}`}>
-                <h3
-                  id={`${groupIdPrefix}-${group}`}
-                  className={cn(
-                    "flex items-center gap-1.5 px-3 pt-3 pb-1.5 font-medium text-xs",
-                    group === "needs-you" ? "text-warning-foreground" : "text-muted-foreground",
-                  )}
-                >
-                  {STATUS_GROUP_LABEL[group]}
-                  <span className="font-normal tabular-nums opacity-80">{members.length}</span>
-                </h3>
+                {/* The refresh icon rides the first heading's line: no header row of its own. */}
+                <div className="flex items-end justify-between pe-1.5">
+                  <h3
+                    id={`${groupIdPrefix}-${group}`}
+                    className={cn(
+                      "flex items-center gap-1.5 px-3 pt-3 pb-1.5 font-medium text-xs",
+                      group === "needs-you" ? "text-warning-foreground" : "text-muted-foreground",
+                    )}
+                  >
+                    {STATUS_GROUP_LABEL[group]}
+                    <span className="font-normal tabular-nums opacity-80">{members.length}</span>
+                  </h3>
+                  {index === 0 ? refreshButton : null}
+                </div>
                 <ul className="mx-3 flex flex-col overflow-hidden rounded-xl border border-border bg-card">
                   {members.map((status) => (
                     <StatusRow
