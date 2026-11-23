@@ -2045,11 +2045,15 @@ export const make = Effect.gen(function* () {
       yield* removeCopy({
         projectId: project.id,
         threadId: coordinatorThreadId,
-        commandId: `assistant-home:expire-retired:${project.id}`,
+        // Named for this retirement: a copy kept, reused and retired again
+        // expires again, never matched to an earlier, already applied command.
+        commandId: `assistant-home:expire-retired:${project.id}:${retiredAt}`,
         what: "Could not remove an old copy",
       }).pipe(
         Effect.flatMap((result) =>
-          result.removed ? Effect.void : unretire(project.id, coordinatorThreadId, "expiry"),
+          result.removed
+            ? Effect.void
+            : unretire(project.id, coordinatorThreadId, `expiry:${retiredAt}`),
         ),
         Effect.tapError((error) => Effect.logWarning(error.detail)),
         Effect.ignore,

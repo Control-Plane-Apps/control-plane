@@ -928,6 +928,44 @@ describe("AssistantHome", () => {
       ),
   );
 
+  it.effect("a kept copy retired again expires again and is shown again", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        yield* addOtherConversation;
+        const home = yield* AssistantHome;
+        yield* home.manage({ action: "move", to: "env-mini" });
+        const confirmAndSweep = Effect.gen(function* () {
+          yield* TestClock.adjust("8 days");
+          noteAssistantHost("env-mini", {
+            hosts: true,
+            at: DateTime.toEpochMillis(yield* DateTime.now),
+          });
+          yield* home.reconcile;
+        });
+        yield* confirmAndSweep;
+        expect(yield* projectState("old-home")).toBe("archived");
+        // Reused and moved away again: hidden once more, with a new retiredAt.
+        yield* Effect.flatMap(OrchestrationEngineService, (engine) =>
+          engine.dispatch({
+            type: "project.meta.update",
+            commandId: CommandId.make("test:retire-again"),
+            projectId: ProjectId.make("old-home"),
+            assistant: {
+              coordinatorThreadId: ThreadId.make("old-assistant"),
+              archived: true,
+              retired: true,
+            },
+          }),
+        );
+        expect(yield* projectState("old-home")).toBe("retired");
+        yield* confirmAndSweep;
+        expect(yield* projectState("old-home")).toBe("archived");
+        expect((yield* threadState("other-thread")).deleted).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("moving back keeps a hidden copy that holds another conversation, and shows it", () =>
     run(
       Effect.gen(function* () {
