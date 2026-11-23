@@ -1375,12 +1375,23 @@ export const make = Effect.gen(function* () {
       }
       const confirmed = confirm.pipe(Effect.mapError((error) => fail(error.message)));
       const existed = (yield* reach.machines).some((machine) => machine.id === from.environmentId);
-      if (existed) yield* confirmed;
+      // An existing link whose token was refused (expired or revoked) cannot confirm: relink it,
+      // then confirm over the new link. The pairing link proved to come from that machine above.
+      let relinking = false;
+      if (existed) {
+        const before = yield* Effect.result(confirmed);
+        if (before._tag === "Failure") {
+          const health = yield* agentMachines.healthOf(from.environmentId);
+          if (health.status !== "needs-relink") return yield* before.failure;
+          relinking = true;
+        }
+      }
       const result = yield* agentMachines
-        .manage({ action: "link", pairingUrl })
+        .manage({ action: "link", pairingUrl, expectedId: from.environmentId })
         .pipe(Effect.mapError((error) => fail(error.detail)));
       if (result.linked === undefined) return yield* fail("The link was not saved.");
       const linked = result.linked;
+      if (relinking) yield* confirmed;
       if (!existed) {
         // New link: now this machine can ask the one that asked. Undo it unless that machine sent this.
         yield* confirmed.pipe(

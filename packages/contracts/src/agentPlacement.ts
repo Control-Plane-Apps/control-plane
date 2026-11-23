@@ -76,6 +76,8 @@ export const AgentMachinesInput = Schema.Union([
     pairingUrl: TrimmedNonEmptyString,
     /** Overrides the link's address when it is not reachable from this machine. */
     baseUrl: Schema.optionalKey(TrimmedNonEmptyString),
+    /** Relinking: refuse a link that leads to any other machine than this one. */
+    expectedId: Schema.optionalKey(AgentMachineId),
   }),
   Schema.Struct({ action: Schema.Literal("unlink"), id: AgentMachineId }),
   /**
@@ -101,12 +103,37 @@ export const AgentMachineStatusKind = Schema.Literals([
 ]);
 export type AgentMachineStatusKind = typeof AgentMachineStatusKind.Type;
 
+/**
+ * - `retrying`: the last renewal failed (machine offline); it is retried with backoff.
+ * - `peer-outdated`: the linked machine runs a build without renewal; the token works until it expires.
+ * - `stopped`: the linked machine refused the token (revoked or unlinked there), or it expired.
+ */
+export const AgentMachineTokenRenewal = Schema.Literals(["retrying", "peer-outdated", "stopped"]);
+export type AgentMachineTokenRenewal = typeof AgentMachineTokenRenewal.Type;
+
+export const AgentMachinePairingInput = Schema.Struct({
+  /** This machine's address as the machine that will redeem the link reaches it. */
+  baseUrl: TrimmedNonEmptyString,
+  /** Who the link is for, shown in Settings, Connections. */
+  label: TrimmedNonEmptyString,
+});
+export type AgentMachinePairingInput = typeof AgentMachinePairingInput.Type;
+
+export const AgentMachinePairingResult = Schema.Struct({ pairingUrl: Schema.String });
+export type AgentMachinePairingResult = typeof AgentMachinePairingResult.Type;
+
 export const AgentMachineStatus = Schema.Struct({
   id: AgentMachineId,
   status: AgentMachineStatusKind,
   detail: Schema.optionalKey(Schema.String),
-  /** When the stored token stops working. Tokens last 30 days and are not refreshed. */
+  /** When the stored token stops working unless it is renewed first. */
   tokenExpiresAt: Schema.optionalKey(Schema.String),
+  /** When the token was last renewed automatically; absent until the first renewal. */
+  tokenRenewedAt: Schema.optionalKey(Schema.String),
+  /** How automatic renewal stands; absent when it has nothing to report. */
+  tokenRenewal: Schema.optionalKey(AgentMachineTokenRenewal),
+  /** Why renewal is retrying, waiting or stopped. */
+  tokenRenewalDetail: Schema.optionalKey(Schema.String),
   /** Projects on this machine with a matching Project on the linked one. */
   matchedProjectCount: Schema.Int,
   projectCount: Schema.Int,

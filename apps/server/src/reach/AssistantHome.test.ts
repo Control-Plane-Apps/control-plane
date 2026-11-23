@@ -60,6 +60,7 @@ let settings: ServerSettings = DEFAULT_SERVER_SETTINGS;
 /** The environment id the server behind a pairing link reports. */
 let pairingServerId = "env-mini";
 let linked: Array<string> = [];
+let miniLinkHealth: "connected" | "needs-relink" = "connected";
 const tracked: Array<ReachAskRecord> = [];
 const dropped: Array<string> = [];
 let adoptAnswer: "ok" | "fail" | "timeout" = "ok";
@@ -165,6 +166,7 @@ const TestLayer = Layer.effect(AssistantHome, makeAssistantHome).pipe(
           linked.push(input.action);
           return { linked: { id: pairingServerId, label: "Mac mini" }, machines: [] };
         }),
+      healthOf: () => Effect.succeed({ status: miniLinkHealth, detail: null, lastSeenAt: null }),
     }),
   ),
   Layer.provideMerge(scripted.layer),
@@ -728,6 +730,38 @@ describe("AssistantHome", () => {
         expect(linked).toEqual(["link"]);
       }),
     ),
+  );
+
+  it.effect(
+    "relinks an existing link whose token was refused, then confirms over the new one",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const home = yield* AssistantHome;
+          const url = "http://127.0.0.1:47781/pair#token=ABCDEF123456";
+          pairingServerId = "env-mini";
+          linked = [];
+          miniLinkHealth = "needs-relink";
+          let confirms = 0;
+          // The old link cannot confirm (its token expired); the new link can.
+          const confirm = Effect.suspend(() =>
+            ++confirms === 1
+              ? Effect.fail(
+                  new AssistantHomeError({ detail: "The linked machine refused the token." }),
+                )
+              : Effect.void,
+          );
+          const done = yield* home.redeemLinkBack(
+            url,
+            { environmentId: "env-mini", label: "Mac mini" },
+            confirm,
+          );
+          expect(done).toMatchObject({ id: "env-mini" });
+          expect(linked).toEqual(["link"]);
+          expect(confirms).toBe(2);
+          miniLinkHealth = "connected";
+        }),
+      ),
   );
 
   it.effect("refuses to create a second Assistant while a linked machine runs one", () =>

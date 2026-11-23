@@ -160,6 +160,7 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import { AgentMachines } from "./agentMachines/AgentMachines.ts";
+import { mintRelinkPairing, revokeIssuedLinkTokens } from "./agentMachines/linkTokenIssuer.ts";
 import { AssistantHome } from "./reach/AssistantHome.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
@@ -2726,7 +2727,21 @@ const makeWsRpcLayer = (
                       .pipe(Effect.map((result) => ({ ...result, linked }))),
                   ),
                 )
-              : agentMachines.manage(input),
+              : agentMachines
+                  .manage(input)
+                  .pipe(
+                    Effect.tap(() =>
+                      input.action === "unlink"
+                        ? revokeIssuedLinkTokens(serverAuth, input.id)
+                        : Effect.void,
+                    ),
+                  ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverAgentMachinePairing]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverAgentMachinePairing,
+            mintRelinkPairing(serverAuth, input),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverAssistantHome]: (input) =>

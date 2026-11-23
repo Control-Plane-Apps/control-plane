@@ -17,6 +17,8 @@ import {
   singleAgentMachineValue,
   summarizeAgentPlacement,
   tokenExpiryText,
+  tokenRenewalText,
+  agentMachineNeedsRelink,
 } from "./AgentMachinesSettings.logic";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -157,7 +159,7 @@ describe("agentMachineStatusPresentation", () => {
     ).toEqual({ label: "Connected, token expires in 3 days", tone: "warning" });
   });
 
-  it("shows the expiry on a machine that needs re-linking", () => {
+  it("shows the expiry on a machine that needs relinking", () => {
     expect(
       agentMachineStatusPresentation(
         status({
@@ -166,9 +168,9 @@ describe("agentMachineStatusPresentation", () => {
         }),
         NOW,
       ),
-    ).toEqual({ label: "Needs re-link (token expired 2 days ago)", tone: "destructive" });
+    ).toEqual({ label: "Needs relink (token expired 2 days ago)", tone: "destructive" });
     expect(agentMachineStatusPresentation(status({ status: "needs-relink" }), NOW).label).toBe(
-      "Needs re-link",
+      "Needs relink",
     );
   });
 
@@ -183,6 +185,78 @@ describe("agentMachineStatusPresentation", () => {
     expect(agentMachineStatusPresentation(status({ status: "wrong-environment" }), NOW).label).toBe(
       "Wrong environment",
     );
+  });
+});
+
+describe("tokenRenewalText", () => {
+  it("says access renews by itself, and when it last did", () => {
+    expect(tokenRenewalText(status({}), NOW)).toBe(
+      "Access renews automatically while both machines are online; not renewed yet.",
+    );
+    expect(
+      tokenRenewalText(
+        status({ tokenRenewedAt: new Date(NOW - 3 * DAY - 60_000).toISOString() }),
+        NOW,
+      ),
+    ).toBe("Access renews automatically while both machines are online; last renewed 3 days ago.");
+    expect(
+      tokenRenewalText(status({ tokenRenewedAt: new Date(NOW - 60_000).toISOString() }), NOW),
+    ).toContain("last renewed today");
+  });
+
+  it("adds the expiry while renewal is retrying", () => {
+    expect(
+      tokenRenewalText(
+        status({
+          tokenRenewal: "retrying",
+          tokenExpiresAt: new Date(NOW + 4 * DAY + 60_000).toISOString(),
+        }),
+        NOW,
+      ),
+    ).toBe(
+      "Access renews automatically while both machines are online; not renewed yet. Renewal is retrying, token expires in 4 days.",
+    );
+  });
+
+  it("asks for an update when the other machine cannot renew", () => {
+    expect(
+      tokenRenewalText(
+        status({
+          tokenRenewal: "peer-outdated",
+          tokenExpiresAt: new Date(NOW + 9 * DAY + 60_000).toISOString(),
+        }),
+        NOW,
+      ),
+    ).toBe(
+      "This machine's link cannot renew until the other machine is updated; token expires in 9 days.",
+    );
+  });
+
+  it("says nothing extra once the row already asks for a relink", () => {
+    expect(tokenRenewalText(status({ status: "needs-relink" }), NOW)).toBeNull();
+    expect(tokenRenewalText(undefined, NOW)).toBeNull();
+  });
+});
+
+describe("agentMachineNeedsRelink", () => {
+  it("offers Relink when the token was refused or renewal stopped", () => {
+    expect(agentMachineNeedsRelink(status({ status: "needs-relink" }))).toBe(true);
+    expect(agentMachineNeedsRelink(status({ tokenRenewal: "stopped" }))).toBe(true);
+    expect(agentMachineNeedsRelink(status({ tokenRenewal: "retrying" }))).toBe(false);
+    expect(agentMachineNeedsRelink(status({}))).toBe(false);
+    expect(agentMachineNeedsRelink(undefined)).toBe(false);
+  });
+
+  it("warns on a connected machine whose peer cannot renew", () => {
+    expect(
+      agentMachineStatusPresentation(
+        status({
+          tokenRenewal: "peer-outdated",
+          tokenExpiresAt: new Date(NOW + 9 * DAY + 60_000).toISOString(),
+        }),
+        NOW,
+      ),
+    ).toEqual({ label: "Connected, token expires in 9 days", tone: "warning" });
   });
 });
 
@@ -250,6 +324,17 @@ describe("agentMachineLinkInput", () => {
       action: "link",
       pairingUrl: "https://mini/pair",
       baseUrl: "http://100.64.0.2:3773",
+    });
+  });
+
+  it("pins the machine when relinking", () => {
+    expect(
+      agentMachineLinkInput("https://mini/pair", "http://100.64.0.2:3773", "env-mini"),
+    ).toEqual({
+      action: "link",
+      pairingUrl: "https://mini/pair",
+      baseUrl: "http://100.64.0.2:3773",
+      expectedId: "env-mini",
     });
   });
 });

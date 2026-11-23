@@ -85,7 +85,7 @@ import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderComma
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import * as ThreadSettlementReactor from "./orchestration/ThreadSettlementReactor.ts";
-import { AgentMachinesLive } from "./agentMachines/AgentMachines.ts";
+import { AgentMachineLinkRenewalLive, AgentMachinesLive } from "./agentMachines/AgentMachines.ts";
 import { RemoteAgentBridgeLive } from "./agentMachines/RemoteAgentBridge.ts";
 import { RemoteAgentsLive } from "./agentMachines/RemoteAgents.ts";
 import { RemoteAgentStoreLive } from "./agentMachines/RemoteAgentStore.ts";
@@ -94,6 +94,7 @@ import { ReachBridgeLive } from "./reach/ReachBridge.ts";
 import { TaskAuthorityLive } from "./reach/TaskAuthorityLive.ts";
 import { AssistantHomeLive } from "./reach/AssistantHome.ts";
 import { reachRouteLayer } from "./reach/route.ts";
+import { linkTokenRouteLayer } from "./agentMachines/linkTokenRoute.ts";
 import * as AgentCompletionReactor from "./orchestration/AgentCompletionReactor.ts";
 import * as StatusDeadlineReactor from "./orchestration/StatusDeadlineReactor.ts";
 import * as TaskCommitmentRollover from "./orchestration/TaskCommitmentRollover.ts";
@@ -276,7 +277,12 @@ const BaseReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(RemoteAgentsLive),
   // Cross-server reach for the Assistant rides the same machine links.
   Layer.provideMerge(
-    Layer.mergeAll(ReachBridgeLive, TaskAuthorityLive, AssistantHomeLive).pipe(
+    Layer.mergeAll(
+      ReachBridgeLive,
+      TaskAuthorityLive,
+      AssistantHomeLive,
+      AgentMachineLinkRenewalLive,
+    ).pipe(
       Layer.provideMerge(ReachLive),
       Layer.provideMerge(AgentMachinesLive.pipe(Layer.provide(ServerSecretStore.layer))),
     ),
@@ -634,6 +640,7 @@ export const makeRoutesLayer = Layer.mergeAll(
     attachmentUploadRouteLayer,
     scheduleFireRouteLayer,
     reachRouteLayer,
+    linkTokenRouteLayer,
     pushDevicesRouteLayer,
     pushActionRouteLayer,
     deviceHubProxyRouteLayer,

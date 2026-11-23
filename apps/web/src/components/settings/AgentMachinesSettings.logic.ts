@@ -102,8 +102,44 @@ export function tokenExpiryText(tokenExpiresAt: string | undefined, now: number)
   return days === 0 ? "token expired today" : `token expired ${span} ago`;
 }
 
-/** Tokens last 30 days and are not refreshed, so warn a week ahead. */
+/** Renewal starts 10 days ahead, so a token this close to expiry means renewal is not getting through. */
 const EXPIRY_WARNING_MS = 7 * DAY_MS;
+
+/** "today", "yesterday", "3 days ago". Null when the date is missing or unreadable. */
+function daysAgoText(iso: string | undefined, now: number): string | null {
+  if (iso === undefined) return null;
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return null;
+  const days = Math.max(0, Math.floor((now - at) / DAY_MS));
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  return `${days} days ago`;
+}
+
+/**
+ * The line under a linked machine about its access. Null when there is
+ * nothing to say (no status yet, or the row already says it needs relinking).
+ */
+export function tokenRenewalText(
+  status: AgentMachineStatus | undefined,
+  now: number,
+): string | null {
+  if (status === undefined || status.status === "needs-relink") return null;
+  const expiry = tokenExpiryText(status.tokenExpiresAt, now);
+  if (status.tokenRenewal === "peer-outdated") {
+    return `This machine's link cannot renew until the other machine is updated${expiry === null ? "" : `; ${expiry}`}.`;
+  }
+  if (status.tokenRenewal === "stopped") {
+    return status.tokenRenewalDetail ?? "Automatic renewal stopped. Link the machine again.";
+  }
+  const renewed = daysAgoText(status.tokenRenewedAt, now);
+  const base = `Access renews automatically while both machines are online; ${
+    renewed === null ? "not renewed yet" : `last renewed ${renewed}`
+  }.`;
+  return status.tokenRenewal === "retrying" && expiry !== null
+    ? `${base} Renewal is retrying, ${expiry}.`
+    : base;
+}
 
 export function agentMachineStatusPresentation(
   status: AgentMachineStatus | undefined,
@@ -116,6 +152,12 @@ export function agentMachineStatusPresentation(
       const expiresAt =
         status.tokenExpiresAt === undefined ? Number.NaN : Date.parse(status.tokenExpiresAt);
       const expiringSoon = !Number.isNaN(expiresAt) && expiresAt - now <= EXPIRY_WARNING_MS;
+      if (status.tokenRenewal === "peer-outdated") {
+        return {
+          label: expiry === null ? "Connected, update to renew" : `Connected, ${expiry}`,
+          tone: "warning",
+        };
+      }
       return expiringSoon && expiry !== null
         ? { label: `Connected, ${expiry}`, tone: "warning" }
         : { label: "Connected", tone: "success" };
@@ -124,7 +166,7 @@ export function agentMachineStatusPresentation(
       return { label: "Offline", tone: "muted" };
     case "needs-relink":
       return {
-        label: expiry === null ? "Needs re-link" : `Needs re-link (${expiry})`,
+        label: expiry === null ? "Needs relink" : `Needs relink (${expiry})`,
         tone: "destructive",
       };
     case "incompatible":
@@ -132,6 +174,11 @@ export function agentMachineStatusPresentation(
     case "wrong-environment":
       return { label: "Wrong environment", tone: "destructive" };
   }
+}
+
+/** Whether the row offers its Relink button outside the menu. */
+export function agentMachineNeedsRelink(status: AgentMachineStatus | undefined): boolean {
+  return status?.status === "needs-relink" || status?.tokenRenewal === "stopped";
 }
 
 export function agentMachineStatusDotClassName(tone: AgentMachineStatusTone): string {
@@ -206,13 +253,21 @@ export function agentMachineEntryPatch(
 
 // ── RPC ─────────────────────────────────────────────────────────────
 
-/** A link request; a blank address override is left out so the link's own address is used. */
-export function agentMachineLinkInput(pairingUrl: string, baseUrl: string): AgentMachinesInput {
+/**
+ * A link request; a blank address override is left out so the link's own
+ * address is used. Relinking pins the machine, so a link for another one is refused.
+ */
+export function agentMachineLinkInput(
+  pairingUrl: string,
+  baseUrl: string,
+  expectedId?: string,
+): AgentMachinesInput {
   const override = baseUrl.trim();
   return {
     action: "link",
     pairingUrl: pairingUrl.trim(),
     ...(override.length > 0 ? { baseUrl: override } : {}),
+    ...(expectedId === undefined ? {} : { expectedId }),
   };
 }
 

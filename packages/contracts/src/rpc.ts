@@ -12,7 +12,13 @@ import {
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { AssistantEnsureError } from "./assistantSettings.ts";
 import { AssistantHomeError, AssistantHomeInput, AssistantHomeStatus } from "./reach.ts";
-import { AgentMachinesError, AgentMachinesInput, AgentMachinesResult } from "./agentPlacement.ts";
+import {
+  AgentMachinePairingInput,
+  AgentMachinePairingResult,
+  AgentMachinesError,
+  AgentMachinesInput,
+  AgentMachinesResult,
+} from "./agentPlacement.ts";
 import {
   GlobalInstructionsError,
   GlobalInstructionsInput,
@@ -416,6 +422,7 @@ export const WS_METHODS = {
   serverRetryResourceTelemetry: "server.retryResourceTelemetry",
   serverSignalProcess: "server.signalProcess",
   serverAgentMachines: "server.agentMachines",
+  serverAgentMachinePairing: "server.agentMachinePairing",
   serverGlobalInstructions: "server.globalInstructions",
   serverAssistantEnsure: "server.assistantEnsure",
   serverAssistantHome: "server.assistantHome",
@@ -696,6 +703,13 @@ const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
 const WsServerAgentMachinesRpc = Rpc.make(WS_METHODS.serverAgentMachines, {
   payload: AgentMachinesInput,
   success: AgentMachinesResult,
+  error: Schema.Union([EnvironmentAuthorizationError, AgentMachinesError]),
+});
+
+/** Mints a one-time link for a machine relinking to this one. Needs access:write, like a pairing link. */
+const WsServerAgentMachinePairingRpc = Rpc.make(WS_METHODS.serverAgentMachinePairing, {
+  payload: AgentMachinePairingInput,
+  success: AgentMachinePairingResult,
   error: Schema.Union([EnvironmentAuthorizationError, AgentMachinesError]),
 });
 
@@ -1536,6 +1550,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
   WsServerAgentMachinesRpc,
+  WsServerAgentMachinePairingRpc,
   WsServerGlobalInstructionsRpc,
   WsServerAssistantEnsureRpc,
   WsServerAssistantHomeRpc,
