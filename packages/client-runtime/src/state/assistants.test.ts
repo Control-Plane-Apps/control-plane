@@ -10,6 +10,7 @@ import {
   planAssistantScaffold,
   rollupAssistantStatus,
   sectionAssistantAgents,
+  selectTaskProjectOptions,
   selectWorkspaceProjects,
 } from "./assistants.ts";
 import type { EnvironmentProject, EnvironmentThreadShell } from "./models.ts";
@@ -158,6 +159,39 @@ describe("partitionAssistants", () => {
     const partition = partitionAssistants([personal], [remoteThread], primary);
     expect(partition.workspaceThreads).toEqual([remoteThread]);
     expect(partition.assistants[0]?.coordinator).toBeNull();
+  });
+});
+
+describe("selectTaskProjectOptions", () => {
+  const global = (id: string, archivedAt?: string, environmentId = primary) =>
+    project(id, {
+      environmentId,
+      title: "Assistant",
+      assistant: {
+        coordinatorThreadId: ThreadId.make(`${id}-coord`),
+        scope: "global",
+        ...(archivedAt ? { archivedAt } : {}),
+      },
+    });
+
+  it("drops global Assistants (live and archived), archived Projects and plain workspaces", () => {
+    const options = selectTaskProjectOptions([
+      global("a1"),
+      global("a2", NOW),
+      global("a3", undefined, remote),
+      project("hometrace", { coordinator: "c1" }),
+      project("lucive", { coordinator: "c2", archivedAt: NOW }),
+      project("plain"),
+    ]);
+    expect(options.map((p) => p.id)).toEqual(["hometrace"]);
+  });
+
+  it("dedupes one Project seen from several environments", () => {
+    const options = selectTaskProjectOptions([
+      project("site", { coordinator: "c1" }),
+      project("site", { coordinator: "c1", environmentId: remote }),
+    ]);
+    expect(options).toHaveLength(1);
   });
 });
 

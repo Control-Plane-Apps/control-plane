@@ -1,4 +1,5 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { selectTaskProjectOptions } from "@t3tools/client-runtime/state/assistants";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   formatTaskHome,
@@ -552,7 +553,7 @@ function ExpandedTask(props: {
     task.links?.statusId === undefined
       ? undefined
       : project?.assistant?.statuses?.find((s) => s.id === task.links!.statusId);
-  const assistantProjects = context.projects.filter((p) => p.assistant != null);
+  const assistantProjects = selectTaskProjectOptions(context.projects);
   const statuses = project?.assistant?.statuses ?? [];
   return (
     <div className="flex flex-col gap-2 ps-6.5 pt-1.5">

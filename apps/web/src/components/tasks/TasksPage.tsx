@@ -45,6 +45,7 @@ import {
 } from "../../keybindings";
 import { isTerminalFocused } from "../../lib/terminalFocus";
 import { cn } from "../../lib/utils";
+import { selectTaskProjectOptions } from "@t3tools/client-runtime/state/assistants";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { useTaskEnvironmentStatus, useTaskToday, useTasks } from "../../state/tasks";
@@ -97,7 +98,7 @@ function ProjectFilterMenu(props: {
   readonly value: string | null;
   readonly onChange: (value: string | null) => void;
 }) {
-  const projects = useProjects().filter((project) => project.assistant != null);
+  const projects = selectTaskProjectOptions(useProjects());
   const selected =
     props.value === "none"
       ? "No project"
