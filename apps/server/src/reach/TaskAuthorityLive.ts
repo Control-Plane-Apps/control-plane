@@ -47,6 +47,7 @@ import {
   setTaskAuthority,
   setTaskAuthorityLiveState,
   type TaskAuthorityDecision,
+  taskRolloverPermit,
 } from "./taskAuthority.ts";
 
 export const TASK_AUTHORITY_REFRESH = Duration.minutes(5);
@@ -170,6 +171,21 @@ export const TaskAuthorityLive = Layer.effectDiscard(
       if (text !== lastText) {
         lastText = text;
         yield* Effect.logInfo(`task authority: ${text}`);
+      }
+      // Keep the account-wide rollover choice here too, so it survives a linked
+      // machine that stays offline past its 3-day answer expiry.
+      if (selfAccount !== null) {
+        const accountWide = taskRolloverPermit(local, now).enabled;
+        if (accountWide !== local.enabled) {
+          yield* settingsService.updateSettings({ taskRolloverToCurrentPeriod: accountWide }).pipe(
+            Effect.tap(() =>
+              Effect.logInfo(
+                `task rollover: adopted the account-wide setting (${accountWide ? "on" : "off"})`,
+              ),
+            ),
+            Effect.ignore,
+          );
+        }
       }
       const gapSince = noteRolloverGap(now);
       if (gapSince === null) {
