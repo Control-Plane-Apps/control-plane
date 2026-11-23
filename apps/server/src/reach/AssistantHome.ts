@@ -655,6 +655,13 @@ export const make = Effect.gen(function* () {
             `${machine.label} has not linked this machine back, so an Assistant there could not reach the Projects here. Use "Let ${machine.label} reach this machine" first.`,
           );
         }
+        const refusal = taskSyncMoveRefusal({
+          selfSynced:
+            describeTaskState(DateTime.toEpochMillis(yield* DateTime.now))?.account != null,
+          target: target.taskSynced,
+          label: machine.label,
+        });
+        if (refusal !== null) return yield* fail(refusal);
         const phase = thread.session?.status;
         if (phase === "running" || phase === "starting") {
           return yield* fail("The Assistant is working. Move it when its turn ends.");
@@ -1501,6 +1508,23 @@ export function sameOrigin(left: string, right: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The Assistant's machine must hold the user's tasks: when this machine is
+ * signed in to Task Sync, a move waits until the target is signed in too (its
+ * own device sign-in). Otherwise the Assistant's task tools would refuse there.
+ */
+export function taskSyncMoveRefusal(input: {
+  readonly selfSynced: boolean;
+  readonly target: boolean | null | undefined;
+  readonly label: string;
+}): string | null {
+  if (!input.selfSynced || input.target === true) return null;
+  if (input.target === false) {
+    return `${input.label} isn't signed in to Task Sync, so the Assistant could not see your tasks there. Sign ${input.label} in first: Settings, Task Sync, choose ${input.label}, Sign in.`;
+  }
+  return `${input.label} did not say whether it is signed in to Task Sync. Update it to this version first.`;
 }
 
 export const AssistantHomeLive = Layer.effect(

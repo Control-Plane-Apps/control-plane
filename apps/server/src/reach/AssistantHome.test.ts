@@ -46,6 +46,7 @@ import {
   faultsAllowedFor,
   make as makeAssistantHome,
   suggestedAddresses,
+  taskSyncMoveRefusal,
 } from "./AssistantHome.ts";
 import { MoveRecord } from "./assistantMoves.ts";
 import { ReachBridge, type ReachAskRecord } from "./ReachBridge.ts";
@@ -1200,5 +1201,18 @@ describe("AssistantHome", () => {
     expect(blocksSchedules("offline", undefined)).toBe(true);
     expect(blocksSchedules("timeout", true)).toBe(true);
     expect(blocksSchedules("offline", false)).toBe(false);
+  });
+});
+
+describe("taskSyncMoveRefusal", () => {
+  it("lets the Assistant move only to a machine that holds the user's tasks", () => {
+    expect(taskSyncMoveRefusal({ selfSynced: false, target: false, label: "Mac mini" })).toBeNull();
+    expect(taskSyncMoveRefusal({ selfSynced: true, target: true, label: "Mac mini" })).toBeNull();
+    expect(taskSyncMoveRefusal({ selfSynced: true, target: false, label: "Mac mini" })).toContain(
+      "Sign Mac mini in first",
+    );
+    expect(taskSyncMoveRefusal({ selfSynced: true, target: null, label: "Mac mini" })).toContain(
+      "Update it",
+    );
   });
 });
