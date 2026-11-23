@@ -1,4 +1,4 @@
-import type { AssistantNeedsYouResult } from "@t3tools/contracts";
+import { EnvironmentId, type AssistantNeedsYouResult } from "@t3tools/contracts";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
@@ -103,19 +103,22 @@ it("shares the list and count across servers using the Assistant home's reach", 
         projectId: remote.id,
         projectTitle: remote.title,
         coordinatorThreadId: remote.assistant!.coordinatorThreadId,
-        status: remote.assistant!.statuses![0]!,
+        status: {
+          ...remote.assistant!.statuses![0]!,
+          decision: remote.assistant!.statuses![0]!.decision!,
+        },
         stale: false,
       },
     ],
     machines: [
       {
-        environmentId: "macbook",
+        environmentId: EnvironmentId.make("macbook"),
         label: "Direct MacBook",
         state: "offline",
         detail: "Home cannot reach it",
       },
     ],
-  } as AssistantNeedsYouResult;
+  } satisfies AssistantNeedsYouResult;
   source.reach = ["control-plane", "server-only"];
   function Harness() {
     const state = useAssistantNeedsYouState();

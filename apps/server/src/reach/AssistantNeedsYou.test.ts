@@ -267,15 +267,20 @@ describe("AssistantNeedsYou", () => {
         peerProjectId = "project";
         const service = yield* make;
         const result = yield* service.read;
-        expect(
-          result.items
-            .map((item) => JSON.stringify([item.environmentId, item.projectId, item.status.id]))
-            .sort(),
-        ).toEqual(
-          [
-            JSON.stringify([SELF, projectId, "question"]),
-            JSON.stringify([peer.id, "project", "question"]),
-          ].sort(),
+        expect(result.items).toHaveLength(2);
+        expect(result.items).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              environmentId: SELF,
+              projectId,
+              status: expect.objectContaining({ id: "question" }),
+            }),
+            expect.objectContaining({
+              environmentId: peer.id,
+              projectId: "project",
+              status: expect.objectContaining({ id: "question" }),
+            }),
+          ]),
         );
       }),
     ),

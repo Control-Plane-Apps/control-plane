@@ -17,6 +17,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -25,6 +26,9 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { StatusListResult } from "../mcp/toolkits/agents/tools.ts";
 import { Reach } from "./Reach.ts";
 import { makeStatusQuestionReply } from "./statusQuestionReply.ts";
+
+// Opaque tuple keys keep machine and Project boundaries unambiguous.
+const scopedKey = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
 
 export interface AssistantNeedsYouShape {
   readonly read: Effect.Effect<AssistantNeedsYouResult, AssistantNeedsYouError>;
@@ -63,8 +67,8 @@ export function sortNeedsYou(items: ReadonlyArray<AssistantNeedsYouEntry>) {
     if (right !== undefined && left === undefined) return 1;
     return (
       b.status.decision.openedAt.localeCompare(a.status.decision.openedAt) ||
-      JSON.stringify([a.environmentId, a.projectId, a.status.id]).localeCompare(
-        JSON.stringify([b.environmentId, b.projectId, b.status.id]),
+      scopedKey([a.environmentId, a.projectId, a.status.id]).localeCompare(
+        scopedKey([b.environmentId, b.projectId, b.status.id]),
       )
     );
   });
@@ -116,7 +120,7 @@ export const make = Effect.gen(function* () {
     ) => {
       for (const status of statuses) {
         if (status.decision === undefined || !isStatusNeedingUser(status)) continue;
-        const key = JSON.stringify([source.environmentId, source.projectId, status.id]);
+        const key = scopedKey([source.environmentId, source.projectId, status.id]);
         if (seen.has(key)) continue;
         seen.add(key);
         items.push({ ...source, status: { ...status, decision: status.decision } });
@@ -167,7 +171,7 @@ export const make = Effect.gen(function* () {
             );
             // Older peers already expose full boards through status.list. Do not invent a question revision.
             if (project.needsYou.some((entry) => entry.status === undefined)) {
-              const boardKey = JSON.stringify([machine.id, project.projectId]);
+              const boardKey = scopedKey([machine.id, project.projectId]);
               const result = yield* reach
                 .call(
                   machine,

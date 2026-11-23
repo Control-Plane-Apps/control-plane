@@ -84,14 +84,14 @@ const makeHarness = Effect.fn("ServerAssistantNeedsYouTest.makeHarness")(functio
       Stream.provideService(stream, EnvironmentSupervisor, supervisor),
   } as EnvironmentRegistry["Service"]);
   const cache = EnvironmentCacheStore.of({
-    loadShell: () => Effect.succeed(Option.none()),
+    loadShell: () => Effect.succeedNone,
     saveShell: () => Effect.void,
-    loadThread: () => Effect.succeed(Option.none()),
+    loadThread: () => Effect.succeedNone,
     saveThread: () => Effect.void,
     removeThread: () => Effect.void,
-    loadServerConfig: () => Effect.succeed(Option.none()),
+    loadServerConfig: () => Effect.succeedNone,
     saveServerConfig: () => Effect.void,
-    loadVcsRefs: () => Effect.succeed(Option.none()),
+    loadVcsRefs: () => Effect.succeedNone,
     saveVcsRefs: () => Effect.void,
     removeVcsRefs: () => Effect.void,
     clearVcsRefs: () => Effect.void,
@@ -175,13 +175,11 @@ it.live("lets an aggregate read finish when it takes longer than the polling int
         Effect.sync(() => vi.useFakeTimers()),
         () => Effect.sync(() => vi.useRealTimers()),
       );
-      const started = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       let interrupted = 0;
       const harness = yield* makeHarness((request) =>
         request === 1
-          ? Deferred.succeed(started, undefined).pipe(
-              Effect.andThen(Deferred.await(release)),
+          ? Deferred.await(release).pipe(
               Effect.onInterrupt(() =>
                 Effect.sync(() => {
                   interrupted += 1;
@@ -191,17 +189,29 @@ it.live("lets an aggregate read finish when it takes longer than the polling int
           : Effect.void,
       );
       const unmount = harness.registry.mount(harness.query);
-      yield* Deferred.await(started);
+      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(0));
+      expect(harness.reads()).toBe(1);
       yield* Effect.promise(() => vi.advanceTimersByTimeAsync(45_000));
       expect(harness.reads()).toBe(1);
       expect(interrupted).toBe(0);
       yield* Deferred.succeed(release, undefined);
-      yield* harness.waitForRead(1);
+      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(0));
+      const completed = harness.registry.get(harness.query);
+      expect(
+        AsyncResult.isSuccess(completed) &&
+          !completed.waiting &&
+          completed.value.machines[0]?.label,
+      ).toBe("1");
       yield* Effect.promise(() => vi.advanceTimersByTimeAsync(14_999));
       expect(harness.reads()).toBe(1);
       yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1));
-      yield* harness.waitForRead(2);
       expect(harness.reads()).toBe(2);
+      const refreshed = harness.registry.get(harness.query);
+      expect(
+        AsyncResult.isSuccess(refreshed) &&
+          !refreshed.waiting &&
+          refreshed.value.machines[0]?.label,
+      ).toBe("2");
       unmount();
     }),
   ),
