@@ -978,13 +978,14 @@ export const make = Effect.gen(function* () {
   const retirePreviousThread = (record: TargetMove) =>
     Effect.gen(function* () {
       if (record.phase !== "committed" || record.previousThreadId === undefined) return;
-      if (record.previousThreadId === record.threadId) return;
+      if (record.previousRetired === true || record.previousThreadId === record.threadId) return;
       const found = yield* snapshots
         .getThreadShellById(ThreadId.make(record.previousThreadId))
         .pipe(Effect.orElseSucceed(() => Option.none()));
-      if (Option.isNone(found)) return;
+      const done = journal.put({ ...record, previousRetired: true });
+      if (Option.isNone(found)) return yield* done;
       const thread = found.value;
-      if (thread.archivedAt != null) return;
+      if (thread.archivedAt != null) return yield* done;
       // Checked state first, so a fresh id per attempt: an older build may have
       // unarchived or re-pinned it after a retire with the same move id.
       const attempt = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
@@ -1006,6 +1007,7 @@ export const make = Effect.gen(function* () {
         },
         "Could not archive the previous Assistant thread",
       );
+      yield* done;
     }).pipe(
       Effect.catch((error) => Effect.logWarning("previous Assistant thread kept", { error })),
     );
@@ -1027,6 +1029,7 @@ export const make = Effect.gen(function* () {
           at: DateTime.toEpochMillis(yield* DateTime.now),
         });
         yield* journal.put({ ...record, phase: "committed" });
+        // Once per move: journaled as retired, so reconcile does not try again.
         yield* retirePreviousThread({ ...record, phase: "committed" });
         yield* note(
           record.threadId,

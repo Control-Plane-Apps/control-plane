@@ -71,6 +71,8 @@ export class TaskSyncService extends Context.Service<
     readonly syncedTaskIds: Effect.Effect<ReadonlySet<string>>;
     /** Local pre-launch preview of Task Sync for this install (see setPreview on the engine). */
     readonly setPreview: (enabled: boolean) => Effect.Effect<TaskSyncStatus, TaskSyncError>;
+    /** Pulls (after any sync in flight) before this server's first roll as authority. */
+    readonly syncBeforeRoll: Effect.Effect<void>;
     /** Rolls the synced account's expired commitments (see the engine). */
     readonly rollExpiredCommitments: (today: string) => Effect.Effect<TaskSyncRolloverResult>;
     /** Emits after a sync applied pulled records or first heard the week start. */
@@ -264,6 +266,11 @@ const make = Effect.gen(function* () {
     requestCode: (email) => attempt(() => engine.requestCode(email)),
     verify: (email, code) => afterAccountChange(attempt(() => engine.verify(email, code))),
     signOut: afterAccountChange(attempt(() => engine.signOut())),
+    syncBeforeRoll: Effect.promise(() => engine.syncFresh()).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("task sync pull before rollover failed", { cause: Cause.pretty(cause) }),
+      ),
+    ),
     syncedAccountKey: Effect.promise(() => engine.syncedAccount()).pipe(
       Effect.map((email) => (email === null ? null : taskSyncAccountKey(email))),
       Effect.catchCause(() => Effect.succeed(null)),
@@ -321,6 +328,7 @@ export const layerUnavailable = Layer.succeed(TaskSyncService, {
   syncNow: unavailable,
   setPreview: () => unavailable,
   syncedAccountKey: Effect.succeed(null),
+  syncBeforeRoll: Effect.void,
   syncedTaskIds: Effect.succeed(new Set<string>()),
   rollExpiredCommitments: () => Effect.succeed({ state: "local" as const }),
   applied: Stream.empty,

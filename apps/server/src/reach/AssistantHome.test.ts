@@ -634,12 +634,27 @@ describe("AssistantHome", () => {
           archived: false,
           pinned: true,
         });
+        // This move already retired it once (journaled): reconcile leaves it alone.
         yield* home.reconcile;
+        expect(yield* threadState("old-assistant")).toMatchObject({ archived: false });
+        // A move committed by an older build has no such mark: reconcile retires it, once.
+        yield* writeJournal(
+          (yield* readJournal).map((move) =>
+            move.role === "target" && move.moveId === "move-back"
+              ? ({ ...move, previousRetired: undefined } as MoveRecord)
+              : move,
+          ),
+        );
+        // The upgraded server starts and reconciles.
+        const restarted = yield* makeAssistantHome;
+        yield* restarted.reconcile;
         expect(yield* threadState("old-assistant")).toEqual({
           archived: true,
           pinned: false,
           deleted: false,
         });
+        const record = (yield* readJournal).find((move) => move.moveId === "move-back");
+        expect(record).toMatchObject({ previousRetired: true });
       }),
     ),
   );

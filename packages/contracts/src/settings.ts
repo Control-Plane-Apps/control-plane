@@ -1303,7 +1303,7 @@ export const ServerSettings = Schema.Struct({
    * When `taskRolloverToCurrentPeriod` was last set on purpose (ISO). Servers
    * on one Task Sync account share the setting: the most recent choice on any
    * of them wins, so it follows task authority between machines. Absent: never
-   * set here. Fork-owned; written by the server, never by a patch.
+   * set here. Fork-owned; stamped by the server when the setting is patched.
    */
   taskRolloverSetAt: Schema.optionalKey(Schema.String),
 });
@@ -1591,6 +1591,11 @@ export const ServerSettingsPatch = Schema.Struct({
   globalInstructions: Schema.optionalKey(GlobalInstructionsScopesPatch),
   assistant: Schema.optionalKey(AssistantSettingsPatch),
   taskRolloverToCurrentPeriod: Schema.optionalKey(Schema.Boolean),
+  /**
+   * When the choice in this patch was made, for a server keeping a linked
+   * server's choice; absent means now. Fork-owned.
+   */
+  taskRolloverSetAt: Schema.optionalKey(Schema.String),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

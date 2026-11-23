@@ -19,6 +19,7 @@ import {
   taskAuthorityStatus,
   noteRolloverGap,
   ROLLOVER_GAP_WARN_MS,
+  UNSTAMPED_ROLLOVER_AT,
   withTaskAuthority,
 } from "./taskAuthority.ts";
 
@@ -150,16 +151,34 @@ describe("decideTaskAuthority with Task Sync", () => {
     expect([a.authority, b.authority]).toEqual([false, true]);
   });
 
-  it("ignores a server synced to another account, and an older build that does not say", () => {
+  it("ignores a server synced to another account", () => {
     expect(
       decideTaskAuthority({
         selfId: "env-macbook",
         localAssistant: false,
         selfAccount: ACCOUNT,
-        linked: [
-          { ...mini, account: "acct-other" },
-          { id: "env-old", label: "Old", hasAssistant: true },
-        ],
+        linked: [{ ...mini, account: "acct-other" }],
+      }),
+    ).toEqual({ authority: true });
+  });
+
+  it("lets an older build that hosts the Assistant keep winning, so only one rolls", () => {
+    // A 0.0.92 MacBook hosts the Assistant and rolls by the old rule; the
+    // synced mini on this build must defer to it, not roll as well.
+    const onMini = decideTaskAuthority({
+      selfId: "env-mini",
+      localAssistant: false,
+      selfAccount: ACCOUNT,
+      linked: [{ id: "env-old", label: "Old MacBook", hasAssistant: true }],
+    });
+    expect(onMini).toMatchObject({ authority: false, deferTo: { id: "env-old" } });
+    // An older build that does not host it changes nothing.
+    expect(
+      decideTaskAuthority({
+        selfId: "env-mini",
+        localAssistant: false,
+        selfAccount: ACCOUNT,
+        linked: [{ id: "env-old", label: "Old MacBook", hasAssistant: false }],
       }),
     ).toEqual({ authority: true });
   });
@@ -177,6 +196,17 @@ describe("effectiveRollover", () => {
         { enabled: true, setAt: "2026-11-20T10:00:00.000Z" },
       ]),
     ).toBe(true);
+  });
+
+  it("lets an explicit stamped choice beat an unstamped one, either way round", () => {
+    const stampedOff = { enabled: false, setAt: "2026-11-01T00:00:00.000Z" };
+    const unstampedOn = { enabled: true, setAt: null };
+    expect(effectiveRollover(stampedOff, [unstampedOn])).toBe(false);
+    expect(effectiveRollover(unstampedOn, [stampedOff])).toBe(false);
+    // A kept unstamped choice is older than any explicit one.
+    expect(effectiveRollover({ enabled: true, setAt: UNSTAMPED_ROLLOVER_AT }, [stampedOff])).toBe(
+      false,
+    );
   });
 
   it("lets on win a tie, so a setting chosen before stamps existed carries over", () => {

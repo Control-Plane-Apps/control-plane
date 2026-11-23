@@ -74,10 +74,15 @@ export function decideTaskAuthority(input: {
       typeof machine.account === "string" &&
       (selfAccount === null || machine.account === selfAccount),
   );
+  // An older build does not report Task Sync, but if it hosts the Assistant it
+  // rolls by the old rule, so it must keep winning here or both would roll.
+  const unknownHosts = others.filter(
+    (machine) => machine.account === undefined && machine.hasAssistant,
+  );
 
   if (selfAccount !== null || synced.length > 0) {
     const self = { id: input.selfId, label: "", hasAssistant: input.localAssistant };
-    const candidates = selfAccount === null ? synced : [self, ...synced];
+    const candidates = [...(selfAccount === null ? [] : [self]), ...synced, ...unknownHosts];
     const hosts = candidates.filter((machine) => machine.hasAssistant).toSorted(byId);
     const winner = hosts[0] ?? candidates.toSorted(byId)[0]!;
     if (winner.id === input.selfId) return { authority: true };
@@ -172,18 +177,34 @@ export function effectiveRollover(
   local: RolloverChoice,
   peers: ReadonlyArray<RolloverChoice>,
 ): boolean {
+  return winningRollover(local, peers).enabled;
+}
+
+/** The choice that wins: the latest stamp; any stamped choice beats an unstamped one. */
+export function winningRollover(
+  local: RolloverChoice,
+  peers: ReadonlyArray<RolloverChoice>,
+): RolloverChoice {
   let best = local;
   for (const peer of peers) {
     const a = peer.setAt ?? "";
     const b = best.setAt ?? "";
     if (a > b || (a === b && peer.enabled && !best.enabled)) best = peer;
   }
-  return best.enabled;
+  return best;
 }
+
+/**
+ * Stamp for keeping an unstamped choice (from builds before stamps): older
+ * than any deliberate choice, so an explicit one made anywhere still wins.
+ */
+export const UNSTAMPED_ROLLOVER_AT = "1970-01-01T00:00:00.000Z";
 
 export interface RolloverPermit {
   /** The account-wide setting. */
   readonly enabled: boolean;
+  /** The choice it came from (this server's or a linked one's). */
+  readonly choice: RolloverChoice;
   /** This server may roll now. */
   readonly rolls: boolean;
   /** This server's view of its linked machines is too old to trust: ask again first. */
@@ -220,12 +241,13 @@ export function rolloverPermit(input: {
       typeof account === "string" && (input.selfAccount === null || account === input.selfAccount)
     );
   });
-  const enabled = effectiveRollover(
+  const choice = winningRollover(
     input.local,
     sameAccount.flatMap((machine) =>
       machine.answer?.task === undefined ? [] : [machine.answer.task.rollover],
     ),
   );
+  const enabled = choice.enabled;
   const stale =
     input.linked.length > 0 &&
     (input.refreshedAt === null || input.nowMs - input.refreshedAt > AUTHORITY_FRESH_MS);
@@ -235,6 +257,7 @@ export function rolloverPermit(input: {
   const rolls = enabled && input.decision.authority && !stale && holder === undefined;
   return {
     enabled,
+    choice,
     rolls,
     stale,
     ...(holder !== undefined && input.decision.authority
@@ -314,7 +337,7 @@ function linkedViews(): LinkedTaskView[] {
 export function taskRolloverPermit(local: RolloverChoice, nowMs: number): RolloverPermit {
   if (live === null) {
     const rolls = local.enabled && current.authority;
-    return { enabled: local.enabled, rolls, stale: false };
+    return { enabled: local.enabled, choice: local, rolls, stale: false };
   }
   return rolloverPermit({
     decision: current,

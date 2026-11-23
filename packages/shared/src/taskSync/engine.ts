@@ -375,6 +375,12 @@ export class TaskSyncEngine {
   }
 
   /** Push the outbox, then pull until caught up. Safe to call any time. */
+  /** A full sync that starts after any sync already in flight, so its pull is fresh. */
+  async syncFresh(): Promise<void> {
+    while (this.syncing) await new Promise((resolve) => setTimeout(resolve, 200));
+    await this.sync();
+  }
+
   async sync(): Promise<void> {
     if (this.syncing || this.deps.client === null) return;
     if (!(await this.refreshAvailability())) {

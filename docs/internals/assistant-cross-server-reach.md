@@ -72,8 +72,21 @@ user's real list, rolls commitments and serves Tasks to clients.
   copied. The rollover switch writes to the authority's settings and shows the account-wide value.
 - **Moving the Assistant** (Runs on): the confirmation says whether tasks follow (target synced)
   or stay put until the target signs in.
-- **Mixed builds:** an older linked build does not report `tasks`; it is treated as unknown and
-  ignored by the synced rule. Update all linked servers together.
+- **Mixed builds:** an older linked build does not report `tasks`. If it hosts the Assistant it
+  still wins (it rolls by the old rule, so the synced server here defers and only one rolls);
+  otherwise it is ignored. Update all linked servers together.
+- **Handover pulls first:** a server that becomes allowed to roll (a handover, or its first pass
+  after start) runs a full sync before it rolls, so what the previous authority already rolled is
+  seen and not rolled again.
+- **Coordinators keep their tools:** only the Assistant's `cp_task_*` calls refuse on an unsynced
+  server; a coordinator there keeps working with that machine's own task list.
+- **Known limits (deferred):**
+  - If the reach link between two synced servers is down for more than 3 days, each stops counting
+    the other and both may roll; the cloud's one-live-commitment tie-break keeps the result to one
+    commitment. A fix needs a lease in the cloud.
+  - `rolls` in `describe` is the permit, not "a roll is running": a server that loses authority in
+    the middle of a pass reports `rolls: false` while that pass finishes, so the new authority can
+    start within that window. Passes take milliseconds and the new authority pulls first.
 
 ## Transport
 

@@ -63,6 +63,8 @@ export const MoveRecord = Schema.Union([
     created: Schema.Boolean,
     /** Reusing an archived Assistant: its coordinator before this move gave it a fresh thread. */
     previousThreadId: Schema.optional(Schema.String),
+    /** After commit: the previous coordinator was archived (or found gone); not tried again. */
+    previousRetired: Schema.optional(Schema.Boolean),
     /** What adopting overwrote, put back on abort. */
     previousSettings: Schema.Unknown,
     previousMemory: Schema.NullOr(Schema.String),

@@ -126,7 +126,7 @@ const ASSISTANT_TASKS_READ_ONLY =
 
 /** Why task tools refuse on a server that does not hold the user's synced list. */
 export function taskListElsewhereDetail(holder: string): string {
-  return `This server is not signed in to Task Sync, so its task list is not the user's (it would read as empty or out of date). The user's tasks are on ${holder}. Nothing was read or changed. Ask the user to sign this machine in to Task Sync: Settings, Task Sync, choose this machine, Sign in.`;
+  return `The Assistant's machine is not signed in to Task Sync, so the user's task list is not here (it would read as empty or out of date). The user's tasks are on ${holder}. Nothing was read or changed. Ask the user to sign this machine in to Task Sync: Settings, Task Sync, choose this machine, Sign in.`;
 }
 
 /** The tool's `when` as a task home, counted from the server's local today. */
@@ -422,9 +422,11 @@ export const makeTaskHandlers = Effect.gen(function* () {
     if (settings?.tasks === "off") {
       return yield* new TaskAccessDeniedError({ detail: ASSISTANT_TASKS_OFF });
     }
-    // This server's list is not the user's when it is not signed in to Task
-    // Sync and a linked server is: say so instead of answering from it.
-    const elsewhere = taskListElsewhere();
+    // The Assistant reads and edits the user's whole list: on a server not
+    // signed in to Task Sync while a linked one is, that list is not here, so
+    // say so instead of answering from it. A coordinator keeps working with
+    // its own machine's tasks.
+    const elsewhere = assistant ? taskListElsewhere() : null;
     if (elsewhere !== null) {
       return yield* new AgentToolFailedError({ detail: taskListElsewhereDetail(elsewhere.label) });
     }

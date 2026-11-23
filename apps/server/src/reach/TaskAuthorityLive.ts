@@ -48,6 +48,7 @@ import {
   setTaskAuthorityLiveState,
   type TaskAuthorityDecision,
   taskRolloverPermit,
+  UNSTAMPED_ROLLOVER_AT,
 } from "./taskAuthority.ts";
 
 export const TASK_AUTHORITY_REFRESH = Duration.minutes(5);
@@ -175,16 +176,23 @@ export const TaskAuthorityLive = Layer.effectDiscard(
       // Keep the account-wide rollover choice here too, so it survives a linked
       // machine that stays offline past its 3-day answer expiry.
       if (selfAccount !== null) {
-        const accountWide = taskRolloverPermit(local, now).enabled;
-        if (accountWide !== local.enabled) {
-          yield* settingsService.updateSettings({ taskRolloverToCurrentPeriod: accountWide }).pipe(
-            Effect.tap(() =>
-              Effect.logInfo(
-                `task rollover: adopted the account-wide setting (${accountWide ? "on" : "off"})`,
+        const winner = taskRolloverPermit(local, now).choice;
+        if (winner.enabled !== local.enabled) {
+          // Keep the winning choice with its own stamp, so a later explicit
+          // choice anywhere still beats it.
+          yield* settingsService
+            .updateSettings({
+              taskRolloverToCurrentPeriod: winner.enabled,
+              taskRolloverSetAt: winner.setAt ?? UNSTAMPED_ROLLOVER_AT,
+            })
+            .pipe(
+              Effect.tap(() =>
+                Effect.logInfo(
+                  `task rollover: adopted the account-wide setting (${winner.enabled ? "on" : "off"})`,
+                ),
               ),
-            ),
-            Effect.ignore,
-          );
+              Effect.ignore,
+            );
         }
       }
       const gapSince = noteRolloverGap(now);

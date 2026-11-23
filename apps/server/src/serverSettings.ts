@@ -955,7 +955,8 @@ const make = Effect.gen(function* () {
             ? patched
             : {
                 ...patched,
-                taskRolloverSetAt: DateTime.formatIso(yield* DateTime.now),
+                taskRolloverSetAt:
+                  patch.taskRolloverSetAt ?? DateTime.formatIso(yield* DateTime.now),
               };
         const persisted = yield* persistProviderEnvironmentSecrets(current, updated);
         const next = yield* normalizeServerSettings(persisted.settings);

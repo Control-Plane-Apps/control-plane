@@ -118,11 +118,22 @@ export const make = Effect.gen(function* () {
   const lock = yield* Semaphore.make(1);
   /** The last local day a full pass completed. */
   let lastDay: string | null = null;
+  /** The last pass was allowed to roll; a pass that becomes allowed pulls first. */
+  let wasRolling = false;
 
   const today = DateTime.now.pipe(Effect.map((now) => localTaskDate(DateTime.toEpochMillis(now))));
 
   const catchUp = Effect.gen(function* () {
     const settings = yield* settingsService.getSettings;
+    const choice = {
+      enabled: rolloverEnabled(settings),
+      setAt: settings.taskRolloverSetAt ?? null,
+    };
+    // Off everywhere: nothing to ask linked machines.
+    if (!taskRolloverPermit(choice, DateTime.toEpochMillis(yield* DateTime.now)).enabled) {
+      wasRolling = false;
+      return 0;
+    }
     // A machine that slept looks at its linked machines again before rolling
     // on what it knew before.
     yield* ensureFreshTaskAuthority;
@@ -130,14 +141,15 @@ export const make = Effect.gen(function* () {
     // and never while another server still says it rolls: two servers on one
     // Task Sync account would each create a new membership for the same
     // commitment.
-    const permit = taskRolloverPermit(
-      {
-        enabled: rolloverEnabled(settings),
-        setAt: settings.taskRolloverSetAt ?? null,
-      },
-      DateTime.toEpochMillis(yield* DateTime.now),
-    );
-    if (!permit.rolls) return 0;
+    const permit = taskRolloverPermit(choice, DateTime.toEpochMillis(yield* DateTime.now));
+    if (!permit.rolls) {
+      wasRolling = false;
+      return 0;
+    }
+    // Taking over (a handover, or the first pass since start): pull first, so
+    // what the previous authority already rolled is seen and not rolled again.
+    if (!wasRolling && Option.isSome(taskSync)) yield* taskSync.value.syncBeforeRoll;
+    wasRolling = true;
     const now = yield* DateTime.now;
     const createdAt = DateTime.formatIso(now);
     const day = localTaskDate(DateTime.toEpochMillis(now));
