@@ -69,6 +69,6 @@ const handle = (host: ReachHostShape) =>
     if (text.length > reachBodyLimit(body.value.op)) {
       return HttpServerResponse.text(`Request too large for ${body.value.op}`, { status: 413 });
     }
-    const response = yield* host.handle(body.value);
+    const response = yield* host.handle(body.value, { subject: session.subject });
     return HttpServerResponse.jsonUnsafe(response);
   });

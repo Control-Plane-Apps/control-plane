@@ -1109,6 +1109,11 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:agent-machines",
       tag: WS_METHODS.serverAgentMachines,
     }),
+    // Mints a one-time link on this environment so a machine whose link expired can relink in one click.
+    agentMachinePairing: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:agent-machine-pairing",
+      tag: WS_METHODS.serverAgentMachinePairing,
+    }),
     // Reads or replaces the environment's GLOBAL_AGENTS.md.
     globalInstructions: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:global-instructions",

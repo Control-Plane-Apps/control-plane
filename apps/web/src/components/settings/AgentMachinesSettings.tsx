@@ -51,6 +51,9 @@ import {
   isAgentPlacementMode,
   linkedAgentMachines,
   projectMatchText,
+  tokenRenewalText,
+  agentMachineNeedsRelink,
+  type LinkedAgentMachine,
   singleAgentMachineOptions,
   singleAgentMachineValue,
   summarizeAgentPlacement,
@@ -142,6 +145,13 @@ function AgentMachinesBody({
   const [addOpen, setAddOpen] = useState(false);
   const [unlinking, setUnlinking] = useState<string | null>(null);
   const [linkBackTarget, setLinkBackTarget] = useState<{ id: string; label: string } | null>(null);
+  const [relinkTarget, setRelinkTarget] = useState<LinkedAgentMachine | null>(null);
+  const [createLinkOpen, setCreateLinkOpen] = useState(false);
+  const [relinking, setRelinking] = useState<string | null>(null);
+  const agentMachinePairing = useAtomCommand(serverEnvironment.agentMachinePairing, {
+    reportFailure: false,
+  });
+  const selfAddress = useSelfAddress(environmentId, true);
 
   // Starts in "checking"; the caller sets that phase for a manual refresh.
   const requestCheck = useCallback(async () => {
@@ -167,6 +177,63 @@ function AgentMachinesBody({
     void requestCheck();
   };
 
+  /**
+   * One click when this window is also connected to that machine: it mints a
+   * pairing link there and relinks both ways. Otherwise the pairing dialog
+   * opens for that machine, so only the link needs pasting.
+   */
+  const relink = async (machine: LinkedAgentMachine) => {
+    const connected = environments.some((candidate) => candidate.environmentId === machine.id);
+    if (!connected) {
+      setRelinkTarget(machine);
+      return;
+    }
+    setRelinking(machine.id);
+    const pairing = await agentMachinePairing({
+      environmentId: machine.id as EnvironmentId,
+      input: { baseUrl: machine.baseUrl, label: environment.label, holderId: environmentId },
+    });
+    if (pairing._tag !== "Success") {
+      setRelinking(null);
+      setRelinkTarget(machine);
+      return;
+    }
+    const linked = await agentMachines({
+      environmentId,
+      input: agentMachineLinkInput(pairing.value.pairingUrl, machine.baseUrl, machine.id),
+    });
+    if (linked._tag !== "Success") {
+      setRelinking(null);
+      if (!isAtomCommandInterrupted(linked)) {
+        toastManager.add({
+          type: "error",
+          title: `Could not relink ${machine.label}`,
+          description: agentMachinesErrorMessage(squashAtomCommandFailure(linked)),
+        });
+      }
+      return;
+    }
+    setCheck(checkedState(linked.value.machines));
+    const back =
+      selfAddress === null
+        ? null
+        : await agentMachines({
+            environmentId,
+            input: { action: "linkBack", id: machine.id, baseUrl: selfAddress },
+          });
+    setRelinking(null);
+    if (back !== null && back._tag === "Success") setCheck(checkedState(back.value.machines));
+    toastManager.add(
+      back !== null && back._tag === "Success"
+        ? { type: "success", title: `Relinked ${machine.label} both ways` }
+        : {
+            type: "warning",
+            title: `Relinked ${machine.label}, but not back`,
+            description: `Use "Let ${machine.label} reach this machine" from its menu.`,
+          },
+    );
+  };
+
   const unlink = async (machineId: string, label: string) => {
     setUnlinking(machineId);
     const result = await agentMachines({
@@ -179,7 +246,7 @@ function AgentMachinesBody({
       toastManager.add({
         type: "success",
         title: `Unlinked ${label}`,
-        description: `To revoke its access fully, remove ${environment.label} from the clients list in Settings → Connections on ${label}.`,
+        description: `Access between ${environment.label} and ${label} was revoked. A link older than automatic renewal can stay in Settings → Connections until it expires; remove it there to end it now.`,
       });
     } else if (!isAtomCommandInterrupted(result)) {
       toastManager.add({
@@ -210,6 +277,16 @@ function AgentMachinesBody({
         onAdd={() => setAddOpen(true)}
         onUnlink={(machineId, label) => void unlink(machineId, label)}
         onLinkBack={(id, label) => setLinkBackTarget({ id, label })}
+        relinking={relinking}
+        onRelink={(machine) => void relink(machine)}
+        onCreateLink={() => setCreateLinkOpen(true)}
+      />
+      <CreateMachineLinkDialog
+        open={createLinkOpen}
+        onClose={() => setCreateLinkOpen(false)}
+        environmentId={environmentId}
+        environmentLabel={environment.label}
+        selfAddress={selfAddress}
       />
       <LinkBackDialog
         target={linkBackTarget}
@@ -219,8 +296,12 @@ function AgentMachinesBody({
         onLinked={(statuses) => setCheck(checkedState(statuses))}
       />
       <AddAgentMachineDialog
-        open={addOpen}
-        onOpenChange={setAddOpen}
+        open={addOpen || relinkTarget !== null}
+        relink={relinkTarget}
+        onOpenChange={(open) => {
+          setAddOpen(open);
+          if (!open) setRelinkTarget(null);
+        }}
         environmentId={environmentId}
         environmentLabel={environment.label}
         onLinked={(statuses) => setCheck(checkedState(statuses))}
@@ -234,6 +315,8 @@ function AgentMachinesBody({
  * fixture. `AgentMachinesBody` owns the RPC state.
  */
 const noLinkBack = () => {};
+const noRelink = () => {};
+const noCreateLink = () => {};
 
 export function AgentMachinesView({
   environmentLabel,
@@ -248,6 +331,9 @@ export function AgentMachinesView({
   onAdd,
   onUnlink,
   onLinkBack = noLinkBack,
+  relinking = null,
+  onRelink = noRelink,
+  onCreateLink = noCreateLink,
 }: {
   readonly environmentLabel: string;
   readonly localKind: EnvironmentMachineKind;
@@ -261,6 +347,9 @@ export function AgentMachinesView({
   readonly onAdd: () => void;
   readonly onUnlink: (machineId: string, label: string) => void;
   readonly onLinkBack?: (machineId: string, label: string) => void;
+  readonly relinking?: string | null;
+  readonly onRelink?: (machine: LinkedAgentMachine) => void;
+  readonly onCreateLink?: () => void;
 }) {
   const balanced = placement.mode === "balanced";
   const machines = linkedAgentMachines(placement);
@@ -282,6 +371,9 @@ export function AgentMachinesView({
         >
           <RefreshIcon refreshing={checking} className="size-3" />
           Refresh
+        </Button>
+        <Button size="xs" variant="ghost-muted" onClick={onCreateLink}>
+          Create link
         </Button>
         <Button size="xs" variant="outline" onClick={onAdd}>
           <PlusIcon className="size-3" />
@@ -362,6 +454,8 @@ export function AgentMachinesView({
           ? { label: "Checking…", tone: "muted" as const }
           : agentMachineStatusPresentation(status, check.checkedAt);
         const matches = projectMatchText(status);
+        const renewalLine = checking ? null : tokenRenewalText(status, check.checkedAt);
+        const needsRelink = !checking && agentMachineNeedsRelink(status);
         return (
           <EnvironmentRow
             key={machine.id}
@@ -384,11 +478,28 @@ export function AgentMachinesView({
               </span>
             }
             below={
-              status?.detail && status.status !== "connected" ? (
-                <p className="text-xs break-words text-muted-foreground/70">{status.detail}</p>
+              (status?.detail && status.status !== "connected") || renewalLine !== null ? (
+                <div className="grid gap-0.5">
+                  {status?.detail && status.status !== "connected" ? (
+                    <p className="text-xs break-words text-muted-foreground/70">{status.detail}</p>
+                  ) : null}
+                  {renewalLine !== null ? (
+                    <p className="text-xs break-words text-muted-foreground/70">{renewalLine}</p>
+                  ) : null}
+                </div>
               ) : null
             }
           >
+            {needsRelink ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={relinking !== null}
+                onClick={() => onRelink(machine)}
+              >
+                {relinking === machine.id ? "Relinking…" : "Relink"}
+              </Button>
+            ) : null}
             <Switch
               aria-label={`Start agents on ${machine.label}`}
               checked={machine.enabled}
@@ -418,6 +529,7 @@ export function AgentMachinesView({
                 <MoreVertical />
               </MenuTrigger>
               <MenuPopup align="end">
+                <MenuItem onClick={() => onRelink(machine)}>Relink</MenuItem>
                 <MenuItem onClick={() => onLinkBack(machine.id, machine.label)}>
                   Let {machine.label} reach this machine
                 </MenuItem>
@@ -494,12 +606,15 @@ function PreferenceSelect({
 
 function AddAgentMachineDialog({
   open,
+  relink = null,
   onOpenChange,
   environmentId,
   environmentLabel,
   onLinked,
 }: {
   readonly open: boolean;
+  /** Relinking this machine: its address is used and a link for any other machine is refused. */
+  readonly relink?: LinkedAgentMachine | null;
   readonly onOpenChange: (open: boolean) => void;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
@@ -527,7 +642,11 @@ function AddAgentMachineDialog({
     setBusy(true);
     const result = await agentMachines({
       environmentId,
-      input: agentMachineLinkInput(pairingUrl, baseUrl),
+      input: agentMachineLinkInput(
+        pairingUrl,
+        baseUrl.trim().length > 0 ? baseUrl : (relink?.baseUrl ?? ""),
+        relink?.id,
+      ),
     });
     if (result._tag === "Success") {
       onLinked(result.value.machines);
@@ -582,10 +701,14 @@ function AddAgentMachineDialog({
     >
       <DialogPopup className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Add a machine for agents</DialogTitle>
+          <DialogTitle>
+            {relink === null ? "Add a machine for agents" : `Relink ${relink.label}`}
+          </DialogTitle>
           <DialogDescription>
-            On the other machine, create a pairing link in Settings → Connections, or run{" "}
-            <code>t3 pair --tailscale</code>, and paste it here.
+            {relink === null ? "On the other machine" : `On ${relink.label}`}, open Settings →
+            Connections → Agent machines → Create link, or run{" "}
+            <code>t3 pair --machine-link --tailscale</code>, and paste the link here. A general
+            pairing link also links, but does not renew.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -611,7 +734,11 @@ function AddAgentMachineDialog({
               <Label htmlFor="agent-machine-base-url">Address (optional)</Label>
               <Input
                 id="agent-machine-base-url"
-                placeholder="Use when the link's address is not reachable from here"
+                placeholder={
+                  relink === null
+                    ? "Use when the link's address is not reachable from here"
+                    : relink.baseUrl
+                }
                 autoComplete="off"
                 value={baseUrl}
                 onChange={(event) => setBaseUrl(event.target.value)}
@@ -652,7 +779,7 @@ function AddAgentMachineDialog({
             ) : null}
             <p className="text-xs text-muted-foreground">
               Linking lets {environmentLabel} run agents on that machine with its full access.
-              Access lasts 30 days, then the machine needs linking again.
+              Access renews automatically while both machines are online.
             </p>
           </form>
         </DialogPanel>
@@ -769,6 +896,113 @@ function LinkBackDialog({
           <Button onClick={() => void submit()} disabled={busy || address.length === 0}>
             {busy ? "Linking…" : "Link back"}
           </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+/**
+ * Mints a machine link on this machine for another one to paste under Add
+ * machine: read and operate only, and renewable (a general pairing link is not).
+ */
+function CreateMachineLinkDialog({
+  open,
+  onClose,
+  environmentId,
+  environmentLabel,
+  selfAddress,
+}: {
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly selfAddress: string | null;
+}) {
+  const agentMachinePairing = useAtomCommand(serverEnvironment.agentMachinePairing, {
+    reportFailure: false,
+  });
+  const [edited, setEdited] = useState<string | null>(null);
+  const [link, setLink] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const address = (edited ?? selfAddress ?? "").trim();
+
+  const close = () => {
+    setEdited(null);
+    setLink(null);
+    onClose();
+  };
+
+  const create = async () => {
+    if (address.length === 0) return;
+    setBusy(true);
+    const result = await agentMachinePairing({
+      environmentId,
+      input: { baseUrl: address, label: "a linked machine" },
+    });
+    setBusy(false);
+    if (result._tag === "Success") {
+      setLink(result.value.pairingUrl);
+    } else if (!isAtomCommandInterrupted(result)) {
+      toastManager.add({
+        type: "error",
+        title: "Could not create a machine link",
+        description: agentMachinesErrorMessage(squashAtomCommandFailure(result)),
+      });
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !next && close()}>
+      <DialogPopup className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Create a machine link</DialogTitle>
+          <DialogDescription>
+            Paste it under Add machine on the other machine within 10 minutes. It lets that machine
+            run agents on {environmentLabel}, and its access renews automatically.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <div className="grid gap-4">
+            <div className="grid gap-1.5">
+              <Label htmlFor="agent-machine-create-link-address">
+                {environmentLabel}'s address, as the other machine reaches it
+              </Label>
+              <Input
+                id="agent-machine-create-link-address"
+                placeholder="http://100.x.y.z:3773"
+                autoComplete="off"
+                value={edited ?? selfAddress ?? ""}
+                onChange={(event) => {
+                  setEdited(event.target.value);
+                  setLink(null);
+                }}
+              />
+            </div>
+            {link !== null ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="agent-machine-created-link">Machine link</Label>
+                <Input
+                  id="agent-machine-created-link"
+                  readOnly
+                  value={link}
+                  onFocus={(event) => event.target.select()}
+                />
+              </div>
+            ) : null}
+          </div>
+        </DialogPanel>
+        <DialogFooter variant="bare">
+          <Button variant="outline" onClick={close}>
+            {link === null ? "Cancel" : "Done"}
+          </Button>
+          {link === null ? (
+            <Button onClick={() => void create()} disabled={busy || address.length === 0}>
+              {busy ? "Creating…" : "Create link"}
+            </Button>
+          ) : (
+            <Button onClick={() => void navigator.clipboard?.writeText(link)}>Copy link</Button>
+          )}
         </DialogFooter>
       </DialogPopup>
     </Dialog>

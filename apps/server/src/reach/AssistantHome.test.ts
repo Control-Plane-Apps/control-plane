@@ -60,6 +60,7 @@ let settings: ServerSettings = DEFAULT_SERVER_SETTINGS;
 /** The environment id the server behind a pairing link reports. */
 let pairingServerId = "env-mini";
 let linked: Array<string> = [];
+let miniLinkHealth: "connected" | "needs-relink" = "connected";
 const tracked: Array<ReachAskRecord> = [];
 const dropped: Array<string> = [];
 let adoptAnswer: "ok" | "fail" | "timeout" = "ok";
@@ -165,6 +166,7 @@ const TestLayer = Layer.effect(AssistantHome, makeAssistantHome).pipe(
           linked.push(input.action);
           return { linked: { id: pairingServerId, label: "Mac mini" }, machines: [] };
         }),
+      healthOf: () => Effect.succeed({ status: miniLinkHealth, detail: null, lastSeenAt: null }),
     }),
   ),
   Layer.provideMerge(scripted.layer),
@@ -728,6 +730,68 @@ describe("AssistantHome", () => {
         expect(linked).toEqual(["link"]);
       }),
     ),
+  );
+
+  it.effect(
+    "relinks an existing link whose token was refused, then confirms over the new one",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const home = yield* AssistantHome;
+          const url = "http://127.0.0.1:47781/pair#token=ABCDEF123456";
+          pairingServerId = "env-mini";
+          linked = [];
+          miniLinkHealth = "needs-relink";
+          // This machine has env-mini at the pairing link's address.
+          const before = settings;
+          settings = {
+            ...settings,
+            agentPlacement: {
+              ...settings.agentPlacement,
+              machines: {
+                "env-mini": {
+                  label: "Mac mini",
+                  baseUrl: "http://127.0.0.1:47781",
+                  enabled: true,
+                  preference: 50,
+                },
+              },
+            },
+          };
+          let confirms = 0;
+          // The old link cannot confirm (its token expired); the new link can.
+          const confirm = Effect.suspend(() =>
+            ++confirms === 1
+              ? Effect.fail(
+                  new AssistantHomeError({ detail: "The linked machine refused the token." }),
+                )
+              : Effect.void,
+          );
+          const done = yield* home.redeemLinkBack(
+            url,
+            { environmentId: "env-mini", label: "Mac mini" },
+            confirm,
+          );
+          expect(done).toMatchObject({ id: "env-mini" });
+          expect(linked).toEqual(["link"]);
+          expect(confirms).toBe(2);
+
+          // A pairing link at another address cannot take the link over, even with env-mini's id.
+          linked = [];
+          confirms = 0;
+          const elsewhere = yield* home
+            .redeemLinkBack(
+              "http://127.0.0.1:47799/pair#token=ABCDEF123456",
+              { environmentId: "env-mini", label: "Mac mini" },
+              confirm,
+            )
+            .pipe(Effect.flip);
+          expect(elsewhere.detail).toContain("different address");
+          expect(linked).toEqual([]);
+          miniLinkHealth = "connected";
+          settings = before;
+        }),
+      ),
   );
 
   it.effect("refuses to create a second Assistant while a linked machine runs one", () =>

@@ -28,6 +28,8 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 
+import { LINK_RENEW_ROUTE_PATH, LINK_RETIRE_ROUTE_PATH } from "./linkToken.ts";
+
 /** Orchestration protocol this build speaks; a peer that differs is refused. */
 export const AGENT_MACHINE_PROTOCOL_VERSION = 1;
 export const PEER_REQUEST_TIMEOUT = Duration.seconds(3);
@@ -45,6 +47,8 @@ export class PeerError extends Schema.TaggedError<PeerError>()("PeerError", {
     "rejected",
   ]),
   detail: Schema.String,
+  /** A machine-readable reason the peer gave, such as a link renewal refusal. */
+  code: Schema.optionalKey(Schema.String),
 }) {
   override get message(): string {
     return this.detail;
@@ -334,3 +338,112 @@ export const postPeerReach = (
     }
     return yield* response.json;
   }).pipe(Effect.timeout(timeout), noRedirects, Effect.mapError(classifyPeerFailure));
+
+const RenewedTokenBody = Schema.Struct({
+  access_token: Schema.String,
+  token_type: Schema.String,
+  expires_in: Schema.Number,
+});
+const decodeRenewedTokenBody = Schema.decodeUnknownOption(RenewedTokenBody);
+
+const postLinkToken = (
+  baseUrl: string,
+  path: string,
+  token: string,
+  body: unknown,
+): Effect.Effect<unknown, PeerError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const request = HttpClientRequest.post(new URL(path, baseUrl).toString()).pipe(
+      HttpClientRequest.setHeader("authorization", `Bearer ${token}`),
+      HttpClientRequest.bodyJsonUnsafe(body),
+    );
+    const response = yield* client.execute(request);
+    if (response.status === 401 || response.status === 403) {
+      return yield* new PeerError({
+        kind: "unauthorized",
+        detail: "The linked machine no longer accepts this link. Link it again.",
+      });
+    }
+    if (response.status === 404) {
+      // A build from before renewal: the token works until it expires.
+      return yield* new PeerError({
+        kind: "incompatible",
+        detail: "The linked machine runs an older version that cannot renew links. Update it.",
+      });
+    }
+    if (response.status === 409) {
+      const refusal = yield* response.json.pipe(Effect.orElseSucceed(() => null));
+      const code =
+        typeof refusal === "object" && refusal !== null && "error" in refusal
+          ? String((refusal as { readonly error: unknown }).error)
+          : "unknown";
+      return yield* new PeerError({
+        kind: "rejected",
+        code,
+        detail: `The linked machine refused to renew the link (${code}).`,
+      });
+    }
+    if (response.status < 200 || response.status >= 300) {
+      return yield* new PeerError({
+        kind: "rejected",
+        detail: `The linked machine refused to renew the link (${response.status}).`,
+      });
+    }
+    return yield* response.json;
+  }).pipe(
+    Effect.timeout(LINK_TOKEN_REQUEST_TIMEOUT),
+    noRedirects,
+    Effect.mapError(classifyPeerFailure),
+  );
+
+/**
+ * The issuer cuts the old token to a short grace as it answers, so a lost
+ * answer costs the link: allow more than a probe.
+ */
+export const LINK_TOKEN_REQUEST_TIMEOUT = Duration.seconds(10);
+
+/** Trades a still-valid link token for a fresh one; the old one keeps working until retired. */
+export const renewPeerToken = (input: {
+  readonly baseUrl: string;
+  readonly token: string;
+  /** This machine's id, so the peer can revoke the new token when it unlinks this machine. */
+  readonly environmentId: string;
+  /** Random per renewal and reused on retries, so a retry after a lost answer gets the same token. */
+  readonly requestId: string;
+}): Effect.Effect<
+  { readonly token: string; readonly expiresInSeconds: number },
+  PeerError,
+  HttpClient.HttpClient
+> =>
+  postLinkToken(input.baseUrl, LINK_RENEW_ROUTE_PATH, input.token, {
+    environmentId: input.environmentId,
+    requestId: input.requestId,
+  }).pipe(
+    Effect.flatMap((body) => {
+      const decoded = decodeRenewedTokenBody(body);
+      if (
+        Option.isNone(decoded) ||
+        decoded.value.token_type !== "Bearer" ||
+        decoded.value.access_token.length === 0
+      ) {
+        return Effect.fail(
+          new PeerError({
+            kind: "rejected",
+            detail: "The linked machine issued a token this machine cannot use.",
+          }),
+        );
+      }
+      return Effect.succeed({
+        token: decoded.value.access_token,
+        expiresInSeconds: decoded.value.expires_in,
+      });
+    }),
+  );
+
+/** Revokes `token` on the peer. Used for the old token after renewal and when unlinking. */
+export const retirePeerToken = (
+  baseUrl: string,
+  token: string,
+): Effect.Effect<void, PeerError, HttpClient.HttpClient> =>
+  postLinkToken(baseUrl, LINK_RETIRE_ROUTE_PATH, token, {}).pipe(Effect.asVoid);

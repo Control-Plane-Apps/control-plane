@@ -64,3 +64,9 @@ export function acceptOnce(callerId: string, requestId: string, nowMs: number): 
   accepted.set(key, nowMs);
   return true;
 }
+
+/** Whether a request id from a caller was already accepted, without recording it. */
+export function wasAccepted(callerId: string, requestId: string, nowMs: number): boolean {
+  prune(accepted, nowMs, (at: number) => at);
+  return accepted.has(`${callerId}\u0000${requestId}`);
+}

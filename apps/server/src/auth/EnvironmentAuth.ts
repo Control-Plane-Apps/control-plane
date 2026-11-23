@@ -36,6 +36,11 @@ import * as EnvironmentAuthPolicy from "./EnvironmentAuthPolicy.ts";
 import * as PairingGrantStore from "./PairingGrantStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as SessionStore from "./SessionStore.ts";
+import {
+  hasTestLinkTokenTtl,
+  isLinkTokenScopes,
+  linkTokenTtl,
+} from "../agentMachines/linkToken.ts";
 import { REUSABLE_DEV_SESSION_EXPIRES_AT, resolveReusableDevAuth } from "./ReusableDevAuth.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
 import { layerConfig as SqlitePersistenceLayer } from "../persistence/Layers/Sqlite.ts";
@@ -493,6 +498,12 @@ export class EnvironmentAuth extends Context.Service<
     readonly authenticateHttpRequest: (
       request: HttpServerRequest.HttpServerRequest,
     ) => Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError>;
+    /** Renews a linked machine's token once; see `SessionStore.renewLink`. */
+    readonly renewLinkSession: (
+      sessionId: AuthSessionId,
+      holderId: string,
+      requestId?: string,
+    ) => Effect.Effect<SessionStore.LinkRenewOutcome, ServerAuthInternalError>;
     readonly authenticateWebSocketUpgrade: (
       request: HttpServerRequest.HttpServerRequest,
     ) => Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError>;
@@ -820,7 +831,10 @@ export const make = Effect.gen(function* () {
                       proofKeyThumbprint: input.proofKeyThumbprint,
                       ttl: Duration.hours(1),
                     }
-                  : {}),
+                  : hasTestLinkTokenTtl() && isLinkTokenScopes(grantedScopes)
+                    ? // Test-only: a linked machine's first token gets the shortened lifetime too.
+                      { ttl: linkTokenTtl() }
+                    : {}),
                 // Desktop restarts forget the previous bearer token. Replace
                 // its session, including stale entries left by older versions.
                 replaceActiveForSubjectAndMethod: grant.method === "desktop-bootstrap",
@@ -1113,6 +1127,18 @@ export const make = Effect.gen(function* () {
     revokeClientSession,
     revokeOtherClientSessions,
     authenticateHttpRequest,
+    renewLinkSession: (sessionId, holderId, requestId) =>
+      sessions
+        .renewLink({
+          sessionId,
+          holderId,
+          ttl: linkTokenTtl(),
+          ...(requestId === undefined ? {} : { requestId }),
+        })
+        .pipe(
+          Effect.mapError((cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause })),
+          Effect.withSpan("EnvironmentAuth.renewLinkSession"),
+        ),
     authenticateWebSocketUpgrade,
     issueWebSocketTicket,
     issueStartupPairingUrl,

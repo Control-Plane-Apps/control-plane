@@ -72,8 +72,59 @@ agentPlacement: {
   `/.well-known/t3/environment` for the id, label and versions, refuses a peer whose
   `orchestrationProtocolVersion` differs, stores the token and adds the entry (keeping an existing
   entry's `enabled`, `preference` and name). `unlink` removes the entry and token and marks that
-  machine's agents lost. `check` probes each machine and returns status, token expiry and, per
-  local Project, whether the peer has a matching Project.
+  machine's agents lost. `check` probes each machine and returns status, token expiry, renewal
+  state and, per local Project, whether the peer has a matching Project. `link` takes an optional
+  `expectedId`: relinking refuses a pairing link for any other machine.
+- **Machine links.** Only a token born from a pairing link made for machine linking can renew:
+  session subject `agent-machine:<holder id>` (tagged, minted when the holder is known: link back,
+  one-click relink) or `agent-machine-link` (untagged: Agent machines, **Create link**, or
+  `t3 pair --machine-link`). Migration 59 tags 0.0.91 link sessions as untagged:
+  `one-time-token`, bearer, exact read and operate scopes, not revoked, and either the labels this
+  fork gave them (`Agent placement from`/`Link back from`) or user agent `node` (the server's own
+  HTTP client; a pairing link's label replaces the fork's, as on the real MacBook and mini link).
+  A script with the same scopes (`Python-urllib`) is left alone. A general
+  pairing link narrowed to read and operate still links, but its token never renews (Settings says
+  so).
+- **Link renewal, issuer** (`SessionStore.renewLink`, `linkTokenRoute.ts`). `POST
+/api/agent-machine/renew` is bearer only (cookies dropped) and needs exactly read and operate
+  scope and a machine-link subject. In one transaction it: refuses a tagged token with more than 10
+  days left (or a third of a shorter lifetime, plus clock skew), records the parent in
+  `agent_machine_link_renewals` so it renews at most once (a second try gets `already-renewed`),
+  issues a child that keeps the parent's tag (the body's holder id is used only for an untagged
+  original), and cuts the parent's stored expiry to a short grace (two minutes, less for a short
+  lifetime; `verify` honours the stored expiry). The holder sends a random 128-bit `requestId`
+  per renewal and reuses it on retries; a retry with the same id while the parent is in its grace
+  gets the same child back (re-signed from its stored row, never a new session), so a lost answer
+  does not cost the link. A request with any other id, or none, gets `already-renewed`. So a leaked token cannot mint children forever:
+  if a thief renews first, the real holder's renewal is refused and it shows **Needs relink**, and
+  the thief's child carries the holder's tag, so unlinking that machine revokes it. Refusals are
+  409 `{ error: too-early | already-renewed | not-renewable }`.
+- **Link renewal, holder** (`AgentMachines.renewDueTokens`, `AgentMachineLinkRenewalLive`). A
+  new or untagged token is renewed at once (inside `link`, before link back uses it), so the issuer
+  tags it; `too-early` means it is already tagged. After that each token renews when its window
+  opens: identity pinned by descriptor, renew (retried up to 3 times, 2 seconds apart, on a
+  timeout or reset, with the same request id), prove the new token with a shell read, store it
+  (`issuedAt`, `renewedAt`, `tagged`), retire the old one after the grace (best effort: the issuer
+  ends it anyway). Failures back off from a minute, doubling to an hour, never past expiry. 401 or
+  403 or `already-renewed` stop renewal until a relink; `not-renewable` says the link must be
+  remade with a machine link; 404 means the peer predates renewal. Token writes, renewal and unlink
+  share one lock, so a renewal in flight cannot restore a token unlink removed. Test-only:
+  `CP_TEST_LINK_TOKEN_TTL_SECONDS` shortens issued link tokens
+  (`agentMachineLinkRenewal.integration.test.ts` runs two real servers at 24 seconds).
+- **Revocation.** Unlinking a machine revokes every session tagged for it on this server and
+  gives this machine's own token back to the peer (best effort). Revoking the client in Settings,
+  Connections works too: renewal needs a token that still verifies.
+- **Relink.** A row that needs relinking shows **Relink**. When the window is also connected to
+  that machine it calls `server.agentMachinePairing` there (scope `access:write`, tagged for this
+  machine) and relinks with `expectedId`, then links back; otherwise it opens the pairing dialog
+  for that machine.
+- **Link back trust.** `/api/reach` passes the token's subject to the host. A token tagged for a
+  machine speaks only for that machine, and `link.back` needs a tagged token naming the caller, so
+  a holder of another token cannot claim another machine's id. Relinking an existing link whose
+  token was refused confirms over the new link, so the pairing link must point at the address
+  already stored for that machine: a server elsewhere claiming the id cannot take the link over.
+  Residual: an untagged token's first renewal names its holder on the holder's word; it happens
+  right after linking.
 - **The client Load balancing section is untouched.** It still governs composer drafts.
 
 **UI.** A folded **Agent machines** section under Settings > Connections, built from
@@ -193,18 +244,18 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
 
 ## Failure modes
 
-| Failure                                      | Behaviour                                                                                                                           |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Peer offline at create                       | Ineligible; fall back or fail per setting. No record left.                                                                          |
-| Peer offline mid-run                         | Agent keeps running there; phase `stale`; polling backs off; results arrive on return.                                              |
-| Peer gone 24 hours                           | Record `lost`; one failed result pushed under its own id, so a real result that arrives later is still delivered.                   |
-| Home restarts                                | Registry and push receipts recompute what is owed.                                                                                  |
-| 401 or 403 (tokens last 30 days, no refresh) | Machine marked needs re-link and ineligible; the bridge holds and pushes nothing; resumes after re-link. Settings shows the expiry. |
-| Create partly applied                        | Retry with the same `clientRequestId` finishes it via the registry.                                                                 |
-| Peer thread deleted or archived              | Record `lost`; failed result pushed once.                                                                                           |
-| Model unavailable on the peer                | Case (b) or (c) delivers a failed result; the coordinator can retry with `machine: "local"`.                                        |
-| Peer protocol version differs                | Link refused; a later mismatch marks the machine ineligible.                                                                        |
-| Unlink with agents running                   | Allowed; those records become `lost` and are reported.                                                                              |
+| Failure                                                        | Behaviour                                                                                                                     |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Peer offline at create                                         | Ineligible; fall back or fail per setting. No record left.                                                                    |
+| Peer offline mid-run                                           | Agent keeps running there; phase `stale`; polling backs off; results arrive on return.                                        |
+| Peer gone 24 hours                                             | Record `lost`; one failed result pushed under its own id, so a real result that arrives later is still delivered.             |
+| Home restarts                                                  | Registry and push receipts recompute what is owed.                                                                            |
+| 401 or 403 (revoked, unlinked there, or expired while offline) | Machine marked needs relink and ineligible; the bridge holds and pushes nothing; resumes after relink. Settings shows Relink. |
+| Create partly applied                                          | Retry with the same `clientRequestId` finishes it via the registry.                                                           |
+| Peer thread deleted or archived                                | Record `lost`; failed result pushed once.                                                                                     |
+| Model unavailable on the peer                                  | Case (b) or (c) delivers a failed result; the coordinator can retry with `machine: "local"`.                                  |
+| Peer protocol version differs                                  | Link refused; a later mismatch marks the machine ineligible.                                                                  |
+| Unlink with agents running                                     | Allowed; those records become `lost` and are reported.                                                                        |
 
 ## Security
 
@@ -213,9 +264,9 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
   machine act on. The runtime-mode rule constrains the MCP path only.
 - **Allowlist.** The peer client refuses any command outside the six above, so a bug or a
   prompt-injected tool call cannot reach `project.delete` or `thread.delete`.
-- **Least privilege token.** Read and operate only; never `access:write` or relay scopes. A
-  session cannot revoke itself, so unlink deletes the local token and tells you to revoke it from
-  the peer's client list (the exchange sets `client_label` so it is recognizable).
+- **Least privilege token.** Read and operate only; never `access:write` or relay scopes. Unlink
+  retires the local token at the peer and deletes it; a token is also listed in the peer's client
+  list (the exchange sets `client_label`, and renewal keeps it) and can be revoked there.
 - **Endpoint validation.** https, or http to a loopback, private-range or tailnet host
   (`isPrivateNetworkHost` covers `100.64/10` and `.ts.net`). Redirects are not followed, responses
   are size-bounded, and the descriptor's environment id must match on every probe.
@@ -252,8 +303,8 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
 9. **Older servers show a failed check** in the Agent machines section instead of hiding it: the
    client fills in the settings default, so it cannot tell the server lacks the feature. Hiding it
    needs a capability flag on the environment descriptor (follow-up).
-10. **Linking grants operate scope,** not read-only, and tokens expire after 30 days and need
-    re-linking. Refresh is a follow-up.
+10. **Linking grants operate scope,** not read-only. Tokens renew while both machines are online;
+    a machine offline through expiry needs a relink.
 
 ## Review changes
 

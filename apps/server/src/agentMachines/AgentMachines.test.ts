@@ -1,9 +1,13 @@
 import { ProjectId, type OrchestrationProjectShell } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
@@ -52,6 +56,14 @@ interface PeerState {
   threads: ReadonlyArray<ReturnType<typeof makePeerThread>>;
   reachable: boolean;
   tokenStatus: number;
+  renewStatus: number;
+  renewRefusal: string | null;
+  renewed: number;
+  /** When set, a renew request waits for it before answering. */
+  renewGate: Deferred.Deferred<void> | null;
+  /** The issuer renews but the answer is lost (connection reset) this many times. */
+  dropRenewAnswers: number;
+  renewSeen: Deferred.Deferred<void> | null;
 }
 
 /** One linked machine answering the routes the service uses; every request is recorded. */
@@ -62,9 +74,21 @@ const makePeer = (overrides: Partial<PeerState> = {}) => {
     threads: [],
     reachable: true,
     tokenStatus: 200,
+    renewStatus: 200,
+    renewRefusal: null,
+    renewed: 0,
+    renewGate: null,
+    dropRenewAnswers: 0,
+    renewSeen: null,
     ...overrides,
   };
-  const requests: Array<{ method: string; path: string; authorization: string | undefined }> = [];
+  const requests: Array<{
+    method: string;
+    path: string;
+    authorization: string | undefined;
+    body?: string;
+  }> = [];
+  const lostAnswer = { pending: (overrides.dropRenewAnswers ?? 0) > 0 };
   const layer = Layer.succeed(
     HttpClient.HttpClient,
     HttpClient.make((request, url) => {
@@ -72,6 +96,9 @@ const makePeer = (overrides: Partial<PeerState> = {}) => {
         method: request.method,
         path: url.pathname,
         authorization: request.headers["authorization"],
+        ...(request.body._tag === "Uint8Array"
+          ? { body: new TextDecoder().decode(request.body.body) }
+          : {}),
       });
       const answer = (status: number, body: unknown) =>
         Effect.succeed(
@@ -99,6 +126,39 @@ const makePeer = (overrides: Partial<PeerState> = {}) => {
               message: "no",
             });
       }
+      if (url.pathname === "/api/agent-machine/renew") {
+        if (state.renewRefusal !== null) return answer(409, { error: state.renewRefusal });
+        if (state.renewStatus !== 200) return answer(state.renewStatus, {});
+        const respond = Effect.suspend(() => {
+          if (state.dropRenewAnswers > 0) {
+            state.dropRenewAnswers -= 1;
+            // Renewed on the issuer; the answer never arrives. A retry gets the same token.
+            if (state.renewed === 0) state.renewed = 1;
+            return Effect.fail(new Error("socket hang up") as never);
+          }
+          if (state.renewed > 0 && lostAnswer.pending) {
+            lostAnswer.pending = false;
+            return answer(200, {
+              access_token: `renewed-token-${state.renewed}`,
+              token_type: "Bearer",
+              expires_in: 2_592_000,
+            });
+          }
+          state.renewed += 1;
+          return answer(200, {
+            access_token: `renewed-token-${state.renewed}`,
+            token_type: "Bearer",
+            expires_in: 2_592_000,
+          });
+        });
+        const seen = state.renewSeen;
+        const gate = state.renewGate;
+        return (seen === null ? Effect.void : Deferred.succeed(seen, undefined)).pipe(
+          Effect.andThen(gate === null ? Effect.void : Deferred.await(gate)),
+          Effect.andThen(respond),
+        );
+      }
+      if (url.pathname === "/api/agent-machine/retire") return answer(200, { revoked: true });
       if (url.pathname === "/api/orchestration/shell") {
         return answer(200, {
           snapshotSequence: 1,
@@ -211,7 +271,12 @@ describe("AgentMachines.manage link", () => {
         });
         const stored = yield* secrets.get(agentMachineSecretName("env-mini"));
         expect(Option.isSome(stored)).toBe(true);
-        expect(new TextDecoder().decode(Option.getOrThrow(stored))).toContain("peer-token");
+        // Renewed at once with the exchanged token, so the issuer tags it with this machine's id.
+        expect(new TextDecoder().decode(Option.getOrThrow(stored))).toContain("renewed-token-1");
+        expect(
+          h.peer.requests.find((request) => request.path === "/api/agent-machine/renew")
+            ?.authorization,
+        ).toBe("Bearer peer-token");
         // The credential never reaches settings.
         const persisted = encodeJson(yield* settings.getSettings);
         expect(persisted).not.toContain("peer-token");
@@ -571,4 +636,361 @@ describe("AgentMachines.placementInputs", () => {
       );
     },
   );
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+const StoredToken = Schema.fromJsonString(
+  Schema.Struct({
+    token: Schema.String,
+    expiresAt: Schema.String,
+    issuedAt: Schema.optionalKey(Schema.String),
+    renewedAt: Schema.optionalKey(Schema.String),
+    tagged: Schema.optionalKey(Schema.Boolean),
+  }),
+);
+const RENEW_PATH = "/api/agent-machine/renew";
+const RETIRE_PATH = "/api/agent-machine/retire";
+
+/** Stores a token as a link from this build would, issued at `issuedAtMs` for `days`. */
+const storeIssuedToken = (issuedAtMs: number, days = 30, token = "peer-token", tagged = true) =>
+  Effect.gen(function* () {
+    const secrets = yield* ServerSecretStore.ServerSecretStore;
+    yield* secrets.set(
+      agentMachineSecretName("env-mini"),
+      new TextEncoder().encode(
+        encodeJson({
+          token,
+          issuedAt: iso(issuedAtMs),
+          expiresAt: iso(issuedAtMs + days * DAY_MS),
+          ...(tagged ? { tagged: true } : {}),
+        }),
+      ),
+    );
+  });
+
+const readStored = Effect.gen(function* () {
+  const secrets = yield* ServerSecretStore.ServerSecretStore;
+  const bytes = Option.getOrThrow(yield* secrets.get(agentMachineSecretName("env-mini")));
+  return yield* Schema.decodeUnknownEffect(StoredToken)(new TextDecoder().decode(bytes));
+});
+
+const checkMini = Effect.gen(function* () {
+  const machines = yield* AgentMachines;
+  const { machines: statuses } = yield* machines.manage({ action: "check" });
+  return statuses.find((status) => status.id === "env-mini")!;
+});
+
+describe("AgentMachines link renewal", () => {
+  it.effect("does nothing before the token is due and sleeps until it is", () => {
+    const h = harness({ placement: linkedMini });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(20 * DAY_MS - 30 * 60 * 1000);
+        expect(yield* machines.renewDueTokens).toBe(30 * 60 * 1000);
+        expect(h.peer.requests.some((request) => request.path === RENEW_PATH)).toBe(false);
+      }),
+    );
+  });
+
+  it.effect(
+    "renews a due token over the link, proves the new one, then retires the old after a grace",
+    () => {
+      const h = harness({ placement: linkedMini });
+      return h.run(
+        Effect.gen(function* () {
+          const machines = yield* AgentMachines;
+          yield* storeIssuedToken(0);
+          yield* TestClock.setTime(21 * DAY_MS);
+          yield* machines.renewDueTokens;
+          const paths = h.peer.requests.map((request) => request.path);
+          // Identity before the token goes out, then renew with the old token, then prove the new one.
+          expect(paths.indexOf("/.well-known/t3/environment")).toBeLessThan(
+            paths.indexOf(RENEW_PATH),
+          );
+          const renew = h.peer.requests.find((request) => request.path === RENEW_PATH)!;
+          expect(renew.authorization).toBe("Bearer peer-token");
+          const proof = h.peer.requests.findLast(
+            (request) => request.path === "/api/orchestration/shell",
+          )!;
+          expect(proof.authorization).toBe("Bearer renewed-token-1");
+          const stored = yield* readStored;
+          expect(stored.token).toBe("renewed-token-1");
+          expect(stored.renewedAt).toBe(iso(21 * DAY_MS));
+          expect(stored.expiresAt).toBe(iso(51 * DAY_MS));
+          // The old token stays valid for calls in flight, then is given back.
+          expect(h.peer.requests.some((request) => request.path === RETIRE_PATH)).toBe(false);
+          yield* TestClock.adjust("2 minutes");
+          yield* Effect.yieldNow;
+          const retire = h.peer.requests.find((request) => request.path === RETIRE_PATH);
+          expect(retire?.authorization).toBe("Bearer peer-token");
+          const status = yield* checkMini;
+          expect(status.tokenRenewedAt).toBe(iso(21 * DAY_MS));
+          expect(status.tokenRenewal).toBeUndefined();
+        }),
+      );
+    },
+  );
+
+  it.effect(
+    "renews an untagged token at once (0.0.91 or a general machine link), then when due",
+    () => {
+      const h = harness({ placement: linkedMini });
+      return h.run(
+        Effect.gen(function* () {
+          const machines = yield* AgentMachines;
+          // 0.0.91 stored no issue time and no tag.
+          yield* storeToken("env-mini", iso(30 * DAY_MS));
+          yield* TestClock.setTime(1 * DAY_MS);
+          yield* machines.renewDueTokens;
+          expect(h.peer.state.renewed).toBe(1);
+          const stored = yield* readStored;
+          expect(stored.token).toBe("renewed-token-1");
+          expect(stored.tagged).toBe(true);
+          // Tagged now: nothing more until 10 days are left.
+          yield* TestClock.setTime(2 * DAY_MS);
+          yield* machines.renewDueTokens;
+          expect(h.peer.state.renewed).toBe(1);
+        }),
+      );
+    },
+  );
+
+  it.effect(
+    "a token the issuer already tagged answers too early: remembered, renewed when due",
+    () => {
+      const peer = makePeer({ renewRefusal: "too-early" });
+      const h = harness({ placement: linkedMini, peer });
+      return h.run(
+        Effect.gen(function* () {
+          const machines = yield* AgentMachines;
+          yield* storeIssuedToken(0, 30, "peer-token", false);
+          yield* TestClock.setTime(1 * DAY_MS);
+          const wait = yield* machines.renewDueTokens;
+          expect((yield* readStored).tagged).toBe(true);
+          expect(wait).toBe(60 * 60 * 1000);
+          const status = yield* checkMini;
+          expect(status.tokenRenewal).toBeUndefined();
+          const renewCalls = () => peer.requests.filter((r) => r.path === RENEW_PATH).length;
+          expect(renewCalls()).toBe(1);
+          yield* TestClock.setTime(5 * DAY_MS);
+          yield* machines.renewDueTokens;
+          expect(renewCalls()).toBe(1);
+        }),
+      );
+    },
+  );
+
+  it.effect("retries a renewal whose answer was lost and gets the same token", () => {
+    const peer = makePeer({ dropRenewAnswers: 1 });
+    const h = harness({ placement: linkedMini, peer });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(21 * DAY_MS);
+        const renewing = yield* Effect.forkChild(machines.renewDueTokens);
+        // Let the retry's spacing elapse on the test clock.
+        for (let step = 0; step < 20; step += 1) {
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("1 second");
+        }
+        yield* Fiber.join(renewing);
+        const renewCalls = peer.requests.filter((r) => r.path === RENEW_PATH);
+        expect(renewCalls.map((r) => r.authorization)).toEqual([
+          "Bearer peer-token",
+          "Bearer peer-token",
+        ]);
+        // The retry repeats the same random request id, which is what lets the issuer answer again.
+        const ids = renewCalls.map((r) => /"requestId":"([0-9a-f]{32})"/.exec(r.body ?? "")?.[1]);
+        expect(ids[0]).toBeDefined();
+        expect(ids[1]).toBe(ids[0]);
+        expect(peer.state.renewed).toBe(1);
+        expect((yield* readStored).token).toBe("renewed-token-1");
+        expect((yield* checkMini).tokenRenewal).toBeUndefined();
+      }),
+    );
+  });
+
+  it.effect("stops when the token was already renewed by another copy of it", () => {
+    const peer = makePeer({ renewRefusal: "already-renewed" });
+    const h = harness({ placement: linkedMini, peer });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(21 * DAY_MS);
+        yield* machines.renewDueTokens;
+        expect((yield* machines.healthOf("env-mini")).status).toBe("needs-relink");
+        const status = yield* checkMini;
+        expect(status.tokenRenewal).toBe("stopped");
+        expect(status.tokenRenewalDetail).toContain("another copy");
+        yield* TestClock.adjust("1 day");
+        yield* machines.renewDueTokens;
+        expect(peer.requests.filter((r) => r.path === RENEW_PATH)).toHaveLength(1);
+      }),
+    );
+  });
+
+  it.effect(
+    "a link from a general pairing link is not renewable: it says so and does not retry",
+    () => {
+      const peer = makePeer({ renewRefusal: "not-renewable" });
+      const h = harness({ placement: linkedMini, peer });
+      return h.run(
+        Effect.gen(function* () {
+          const machines = yield* AgentMachines;
+          yield* storeIssuedToken(0, 30, "peer-token", false);
+          yield* TestClock.setTime(1 * DAY_MS);
+          yield* machines.renewDueTokens;
+          const status = yield* checkMini;
+          expect(status.status).toBe("connected");
+          expect(status.tokenRenewal).toBe("not-renewable");
+          yield* TestClock.adjust("25 days");
+          yield* machines.renewDueTokens;
+          expect(peer.requests.filter((r) => r.path === RENEW_PATH)).toHaveLength(1);
+        }),
+      );
+    },
+  );
+
+  it.effect("unlink during a renewal waits for it, then gives back the new token", () => {
+    const peer = makePeer();
+    const h = harness({ placement: linkedMini, peer });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        const secrets = yield* ServerSecretStore.ServerSecretStore;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(21 * DAY_MS);
+        peer.state.renewGate = yield* Deferred.make<void>();
+        peer.state.renewSeen = yield* Deferred.make<void>();
+        const renewing = yield* Effect.forkChild(machines.renewDueTokens);
+        yield* Deferred.await(peer.state.renewSeen);
+        const unlinking = yield* Effect.forkChild(
+          machines.manage({ action: "unlink", id: "env-mini" }),
+        );
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(peer.state.renewGate, undefined);
+        yield* Fiber.join(renewing);
+        yield* Fiber.join(unlinking);
+        // Unlink won the token: nothing is restored, and the renewed token went back to the peer.
+        expect(Option.isNone(yield* secrets.get(agentMachineSecretName("env-mini")))).toBe(true);
+        const retired = peer.requests
+          .filter((request) => request.path === RETIRE_PATH)
+          .map((request) => request.authorization);
+        expect(retired).toContain("Bearer renewed-token-1");
+      }),
+    );
+  });
+
+  it.effect("backs off while the machine is offline and renews when it is back", () => {
+    const peer = makePeer({ reachable: false });
+    const h = harness({ placement: linkedMini, peer });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(21 * DAY_MS);
+        expect(yield* machines.renewDueTokens).toBe(60 * 1000);
+        const attempts = () => peer.requests.length;
+        const afterFirst = attempts();
+        // Inside the backoff: no new attempt.
+        yield* TestClock.adjust("30 seconds");
+        yield* machines.renewDueTokens;
+        expect(attempts()).toBe(afterFirst);
+        // Second failure doubles the wait.
+        yield* TestClock.adjust("30 seconds");
+        expect(yield* machines.renewDueTokens).toBe(2 * 60 * 1000);
+        expect((yield* checkMini).tokenRenewal).toBe("retrying");
+        peer.state.reachable = true;
+        yield* TestClock.adjust("2 minutes");
+        yield* machines.renewDueTokens;
+        expect((yield* readStored).token).toBe("renewed-token-1");
+        expect((yield* checkMini).tokenRenewal).toBeUndefined();
+      }),
+    );
+  });
+
+  it.effect("stops for good when the issuer refuses the token (revoked or unlinked there)", () => {
+    const peer = makePeer({ renewStatus: 401 });
+    const h = harness({ placement: linkedMini, peer });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(21 * DAY_MS);
+        yield* machines.renewDueTokens;
+        const renewCalls = () => peer.requests.filter((r) => r.path === RENEW_PATH).length;
+        expect(renewCalls()).toBe(1);
+        expect((yield* machines.healthOf("env-mini")).status).toBe("needs-relink");
+        yield* TestClock.adjust("2 days");
+        yield* machines.renewDueTokens;
+        expect(renewCalls()).toBe(1);
+        expect((yield* readStored).token).toBe("peer-token");
+      }),
+    );
+  });
+
+  it.effect("keeps the token and says so when the other machine is too old to renew", () => {
+    const peer = makePeer({ renewStatus: 404 });
+    const h = harness({ placement: linkedMini, peer });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(21 * DAY_MS);
+        yield* machines.renewDueTokens;
+        const status = yield* checkMini;
+        expect(status.status).toBe("connected");
+        expect(status.tokenRenewal).toBe("peer-outdated");
+        expect(status.tokenRenewalDetail).toContain("Update it");
+        expect((yield* readStored).token).toBe("peer-token");
+      }),
+    );
+  });
+
+  it.effect("never sends the token to a server that is not the linked machine", () => {
+    const peer = makePeer({ descriptor: descriptorBody("env-impostor") });
+    const h = harness({ placement: linkedMini, peer });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(21 * DAY_MS);
+        yield* machines.renewDueTokens;
+        expect(peer.requests.some((r) => r.authorization !== undefined)).toBe(false);
+        expect((yield* checkMini).tokenRenewal).toBe("stopped");
+      }),
+    );
+  });
+
+  it.effect("an expired token is not renewed: the machine needs relinking", () => {
+    const h = harness({ placement: linkedMini });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(31 * DAY_MS);
+        yield* machines.renewDueTokens;
+        expect(h.peer.state.renewed).toBe(0);
+        expect((yield* machines.healthOf("env-mini")).status).toBe("needs-relink");
+      }),
+    );
+  });
+
+  it.effect("unlinking gives the token back to the other machine", () => {
+    const h = harness({ placement: linkedMini });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* machines.manage({ action: "unlink", id: "env-mini" });
+        const retire = h.peer.requests.find((request) => request.path === RETIRE_PATH);
+        expect(retire?.authorization).toBe("Bearer peer-token");
+      }),
+    );
+  });
 });

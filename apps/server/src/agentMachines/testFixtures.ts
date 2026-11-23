@@ -219,6 +219,8 @@ export function makeFakePeer(options: FakePeerOptions = {}) {
     linked: Effect.succeed([{ id: machineId, label: "Mac Mini" }]),
     reach: () => Effect.die("not stubbed"),
     healthOf: () => Effect.succeed({ status: "connected", detail: null, lastSeenAt: null }),
+    renewDueTokens: Effect.succeed(60 * 60 * 1000),
+    linksChanged: Effect.never,
   };
 
   return {

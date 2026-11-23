@@ -53,7 +53,8 @@ import {
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
 import { Reach } from "./Reach.ts";
-import { acceptOnce, reachInputHash, wasSent } from "./reachSent.ts";
+import { acceptOnce, reachInputHash, wasAccepted, wasSent } from "./reachSent.ts";
+import { linkSubjectHolder } from "../agentMachines/linkToken.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
 import { AssistantHome } from "./AssistantHome.ts";
 import {
@@ -82,8 +83,13 @@ import {
   type ThreadSendResult,
 } from "./reachProtocol.ts";
 
+/** How the route authenticated the call: the subject of the presented token. */
+export interface ReachAuth {
+  readonly subject: string;
+}
+
 export interface ReachHostShape {
-  readonly handle: (request: ReachRequest) => Effect.Effect<ReachResponse>;
+  readonly handle: (request: ReachRequest, auth?: ReachAuth) => Effect.Effect<ReachResponse>;
 }
 
 class ReachOpError extends Schema.TaggedError<ReachOpError>()("ReachOpError", {
@@ -519,8 +525,7 @@ export const make = Effect.gen(function* () {
           `This machine has not linked ${request.caller.label} back, so it cannot confirm who is asking. On ${request.caller.label}, use Settings, Connections, Agent machines, Add machine with "Let that machine reach this one too" on, or "Let this machine reach ${request.caller.label}" on its row.`,
         );
       }
-      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-      if (!acceptOnce(machine.id, request.requestId, nowMs)) {
+      if (wasAccepted(machine.id, request.requestId, DateTime.toEpochMillis(yield* DateTime.now))) {
         return yield* opFailed("This request was already used.");
       }
       const answer = yield* reach
@@ -547,13 +552,32 @@ export const make = Effect.gen(function* () {
       if (!answer.sent) {
         return yield* opFailed(`${machine.label} did not send this request, so nothing was done.`);
       }
+      // Spent only once confirmed: a link back that relinks first confirms again over the new link.
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+      if (!acceptOnce(machine.id, request.requestId, nowMs)) {
+        return yield* opFailed("This request was already used.");
+      }
     });
 
-  const handle = (request: ReachRequest): Effect.Effect<ReachResponse> =>
+  const handle = (request: ReachRequest, auth?: ReachAuth): Effect.Effect<ReachResponse> =>
     Effect.gen(function* () {
       const self = yield* environment.getEnvironmentId;
       if (request.caller.environmentId === self) {
         return { ok: false as const, error: "A machine cannot reach itself." };
+      }
+      // A token tagged for one machine speaks only for that machine.
+      const holder = auth === undefined ? null : linkSubjectHolder(auth.subject);
+      if (holder !== null && holder !== request.caller.environmentId) {
+        return { ok: false as const, error: "This link belongs to another machine." };
+      }
+      // Linking back trusts the pairing link the caller names, so only a token this machine
+      // tagged for the caller may ask: a holder of another token cannot claim another id.
+      if (request.op === "link.back" && holder === null) {
+        return {
+          ok: false as const,
+          error:
+            "Link back needs a link token tagged for the machine asking. Update that machine and wait for its link to renew, then try again.",
+        };
       }
       // A machine this one linked is called what the user named it here.
       const linkedLabel = yield* settings.getSettings.pipe(
