@@ -53,6 +53,7 @@ import {
 } from "./AssistantHome.ts";
 import { MoveRecord } from "./assistantMoves.ts";
 import { historyDigest, sha256Hex } from "./assistantHistory.ts";
+import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
 import { ReachBridge, type ReachAskRecord } from "./ReachBridge.ts";
 import type { AssistantBundle } from "./reachProtocol.ts";
 import { noteAssistantHost, taskRolloverPermit } from "./taskAuthority.ts";
@@ -680,6 +681,36 @@ describe("AssistantHome", () => {
         Effect.gen(function* () {
           yield* seedAssistant;
           const home = yield* AssistantHome;
+          // The old copy owns one attachment file; another thread's file must stay.
+          const config = yield* ServerConfig;
+          const owned = `${toSafeThreadAttachmentSegment("old-assistant")}-0b1e8d2a-1234-4abc-9def-0123456789ab`;
+          const foreign = "other_thread-1b1e8d2a-1234-4abc-9def-0123456789ab";
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+          yield* fs.writeFileString(`${config.attachmentsDir}/${owned}.png`, "owned");
+          yield* fs.writeFileString(`${config.attachmentsDir}/${foreign}.png`, "foreign");
+          const image = (id: string) => ({
+            type: "image" as const,
+            id,
+            name: "shot.png",
+            mimeType: "image/png",
+            sizeBytes: 5,
+          });
+          yield* (yield* OrchestrationEngineService).dispatch({
+            type: "thread.history.import",
+            commandId: CommandId.make("test:files"),
+            threadId: ThreadId.make("old-assistant"),
+            messages: [
+              {
+                messageId: MessageId.make("with-files"),
+                role: "user",
+                text: "two pictures",
+                createdAt: "2026-11-01T00:00:00.000Z",
+                attachments: [image(owned), image(foreign)],
+              },
+            ] as never,
+            append: true,
+          });
           yield* home.manage({ action: "move", to: "env-mini" });
           yield* asOlderBuildCopy;
           const listed = yield* home.legacyList;
@@ -705,6 +736,9 @@ describe("AssistantHome", () => {
             )).removed,
           ).toBe(true);
           expect((yield* home.legacyList).copies).toEqual([]);
+          // Its own file is gone with it; the other thread's file stays.
+          expect(yield* fs.exists(`${config.attachmentsDir}/${owned}.png`)).toBe(false);
+          expect(yield* fs.exists(`${config.attachmentsDir}/${foreign}.png`)).toBe(true);
         }),
       ),
   );

@@ -62,7 +62,11 @@ import { ProjectionProjectRepositoryLive } from "../persistence/Layers/Projectio
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 import { ProjectionThreadMessageRepositoryLive } from "../persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionThreadMessageRepository } from "../persistence/Services/ProjectionThreadMessages.ts";
-import { resolveAttachmentPath } from "../attachmentStore.ts";
+import {
+  parseThreadSegmentFromAttachmentId,
+  resolveAttachmentPath,
+  toSafeThreadAttachmentSegment,
+} from "../attachmentStore.ts";
 import {
   ATTACHMENT_CHUNK_BYTES,
   historyDigest,
@@ -505,6 +509,47 @@ export const make = Effect.gen(function* () {
               : {}),
           })),
       );
+    });
+
+  /**
+   * Deletes a copy of the Assistant (its Project, threads and rows), then the
+   * attachment files its thread owned: only files named for that thread, and
+   * only once its rows are gone, so nothing still points at them.
+   */
+  const removeCopy = (input: {
+    readonly projectId: ProjectId | string;
+    readonly threadId: ThreadId | string;
+    readonly commandId: string;
+    readonly what: string;
+  }) =>
+    Effect.gen(function* () {
+      const segment = toSafeThreadAttachmentSegment(input.threadId);
+      const owned =
+        segment === null
+          ? []
+          : (yield* conversationOf(input.threadId).pipe(Effect.orElseSucceed(() => [])))
+              .flatMap((message) => message.files)
+              .filter((file) => parseThreadSegmentFromAttachmentId(file.id) === segment)
+              .flatMap((file) => {
+                const path = resolveAttachmentPath({
+                  attachmentsDir: config.attachmentsDir,
+                  attachment: file,
+                });
+                return path === null ? [] : [path];
+              });
+      yield* dispatch(
+        {
+          type: "project.delete",
+          commandId: CommandId.make(input.commandId),
+          projectId: ProjectId.make(input.projectId),
+          force: true,
+        },
+        input.what,
+      );
+      for (const path of owned) {
+        yield* Effect.promise(() => NodeFSP.rm(path, { force: true }).catch(() => undefined));
+      }
+      return owned.length;
     });
 
   /** Collects everything that moves, and notes what cannot move as it was. */
@@ -957,15 +1002,12 @@ export const make = Effect.gen(function* () {
         // (not retired, possibly holding history the mover lacks) is reused instead.
         const found = yield* archivedAssistant;
         if (found !== undefined && isRetiredAssistant(found.project)) {
-          yield* dispatch(
-            {
-              type: "project.delete",
-              commandId: CommandId.make(`assistant-home:drop-retired:${bundle.moveId}`),
-              projectId: found.project.id,
-              force: true,
-            },
-            "Could not clear the old copy here",
-          );
+          yield* removeCopy({
+            projectId: found.project.id,
+            threadId: found.threadId,
+            commandId: `assistant-home:drop-retired:${bundle.moveId}`,
+            what: "Could not clear the old copy here",
+          });
         }
         const archived =
           found !== undefined && !isRetiredAssistant(found.project) ? found : undefined;
@@ -1517,15 +1559,12 @@ export const make = Effect.gen(function* () {
         if (all.length !== input.count || historyDigest(all) !== input.digest) {
           return yield* fail("This copy changed since it was brought over, so it stays.");
         }
-        yield* dispatch(
-          {
-            type: "project.delete",
-            commandId: CommandId.make(`assistant-home:remove-legacy:${project.id}`),
-            projectId: project.id,
-            force: true,
-          },
-          "Could not remove the older copy",
-        );
+        yield* removeCopy({
+          projectId: project.id,
+          threadId,
+          commandId: `assistant-home:remove-legacy:${project.id}`,
+          what: "Could not remove the older copy",
+        });
         return { removed: true };
       }),
     );
@@ -1761,15 +1800,12 @@ export const make = Effect.gen(function* () {
       if (retiredAt == null || project.assistant?.archivedAt == null) continue;
       const at = Date.parse(retiredAt);
       if (!Number.isFinite(at) || now - at < RETIRED_GRACE_MS) continue;
-      yield* dispatch(
-        {
-          type: "project.delete",
-          commandId: CommandId.make(`assistant-home:expire-retired:${project.id}`),
-          projectId: project.id,
-          force: true,
-        },
-        "Could not remove an old copy",
-      ).pipe(
+      yield* removeCopy({
+        projectId: project.id,
+        threadId: project.assistant.coordinatorThreadId,
+        commandId: `assistant-home:expire-retired:${project.id}`,
+        what: "Could not remove an old copy",
+      }).pipe(
         Effect.tapError((error) => Effect.logWarning(error.detail)),
         Effect.ignore,
       );
