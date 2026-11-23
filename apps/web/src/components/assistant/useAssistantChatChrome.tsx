@@ -2,7 +2,6 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   askAnswerMessageIds,
   collectAskCards,
-  collectNeedsYou,
   collectPings,
   isGlobalAssistant,
 } from "@t3tools/client-runtime/state/assistant-home";
@@ -20,7 +19,6 @@ import { describeCadence } from "@t3tools/shared/schedules";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useMemo } from "react";
 
-import { usePrimaryEnvironment } from "~/state/environments";
 import { useProjects, useThreadShellsForProjectRefs } from "~/state/entities";
 import { useTaskToday, useTasks } from "~/state/tasks";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -34,7 +32,9 @@ import {
   AssistantTimelineCardsContext,
   type AssistantTimelineCardsValue,
 } from "./AssistantTimelineCards";
-import { useSendToThread } from "./useAssistant";
+import { useAssistantHomeEnvironment, useSendToThread } from "./useAssistant";
+
+import { useAssistantNeedsYou } from "./useAssistantNeedsYou";
 
 // Fork-owned. Everything ChatView swaps in when the thread on screen is one
 // of the Assistant's channels, kept here so ChatView only gains a few lines.
@@ -73,8 +73,9 @@ export function useAssistantChatChrome(input: {
   const projects = useProjects();
   const send = useSendToThread();
   const inboxKey = `${environmentId}:${threadId}`;
-  const assistantSettings = usePrimaryEnvironment()?.serverConfig?.settings.assistant ?? null;
+  const assistantSettings = useAssistantHomeEnvironment()?.serverConfig?.settings.assistant ?? null;
   const reach = assistantSettings?.projects ?? null;
+  const needsYou = useAssistantNeedsYou();
   const { tasks } = useTasks();
   const taskToday = useTaskToday();
   const tasksTodayCount = useMemo(
@@ -118,10 +119,7 @@ export function useAssistantChatChrome(input: {
     () => projects.filter((candidate) => candidate.environmentId === environmentId),
     [environmentId, projects],
   );
-  const needsYouCount = useMemo(
-    () => (enabled ? collectNeedsYou(environmentProjects, reach).length : 0),
-    [enabled, environmentProjects, reach],
-  );
+  const needsYouCount = needsYou.length;
 
   const goToThread = useCallback(
     (env: EnvironmentId, target: ThreadId) =>
@@ -197,8 +195,7 @@ export function useAssistantChatChrome(input: {
     overview: (
       <AssistantOverview
         assistant={project}
-        projects={environmentProjects}
-        reach={reach}
+        needsYou={needsYou}
         asks={asks}
         tasksToday={tasksReach === "off" ? null : { count: tasksTodayCount, onOpen: openTasks }}
       />
