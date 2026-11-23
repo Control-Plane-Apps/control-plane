@@ -84,6 +84,7 @@ import {
 } from "./reachProtocol.ts";
 import {
   type HomeCheck,
+  describeTaskState,
   lastAssistantHost,
   noteAssistantHost,
   refreshTaskAuthority,
@@ -320,15 +321,19 @@ export const make = Effect.gen(function* () {
         title,
       }));
       if (described._tag === "Success") {
+        const at = DateTime.toEpochMillis(yield* DateTime.now);
+        const tasks = described.success.tasks;
         noteAssistantHost(machine.id, {
           hosts: described.success.assistant !== null,
-          at: DateTime.toEpochMillis(yield* DateTime.now),
+          at,
+          ...(tasks === undefined ? {} : { task: { at, ...tasks } }),
         });
         return {
           id: machine.id,
           label: machine.label,
           state: "online",
           hostsAssistant: described.success.assistant !== null,
+          taskSynced: tasks === undefined ? null : tasks.account !== null,
           linksBack:
             described.success.linked === undefined
               ? null
@@ -371,8 +376,10 @@ export const make = Effect.gen(function* () {
     const pending = yield* pendingMove;
     const elsewhere = project === undefined ? (hosts[0] ?? null) : null;
     const homeMachine = machines.find((machine) => machine.id === elsewhere?.id);
+    const ownTasks = describeTaskState(DateTime.toEpochMillis(yield* DateTime.now));
     return {
       here: project !== undefined,
+      ...(ownTasks === undefined ? {} : { taskSynced: ownTasks.account !== null }),
       canReclaim:
         pending === undefined && homeMachine !== undefined && homeMachine.state !== "online",
       ...(pending !== undefined
@@ -960,6 +967,51 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  /**
+   * After a move back onto a reused Assistant Project commits, its old
+   * coordinator is history: a coordinator swap leaves it pinned as a standing
+   * agent named "Assistant (previous)", which nothing needs once the move can
+   * no longer be undone (a committed move is never aborted). Unpin and archive
+   * it, so the sidebar shows one Assistant. Idempotent; also run by reconcile
+   * for moves committed before this existed.
+   */
+  const retirePreviousThread = (record: TargetMove) =>
+    Effect.gen(function* () {
+      if (record.phase !== "committed" || record.previousThreadId === undefined) return;
+      if (record.previousRetired === true || record.previousThreadId === record.threadId) return;
+      const found = yield* snapshots
+        .getThreadShellById(ThreadId.make(record.previousThreadId))
+        .pipe(Effect.orElseSucceed(() => Option.none()));
+      const done = journal.put({ ...record, previousRetired: true });
+      if (Option.isNone(found)) return yield* done;
+      const thread = found.value;
+      if (thread.archivedAt != null) return yield* done;
+      // Checked state first, so a fresh id per attempt: an older build may have
+      // unarchived or re-pinned it after a retire with the same move id.
+      const attempt = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      if (thread.pinnedAt != null) {
+        yield* dispatch(
+          {
+            type: "thread.unpin",
+            commandId: CommandId.make(`assistant-home:retire-unpin:${record.moveId}:${attempt}`),
+            threadId: thread.id,
+          },
+          "Could not unpin the previous Assistant thread",
+        );
+      }
+      yield* dispatch(
+        {
+          type: "thread.archive",
+          commandId: CommandId.make(`assistant-home:retire-archive:${record.moveId}:${attempt}`),
+          threadId: thread.id,
+        },
+        "Could not archive the previous Assistant thread",
+      );
+      yield* done;
+    }).pipe(
+      Effect.catch((error) => Effect.logWarning("previous Assistant thread kept", { error })),
+    );
+
   const commit: AssistantHomeShape["commit"] = (moveId, from) =>
     lock.withPermits(1)(
       Effect.gen(function* () {
@@ -977,6 +1029,8 @@ export const make = Effect.gen(function* () {
           at: DateTime.toEpochMillis(yield* DateTime.now),
         });
         yield* journal.put({ ...record, phase: "committed" });
+        // Once per move: journaled as retired, so reconcile does not try again.
+        yield* retirePreviousThread({ ...record, phase: "committed" });
         yield* note(
           record.threadId,
           `assistant-home:arrived:${moveId}`,
@@ -1013,6 +1067,7 @@ export const make = Effect.gen(function* () {
           // Under the lock no adopt is running: a `preparing` copy is what a crash left behind.
           if (record.role === "target") {
             if (record.phase === "preparing") yield* abortTarget(record);
+            if (record.phase === "committed") yield* retirePreviousThread(record);
             continue;
           }
           if (record.role === "reclaim") {

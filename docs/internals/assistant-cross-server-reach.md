@@ -22,29 +22,71 @@ Projects and coordinators could not reach the Assistant. Code: `apps/server/src/
 With Task Sync on for one account on both servers, both would run commitment rollover
 (`taskRolloverToCurrentPeriod`). A rollover retires the old membership and creates one with a new
 random id, so two servers rolling the same commitment can leave duplicate memberships (see the
-rollover contract with Lucive). So exactly one server is the **task authority**:
+rollover contract with Lucive). So exactly one server is the **task authority**: it holds the
+user's real list, rolls commitments and serves Tasks to clients.
 
-- **Rule** (`reach/taskAuthority.ts`, `decideTaskAuthority`): the server that hosts the user's
-  live Assistant. With no Assistant on any linked machine, a server is its own authority (one
-  machine, as before). If two linked servers both host one, the lower environment id wins, and both
-  sides compute the same answer.
+- **Rule** (`reach/taskAuthority.ts`, `decideTaskAuthority`): **Task Sync decides first.** Among
+  the servers signed in and synced to this server's account, the one that hosts the Assistant wins
+  (lower environment id if two do), else the lowest environment id. A server that is not signed
+  in defers to any synced linked server (reason `unsynced`): its local list is not the user's, so
+  authority never follows the Assistant onto an unsynced machine. With no synced server anywhere,
+  the old rule applies: the Assistant's server, else every server is its own authority. A server
+  counts as synced once it is signed in, past its first merge and its subscription is not inactive
+  (`TaskSyncEngine.syncedAccount`). Servers compare a hash of the account email, never the address.
+- **Why (2026-11-23):** after the Assistant moved to a mini that had never signed in to Task Sync,
+  the mini became authority with an empty list, the synced MacBook deferred, and nobody rolled.
+  The Assistant's `cp_task_*` answered `{"tasks":[],"total":0}` from the empty list.
 - **Knowledge** (`reach/TaskAuthorityLive.ts`): each server asks its linked machines `describe`
-  every 5 minutes and stores who hosts an Assistant in `reach-assistants.json`. The decision is
-  made from that file at startup, before clients connect, and a machine that does not answer keeps
-  its stored answer, so the MacBook keeps deferring while the mini sleeps or after a restart. An
-  answer expires three days after the machine last gave it, for task authority only, so a retired
-  machine that stays linked does not stop every other server from rolling commitments forever.
-  Guarding against a second Assistant, Settings' "Runs on" and taking the Assistant back use the
-  last answer with no expiry: a host off for a week still runs the Assistant.
-- **Rollover** (`TaskCommitmentRollover.ts`): a server that is not the authority never rolls, with
-  or without Task Sync. Rollover is the only automatic task write; Task Sync's own pull and push and
-  writes a person or agent asks for (coordinator proposals, push-notification actions) still run.
-- **Clients:** a deferring server keeps `capabilities.tasks: true` and adds `tasksDeferred:
-true`. The web client's `resolveTaskEnvironmentId` and the mobile `useTaskEnvironmentId` prefer a
-  Tasks server that does not defer, so a client connected to the Assistant's server uses its list.
-  A client connected only to the deferring server keeps showing that server's list (the same list
-  when Task Sync is on), so Tasks never disappear. Clients read the descriptor when they connect,
-  so a change of authority shows after reconnect.
+  every 5 minutes. `describe` now carries `tasks: { account, rolls, rollover }`. Answers are stored
+  in `reach-assistants.json` (the `task` field per machine), so the decision survives restarts and
+  a sleeping machine keeps its last answer for three days. A server whose own Task Sync account or
+  Assistant changes sends `authority.poke` (read-only, rate limited) so linked machines look again
+  at once instead of within 5 minutes.
+- **Rollover** (`TaskCommitmentRollover.ts`, `rolloverPermit`): a server rolls only when all hold:
+  it is the authority; the **account-wide** setting is on; its view of linked machines is under 6
+  minutes old (else it refreshes first, so a machine waking from sleep never rolls on old
+  knowledge); and no linked machine said within the last 15 minutes that it rolls. During a
+  handover the new authority waits until the old one has stepped down, so the two never roll at
+  once; since rollover is a catch-up, that only delays moves by minutes and never skips one. The
+  residual race (both decide at the same instant on stale facts) is backstopped by the cloud's
+  one-live-commitment tie-break (rollover contract, section 4).
+- **Setting follows authority:** `taskRolloverToCurrentPeriod` is stamped with
+  `taskRolloverSetAt` whenever it is set. The effective value is the latest choice on this server
+  or any linked server synced to the same account; a tie (both unstamped, as before this change)
+  goes to on. So the MacBook's ON carries to the mini when the mini takes over, with no copy step.
+- **Gap check:** each server tracks how long the setting has been on with nobody rolling. Past 20
+  minutes it logs a warning and Task Sync status reports `authority.rolloverGap`, shown in
+  Settings > Task Sync.
+- **Task tools:** on a server that is not signed in while a linked server is
+  (`taskListElsewhere`), every `cp_task_*` fails with "This server is not signed in to Task Sync
+  ... The user's tasks are on <machine>", for reads and writes. Tasks are not proxied.
+- **Clients:** a deferring server keeps `capabilities.tasks: true` and adds `tasksDeferred: true`.
+  The web `resolveTaskEnvironmentId` and mobile `useTaskEnvironmentId` prefer a Tasks server that
+  does not defer. The descriptor is now pushed live (`environmentUpdated` config-stream event,
+  opt-in `environmentUpdates`), so a change of authority reaches connected clients without a
+  reconnect.
+- **Settings > Task Sync** lists every connected Tasks server with its sync state and role
+  (holds your tasks, runs the Assistant, rolls commitments, needs sign-in). The card signs in the
+  chosen server, defaulting to the Assistant's server when it needs a sign-in, so any client
+  connected to it can sign it in. Each server does its own device sign-in; credentials are never
+  copied. The rollover switch writes to the authority's settings and shows the account-wide value.
+- **Moving the Assistant** (Runs on): the confirmation says whether tasks follow (target synced)
+  or stay put until the target signs in.
+- **Mixed builds:** an older linked build does not report `tasks`. If it hosts the Assistant it
+  still wins (it rolls by the old rule, so the synced server here defers and only one rolls);
+  otherwise it is ignored. Update all linked servers together.
+- **Handover pulls first:** a server that becomes allowed to roll (a handover, or its first pass
+  after start) runs a full sync before it rolls, so what the previous authority already rolled is
+  seen and not rolled again.
+- **Coordinators keep their tools:** only the Assistant's `cp_task_*` calls refuse on an unsynced
+  server; a coordinator there keeps working with that machine's own task list.
+- **Known limits (deferred):**
+  - If the reach link between two synced servers is down for more than 3 days, each stops counting
+    the other and both may roll; the cloud's one-live-commitment tie-break keeps the result to one
+    commitment. A fix needs a lease in the cloud.
+  - `rolls` in `describe` is the permit, not "a roll is running": a server that loses authority in
+    the middle of a pass reports `rolls: false` while that pass finishes, so the new authority can
+    start within that window. Passes take milliseconds and the new authority pulls first.
 
 ## Transport
 
@@ -162,7 +204,8 @@ are linked both ways; the answers are collected by the asking server, which only
 4. **Every linked machine is in reach.** The per-Project reach setting filters. The reach picker
    in Settings lists only this server's Projects; `null` (all) includes remote ones.
 5. **Tasks are not proxied.** Task Sync is the way to share one task list, and only the task
-   authority (the Assistant's server) rolls commitments or serves Tasks to clients.
+   authority (the synced server that runs the Assistant) rolls commitments or serves Tasks to
+   clients. An unsynced server's task tools refuse with a pointer to the synced one.
 
 ## Phase 2: choosing the Assistant's machine (general feature)
 
@@ -206,6 +249,10 @@ timeout or crash never leaves two Assistants, and an interrupted move finishes o
    (commit and abort from any other linked machine are refused). The target puts its copy live and starts polling the asks.
    Only the source sends a commit, and only after a successful adopt, so the target's copy can
    never be live while the source's is.
+   When the copy reused an archived Project (A to B to A), the coordinator swap leaves the old
+   coordinator pinned as "Assistant (previous)"; on commit the target unpins and archives it
+   (`retirePreviousThread`), and reconcile does the same for moves committed by older builds. Only
+   abort needs that thread, and a committed move is never aborted.
 5. **Outcomes on the source:**
    - Adopt failed or timed out: send `assistant.abort` and resume here. Resuming is safe even if
      the abort cannot be delivered, because the target's copy stays paused without a commit; the

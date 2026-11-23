@@ -134,3 +134,25 @@ export function reclaimWarning(status: AssistantHomeStatus): string | null {
   const label = status.elsewhere.label;
   return `Your Assistant starts running here again from the copy this machine last had, so anything it learned or said on ${label} since stays there. When ${label} is back online it pauses its copy, so only one Assistant acts for you. Use this only if ${label} is gone or off for a long time; otherwise wait for it.`;
 }
+
+/**
+ * What happens to tasks when the Assistant moves to `target`. Task authority
+ * follows the Assistant only onto a machine signed in to Task Sync, so moving
+ * to one that is not leaves the tasks (and rollover) where they are and the
+ * Assistant's task tools refuse until that machine signs in.
+ */
+export function moveTaskNote(
+  status: AssistantHomeStatus,
+  target: string,
+  targetLabel: string,
+): string {
+  const targetSynced =
+    target === LOCAL_HOME
+      ? status.taskSynced
+      : status.machines.find((machine) => machine.id === target)?.taskSynced;
+  if (targetSynced === false) {
+    return `${targetLabel} isn't signed in to Task Sync, so your tasks stay where they are and the Assistant can't read or change them there until you sign ${targetLabel} in (Settings, Task Sync).`;
+  }
+  if (targetSynced === true) return "Your tasks follow it through Task Sync.";
+  return "Its tasks follow it once that machine is signed in to Task Sync.";
+}

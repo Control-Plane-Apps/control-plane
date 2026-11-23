@@ -84,6 +84,11 @@ export const AssistantHomeMachine = Schema.Struct({
   hostsAssistant: Schema.NullOr(Schema.Boolean),
   /** It has linked this machine back, so an Assistant there can reach Projects here. */
   linksBack: Schema.NullOr(Schema.Boolean),
+  /**
+   * It is signed in and synced to Task Sync; null when unknown (offline, an
+   * older build). An Assistant on an unsynced machine cannot see the tasks.
+   */
+  taskSynced: Schema.optional(Schema.NullOr(Schema.Boolean)),
   /** Its Projects as last seen, for the Assistant's reach picker. */
   projects: Schema.Array(Schema.Struct({ projectId: Schema.String, title: Schema.String })),
 });
@@ -97,6 +102,8 @@ export const AssistantHomeStatus = Schema.Struct({
   /** Linked machines that also run one: a conflict to resolve by moving one in. */
   conflicts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
   machines: Schema.Array(AssistantHomeMachine),
+  /** This machine is signed in and synced to Task Sync; absent from older servers. */
+  taskSynced: Schema.optional(Schema.Boolean),
   /** Addresses linked machines can likely use to reach this one, best first. */
   addresses: Schema.Array(Schema.String),
   /** The machine that runs the Assistant is unreachable, so it can be taken back here. */

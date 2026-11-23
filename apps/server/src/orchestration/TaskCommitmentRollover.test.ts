@@ -30,7 +30,7 @@ import {
   TaskCommitmentRollover,
   layer as rolloverLayer,
 } from "./TaskCommitmentRollover.ts";
-import { setTaskAuthority } from "../reach/taskAuthority.ts";
+import { registerTaskAuthorityRefresh, setTaskAuthority } from "../reach/taskAuthority.ts";
 
 const AT = "2026-11-01T00:00:00.000Z";
 
@@ -228,6 +228,8 @@ describe("TaskCommitmentRollover", () => {
         options.sync === undefined
           ? Layer.empty
           : Layer.mock(TaskSyncService)({
+              // Recorded as "pull" so a test sees it comes before the first roll.
+              syncBeforeRoll: Ref.update(syncRuns, (list) => [...list, "pull"]),
               rollExpiredCommitments: (today) =>
                 Ref.update(syncRuns, (list) => [...list, today]).pipe(
                   Effect.andThen(Queue.offer(syncRan, undefined)),
@@ -328,13 +330,35 @@ describe("TaskCommitmentRollover", () => {
       });
       yield* TestClock.setTime(noonToday);
       const moved = yield* runOnce.pipe(Effect.provide(layer));
-      assert.deepStrictEqual(yield* Ref.get(syncRuns), ["2026-11-16"]);
+      // The first pass as authority pulls before it rolls.
+      assert.deepStrictEqual(yield* Ref.get(syncRuns), ["pull", "2026-11-16"]);
       // One synced move by Task Sync, one local task.update.
       assert.strictEqual(moved, 2);
       assert.deepStrictEqual(
         taskUpdates(yield* Ref.get(dispatched)).map((command) => command.taskId),
         [expired.id],
       );
+    }),
+  );
+
+  it.effect("asks linked machines again before rolling only when rollover is on", () =>
+    Effect.gen(function* () {
+      let refreshes = 0;
+      registerTaskAuthorityRefresh(
+        Effect.void,
+        Effect.sync(() => void (refreshes += 1)),
+      );
+      try {
+        const off = yield* harness(false);
+        yield* TestClock.setTime(noonToday);
+        yield* runOnce.pipe(Effect.provide(off.layer));
+        assert.strictEqual(refreshes, 0);
+        const on = yield* harness(true, { sync: { state: "local" } });
+        yield* runOnce.pipe(Effect.provide(on.layer));
+        assert.strictEqual(refreshes, 1);
+      } finally {
+        registerTaskAuthorityRefresh(Effect.void, Effect.void);
+      }
     }),
   );
 
@@ -350,18 +374,24 @@ describe("TaskCommitmentRollover", () => {
 
   it.effect("catches up before a read once per day, and again after a waiting pass", () =>
     Effect.gen(function* () {
+      const rolls = (runs: ReadonlyArray<string>) => runs.filter((run) => run !== "pull");
       const done = yield* harness(true, { sync: { state: "local" } });
       yield* TestClock.setTime(noonToday);
       yield* Effect.gen(function* () {
         const rollover = yield* TaskCommitmentRollover;
         yield* rollover.beforeRead;
         yield* rollover.beforeRead;
-        assert.strictEqual((yield* Ref.get(done.syncRuns)).length, 1);
+        assert.strictEqual(rolls(yield* Ref.get(done.syncRuns)).length, 1);
         // The next day: one more pass.
         yield* TestClock.adjust("1 day");
         yield* rollover.beforeRead;
         yield* rollover.beforeRead;
-        assert.strictEqual((yield* Ref.get(done.syncRuns)).length, 2);
+        assert.strictEqual(rolls(yield* Ref.get(done.syncRuns)).length, 2);
+        // Pulled once, before the first roll; a server that keeps rolling does not pull again.
+        assert.strictEqual(
+          (yield* Ref.get(done.syncRuns)).filter((run) => run === "pull").length,
+          1,
+        );
       }).pipe(Effect.provide(done.layer));
 
       const waiting = yield* harness(true, { sync: { state: "waiting" } });
@@ -370,7 +400,7 @@ describe("TaskCommitmentRollover", () => {
         yield* rollover.beforeRead;
         yield* rollover.beforeRead;
         // A pass that had to wait does not count as done for the day.
-        assert.strictEqual((yield* Ref.get(waiting.syncRuns)).length, 2);
+        assert.strictEqual(rolls(yield* Ref.get(waiting.syncRuns)).length, 2);
       }).pipe(Effect.provide(waiting.layer));
     }),
   );

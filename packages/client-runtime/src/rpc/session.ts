@@ -157,6 +157,8 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
     ...(options.environmentThemes === true ? { environmentThemes: true } : {}),
     ...(options.usageLimitSources === true ? { usageLimitSources: true } : {}),
     ...(options.usageLimitsCommand === true ? { usageLimitsCommand: true } : {}),
+    // This runtime projects descriptor changes (task authority) itself.
+    environmentUpdates: true,
   };
 
   const connect = Effect.fnUntraced(function* (connection: PreparedConnection) {
@@ -354,8 +356,10 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
           }),
       ),
     );
-    const subscribeServerConfig = (input: ServerConfigSubscriptionInput) =>
-      Stream.unwrap(
+    const subscribeServerConfig = (requested: ServerConfigSubscriptionInput) => {
+      // This runtime always projects descriptor changes, whatever the caller asked.
+      const input: ServerConfigSubscriptionInput = { ...requested, environmentUpdates: true };
+      return Stream.unwrap(
         validatedInitialConfig.pipe(
           Effect.as(
             Equal.equals(input, serverConfigInput)
@@ -364,6 +368,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
           ),
         ),
       );
+    };
     const probe = initialConfig.pipe(
       Effect.flatMap((config) =>
         (config.environment.capabilities.connectionProbe === true

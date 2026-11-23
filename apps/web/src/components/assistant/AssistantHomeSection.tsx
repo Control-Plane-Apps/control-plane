@@ -26,6 +26,7 @@ import {
   currentHome,
   LOCAL_HOME,
   machineStateText,
+  moveTaskNote,
   offlineHomeText,
   pendingMoveText,
   reclaimWarning,
@@ -268,8 +269,9 @@ export function AssistantHomeSection({
             <AlertDialogDescription>
               Its settings, schedules, memory and last 200 messages move to {pending?.label}. It
               pauses on its current machine first, so only one Assistant ever acts for you, and the
-              copy left there stays read-only. Tasks follow it. If anything fails, it stays where it
-              is.
+              copy left there stays read-only.{" "}
+              {pending === null ? null : moveTaskNote(status, pending.value, pending.label)} If
+              anything fails, it stays where it is.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -34,6 +34,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -946,7 +947,17 @@ const make = Effect.gen(function* () {
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
         const current = yield* getSettingsFromCache;
-        const updated = applyServerSettingsPatch(current, patch);
+        const patched = applyServerSettingsPatch(current, patch);
+        // A deliberate rollover choice is stamped: servers on one Task Sync
+        // account share the setting, latest choice wins (taskAuthority.ts).
+        const updated =
+          patch.taskRolloverToCurrentPeriod === undefined
+            ? patched
+            : {
+                ...patched,
+                taskRolloverSetAt:
+                  patch.taskRolloverSetAt ?? DateTime.formatIso(yield* DateTime.now),
+              };
         const persisted = yield* persistProviderEnvironmentSecrets(current, updated);
         const next = yield* normalizeServerSettings(persisted.settings);
         const materialized = yield* Effect.uninterruptibleMask(() =>

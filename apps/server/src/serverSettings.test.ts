@@ -184,6 +184,22 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       }),
   );
 
+  it.effect("stamps a rollover choice, or keeps the stamp it was given", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const chosen = yield* serverSettings.updateSettings({ taskRolloverToCurrentPeriod: true });
+      assert.ok(chosen.taskRolloverSetAt !== undefined && chosen.taskRolloverSetAt.length > 0);
+      const kept = yield* serverSettings.updateSettings({
+        taskRolloverToCurrentPeriod: false,
+        taskRolloverSetAt: "1970-01-01T00:00:00.000Z",
+      });
+      assert.strictEqual(kept.taskRolloverSetAt, "1970-01-01T00:00:00.000Z");
+      // Other changes leave the stamp alone.
+      const other = yield* serverSettings.updateSettings({ defaultAutoPull: true });
+      assert.strictEqual(other.taskRolloverSetAt, "1970-01-01T00:00:00.000Z");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("deep merges nested settings updates without dropping siblings", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;

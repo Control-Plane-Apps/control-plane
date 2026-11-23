@@ -33,6 +33,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { forkParked } from "../serverActivation.ts";
 import { makeTaskSyncCloudClient, TaskSyncCloudError } from "@t3tools/shared/taskSync/cloudClient";
 import { readTaskSyncConfig } from "./config.ts";
+import { refreshTaskAuthority, taskAuthorityStatus } from "../reach/taskAuthority.ts";
 import {
   emptyTaskSyncState,
   TaskSyncEngine,
@@ -60,16 +61,38 @@ export class TaskSyncService extends Context.Service<
     readonly checkoutUrl: Effect.Effect<{ url: string }, TaskSyncError>;
     readonly portalUrl: Effect.Effect<{ url: string }, TaskSyncError>;
     readonly syncNow: Effect.Effect<TaskSyncStatus, TaskSyncError>;
+    /**
+     * A key for the account this server holds the synced task list for (a
+     * hash, never the address), or null: signed out, sync off, first merge not
+     * done, subscription inactive.
+     */
+    readonly syncedAccountKey: Effect.Effect<string | null>;
     /** Ids of the tasks kept in step with the synced account; empty when sync is off. */
     readonly syncedTaskIds: Effect.Effect<ReadonlySet<string>>;
     /** Local pre-launch preview of Task Sync for this install (see setPreview on the engine). */
     readonly setPreview: (enabled: boolean) => Effect.Effect<TaskSyncStatus, TaskSyncError>;
+    /** Pulls (after any sync in flight) before this server's first roll as authority. */
+    readonly syncBeforeRoll: Effect.Effect<void>;
     /** Rolls the synced account's expired commitments (see the engine). */
     readonly rollExpiredCommitments: (today: string) => Effect.Effect<TaskSyncRolloverResult>;
     /** Emits after a sync applied pulled records or first heard the week start. */
     readonly applied: Stream.Stream<void>;
   }
 >()("t3/taskSync/TaskSyncService") {}
+
+/** Same account on two servers, same key; the address itself never leaves this server. */
+export function taskSyncAccountKey(email: string): string {
+  return NodeCrypto.createHash("sha256")
+    .update(`cplane-task-sync:${email.trim().toLowerCase()}`)
+    .digest("hex")
+    .slice(0, 24);
+}
+
+/** The status with this server's place among linked servers, for Settings. */
+function withAuthority(status: TaskSyncStatus): TaskSyncStatus {
+  const authority = taskAuthorityStatus(Date.now());
+  return authority === null ? status : { ...status, authority };
+}
 
 function toTaskSyncError(error: unknown): TaskSyncError {
   if (error instanceof TaskSyncCloudError) return new TaskSyncError({ reason: error.reason });
@@ -225,16 +248,33 @@ const make = Effect.gen(function* () {
   const attempt = <A>(run: () => Promise<A>) =>
     Effect.tryPromise({ try: run, catch: toTaskSyncError });
 
+  // Who holds the task list depends on which servers are signed in, so a
+  // sign-in or sign-out here re-asks linked machines at once.
+  const afterAccountChange = <E, R>(effect: Effect.Effect<TaskSyncStatus, E, R>) =>
+    effect.pipe(
+      Effect.tap(() => refreshTaskAuthority),
+      Effect.map(withAuthority),
+    );
+
   return {
     status: attempt(async () => {
       const current = await engine.status();
       if (current.state !== "coming-soon") return current;
       await engine.refreshAvailability(OPEN_AVAILABILITY_RECHECK_MS);
       return engine.status();
-    }),
+    }).pipe(Effect.map(withAuthority)),
     requestCode: (email) => attempt(() => engine.requestCode(email)),
-    verify: (email, code) => attempt(() => engine.verify(email, code)),
-    signOut: attempt(() => engine.signOut()),
+    verify: (email, code) => afterAccountChange(attempt(() => engine.verify(email, code))),
+    signOut: afterAccountChange(attempt(() => engine.signOut())),
+    syncBeforeRoll: Effect.promise(() => engine.syncFresh()).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("task sync pull before rollover failed", { cause: Cause.pretty(cause) }),
+      ),
+    ),
+    syncedAccountKey: Effect.promise(() => engine.syncedAccount()).pipe(
+      Effect.map((email) => (email === null ? null : taskSyncAccountKey(email))),
+      Effect.catchCause(() => Effect.succeed(null)),
+    ),
     checkoutUrl: attempt(async () => ({ url: await engine.checkoutUrl() })),
     portalUrl: attempt(async () => ({ url: await engine.portalUrl() })),
     setPreview: (enabled) =>
@@ -248,7 +288,7 @@ const make = Effect.gen(function* () {
         engine.setPreview(enabled || previewFromEnv);
         await engine.refreshAvailability(0);
         return engine.status();
-      }),
+      }).pipe(Effect.map(withAuthority)),
     syncedTaskIds: Effect.promise(() => engine.syncedTaskIds()).pipe(
       Effect.catchCause(() => Effect.succeed(new Set<string>())),
     ),
@@ -267,7 +307,7 @@ const make = Effect.gen(function* () {
       await engine.refreshSubscription().catch(() => undefined);
       await engine.sync();
       return engine.status();
-    }),
+    }).pipe(Effect.map(withAuthority)),
   } satisfies TaskSyncService["Service"];
 });
 
@@ -287,6 +327,8 @@ export const layerUnavailable = Layer.succeed(TaskSyncService, {
   portalUrl: unavailable,
   syncNow: unavailable,
   setPreview: () => unavailable,
+  syncedAccountKey: Effect.succeed(null),
+  syncBeforeRoll: Effect.void,
   syncedTaskIds: Effect.succeed(new Set<string>()),
   rollExpiredCommitments: () => Effect.succeed({ state: "local" as const }),
   applied: Stream.empty,

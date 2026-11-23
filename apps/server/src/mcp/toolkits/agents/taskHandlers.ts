@@ -64,6 +64,7 @@ import {
   ThreadSendResult as ReachThreadSendResult,
 } from "../../../reach/reachProtocol.ts";
 import { TaskSyncService } from "../../../taskSync/TaskSyncService.ts";
+import { taskListElsewhere } from "../../../reach/taskAuthority.ts";
 import { TaskCommitmentRollover } from "../../../orchestration/TaskCommitmentRollover.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
@@ -122,6 +123,11 @@ const ASSISTANT_TASKS_OFF =
   "The user turned off the Assistant's access to tasks (Assistant settings, Tasks: Off).";
 const ASSISTANT_TASKS_READ_ONLY =
   "The user's Assistant settings allow reading tasks but not editing them (Tasks: Read only). Tell the user what to change instead.";
+
+/** Why task tools refuse on a server that does not hold the user's synced list. */
+export function taskListElsewhereDetail(holder: string): string {
+  return `The Assistant's machine is not signed in to Task Sync, so the user's task list is not here (it would read as empty or out of date). The user's tasks are on ${holder}. Nothing was read or changed. Ask the user to sign this machine in to Task Sync: Settings, Task Sync, choose this machine, Sign in.`;
+}
 
 /** The tool's `when` as a task home, counted from the server's local today. */
 export function taskHomeOf(when: TaskWhen | undefined, today: string): TaskHome {
@@ -415,6 +421,14 @@ export const makeTaskHandlers = Effect.gen(function* () {
       : null;
     if (settings?.tasks === "off") {
       return yield* new TaskAccessDeniedError({ detail: ASSISTANT_TASKS_OFF });
+    }
+    // The Assistant reads and edits the user's whole list: on a server not
+    // signed in to Task Sync while a linked one is, that list is not here, so
+    // say so instead of answering from it. A coordinator keeps working with
+    // its own machine's tasks.
+    const elsewhere = assistant ? taskListElsewhere() : null;
+    if (elsewhere !== null) {
+      return yield* new AgentToolFailedError({ detail: taskListElsewhereDetail(elsewhere.label) });
     }
     return { callerId: caller.value.id, projectId: project.value.id, settings };
   });

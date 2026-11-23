@@ -162,6 +162,7 @@ import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import { AgentMachines } from "./agentMachines/AgentMachines.ts";
 import { mintRelinkPairing, revokeIssuedLinkTokens } from "./agentMachines/linkTokenIssuer.ts";
 import { AssistantHome } from "./reach/AssistantHome.ts";
+import { onTaskDeferralChange } from "./reach/taskAuthority.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -3803,13 +3804,39 @@ const makeWsRpcLayer = (
                 })),
               );
 
+              // Task authority moves between linked servers while clients stay
+              // connected: send the descriptor again when `tasksDeferred` flips.
+              const environmentUpdates =
+                input.environmentUpdates === true
+                  ? Stream.callback<void>((queue) =>
+                      Effect.acquireRelease(
+                        Effect.sync(() =>
+                          onTaskDeferralChange(() => {
+                            Queue.offerUnsafe(queue, undefined);
+                          }),
+                        ),
+                        (unsubscribe) => Effect.sync(unsubscribe),
+                      ),
+                    ).pipe(
+                      Stream.mapEffect(() => serverEnvironment.getDescriptor),
+                      Stream.map((environment) => ({
+                        version: 1 as const,
+                        type: "environmentUpdated" as const,
+                        payload: { environment },
+                      })),
+                    )
+                  : Stream.empty;
+
               const liveUpdates = Stream.merge(
                 keybindingsUpdates,
                 Stream.merge(
                   providerStatuses,
                   Stream.merge(
                     settingsUpdates,
-                    Stream.merge(environmentThemeUpdates, usageLimitSourceUpdates),
+                    Stream.merge(
+                      environmentThemeUpdates,
+                      Stream.merge(usageLimitSourceUpdates, environmentUpdates),
+                    ),
                   ),
                 ),
               );
