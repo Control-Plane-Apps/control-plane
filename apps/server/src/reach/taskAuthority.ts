@@ -506,11 +506,25 @@ export const ensureFreshTaskAuthority: Effect.Effect<void> = Effect.suspend(() =
 /** At most one poke-driven refresh this often. */
 const POKE_MIN_INTERVAL_MS = 20_000;
 let lastPokeAt = 0;
+let pokePlanned = false;
 
 /** A linked machine says its tasks changed: refresh soon, in the background. */
 export const pokeTaskAuthority: Effect.Effect<void> = Effect.gen(function* () {
   const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-  if (nowMs - lastPokeAt < POKE_MIN_INTERVAL_MS) return;
-  lastPokeAt = nowMs;
-  yield* Effect.forkDetach(refreshTaskAuthority);
+  const wait = Math.max(0, lastPokeAt + POKE_MIN_INTERVAL_MS - nowMs);
+  // Inside the window a poke is not dropped: one look is already planned for
+  // its end, and that look sees this change too.
+  if (pokePlanned) return;
+  pokePlanned = true;
+  lastPokeAt = nowMs + wait;
+  // The poking machine may have just started and not answer yet: look, and
+  // again a little later.
+  yield* Effect.forkDetach(
+    Effect.sleep(`${wait} millis`).pipe(
+      Effect.andThen(Effect.sync(() => (pokePlanned = false))),
+      Effect.andThen(refreshTaskAuthority),
+      Effect.andThen(Effect.sleep("15 seconds")),
+      Effect.andThen(refreshTaskAuthority),
+    ),
+  );
 });

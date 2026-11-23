@@ -267,9 +267,14 @@ export const TaskAuthorityLive = Layer.effectDiscard(
     );
     yield* forkParked(
       Effect.gen(function* () {
+        // A server that just started (often a just-updated build) tells linked
+        // machines to look again now, so they see its task state and rollover
+        // choice in seconds instead of at their next 5-minute refresh.
+        yield* refresh.pipe(logFailure("task authority refresh failed"));
+        yield* Effect.forkDetach(poke);
         while (true) {
-          yield* refresh.pipe(logFailure("task authority refresh failed"));
           yield* Effect.sleep(TASK_AUTHORITY_REFRESH);
+          yield* refresh.pipe(logFailure("task authority refresh failed"));
         }
       }),
     );
