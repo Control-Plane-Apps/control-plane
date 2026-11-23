@@ -70,6 +70,22 @@ describe("selectArchivedProjectRows", () => {
     expect(rows[0]?.key).toBe("host-b:personal");
   });
 
+  it("leaves out a copy a move left behind (a hidden rollback snapshot)", () => {
+    const hidden = {
+      ...work,
+      id: ProjectId.make("left-behind"),
+      title: "Assistant",
+      assistant: { ...work.assistant, retiredAt: "2026-09-28T09:00:00.000Z" },
+    };
+    const rows = selectArchivedProjectRows({
+      projects: [work, hidden],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+    expect(rows.map(({ title }) => title)).toEqual(["Work"]);
+  });
+
   it("follows the screen's oldest-first sort", () => {
     const rows = selectArchivedProjectRows({
       projects: [personal, renovation, work],
