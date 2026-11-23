@@ -5,6 +5,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -15,7 +16,7 @@ import * as SessionStore from "./SessionStore.ts";
 const LINK_SCOPES = ["orchestration:read", "orchestration:operate"] as const;
 
 const layer = SessionStore.layer.pipe(
-  Layer.provide(SqlitePersistenceMemory),
+  Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provide(ServerSecretStore.layer),
   Layer.provide(
     Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
@@ -152,6 +153,54 @@ it.layer(NodeServices.layer)("SessionStore.renewLink", (it) => {
         yield* TestClock.adjust("2 minutes");
         expect(yield* verifies(parent.token)).toBe(false);
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a revoke or expiry that lands after the first check stops the renewal", () =>
+    Effect.gen(function* () {
+      const store = yield* SessionStore.SessionStore;
+      const sql = yield* SqlClient.SqlClient;
+      const countChildren = store
+        .listActive()
+        .pipe(
+          Effect.map(
+            (sessions) =>
+              sessions.filter((session) => session.subject === "agent-machine:env-race").length,
+          ),
+        );
+      // Revoked between the first read and the write lock.
+      const revoked = yield* issueLink("agent-machine:env-race");
+      yield* TestClock.adjust(Duration.days(21));
+      const before = yield* countChildren;
+      const outcome = yield* store.renewLink({
+        sessionId: revoked.sessionId,
+        holderId: "env-race",
+        ttl: Duration.days(30),
+        afterLock: store.revoke(revoked.sessionId).pipe(Effect.orDie, Effect.asVoid),
+      });
+      expect(outcome).toEqual({ _tag: "Refused", reason: "not-renewable" });
+      // No child was issued, and the ledger write was rolled back with the rest. (The seam's
+      // revoke ran inside the transaction, so it rolled back too; a real one commits on its own.)
+      expect(yield* countChildren).toBe(before);
+      const ledger = yield* sql<{ readonly n: number }>`
+        SELECT COUNT(*) AS n FROM agent_machine_link_renewals
+        WHERE parent_session_id = ${revoked.sessionId}
+      `;
+      expect(ledger[0]?.n).toBe(0);
+
+      // Expired (stored expiry cut) between the first read and the write lock.
+      const cut = yield* issueLink("agent-machine:env-race");
+      yield* TestClock.adjust(Duration.days(21));
+      const expired = yield* store.renewLink({
+        sessionId: cut.sessionId,
+        holderId: "env-race",
+        ttl: Duration.days(30),
+        afterLock: sql`
+          UPDATE auth_sessions SET expires_at = '1970-01-01T00:00:00.000Z'
+          WHERE session_id = ${cut.sessionId}
+        `.pipe(Effect.orDie, Effect.asVoid),
+      });
+      expect(expired).toEqual({ _tag: "Refused", reason: "not-renewable" });
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("an untagged machine link renews at once and is tagged with the holder", () =>

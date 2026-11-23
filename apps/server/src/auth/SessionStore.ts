@@ -374,6 +374,10 @@ export const SessionCredentialError = Schema.Union([
 ]);
 export type SessionCredentialError = typeof SessionCredentialError.Type;
 
+/** Rolls a renewal back when the parent stopped being eligible under the write lock. */
+class RenewParentGone extends Schema.TaggedError<RenewParentGone>()("RenewParentGone", {}) {}
+const isRenewParentGone = Schema.is(RenewParentGone);
+
 export type LinkRenewOutcome =
   | { readonly _tag: "Renewed"; readonly issued: IssuedSession }
   | { readonly _tag: "Refused"; readonly reason: LinkRenewRefusal };
@@ -436,6 +440,11 @@ export class SessionStore extends Context.Service<
       readonly ttl: Duration.Duration;
       /** The holder's id for this renewal; a retry with the same id gets the same child. */
       readonly requestId?: string;
+      /**
+       * @internal Test seam: runs inside the transaction once the renewal ledger row
+       * is written, before the parent is checked again, so a test can revoke it there.
+       */
+      readonly afterLock?: Effect.Effect<void>;
     }) => Effect.Effect<LinkRenewOutcome, SessionCredentialInternalError>;
     readonly markConnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
     readonly markDisconnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
@@ -1070,19 +1079,20 @@ export const make = Effect.gen(function* () {
       const refuse = (reason: LinkRenewRefusal): Outcome => ({ _tag: "Refused", reason });
       const fail = (cause: unknown) =>
         new SessionCredentialIssueError({ sessionId: input.sessionId, cause });
+      const now = yield* DateTime.now;
+      const nowMs = now.epochMilliseconds;
+      /** Not revoked, not expired, and still a bearer machine-link token with link scopes. */
+      const eligible = (candidate: Option.Option<AuthSessions.AuthSessionRecord>) =>
+        Option.isSome(candidate) &&
+        candidate.value.revokedAt === null &&
+        candidate.value.expiresAt.epochMilliseconds > nowMs &&
+        candidate.value.method === "bearer-access-token" &&
+        isLinkTokenScopes(candidate.value.scopes) &&
+        isRenewableLinkSubject(candidate.value.subject);
       const row = yield* authSessions
         .getById({ sessionId: input.sessionId })
         .pipe(Effect.mapError(fail));
-      const now = yield* DateTime.now;
-      const nowMs = now.epochMilliseconds;
-      if (
-        Option.isNone(row) ||
-        row.value.revokedAt !== null ||
-        row.value.expiresAt.epochMilliseconds <= nowMs ||
-        row.value.method !== "bearer-access-token" ||
-        !isLinkTokenScopes(row.value.scopes) ||
-        !isRenewableLinkSubject(row.value.subject)
-      ) {
+      if (!eligible(row) || Option.isNone(row)) {
         return refuse(LinkRenewRefusal.notRenewable);
       }
       const parent = row.value;
@@ -1119,6 +1129,19 @@ export const make = Effect.gen(function* () {
               ON CONFLICT (parent_session_id) DO NOTHING
               RETURNING parent_session_id AS "parent"
             `;
+            if (input.afterLock !== undefined) yield* input.afterLock;
+            // Check the parent again under the transaction's write lock: a revoke or expiry that
+            // landed after the first read must stop the renewal. A renewal that wrote the ledger
+            // rolls it back; a replay just refuses.
+            const current = yield* authSessions.getById({ sessionId: input.sessionId });
+            if (
+              !eligible(current) ||
+              Option.isNone(current) ||
+              current.value.subject !== parent.subject
+            ) {
+              if (claimed.length > 0) return yield* new RenewParentGone({});
+              return refuse(LinkRenewRefusal.notRenewable);
+            }
             if (claimed.length === 0) {
               // Renewed already. A retry of the same request (same random request id) inside the
               // parent's grace (we only got here because it still verifies) gets the same child:
@@ -1178,7 +1201,12 @@ export const make = Effect.gen(function* () {
             return { _tag: "Renewed", issued } satisfies Outcome;
           }),
         )
-        .pipe(Effect.mapError(fail));
+        .pipe(
+          Effect.catchIf(isRenewParentGone, () =>
+            Effect.succeed(refuse(LinkRenewRefusal.notRenewable)),
+          ),
+          Effect.mapError(fail),
+        );
     }).pipe(Effect.withSpan("SessionStore.renewLink"));
 
   const revokeAllExcept: SessionStore["Service"]["revokeAllExcept"] = Effect.fn(
