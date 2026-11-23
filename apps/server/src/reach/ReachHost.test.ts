@@ -474,6 +474,22 @@ describe("ReachHost", () => {
     ),
   );
 
+  it.effect("a request that could not be confirmed is not spent, so it can be confirmed again", () =>
+    run(
+      Effect.gen(function* () {
+        confirmsAsked.length = 0;
+        const input = { threadId: ACME_COORD, message: "hi" };
+        confirms = false;
+        const refused = yield* call("thread.send", input, ThreadSendResult, MINI, "retry1234");
+        expect(refused.ok).toBe(false);
+        confirms = true;
+        const accepted = yield* call("thread.send", input, ThreadSendResult, MINI, "retry1234");
+        expect(accepted.ok).toBe(true);
+        expect(confirmsAsked).toHaveLength(2);
+      }),
+    ),
+  );
+
   it.effect("confirms only requests this machine sent to the machine asking", () =>
     run(
       Effect.gen(function* () {

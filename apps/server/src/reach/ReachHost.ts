@@ -53,7 +53,7 @@ import {
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
 import { Reach } from "./Reach.ts";
-import { acceptOnce, reachInputHash, wasSent } from "./reachSent.ts";
+import { acceptOnce, reachInputHash, wasAccepted, wasSent } from "./reachSent.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
 import { AssistantHome } from "./AssistantHome.ts";
 import {
@@ -519,8 +519,7 @@ export const make = Effect.gen(function* () {
           `This machine has not linked ${request.caller.label} back, so it cannot confirm who is asking. On ${request.caller.label}, use Settings, Connections, Agent machines, Add machine with "Let that machine reach this one too" on, or "Let this machine reach ${request.caller.label}" on its row.`,
         );
       }
-      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-      if (!acceptOnce(machine.id, request.requestId, nowMs)) {
+      if (wasAccepted(machine.id, request.requestId, DateTime.toEpochMillis(yield* DateTime.now))) {
         return yield* opFailed("This request was already used.");
       }
       const answer = yield* reach
@@ -546,6 +545,11 @@ export const make = Effect.gen(function* () {
         );
       if (!answer.sent) {
         return yield* opFailed(`${machine.label} did not send this request, so nothing was done.`);
+      }
+      // Spent only once confirmed: a link back that relinks first confirms again over the new link.
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+      if (!acceptOnce(machine.id, request.requestId, nowMs)) {
+        return yield* opFailed("This request was already used.");
       }
     });
 
