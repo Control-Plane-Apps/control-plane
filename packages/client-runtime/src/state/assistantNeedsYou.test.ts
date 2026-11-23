@@ -82,6 +82,95 @@ describe("mergeAssistantNeedsYou", () => {
     expect(merge(projects, [answered, dismissed, updated])).toEqual([updated]);
   });
 
+  it("reconciles the cleared Control Plane question and current Hometrace question from one live MacBook snapshot", () => {
+    const cleared = { ...entry(MACBOOK, "control-plane", "assistant-tasks"), stale: true };
+    const current = entry(MACBOOK, "hometrace", "inspection-follow-up");
+    const projects = [project(cleared, []), project(current)];
+    const items = merge(projects, [cleared]);
+    expect(items).toEqual([current]);
+    expect(items[0]!.stale).toBe(false);
+    // There is one list to render and count, not a union with the mini's ghost question.
+    expect(items.map(assistantNeedsYouKey)).toEqual([assistantNeedsYouKey(current)]);
+  });
+
+  it("uses a newer disconnected client snapshot over a stale peer cache, including removals", () => {
+    const cleared = { ...entry(MACBOOK, "control-plane", "assistant-tasks"), stale: true };
+    const current = entry(MACBOOK, "hometrace", "inspection-follow-up");
+    const input = {
+      projects: [project(cleared, []), project(current)],
+      reach: null,
+      aggregateItems: [cleared],
+      aggregateMachines: [
+        {
+          environmentId: MACBOOK,
+          label: "MacBook",
+          state: "offline" as const,
+          snapshotSequence: 20,
+        },
+      ],
+      clientSnapshotSequences: new Map([[MACBOOK, 30]]),
+      liveEnvironmentIds: new Set<EnvironmentId>(),
+    };
+    expect(mergeAssistantNeedsYou(input)).toEqual([{ ...current, stale: true }]);
+    expect(mergeAssistantNeedsYou({ ...input, projects: [] })).toEqual([]);
+  });
+
+  it("does not guess when cached source versions are missing, equal, older or incomparable", () => {
+    const cached = { ...entry(MACBOOK, "control-plane", "assistant-tasks"), stale: true };
+    const current = entry(MACBOOK, "hometrace", "inspection-follow-up");
+    const input = {
+      projects: [project(current)],
+      reach: null,
+      aggregateItems: [cached],
+      liveEnvironmentIds: new Set<EnvironmentId>(),
+    };
+    const peer = {
+      environmentId: MACBOOK,
+      label: "MacBook",
+      state: "offline" as const,
+      snapshotSequence: 20,
+    };
+    expect(mergeAssistantNeedsYou({ ...input, aggregateMachines: [peer] })).toEqual([cached]);
+    expect(
+      mergeAssistantNeedsYou({
+        ...input,
+        aggregateMachines: [peer],
+        clientSnapshotSequences: new Map([[MACBOOK, 20]]),
+      }),
+    ).toEqual([cached]);
+    expect(
+      mergeAssistantNeedsYou({
+        ...input,
+        aggregateMachines: [peer],
+        clientSnapshotSequences: new Map([[MACBOOK, 19]]),
+      }),
+    ).toEqual([cached]);
+    expect(
+      mergeAssistantNeedsYou({
+        ...input,
+        aggregateMachines: [{ ...peer, snapshotSequence: undefined }],
+        clientSnapshotSequences: new Map([[MACBOOK, 30]]),
+      }),
+    ).toEqual([cached]);
+    // A current server answer wins over any disconnected local cache, even with a larger sequence.
+    expect(
+      mergeAssistantNeedsYou({
+        ...input,
+        aggregateItems: [],
+        aggregateMachines: [{ ...peer, state: "online" }],
+        clientSnapshotSequences: new Map([[MACBOOK, 30]]),
+      }),
+    ).toEqual([]);
+  });
+
+  it("replaces stale peer questions with a recovered snapshot and respects an empty recovered board", () => {
+    const old = { ...entry(MACBOOK, "control-plane", "assistant-tasks"), stale: true };
+    const recovered = entry(MACBOOK, "hometrace", "inspection-follow-up");
+    expect(merge([], [old], new Set())).toEqual([old]);
+    expect(merge([], [recovered], new Set())).toEqual([recovered]);
+    expect(merge([], [], new Set())).toEqual([]);
+  });
+
   it("clears questions from a live environment even when its Project list is empty", () => {
     const remote = { ...entry(SERVER_ONLY), stale: true };
     expect(merge([], [entry(MACBOOK), remote])).toEqual([remote]);

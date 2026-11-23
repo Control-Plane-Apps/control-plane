@@ -111,7 +111,12 @@ export const make = Effect.gen(function* () {
     const self = yield* environment.getDescriptor;
     const items: AssistantNeedsYouEntry[] = [];
     const machines: AssistantNeedsYouMachine[] = [
-      { environmentId: self.environmentId, label: self.label, state: "online" },
+      {
+        environmentId: self.environmentId,
+        label: self.label,
+        snapshotSequence: current.snapshot.snapshotSequence,
+        state: "online",
+      },
     ];
     const seen = new Set<string>();
     const add = (
@@ -163,6 +168,7 @@ export const make = Effect.gen(function* () {
             statuses: ReadonlyArray<ProjectStatus>;
           }> = [];
           let problem = overview.problem;
+          let snapshotSequence = overview.result?.snapshotSequence;
           for (const project of overview.result?.projects ?? []) {
             if (!isProjectInAssistantReach(current.settings, project.projectId)) continue;
             let projectStale = overview.stale;
@@ -171,6 +177,8 @@ export const make = Effect.gen(function* () {
             );
             // Older peers already expose full boards through status.list. Do not invent a question revision.
             if (project.needsYou.some((entry) => entry.status === undefined)) {
+              // A separately fetched legacy board may be newer than this overview's version.
+              snapshotSequence = undefined;
               const boardKey = scopedKey([machine.id, project.projectId]);
               const result = yield* reach
                 .call(
@@ -216,6 +224,7 @@ export const make = Effect.gen(function* () {
             machine: {
               environmentId: EnvironmentId.make(machine.id),
               label: machine.label,
+              ...(snapshotSequence === undefined ? {} : { snapshotSequence }),
               state: overview.stale
                 ? ("offline" as const)
                 : problem === undefined

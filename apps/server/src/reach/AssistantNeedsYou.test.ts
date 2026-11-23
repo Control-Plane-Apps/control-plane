@@ -48,6 +48,7 @@ const QUESTION: ProjectStatus = {
 };
 let reachIds: string[] | null = null;
 let oldPeer = false;
+let peerSnapshotSequence = 10;
 let peerProjectId: string = ACME;
 let returned: ProjectStatus[] = [QUESTION];
 let sent: unknown[] = [];
@@ -58,6 +59,7 @@ const peer = {
   answer: (op: string, input: unknown) => {
     if (op === "overview")
       return {
+        snapshotSequence: peerSnapshotSequence,
         projects: [
           {
             projectId: peerProjectId,
@@ -167,6 +169,7 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.sync(() => {
     reachIds = null;
     oldPeer = false;
+    peerSnapshotSequence = 10;
     peer.online = true;
     peer.id = "env-mini";
     peerProjectId = ACME;
@@ -312,6 +315,47 @@ describe("AssistantNeedsYou", () => {
         expect(result.items[0]?.stale).toBe(true);
         expect(result.machines.find((machine) => machine.environmentId === peer.id)?.state).toBe(
           "offline",
+        );
+      }),
+    ),
+  );
+  it.effect("refreshes stale Project questions and source versions when a peer answers again", () =>
+    run(
+      Effect.gen(function* () {
+        peerProjectId = "control-plane";
+        returned = [{ ...QUESTION, id: "assistant-tasks" }];
+        const service = yield* make;
+        yield* service.read;
+        peer.online = false;
+        const stale = yield* service.read;
+        expect(stale.items.map((item) => [item.projectId, item.status.id, item.stale])).toEqual([
+          ["control-plane", "assistant-tasks", true],
+        ]);
+        expect(
+          stale.machines.find((machine) => machine.environmentId === peer.id)?.snapshotSequence,
+        ).toBe(10);
+        peer.online = true;
+        peerSnapshotSequence = 30;
+        peerProjectId = "hometrace";
+        returned = [{ ...QUESTION, id: "inspection-follow-up" }];
+        const recovered = yield* service.read;
+        expect(recovered.items.map((item) => [item.projectId, item.status.id, item.stale])).toEqual(
+          [["hometrace", "inspection-follow-up", false]],
+        );
+        expect(recovered.machines.find((machine) => machine.environmentId === peer.id)).toEqual(
+          expect.objectContaining({ snapshotSequence: 30, state: "online" }),
+        );
+        peer.online = false;
+        expect((yield* service.read).items.map((item) => item.projectId)).toEqual(["hometrace"]);
+        peer.online = true;
+        peerSnapshotSequence = 31;
+        returned = [];
+        expect((yield* service.read).items).toEqual([]);
+        peer.online = false;
+        const cleared = yield* service.read;
+        expect(cleared.items).toEqual([]);
+        expect(cleared.machines.find((machine) => machine.environmentId === peer.id)).toEqual(
+          expect.objectContaining({ snapshotSequence: 31, state: "offline" }),
         );
       }),
     ),

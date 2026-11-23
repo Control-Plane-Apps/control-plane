@@ -229,6 +229,7 @@ export const make = Effect.gen(function* () {
   const overview = Effect.gen(function* () {
     const snapshot = yield* shell;
     return {
+      snapshotSequence: snapshot.snapshotSequence,
       projects: overviewProjectsOf(snapshot),
       workspaces: overviewWorkspacesOf(snapshot),
     } satisfies OverviewResult;

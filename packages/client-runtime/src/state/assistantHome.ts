@@ -10,6 +10,7 @@ import {
   isGlobalAssistant,
   isStatusNeedingUser,
   type AssistantNeedsYouEntry,
+  type AssistantNeedsYouMachine,
   type EnvironmentId,
   type OrchestrationMessage,
   type OrchestrationProjectShell,
@@ -95,18 +96,34 @@ export function assistantNeedsYouKey(item: AssistantNeedsYouEntry): string {
  * answered or removed questions disappear immediately. Other environments
  * come from the Assistant's server, including machines this client never
  * connected to. Cached client shells are only a fallback before that first
- * aggregate arrives; they must not overwrite a newer server answer.
+ * aggregate arrives or when their explicit source version is newer than a stale
+ * aggregate for that same machine. Cached choices remain stale and non-actionable.
  */
 export function mergeAssistantNeedsYou(input: {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly reach: ReadonlyArray<string> | null;
   readonly aggregateItems: ReadonlyArray<AssistantNeedsYouEntry> | null;
+  readonly aggregateMachines?: ReadonlyArray<AssistantNeedsYouMachine>;
+  readonly clientSnapshotSequences?: ReadonlyMap<EnvironmentId, number>;
   readonly liveEnvironmentIds: ReadonlySet<EnvironmentId>;
   readonly machineLabels?: ReadonlyMap<EnvironmentId, string>;
 }): AssistantNeedsYouEntry[] {
   const items = new Map<string, AssistantNeedsYouEntry>();
+  const clientEnvironmentIds = new Set(input.liveEnvironmentIds);
+  for (const machine of input.aggregateMachines ?? []) {
+    const clientSequence = input.clientSnapshotSequences?.get(machine.environmentId);
+    // A newer cached snapshot carries removals too. Never infer freshness from the age of a surviving question.
+    if (
+      machine.state !== "online" &&
+      machine.snapshotSequence !== undefined &&
+      clientSequence !== undefined &&
+      clientSequence > machine.snapshotSequence
+    ) {
+      clientEnvironmentIds.add(machine.environmentId);
+    }
+  }
   for (const item of input.aggregateItems ?? []) {
-    if (input.liveEnvironmentIds.has(item.environmentId)) continue;
+    if (clientEnvironmentIds.has(item.environmentId)) continue;
     if (input.reach !== null && !input.reach.includes(item.projectId)) continue;
     if (!isStatusNeedingUser(item.status)) continue;
     const key = assistantNeedsYouKey(item);
@@ -117,7 +134,7 @@ export function mergeAssistantNeedsYou(input: {
   const shellProjects =
     input.aggregateItems === null
       ? input.projects
-      : input.projects.filter((project) => input.liveEnvironmentIds.has(project.environmentId));
+      : input.projects.filter((project) => clientEnvironmentIds.has(project.environmentId));
   for (const { project, status } of collectNeedsYou(shellProjects, input.reach)) {
     const item: AssistantNeedsYouEntry = {
       environmentId: project.environmentId,

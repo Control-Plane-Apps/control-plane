@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import {
   EnvironmentId,
   IsoDateTime,
+  NonNegativeInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -24,6 +25,8 @@ export type AssistantNeedsYouEntry = typeof AssistantNeedsYouEntry.Type;
 export const AssistantNeedsYouMachine = Schema.Struct({
   environmentId: EnvironmentId,
   label: Schema.String,
+  /** Source snapshot version, including empty boards, for comparing cached copies. */
+  snapshotSequence: Schema.optional(NonNegativeInt),
   state: Schema.Literals(["online", "offline", "error"]),
   detail: Schema.optional(Schema.String),
 });

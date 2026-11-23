@@ -22,17 +22,21 @@ const sourcesAtom = Atom.make((get) => {
   const presentations = get(environmentPresentations.presentationsAtom);
   const liveEnvironmentIds = new Set<EnvironmentId>();
   const machineLabels = new Map<EnvironmentId, string>();
+  const clientSnapshotSequences = new Map<EnvironmentId, number>();
   for (const environmentId of enabledEnvironmentIds(catalog)) {
     const entry = catalog.entries.get(environmentId);
     if (entry) machineLabels.set(environmentId, entry.target.label);
+    const shell = get(environmentShell.stateValueAtom(environmentId));
+    if (Option.isSome(shell.snapshot))
+      clientSnapshotSequences.set(environmentId, shell.snapshot.value.snapshotSequence);
     if (
       presentations.get(environmentId)?.connection.phase === "connected" &&
-      get(environmentShell.stateValueAtom(environmentId)).status === "live"
+      shell.status === "live"
     ) {
       liveEnvironmentIds.add(environmentId);
     }
   }
-  return { liveEnvironmentIds, machineLabels };
+  return { liveEnvironmentIds, machineLabels, clientSnapshotSequences };
 });
 
 export interface AssistantNeedsYouState {
@@ -62,7 +66,7 @@ export function useAssistantNeedsYouState(): AssistantNeedsYouState {
     [homeId],
   );
   const result = useAtomValue(query);
-  const { liveEnvironmentIds, machineLabels } = useAtomValue(sourcesAtom);
+  const { liveEnvironmentIds, machineLabels, clientSnapshotSequences } = useAtomValue(sourcesAtom);
   const aggregate = result === null ? null : Option.getOrNull(AsyncResult.value(result));
   const homeUnavailable = homeId !== null && home?.connection.phase !== "connected";
   const failed =
@@ -77,16 +81,35 @@ export function useAssistantNeedsYouState(): AssistantNeedsYouState {
           : aggregate.items,
     [aggregate, failed, homeUnavailable],
   );
+  const aggregateMachines = useMemo(
+    () =>
+      aggregate === null
+        ? []
+        : failed || homeUnavailable
+          ? aggregate.machines.map((machine) => ({ ...machine, state: "offline" as const }))
+          : aggregate.machines,
+    [aggregate, failed, homeUnavailable],
+  );
   const items = useMemo(
     () =>
       mergeAssistantNeedsYou({
         projects,
         reach,
         aggregateItems,
+        aggregateMachines,
+        clientSnapshotSequences,
         liveEnvironmentIds,
         machineLabels,
       }),
-    [projects, reach, aggregateItems, liveEnvironmentIds, machineLabels],
+    [
+      projects,
+      reach,
+      aggregateItems,
+      aggregateMachines,
+      clientSnapshotSequences,
+      liveEnvironmentIds,
+      machineLabels,
+    ],
   );
   const refresh = useCallback(() => {
     if (homeId !== null)

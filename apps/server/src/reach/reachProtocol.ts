@@ -7,6 +7,7 @@
  */
 import { AssistantNeedsYouReplyInput, ProjectStatus } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { NonNegativeInt } from "@t3tools/contracts";
 
 export { REACH_ROUTE_PATH } from "../agentMachines/AgentMachineClient.ts";
 
@@ -220,6 +221,8 @@ export const OverviewWorkspaceThread = Schema.Struct({
 
 /** Every live, marked, non-global Project there, and recent workspace threads. Unfiltered: the Assistant's server applies its reach. */
 export const OverviewResult = Schema.Struct({
+  /** Optional for older peers and persisted caches. Versions belong to this source machine. */
+  snapshotSequence: Schema.optional(NonNegativeInt),
   projects: Schema.Array(OverviewProject),
   workspaces: Schema.Array(OverviewWorkspaceThread),
 });

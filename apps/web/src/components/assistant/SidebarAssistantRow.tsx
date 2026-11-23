@@ -1,10 +1,11 @@
+import { AlertTriangleIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { AssistantMark } from "./AssistantMark";
 import { useOpenAssistant } from "./useAssistant";
 
-import { useAssistantNeedsYou } from "./useAssistantNeedsYou";
+import { useAssistantNeedsYouState } from "./useAssistantNeedsYou";
 
 // Fork-owned. The sidebar's first row: the cross-Project Assistant, with how
 // many Status questions wait on the user across every Project in its reach.
@@ -18,7 +19,15 @@ export function SidebarAssistantRow({
   readonly hint?: ReactNode;
 }) {
   const { open, opening } = useOpenAssistant();
-  const needsYou = useAssistantNeedsYou().length;
+  const state = useAssistantNeedsYouState();
+  const needsYou = state.items.length;
+  const incomplete =
+    state.failed ||
+    state.items.some((item) => item.stale) ||
+    state.machines.some(
+      (machine) =>
+        machine.state !== "online" && !state.liveEnvironmentIds.has(machine.environmentId),
+    );
   return (
     <li className="relative mb-1.5 list-none" data-testid="sidebar-global-assistant">
       <button
@@ -33,6 +42,16 @@ export function SidebarAssistantRow({
       >
         <AssistantMark className="size-4 text-attention-foreground" />
         <span className="min-w-0 flex-1 truncate font-medium">Assistant</span>
+        {incomplete ? (
+          <span
+            role="img"
+            aria-label="Question list may be stale or incomplete"
+            data-testid="assistant-needs-you-stale"
+            className="shrink-0 text-warning-foreground"
+          >
+            <AlertTriangleIcon aria-hidden className="size-3" />
+          </span>
+        ) : null}
         {needsYou > 0 ? (
           <span
             className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm bg-attention/12 px-1 text-[11px] font-medium text-attention-foreground tabular-nums"
