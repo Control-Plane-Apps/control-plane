@@ -30,6 +30,7 @@ it("shares the list and count across servers using the Assistant home's reach", 
   const project = (id: string, environmentId: string) =>
     ({
       id,
+      title: id,
       environmentId,
       assistant: {
         coordinatorThreadId: `${id}-coord`,
@@ -50,11 +51,8 @@ it("shares the list and count across servers using the Assistant home's reach", 
     }) as unknown as EnvironmentProject;
   source.projects = [project("control-plane", "macbook"), project("other", "mini")];
   source.reach = ["control-plane"];
-  let badge = 0;
-  let rows: ReturnType<typeof useAssistantNeedsYou> = [];
   function Harness() {
-    badge = useAssistantNeedsYou().length;
-    rows = useAssistantNeedsYou();
+    const rows = useAssistantNeedsYou();
     return (
       <>
         <SidebarAssistantRow isActive />
@@ -82,18 +80,14 @@ it("shares the list and count across servers using the Assistant home's reach", 
       count,
     );
   };
-  expect(badge).toBe(1);
   assertConsumersAgree(1);
-  expect(rows.map((row) => row.project.environmentId)).toEqual(["macbook"]);
+  expect(JSON.stringify(renderer.toJSON())).toContain("control-plane");
+  expect(JSON.stringify(renderer.toJSON())).not.toContain("other");
   source.reach = null;
   await act(async () => renderer.update(<Harness />));
-  expect(badge).toBe(2);
   assertConsumersAgree(2);
-  expect(badge).toBe(rows.length);
   source.reach = [];
   await act(async () => renderer.update(<Harness />));
-  expect(badge).toBe(0);
   assertConsumersAgree(0);
-  expect(rows).toEqual([]);
   await act(async () => renderer.unmount());
 });
