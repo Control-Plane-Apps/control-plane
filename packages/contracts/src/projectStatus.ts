@@ -214,6 +214,49 @@ export function countStatusesNeedingUser(
   return (statuses ?? []).filter(isStatusNeedingUser).length;
 }
 
+/**
+ * What the Status header's refresh icon sends the coordinator. A plain message,
+ * not a `Re:` reply: it concerns the whole board, not one workstream.
+ */
+export const STATUS_REFRESH_PROMPT =
+  "Refresh the Status board now. For each workstream, check its agents (cp_agent_list, cp_agent_read), update every row so it is true right now, and remove finished rows.";
+
+/** How long the refresh icon waits for the board to change before it gives up and re-enables. */
+export const STATUS_REFRESH_TIMEOUT_MS = 120_000;
+
+/**
+ * A fingerprint of the board's rows and when each last changed. The refresh
+ * icon compares it before and after asking: any row updated, added, removed or
+ * checked off means the coordinator answered.
+ */
+export function statusBoardSignature(
+  statuses:
+    | ReadonlyArray<{
+        readonly id: string;
+        readonly updatedAt: string;
+        readonly dismissedAt?: string | undefined;
+      }>
+    | null
+    | undefined,
+): string {
+  return (statuses ?? [])
+    .map((status) => `${status.id}@${status.updatedAt}@${status.dismissedAt ?? ""}`)
+    .sort()
+    .join("|");
+}
+
+/**
+ * Why the refresh icon is disabled, or null when the coordinator can be asked.
+ * `phase` is the coordinator's server connection phase; null means unknown
+ * (treated as reachable).
+ */
+export function statusRefreshBlockReason(phase: string | null): string | null {
+  if (phase === null || phase === "connected") return null;
+  return phase === "connecting" || phase === "reconnecting"
+    ? "Reconnecting to the coordinator's machine"
+    : "The coordinator's machine is offline";
+}
+
 /** Which workstream, and which version of its question, a reply answers. */
 export interface StatusReplyRef {
   readonly statusId: string;

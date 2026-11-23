@@ -393,7 +393,11 @@ import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSki
 import { vcsEnvironment } from "../state/vcs";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useProjectClone } from "../state/projectClones";
-import { projectCloneDisplayName, projectCloneProgressSummary } from "@t3tools/contracts";
+import {
+  projectCloneDisplayName,
+  projectCloneProgressSummary,
+  STATUS_REFRESH_PROMPT,
+} from "@t3tools/contracts";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
   useProject,
@@ -4891,6 +4895,23 @@ export default function ChatView(props: ChatViewProps) {
     },
     [activeThreadKey, sentStatusRecommendations, threadActivities],
   );
+  // The Status header's refresh icon queues a plain message the same way, so a
+  // busy coordinator reads it at its next boundary. The draft is left alone.
+  const requestStatusRefresh = useCallback(() => {
+    if (!activeThreadKey) return false;
+    useQueuedMessageStore.getState().enqueue(activeThreadKey, {
+      prompt: STATUS_REFRESH_PROMPT,
+      images: [],
+      files: [],
+      terminalContexts: [],
+      previewAnnotations: [],
+      reviewComments: [],
+      submissionIntent: "foreground",
+      queuedAfterToolActivityId: latestCompletedToolActivityId(threadActivities),
+      createdAt: new Date().toISOString(),
+    });
+    return true;
+  }, [activeThreadKey, threadActivities]);
   const statusComposerBannerItem = useStatusComposerBanner({
     enabled: statusBoardEnabled,
     threadKey: activeThreadKey,
@@ -10127,6 +10148,7 @@ export default function ChatView(props: ChatViewProps) {
         onAskForUpdate={askStatusUpdate}
         onGoWithRecommendation={goWithStatusRecommendation}
         sentRecommendations={sentStatusRecommendations}
+        onRequestRefresh={requestStatusRefresh}
       />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel

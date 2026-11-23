@@ -8,6 +8,7 @@ import { AppText as Text } from "../../components/AppText";
 import { symbol } from "../tasks/taskUi";
 import { ProjectStatusPanel } from "./ProjectStatusPanel";
 import { prepareStatusReply } from "./ProjectStatusRouteScreen";
+import { ProjectStatusRefreshButton } from "./StatusRefreshButton";
 
 // Fork-owned. Status beside the coordinator thread on iPad. Reply lands in
 // the composer next to it, so the pane stays open.
@@ -32,6 +33,7 @@ export function ProjectStatusInspector(props: {
         >
           Status
         </Text>
+        <ProjectStatusRefreshButton project={project} variant="plain" />
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Close Status"

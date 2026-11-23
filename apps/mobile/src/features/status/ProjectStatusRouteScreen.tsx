@@ -22,6 +22,7 @@ import { symbol } from "../tasks/taskUi";
 import { ProjectStatusPanel } from "./ProjectStatusPanel";
 import type { StatusReplyTag } from "./projectStatus.logic";
 import { setStatusReplyTag } from "./statusReplyStore";
+import { ProjectStatusRefreshButton } from "./StatusRefreshButton";
 
 // Fork-owned. Status, full screen over the coordinator thread (phone).
 
@@ -111,20 +112,23 @@ export function ProjectStatusRouteScreen({ route }: StaticScreenProps<ProjectSta
                   {project.title} coordinator
                 </Text>
               </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close Status"
-                onPress={() => navigation.goBack()}
-                className="size-11 items-center justify-center rounded-full bg-subtle-strong"
-              >
-                <SymbolView
-                  name={symbol("xmark", "close")}
-                  size={15}
-                  tintColorClassName="accent-foreground"
-                  type="monochrome"
-                  weight="semibold"
-                />
-              </Pressable>
+              <View className="flex-row items-center gap-2">
+                <ProjectStatusRefreshButton project={project} variant="filled" />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Close Status"
+                  onPress={() => navigation.goBack()}
+                  className="size-11 items-center justify-center rounded-full bg-subtle-strong"
+                >
+                  <SymbolView
+                    name={symbol("xmark", "close")}
+                    size={15}
+                    tintColorClassName="accent-foreground"
+                    type="monochrome"
+                    weight="semibold"
+                  />
+                </Pressable>
+              </View>
             </View>
           </GestureDetector>
           <ProjectStatusPanel

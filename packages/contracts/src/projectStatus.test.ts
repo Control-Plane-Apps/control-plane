@@ -13,6 +13,9 @@ import {
   PROJECT_STATUS_STALL_MINUTES_DEFAULT,
   recommendedAnswerLabel,
   sortProjectStatuses,
+  STATUS_REFRESH_PROMPT,
+  statusBoardSignature,
+  statusRefreshBlockReason,
   type StatusAgentShell,
   statusReminderMessageId,
   statusReplyText,
@@ -236,5 +239,44 @@ describe("answer labels", () => {
     ).toBe("You replied");
     // Answers recorded before answeredWith existed.
     expect(answeredLabel({ answeredAt: "2026-11-16T12:00:00.000Z" })).toBe("You replied");
+  });
+});
+
+describe("status refresh", () => {
+  const row = (id: string, updatedAt: string, dismissedAt?: string) => ({
+    id,
+    updatedAt,
+    ...(dismissedAt === undefined ? {} : { dismissedAt }),
+  });
+
+  it("asks the coordinator to check its agents and prune finished rows", () => {
+    expect(STATUS_REFRESH_PROMPT).toContain("cp_agent_list");
+    expect(STATUS_REFRESH_PROMPT).toContain("cp_agent_read");
+    expect(STATUS_REFRESH_PROMPT).toContain("remove finished rows");
+    expect(STATUS_REFRESH_PROMPT).not.toContain("\u2014");
+  });
+
+  it("changes the board signature when a row updates, appears, goes or is checked off", () => {
+    const base = [row("a", "2026-11-23T10:00:00.000Z"), row("b", "2026-11-23T10:00:00.000Z")];
+    const sig = statusBoardSignature(base);
+    expect(statusBoardSignature([...base].reverse())).toBe(sig);
+    expect(statusBoardSignature([row("a", "2026-11-23T10:05:00.000Z"), base[1]!])).not.toBe(sig);
+    expect(statusBoardSignature([...base, row("c", "2026-11-23T10:00:00.000Z")])).not.toBe(sig);
+    expect(statusBoardSignature([base[0]!])).not.toBe(sig);
+    expect(
+      statusBoardSignature([
+        base[0]!,
+        row("b", "2026-11-23T10:00:00.000Z", "2026-11-23T10:06:00.000Z"),
+      ]),
+    ).not.toBe(sig);
+    expect(statusBoardSignature(undefined)).toBe("");
+  });
+
+  it("blocks the refresh only while the coordinator's machine is away", () => {
+    expect(statusRefreshBlockReason("connected")).toBeNull();
+    expect(statusRefreshBlockReason(null)).toBeNull();
+    expect(statusRefreshBlockReason("reconnecting")).toMatch(/Reconnecting/);
+    expect(statusRefreshBlockReason("offline")).toMatch(/offline/);
+    expect(statusRefreshBlockReason("error")).toMatch(/offline/);
   });
 });
