@@ -7,6 +7,7 @@
  * that relinking with a link minted on the other machine restores it.
  */
 import * as NodeChildProcess from "node:child_process";
+import * as NodeHttp from "node:http";
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
@@ -272,6 +273,54 @@ const shellStatus = (issuer: RunningServer, token: string) =>
     return response.status;
   });
 
+/**
+ * A forwarding proxy in front of `target` that lets the first `drops` successful
+ * renewals happen on the issuer but never delivers their answers (the socket is
+ * reset), as a network drop would. Records each renewal answer it saw.
+ */
+function startDroppingProxy(target: string, drops: number) {
+  const state = { dropsLeft: drops, dropped: 0, renewTokens: [] as Array<string> };
+  const server = NodeHttp.createServer((req, res) => {
+    const chunks: Array<Buffer> = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const upstream = NodeHttp.request(
+        new URL(req.url ?? "/", target),
+        { method: req.method, headers: { ...req.headers, host: new URL(target).host } },
+        (up) => {
+          const body: Array<Buffer> = [];
+          up.on("data", (chunk: Buffer) => body.push(chunk));
+          up.on("end", () => {
+            const text = Buffer.concat(body);
+            if (req.url === "/api/agent-machine/renew" && up.statusCode === 200) {
+              state.renewTokens.push(
+                (JSON.parse(text.toString()) as { access_token: string }).access_token,
+              );
+              if (state.dropsLeft > 0) {
+                state.dropsLeft -= 1;
+                state.dropped += 1;
+                req.socket.destroy();
+                return;
+              }
+            }
+            res.writeHead(up.statusCode ?? 502, up.headers);
+            res.end(text);
+          });
+        },
+      );
+      upstream.on("error", () => req.socket.destroy());
+      upstream.end(Buffer.concat(chunks));
+    });
+  });
+  return new Promise<{ url: string; state: typeof state; close: () => void }>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      resolve({ url: `http://127.0.0.1:${port}`, state, close: () => server.close() });
+    });
+  });
+}
+
 describe.sequential("linked machines renew their link tokens", () => {
   let a: RunningServer;
   let b: RunningServer;
@@ -423,5 +472,37 @@ describe.sequential("linked machines renew their link tokens", () => {
         expect(attempt).toEqual({ status: 409, body: { error: "not-renewable" } });
       }),
     60_000,
+  );
+
+  it.live(
+    "a lost renewal answer does not cost the link: the retry gets the same token",
+    () =>
+      Effect.gen(function* () {
+        const proxy = yield* Effect.promise(() => startDroppingProxy(b.baseUrl, 1));
+        try {
+          const { pairingUrl } = yield* pairingFrom(b, "a", a);
+          yield* machines(a, {
+            action: "link",
+            pairingUrl,
+            baseUrl: proxy.url,
+            expectedId: b.environmentId,
+          });
+          const first = yield* statusOf(a, b);
+          const firstExpiry = Date.parse(first.tokenExpiresAt!);
+          // Past the first token's expiry the link still works, though its renewal answer was lost.
+          yield* pause(Math.max(0, firstExpiry - Date.now()) + 3_000);
+          const later = yield* statusOf(a, b);
+          expect(later.status).toBe("connected");
+          expect(later.tokenRenewal).toBeUndefined();
+          expect(Date.parse(later.tokenExpiresAt!)).toBeGreaterThan(firstExpiry);
+          expect(proxy.state.dropped).toBe(1);
+          // The retry with the old token received exactly the token whose answer was dropped.
+          expect(proxy.state.renewTokens.length).toBeGreaterThanOrEqual(2);
+          expect(proxy.state.renewTokens[1]).toBe(proxy.state.renewTokens[0]);
+        } finally {
+          proxy.close();
+        }
+      }),
+    90_000,
   );
 });

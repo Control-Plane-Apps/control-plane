@@ -409,6 +409,8 @@ export const renewPeerToken = (input: {
   readonly token: string;
   /** This machine's id, so the peer can revoke the new token when it unlinks this machine. */
   readonly environmentId: string;
+  /** Random per renewal and reused on retries, so a retry after a lost answer gets the same token. */
+  readonly requestId: string;
 }): Effect.Effect<
   { readonly token: string; readonly expiresInSeconds: number },
   PeerError,
@@ -416,6 +418,7 @@ export const renewPeerToken = (input: {
 > =>
   postLinkToken(input.baseUrl, LINK_RENEW_ROUTE_PATH, input.token, {
     environmentId: input.environmentId,
+    requestId: input.requestId,
   }).pipe(
     Effect.flatMap((body) => {
       const decoded = decodeRenewedTokenBody(body);

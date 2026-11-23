@@ -16,7 +16,7 @@ interface AuthState {
   scopes: ReadonlyArray<string>;
   method: string;
   valid: boolean;
-  renewals: Array<{ sessionId: string; holderId: string }>;
+  renewals: Array<{ sessionId: string; holderId: string; requestId?: string }>;
   refusal: string | null;
   revoked: Array<string>;
 }
@@ -41,9 +41,13 @@ const makeAuth = (overrides: Partial<AuthState> = {}) => {
             scopes: state.scopes as never,
           })
         : Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({})),
-    renewLinkSession: (sessionId, holderId) =>
+    renewLinkSession: (sessionId, holderId, requestId) =>
       Effect.sync(() => {
-        state.renewals.push({ sessionId, holderId });
+        state.renewals.push({
+          sessionId,
+          holderId,
+          ...(requestId === undefined ? {} : { requestId }),
+        });
         return state.refusal === null
           ? {
               _tag: "Renewed" as const,
@@ -103,6 +107,28 @@ describe("link token routes", () => {
         expires_in: 30 * 24 * 60 * 60,
       });
       expect(auth.state.renewals).toEqual([{ sessionId: SESSION_ID, holderId: "env-macbook" }]);
+    }),
+  );
+
+  it.effect("passes the holder's request id through, so a retry can get the same token", () =>
+    Effect.gen(function* () {
+      const auth = makeAuth();
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      const body = JSON.stringify({
+        environmentId: "env-macbook",
+        requestId: "0123456789abcdef0123456789abcdef",
+      });
+      expect((yield* call(renew, auth, { authorization: "Bearer old" }, body)).status).toBe(200);
+      expect(auth.state.renewals).toEqual([
+        {
+          sessionId: SESSION_ID,
+          holderId: "env-macbook",
+          requestId: "0123456789abcdef0123456789abcdef",
+        },
+      ]);
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      const short = JSON.stringify({ environmentId: "env-macbook", requestId: "short" });
+      expect((yield* call(renew, auth, { authorization: "Bearer old" }, short)).status).toBe(400);
     }),
   );
 

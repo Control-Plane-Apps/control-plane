@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
@@ -169,6 +170,26 @@ export interface MachineHealth {
   readonly detail: string | null;
   /** ISO time of the last successful call, or null when none this run. */
   readonly lastSeenAt: string | null;
+}
+
+/** Unguessable, since a retry with it gets the renewed token back: 128 random bits, hex. */
+function newRenewRequestId(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Retries of a renew whose answer did not arrive; all land well inside the issuer's grace. */
+const RENEW_ANSWER_RETRIES = 3;
+
+/** Two seconds apart, or a quarter of the grace for a short test lifetime. */
+function renewRetrySpacing(stored: { readonly issuedAt?: string; readonly expiresAt: string }) {
+  const expiresAtMs = Date.parse(stored.expiresAt);
+  const issuedAtRaw = stored.issuedAt === undefined ? Number.NaN : Date.parse(stored.issuedAt);
+  const lifetimeMs = tokenLifetimeMs({
+    issuedAtMs: Number.isNaN(issuedAtRaw) ? undefined : issuedAtRaw,
+    expiresAtMs,
+  });
+  return Duration.millis(Math.max(50, Math.min(2_000, Math.floor(retireGraceMs(lifetimeMs) / 4))));
 }
 
 /** After a failed reach call, further calls to that machine fail at once for this long. */
@@ -599,11 +620,21 @@ const make = Effect.gen(function* () {
         const config = yield* machineConfig(machineId);
         const selfId = yield* environment.getEnvironmentId;
         yield* requirePeerIdentity(config.baseUrl, machineId);
+        // One id for this renewal and all its retries.
+        const requestId = yield* Effect.sync(newRenewRequestId);
         const fresh = yield* renewPeerToken({
           baseUrl: config.baseUrl,
           token: stored.token,
           environmentId: selfId,
+          requestId,
         }).pipe(
+          // The answer may be lost after the issuer renewed (timeout, reset). Retrying with the
+          // old token inside its grace returns the same new token, so retry before giving up.
+          Effect.retry({
+            times: RENEW_ANSWER_RETRIES,
+            while: (error) => error.kind === "timeout" || error.kind === "unreachable",
+            schedule: Schedule.spaced(renewRetrySpacing(stored)),
+          }),
           Effect.catchIf(
             (error) => error.code === LinkRenewRefusal.tooEarly,
             (error) =>

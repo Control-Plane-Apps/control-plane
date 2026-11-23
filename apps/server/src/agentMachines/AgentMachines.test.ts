@@ -61,6 +61,8 @@ interface PeerState {
   renewed: number;
   /** When set, a renew request waits for it before answering. */
   renewGate: Deferred.Deferred<void> | null;
+  /** The issuer renews but the answer is lost (connection reset) this many times. */
+  dropRenewAnswers: number;
   renewSeen: Deferred.Deferred<void> | null;
 }
 
@@ -76,10 +78,17 @@ const makePeer = (overrides: Partial<PeerState> = {}) => {
     renewRefusal: null,
     renewed: 0,
     renewGate: null,
+    dropRenewAnswers: 0,
     renewSeen: null,
     ...overrides,
   };
-  const requests: Array<{ method: string; path: string; authorization: string | undefined }> = [];
+  const requests: Array<{
+    method: string;
+    path: string;
+    authorization: string | undefined;
+    body?: string;
+  }> = [];
+  const lostAnswer = { pending: (overrides.dropRenewAnswers ?? 0) > 0 };
   const layer = Layer.succeed(
     HttpClient.HttpClient,
     HttpClient.make((request, url) => {
@@ -87,6 +96,9 @@ const makePeer = (overrides: Partial<PeerState> = {}) => {
         method: request.method,
         path: url.pathname,
         authorization: request.headers["authorization"],
+        ...(request.body._tag === "Uint8Array"
+          ? { body: new TextDecoder().decode(request.body.body) }
+          : {}),
       });
       const answer = (status: number, body: unknown) =>
         Effect.succeed(
@@ -118,6 +130,20 @@ const makePeer = (overrides: Partial<PeerState> = {}) => {
         if (state.renewRefusal !== null) return answer(409, { error: state.renewRefusal });
         if (state.renewStatus !== 200) return answer(state.renewStatus, {});
         const respond = Effect.suspend(() => {
+          if (state.dropRenewAnswers > 0) {
+            state.dropRenewAnswers -= 1;
+            // Renewed on the issuer; the answer never arrives. A retry gets the same token.
+            if (state.renewed === 0) state.renewed = 1;
+            return Effect.fail(new Error("socket hang up") as never);
+          }
+          if (state.renewed > 0 && lostAnswer.pending) {
+            lostAnswer.pending = false;
+            return answer(200, {
+              access_token: `renewed-token-${state.renewed}`,
+              token_type: "Bearer",
+              expires_in: 2_592_000,
+            });
+          }
           state.renewed += 1;
           return answer(200, {
             access_token: `renewed-token-${state.renewed}`,
@@ -756,6 +782,37 @@ describe("AgentMachines link renewal", () => {
       );
     },
   );
+
+  it.effect("retries a renewal whose answer was lost and gets the same token", () => {
+    const peer = makePeer({ dropRenewAnswers: 1 });
+    const h = harness({ placement: linkedMini, peer });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        yield* storeIssuedToken(0);
+        yield* TestClock.setTime(21 * DAY_MS);
+        const renewing = yield* Effect.forkChild(machines.renewDueTokens);
+        // Let the retry's spacing elapse on the test clock.
+        for (let step = 0; step < 20; step += 1) {
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("1 second");
+        }
+        yield* Fiber.join(renewing);
+        const renewCalls = peer.requests.filter((r) => r.path === RENEW_PATH);
+        expect(renewCalls.map((r) => r.authorization)).toEqual([
+          "Bearer peer-token",
+          "Bearer peer-token",
+        ]);
+        // The retry repeats the same random request id, which is what lets the issuer answer again.
+        const ids = renewCalls.map((r) => /"requestId":"([0-9a-f]{32})"/.exec(r.body ?? "")?.[1]);
+        expect(ids[0]).toBeDefined();
+        expect(ids[1]).toBe(ids[0]);
+        expect(peer.state.renewed).toBe(1);
+        expect((yield* readStored).token).toBe("renewed-token-1");
+        expect((yield* checkMini).tokenRenewal).toBeUndefined();
+      }),
+    );
+  });
 
   it.effect("stops when the token was already renewed by another copy of it", () => {
     const peer = makePeer({ renewRefusal: "already-renewed" });

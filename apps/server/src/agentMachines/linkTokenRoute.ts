@@ -31,6 +31,8 @@ const RenewRequest = Schema.Struct({
    * untagged original (`agent-machine-link`); a tagged token's child keeps its tag.
    */
   environmentId: Schema.String.check(Schema.isPattern(LINK_HOLDER_ID_PATTERN)),
+  /** Random per renewal, reused on retries: a retry whose first answer was lost gets the same token. */
+  requestId: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{16,64}$/))),
 });
 const decodeRenewRequest = Schema.decodeUnknownOption(Schema.fromJsonString(RenewRequest));
 
@@ -74,7 +76,7 @@ export const renew = Effect.gen(function* () {
   const body = decodeRenewRequest(yield* request.text.pipe(Effect.orElseSucceed(() => "")));
   if (Option.isNone(body)) return HttpServerResponse.text("Bad Request", { status: 400 });
   const outcome = yield* auth
-    .renewLinkSession(session.sessionId, body.value.environmentId)
+    .renewLinkSession(session.sessionId, body.value.environmentId, body.value.requestId)
     .pipe(Effect.orElseSucceed(() => null));
   if (outcome === null) return HttpServerResponse.text("Could not renew", { status: 500 });
   if (outcome._tag === "Refused") {

@@ -41,10 +41,19 @@ const issueLink = (
     });
   });
 
-const renew = (sessionId: SessionStore.IssuedSession["sessionId"], holderId = "env-macbook") =>
+const renew = (
+  sessionId: SessionStore.IssuedSession["sessionId"],
+  holderId = "env-macbook",
+  requestId?: string,
+) =>
   Effect.gen(function* () {
     const store = yield* SessionStore.SessionStore;
-    return yield* store.renewLink({ sessionId, holderId, ttl: Duration.days(30) });
+    return yield* store.renewLink({
+      sessionId,
+      holderId,
+      ttl: Duration.days(30),
+      ...(requestId === undefined ? {} : { requestId }),
+    });
   });
 
 const verifies = (token: string) =>
@@ -89,16 +98,60 @@ it.layer(NodeServices.layer)("SessionStore.renewLink", (it) => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("refuses a second renewal from the same token", () =>
+  it.effect("refuses a renewal from a token whose child is gone", () =>
     Effect.gen(function* () {
+      const store = yield* SessionStore.SessionStore;
       const parent = yield* issueLink("agent-machine:env-macbook");
       yield* TestClock.adjust(Duration.days(21));
-      expect((yield* renew(parent.sessionId))._tag).toBe("Renewed");
+      const first = yield* renew(parent.sessionId);
+      if (first._tag !== "Renewed") throw new Error("not renewed");
+      yield* store.revoke(first.issued.sessionId);
       expect(yield* renew(parent.sessionId)).toEqual({
         _tag: "Refused",
         reason: "already-renewed",
       });
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a retry of the same request inside the grace gets the same child back; any other is refused",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* SessionStore.SessionStore;
+        const parent = yield* issueLink("agent-machine:env-macbook");
+        yield* TestClock.adjust(Duration.days(21));
+        const first = yield* renew(parent.sessionId, "env-macbook", "request-aaaaaaaaaaaaaaaa");
+        // The answer was lost: the holder retries a few seconds later with the old token.
+        yield* TestClock.adjust("5 seconds");
+        const retry = yield* renew(parent.sessionId, "env-macbook", "request-aaaaaaaaaaaaaaaa");
+        // A second copy of the token, with its own request or none, is refused: the holder notices.
+        expect(yield* renew(parent.sessionId, "env-macbook", "request-bbbbbbbbbbbbbbbb")).toEqual({
+          _tag: "Refused",
+          reason: "already-renewed",
+        });
+        expect(yield* renew(parent.sessionId)).toEqual({
+          _tag: "Refused",
+          reason: "already-renewed",
+        });
+        expect(first._tag).toBe("Renewed");
+        expect(retry._tag).toBe("Renewed");
+        if (first._tag !== "Renewed" || retry._tag !== "Renewed") return;
+        expect(retry.issued.token).toBe(first.issued.token);
+        expect(retry.issued.sessionId).toBe(first.issued.sessionId);
+        expect((yield* store.verify(retry.issued.token)).subject).toBe("agent-machine:env-macbook");
+        expect(
+          (yield* store.listActive()).filter((s) => s.subject === "agent-machine:env-macbook"),
+        ).toHaveLength(2);
+        // Once the child is revoked, a retry gets nothing.
+        yield* store.revoke(first.issued.sessionId);
+        expect(yield* renew(parent.sessionId, "env-macbook", "request-aaaaaaaaaaaaaaaa")).toEqual({
+          _tag: "Refused",
+          reason: "already-renewed",
+        });
+        // After the grace the old token is dead, so no retry can reach the child either.
+        yield* TestClock.adjust("2 minutes");
+        expect(yield* verifies(parent.token)).toBe(false);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("an untagged machine link renews at once and is tagged with the holder", () =>

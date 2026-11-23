@@ -78,8 +78,11 @@ agentPlacement: {
 - **Machine links.** Only a token born from a pairing link made for machine linking can renew:
   session subject `agent-machine:<holder id>` (tagged, minted when the holder is known: link back,
   one-click relink) or `agent-machine-link` (untagged: Agent machines, **Create link**, or
-  `t3 pair --machine-link`). Migration 59 tags 0.0.91 link sessions (`one-time-token`, exact read
-  and operate scopes, labels `Agent placement from`/`Link back from`) as untagged. A general
+  `t3 pair --machine-link`). Migration 59 tags 0.0.91 link sessions as untagged:
+  `one-time-token`, bearer, exact read and operate scopes, not revoked, and either the labels this
+  fork gave them (`Agent placement from`/`Link back from`) or user agent `node` (the server's own
+  HTTP client; a pairing link's label replaces the fork's, as on the real MacBook and mini link).
+  A script with the same scopes (`Python-urllib`) is left alone. A general
   pairing link narrowed to read and operate still links, but its token never renews (Settings says
   so).
 - **Link renewal, issuer** (`SessionStore.renewLink`, `linkTokenRoute.ts`). `POST
@@ -89,14 +92,18 @@ agentPlacement: {
   `agent_machine_link_renewals` so it renews at most once (a second try gets `already-renewed`),
   issues a child that keeps the parent's tag (the body's holder id is used only for an untagged
   original), and cuts the parent's stored expiry to a short grace (two minutes, less for a short
-  lifetime; `verify` honours the stored expiry). So a leaked token cannot mint children forever:
+  lifetime; `verify` honours the stored expiry). The holder sends a random 128-bit `requestId`
+  per renewal and reuses it on retries; a retry with the same id while the parent is in its grace
+  gets the same child back (re-signed from its stored row, never a new session), so a lost answer
+  does not cost the link. A request with any other id, or none, gets `already-renewed`. So a leaked token cannot mint children forever:
   if a thief renews first, the real holder's renewal is refused and it shows **Needs relink**, and
   the thief's child carries the holder's tag, so unlinking that machine revokes it. Refusals are
   409 `{ error: too-early | already-renewed | not-renewable }`.
 - **Link renewal, holder** (`AgentMachines.renewDueTokens`, `AgentMachineLinkRenewalLive`). A
   new or untagged token is renewed at once (inside `link`, before link back uses it), so the issuer
   tags it; `too-early` means it is already tagged. After that each token renews when its window
-  opens: identity pinned by descriptor, renew, prove the new token with a shell read, store it
+  opens: identity pinned by descriptor, renew (retried up to 3 times, 2 seconds apart, on a
+  timeout or reset, with the same request id), prove the new token with a shell read, store it
   (`issuedAt`, `renewedAt`, `tagged`), retire the old one after the grace (best effort: the issuer
   ends it anyway). Failures back off from a minute, doubling to an hour, never past expiry. 401 or
   403 or `already-renewed` stop renewal until a relink; `not-renewable` says the link must be

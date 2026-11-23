@@ -434,6 +434,8 @@ export class SessionStore extends Context.Service<
       readonly sessionId: AuthSessionId;
       readonly holderId: string;
       readonly ttl: Duration.Duration;
+      /** The holder's id for this renewal; a retry with the same id gets the same child. */
+      readonly requestId?: string;
     }) => Effect.Effect<LinkRenewOutcome, SessionCredentialInternalError>;
     readonly markConnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
     readonly markDisconnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
@@ -1034,6 +1036,35 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  /** The exact token an existing session was issued with: its claims are all in the row. */
+  const reissue = (row: AuthSessions.AuthSessionRecord) =>
+    Effect.gen(function* () {
+      const claims: SessionClaims = {
+        v: 1,
+        kind: "session",
+        sid: row.sessionId,
+        sub: row.subject,
+        scopes: row.scopes,
+        method: row.method,
+        iat: row.issuedAt.epochMilliseconds,
+        exp: row.expiresAt.epochMilliseconds,
+      };
+      const encodedPayload = yield* encodeClaims(claims).pipe(
+        Effect.map(base64UrlEncode),
+        Effect.mapError(
+          (cause) => new SessionCredentialIssueError({ sessionId: row.sessionId, cause }),
+        ),
+      );
+      return {
+        sessionId: row.sessionId,
+        token: `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`,
+        method: row.method,
+        client: toClientMetadata(row.client),
+        expiresAt: row.expiresAt,
+        scopes: row.scopes,
+      } satisfies IssuedSession;
+    });
+
   const renewLink: SessionStore["Service"]["renewLink"] = (input) =>
     Effect.gen(function* () {
       const refuse = (reason: LinkRenewRefusal): Outcome => ({ _tag: "Refused", reason });
@@ -1081,12 +1112,48 @@ export const make = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             const claimed = yield* sql<{ readonly parent: string }>`
-              INSERT INTO agent_machine_link_renewals (parent_session_id, child_session_id, renewed_at)
-              VALUES (${input.sessionId}, '', ${nowIso})
+              INSERT INTO agent_machine_link_renewals (
+                parent_session_id, child_session_id, request_id, renewed_at
+              )
+              VALUES (${input.sessionId}, '', ${input.requestId ?? null}, ${nowIso})
               ON CONFLICT (parent_session_id) DO NOTHING
               RETURNING parent_session_id AS "parent"
             `;
-            if (claimed.length === 0) return refuse(LinkRenewRefusal.alreadyRenewed);
+            if (claimed.length === 0) {
+              // Renewed already. A retry of the same request (same random request id) inside the
+              // parent's grace (we only got here because it still verifies) gets the same child:
+              // its answer was lost, and that must not cost the link. Any other request, such as
+              // a second copy of the token, is refused, so the real holder still notices a thief.
+              // Never a second, different child.
+              const ledger = yield* sql<{
+                readonly child: string;
+                readonly requestId: string | null;
+              }>`
+                SELECT child_session_id AS "child", request_id AS "requestId"
+                FROM agent_machine_link_renewals
+                WHERE parent_session_id = ${input.sessionId}
+              `;
+              const childId = ledger[0]?.child;
+              const sameRequest =
+                input.requestId !== undefined && ledger[0]?.requestId === input.requestId;
+              if (!sameRequest || childId === undefined || childId.length === 0) {
+                return refuse(LinkRenewRefusal.alreadyRenewed);
+              }
+              const child = yield* authSessions.getById({
+                sessionId: AuthSessionId.make(childId),
+              });
+              if (
+                Option.isNone(child) ||
+                child.value.revokedAt !== null ||
+                child.value.expiresAt.epochMilliseconds <= nowMs
+              ) {
+                return refuse(LinkRenewRefusal.alreadyRenewed);
+              }
+              return {
+                _tag: "Renewed",
+                issued: yield* reissue(child.value),
+              } satisfies Outcome;
+            }
             const issued = yield* issue({
               subject,
               method: "bearer-access-token",
