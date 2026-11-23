@@ -98,6 +98,12 @@ export const ProjectAssistant = Schema.Struct({
   /** The current coordinator's title from before it was promoted, restored if it is replaced. */
   formerTitle: Schema.optional(TrimmedNonEmptyString),
   archivedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /**
+   * The Assistant moved to another machine and this copy stays only as a
+   * hidden rollback snapshot: listed nowhere, removed after a grace period.
+   * Fork-owned.
+   */
+  retiredAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   schedules: Schema.optional(Schema.Array(ProjectSchedule)),
   /** Prompt per schedule id. Never on the shell; `schedules.status` returns them. */
   schedulePrompts: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -134,6 +140,8 @@ export const ProjectAssistantPatch = Schema.Struct({
   scope: Schema.optional(ProjectAssistantScope),
   /** The server stamps `archivedAt`. */
   archived: Schema.optional(Schema.Boolean),
+  /** The server stamps `retiredAt`; bringing the copy back (unarchiving) clears it. */
+  retired: Schema.optional(Schema.Boolean),
   /** The whole list, like `scripts`. */
   schedules: Schema.optional(Schema.Array(ProjectScheduleInput)),
 });
@@ -205,6 +213,11 @@ export function findGlobalAssistantProject<P extends AssistantProjectLike>(
 
 export function isArchivedAssistant(project: AssistantProjectLike | null | undefined): boolean {
   return project?.assistant?.archivedAt != null;
+}
+
+/** A copy a move left behind: a hidden rollback snapshot, never listed. */
+export function isRetiredAssistant(project: AssistantProjectLike | null | undefined): boolean {
+  return project?.assistant?.retiredAt != null;
 }
 
 /** A pinned agent: a reused role that never settles until it is unpinned. */

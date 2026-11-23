@@ -15,6 +15,7 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import { TestClock } from "effect/testing";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -439,6 +440,15 @@ describe("AssistantHome", () => {
     ),
   );
 
+  const asOlderBuildCopy = Effect.flatMap(OrchestrationEngineService, (engine) =>
+    engine.dispatch({
+      type: "project.meta.update",
+      commandId: CommandId.make("test:unretire"),
+      projectId: ProjectId.make("old-home"),
+      assistant: { coordinatorThreadId: ThreadId.make("old-assistant"), retired: false },
+    }),
+  );
+
   const seedHistory = (count: number) =>
     Effect.flatMap(OrchestrationEngineService, (engine) =>
       engine.dispatch({
@@ -666,13 +676,68 @@ describe("AssistantHome", () => {
     ),
   );
 
-  it.effect("moving back reuses the archived Assistant and its folder", () =>
+  const projectState = (projectId: string) =>
+    Effect.gen(function* () {
+      const snapshots = yield* ProjectionSnapshotQuery;
+      const project = (yield* snapshots.getCommandReadModel()).projects.find(
+        (entry) => entry.id === projectId,
+      );
+      return project === undefined || project.deletedAt !== null
+        ? "gone"
+        : project.assistant?.retiredAt != null
+          ? "retired"
+          : project.assistant?.archivedAt != null
+            ? "archived"
+            : "live";
+    });
+
+  it.effect("a move hides the copy it leaves; moving back builds fresh and removes it", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const home = yield* AssistantHome;
+        yield* home.manage({ action: "move", to: "env-mini" });
+        // Hidden rollback snapshot: not live, not in Archived.
+        expect(yield* projectState("old-home")).toBe("retired");
+        const returned = yield* home.adopt(bundle("move-back-fresh"), FROM);
+        expect(returned.projectId).not.toBe("old-home");
+        expect(yield* projectState("old-home")).toBe("gone");
+        yield* home.commit("move-back-fresh", FROM);
+        expect((yield* liveAssistant)?.id).toBe(returned.projectId);
+        // Only one Assistant thread exists: no "(previous)".
+        const snapshots = yield* ProjectionSnapshotQuery;
+        const titles = (yield* snapshots.getCommandReadModel()).threads
+          .filter((thread) => thread.deletedAt === null && thread.title.startsWith("Assistant"))
+          .map((thread) => thread.title);
+        expect(titles).toEqual(["Assistant"]);
+      }),
+    ),
+  );
+
+  it.effect("removes a hidden copy after the grace period, not before", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const home = yield* AssistantHome;
+        yield* home.manage({ action: "move", to: "env-mini" });
+        yield* home.reconcile;
+        expect(yield* projectState("old-home")).toBe("retired");
+        yield* TestClock.adjust("8 days");
+        yield* home.reconcile;
+        expect(yield* projectState("old-home")).toBe("gone");
+      }),
+    ),
+  );
+
+  it.effect("moving back over a copy left by an older build reuses it and its folder", () =>
     run(
       Effect.gen(function* () {
         yield* seedAssistant;
         const home = yield* AssistantHome;
         // A to B: this machine pauses its copy.
         yield* home.manage({ action: "move", to: "env-mini" });
+        // As an older build left it: archived, not retired, so it is reused.
+        yield* asOlderBuildCopy;
         expect(yield* liveAssistant).toBeUndefined();
         // B to A: the bundle repeats the old messages and adds one.
         const back = bundle("move-back");
@@ -738,6 +803,8 @@ describe("AssistantHome", () => {
           yield* seedAssistant;
           const home = yield* AssistantHome;
           yield* home.manage({ action: "move", to: "env-mini" });
+          // As an older build left it: archived, not retired, so it is reused.
+          yield* asOlderBuildCopy;
           const returned = yield* home.adopt(bundle("move-back"), FROM);
           // Before commit the old coordinator is kept as is: an abort makes it the coordinator again.
           expect((yield* threadState("old-assistant")).archived).toBe(false);
@@ -764,6 +831,8 @@ describe("AssistantHome", () => {
         yield* seedAssistant;
         const home = yield* AssistantHome;
         yield* home.manage({ action: "move", to: "env-mini" });
+        // As an older build left it: archived, not retired, so it is reused.
+        yield* asOlderBuildCopy;
         yield* home.adopt(bundle("move-back"), FROM);
         yield* home.abort("move-back", FROM);
         expect((yield* threadState("old-assistant")).archived).toBe(false);
@@ -783,6 +852,8 @@ describe("AssistantHome", () => {
         const home = yield* AssistantHome;
         const engine = yield* OrchestrationEngineService;
         yield* home.manage({ action: "move", to: "env-mini" });
+        // As an older build left it: archived, not retired, so it is reused.
+        yield* asOlderBuildCopy;
         yield* home.adopt(bundle("move-back"), FROM);
         yield* home.commit("move-back", FROM);
         // As an older build left it: unarchived and pinned as a standing agent.
@@ -1253,6 +1324,8 @@ describe("AssistantHome", () => {
         const after = yield* home.manage({ action: "reclaim" });
         expect(after.here).toBe(true);
         expect((yield* liveAssistant)?.id).toBe("old-home");
+        // The hidden copy the move left is the one that comes back.
+        expect(yield* projectState("old-home")).toBe("live");
         expect(calls).toEqual([]);
         // The mini comes back: reconcile tells it to pause its copy, once.
         mini.online = true;

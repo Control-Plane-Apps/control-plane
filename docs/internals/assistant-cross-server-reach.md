@@ -249,6 +249,19 @@ timeout or crash never leaves two Assistants, and an interrupted move finishes o
    (commit and abort from any other linked machine are refused). The target puts its copy live and starts polling the asks.
    Only the source sends a commit, and only after a successful adopt, so the target's copy can
    never be live while the source's is.
+   **Whole conversation (#134):** the adopt carries the first page; the rest follows as
+   `assistant.history` pages (200 messages or 4 MB), every attachment as `assistant.attachment`
+   chunks (6 MB, sha256-checked, renamed for the new thread), then `assistant.verify` compares the
+   message count, a digest of (role, time, text) and the attachment count. The target refuses to
+   commit until verified; the source rolls back if the check fails. Message ids are kept, so a resent
+   page adds nothing twice. Tool-call activity rows stay behind.
+   **Nothing left behind (#134):** on commit the source marks its paused copy `retiredAt`: a hidden
+   rollback snapshot listed nowhere (not the sidebar, not Archived), kept 7 days
+   (`RETIRED_GRACE_MS`) and then force-deleted by reconcile. Taking the Assistant back within that
+   time revives it. A move back onto a machine holding a retired copy deletes it and builds a fresh
+   Project in the same home folder, so no "(previous)" thread exists. A copy an older build left
+   (archived, not retired, possibly holding history the mover lacks) is still reused as below until
+   the one-time history backfill.
    When the copy reused an archived Project (A to B to A), the coordinator swap leaves the old
    coordinator pinned as "Assistant (previous)"; on commit the target unpins and archives it
    (`retirePreviousThread`), and reconcile does the same for moves committed by older builds. Only

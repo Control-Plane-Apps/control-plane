@@ -28,6 +28,7 @@ import {
   CommandId,
   EventId,
   findGlobalAssistantProject,
+  isRetiredAssistant,
   MessageId,
   ModelSelection,
   ProjectId,
@@ -194,6 +195,8 @@ type MovedAsk = Omit<ReachAskRecord, "replyTo">;
 export const ADOPT_TIMEOUT = Duration.seconds(60);
 /** Commit, abort and status checks of a move. */
 export const MOVE_STEP_TIMEOUT = Duration.seconds(15);
+/** How long a copy a move left behind stays as a hidden rollback snapshot. */
+export const RETIRED_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 /** One page of conversation or one attachment chunk. */
 export const HISTORY_STEP_TIMEOUT = Duration.seconds(60);
 
@@ -645,6 +648,20 @@ export const make = Effect.gen(function* () {
         `Assistant moved to ${record.peerLabel}`,
         `This copy is read-only. Your Assistant now runs on ${record.peerLabel}.`,
       );
+      // Nothing shows here any more: the paused copy becomes a hidden rollback
+      // snapshot, removed after RETIRED_GRACE (reconcile).
+      yield* dispatch(
+        {
+          type: "project.meta.update",
+          commandId: CommandId.make(`assistant-home:retire:${record.moveId}`),
+          projectId: ProjectId.make(record.projectId),
+          assistant: { coordinatorThreadId: ThreadId.make(record.threadId), retired: true },
+        },
+        "Could not hide the copy left here",
+      ).pipe(
+        Effect.tapError((error) => Effect.logWarning(error.detail)),
+        Effect.ignore,
+      );
       yield* refreshTaskAuthority;
     });
 
@@ -889,8 +906,24 @@ export const make = Effect.gen(function* () {
         const previousMemory = yield* fileSystem
           .readFileString(memoryPath)
           .pipe(Effect.orElseSucceed(() => null));
-        // An Assistant that moved away from here before holds the home folder: reuse it.
-        const archived = yield* archivedAssistant;
+        // A hidden rollback copy from an earlier move away is obsolete now that
+        // the live Assistant (with its whole conversation) comes back: remove it
+        // and build fresh, so nothing old shows. A copy left by an older build
+        // (not retired, possibly holding history the mover lacks) is reused instead.
+        const found = yield* archivedAssistant;
+        if (found !== undefined && isRetiredAssistant(found.project)) {
+          yield* dispatch(
+            {
+              type: "project.delete",
+              commandId: CommandId.make(`assistant-home:drop-retired:${bundle.moveId}`),
+              projectId: found.project.id,
+              force: true,
+            },
+            "Could not clear the old copy here",
+          );
+        }
+        const archived =
+          found !== undefined && !isRetiredAssistant(found.project) ? found : undefined;
         const projectId =
           archived !== undefined
             ? (archived.project.id as string)
@@ -1391,6 +1424,33 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  /** Removes hidden rollback copies older than RETIRED_GRACE_MS. */
+  const expireRetiredCopies = Effect.gen(function* () {
+    const snapshot = yield* snapshots
+      .getShellSnapshot()
+      .pipe(Effect.orElseSucceed(() => undefined));
+    if (snapshot === undefined) return;
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
+    for (const project of snapshot.projects) {
+      const retiredAt = project.assistant?.retiredAt;
+      if (retiredAt == null || project.assistant?.archivedAt == null) continue;
+      const at = Date.parse(retiredAt);
+      if (!Number.isFinite(at) || now - at < RETIRED_GRACE_MS) continue;
+      yield* dispatch(
+        {
+          type: "project.delete",
+          commandId: CommandId.make(`assistant-home:expire-retired:${project.id}`),
+          projectId: project.id,
+          force: true,
+        },
+        "Could not remove an old copy",
+      ).pipe(
+        Effect.tapError((error) => Effect.logWarning(error.detail)),
+        Effect.ignore,
+      );
+    }
+  });
+
   /**
    * Finishes or undoes moves a timeout, crash or sleep interrupted. A source
    * in `adopting` never heard back: it cancels and resumes its own copy. In
@@ -1401,6 +1461,7 @@ export const make = Effect.gen(function* () {
   const reconcile = lock
     .withPermits(1)(
       Effect.gen(function* () {
+        yield* expireRetiredCopies;
         for (const record of yield* journal.list) {
           // Under the lock no adopt is running: a `preparing` copy is what a crash left behind.
           if (record.role === "target") {

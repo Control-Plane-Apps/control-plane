@@ -1,6 +1,7 @@
 import {
   assistantSlug,
   isArchivedAssistant,
+  isRetiredAssistant,
   isGlobalAssistant,
   isRunningAgent,
   type EnvironmentId,
@@ -179,6 +180,8 @@ export function partitionAssistants<
   const assistants: AssistantEntry<P, T>[] = [];
   const archivedAssistants: AssistantEntry<P, T>[] = [];
   for (const draft of draftByProject.values()) {
+    // A copy a move left on this machine is a hidden rollback snapshot: listed nowhere.
+    if (isRetiredAssistant(draft.project)) continue;
     const entry: AssistantEntry<P, T> = {
       project: draft.project,
       projectKey: derivePhysicalProjectKey(draft.project),

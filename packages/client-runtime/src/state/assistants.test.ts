@@ -84,6 +84,22 @@ function session(status: "starting" | "running" | "ready" | "error") {
 }
 
 describe("partitionAssistants", () => {
+  it("lists nowhere a copy a move left behind (a hidden rollback snapshot)", () => {
+    const live = project("home", { coordinator: "coord" });
+    const archived = project("old", {
+      coordinator: "old-coord",
+      archivedAt: "2026-11-01T00:00:00.000Z",
+    });
+    const retired = {
+      ...archived,
+      id: ProjectId.make("left"),
+      assistant: { ...archived.assistant!, retiredAt: "2026-11-23T00:00:00.000Z" },
+    };
+    const partition = partitionAssistants([live, archived, retired], [], primary);
+    expect(partition.assistants.map((entry) => entry.project.id)).toEqual(["home"]);
+    expect(partition.archivedAssistants.map((entry) => entry.project.id)).toEqual(["old"]);
+  });
+
   it("keeps the input arrays when no Project exists", () => {
     const projects = [project("web")];
     const threads = [thread("t1", "web")];
