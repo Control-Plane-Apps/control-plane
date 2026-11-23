@@ -3,7 +3,6 @@ import {
   type AssistantAskCard,
   type AssistantNeedsYouItem,
   assistantWorkingOn,
-  collectNeedsYou,
   pendingAskCards,
 } from "@t3tools/client-runtime/state/assistant-home";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
@@ -30,19 +29,14 @@ import { recommendationTextFor, useSendToThread } from "./useAssistant";
 
 export interface AssistantOverviewProps {
   readonly assistant: EnvironmentProject;
-  readonly projects: ReadonlyArray<EnvironmentProject>;
-  /** Null reaches every Project. */
-  readonly reach: ReadonlyArray<string> | null;
+  readonly needsYou: ReadonlyArray<AssistantNeedsYouItem<EnvironmentProject>>;
   readonly asks: ReadonlyArray<AssistantAskCard>;
   /** Today's tasks once the Tasks feature is available; null hides the row. */
   readonly tasksToday?: { readonly count: number; readonly onOpen: () => void } | null;
 }
 
 export function AssistantOverview(props: AssistantOverviewProps) {
-  const needsYou = useMemo(
-    () => collectNeedsYou(props.projects, props.reach),
-    [props.projects, props.reach],
-  );
+  const { needsYou } = props;
   const now = useMinuteNow();
   const dismissedAskIds = useAssistantOverviewStore((state) => state.dismissedAskIds);
   const dismissAsk = useAssistantOverviewStore((state) => state.dismissAsk);

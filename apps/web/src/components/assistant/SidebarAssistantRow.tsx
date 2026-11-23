@@ -1,11 +1,10 @@
-import { collectNeedsYou } from "@t3tools/client-runtime/state/assistant-home";
-import { useMemo, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
-import { usePrimaryEnvironment } from "~/state/environments";
-import { useProjects } from "~/state/entities";
 import { AssistantMark } from "./AssistantMark";
 import { useOpenAssistant } from "./useAssistant";
+
+import { useAssistantNeedsYou } from "./useAssistantNeedsYou";
 
 // Fork-owned. The sidebar's first row: the cross-Project Assistant, with how
 // many Status questions wait on the user across every Project in its reach.
@@ -19,9 +18,7 @@ export function SidebarAssistantRow({
   readonly hint?: ReactNode;
 }) {
   const { open, opening } = useOpenAssistant();
-  const projects = useProjects();
-  const reach = usePrimaryEnvironment()?.serverConfig?.settings.assistant?.projects ?? null;
-  const needsYou = useMemo(() => collectNeedsYou(projects, reach).length, [projects, reach]);
+  const needsYou = useAssistantNeedsYou().length;
   return (
     <li className="relative mb-1.5 list-none" data-testid="sidebar-global-assistant">
       <button
