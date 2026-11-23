@@ -232,6 +232,21 @@ describe("tokenRenewalText", () => {
     );
   });
 
+  it("says a link from a general pairing link will not renew, and when it ends", () => {
+    const notRenewable = status({
+      tokenRenewal: "not-renewable",
+      tokenRenewalDetail: "Linked with a general pairing link, so it will not renew.",
+      tokenExpiresAt: new Date(NOW + 12 * DAY + 60_000).toISOString(),
+    });
+    expect(tokenRenewalText(notRenewable, NOW)).toBe(
+      "Linked with a general pairing link, so it will not renew. Access ends: token expires in 12 days.",
+    );
+    expect(agentMachineStatusPresentation(notRenewable, NOW)).toEqual({
+      label: "Connected, token expires in 12 days",
+      tone: "warning",
+    });
+  });
+
   it("says nothing extra once the row already asks for a relink", () => {
     expect(tokenRenewalText(status({ status: "needs-relink" }), NOW)).toBeNull();
     expect(tokenRenewalText(undefined, NOW)).toBeNull();

@@ -155,15 +155,19 @@ const call = <A, I>(
   result: Schema.Codec<A, I>,
   caller: { environmentId: string; label: string } = MINI,
   requestId = `req${(request += 1)}xyz`,
+  subject: string | null = `agent-machine:${caller.environmentId}`,
 ) =>
   Effect.gen(function* () {
     const host = yield* makeReachHost;
-    const response = yield* host.handle({
-      op,
-      requestId,
-      caller: { ...caller, threadId: "mini-assistant", threadTitle: "Assistant" },
-      input,
-    });
+    const response = yield* host.handle(
+      {
+        op,
+        requestId,
+        caller: { ...caller, threadId: "mini-assistant", threadTitle: "Assistant" },
+        input,
+      },
+      subject === null ? undefined : { subject },
+    );
     if (!response.ok) return { ok: false as const, error: response.error };
     return {
       ok: true as const,
@@ -474,18 +478,54 @@ describe("ReachHost", () => {
     ),
   );
 
-  it.effect("a request that could not be confirmed is not spent, so it can be confirmed again", () =>
+  it.effect(
+    "a request that could not be confirmed is not spent, so it can be confirmed again",
+    () =>
+      run(
+        Effect.gen(function* () {
+          confirmsAsked.length = 0;
+          const input = { threadId: ACME_COORD, message: "hi" };
+          confirms = false;
+          const refused = yield* call("thread.send", input, ThreadSendResult, MINI, "retry1234");
+          expect(refused.ok).toBe(false);
+          confirms = true;
+          const accepted = yield* call("thread.send", input, ThreadSendResult, MINI, "retry1234");
+          expect(accepted.ok).toBe(true);
+          expect(confirmsAsked).toHaveLength(2);
+        }),
+      ),
+  );
+
+  it.effect("a token tagged for one machine cannot speak for another", () =>
     run(
       Effect.gen(function* () {
-        confirmsAsked.length = 0;
         const input = { threadId: ACME_COORD, message: "hi" };
-        confirms = false;
-        const refused = yield* call("thread.send", input, ThreadSendResult, MINI, "retry1234");
-        expect(refused.ok).toBe(false);
-        confirms = true;
-        const accepted = yield* call("thread.send", input, ThreadSendResult, MINI, "retry1234");
-        expect(accepted.ok).toBe(true);
-        expect(confirmsAsked).toHaveLength(2);
+        const spoofed = yield* call(
+          "thread.send",
+          input,
+          ThreadSendResult,
+          MINI,
+          "spoof12345",
+          "agent-machine:env-other",
+        );
+        expect(spoofed).toEqual({ ok: false, error: "This link belongs to another machine." });
+      }),
+    ),
+  );
+
+  it.effect("link back needs a token tagged for the machine asking", () =>
+    run(
+      Effect.gen(function* () {
+        const untagged = yield* call(
+          "link.back",
+          { pairingUrl: "http://127.0.0.1:47799/pair#token=ABCDEF123456" },
+          Schema.Unknown,
+          { environmentId: "env-new", label: "New Mac" },
+          "linkback1",
+          "agent-machine-link",
+        );
+        expect(untagged.ok).toBe(false);
+        if (!untagged.ok) expect(untagged.error).toContain("tagged for the machine asking");
       }),
     ),
   );

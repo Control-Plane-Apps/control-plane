@@ -16,7 +16,8 @@ interface AuthState {
   scopes: ReadonlyArray<string>;
   method: string;
   valid: boolean;
-  issued: Array<{ subject?: string; scopes?: ReadonlyArray<string>; label?: string }>;
+  renewals: Array<{ sessionId: string; holderId: string }>;
+  refusal: string | null;
   revoked: Array<string>;
 }
 
@@ -25,7 +26,8 @@ const makeAuth = (overrides: Partial<AuthState> = {}) => {
     scopes: LINK_SCOPES,
     method: "bearer-access-token",
     valid: true,
-    issued: [],
+    renewals: [],
+    refusal: null,
     revoked: [],
     ...overrides,
   };
@@ -39,29 +41,22 @@ const makeAuth = (overrides: Partial<AuthState> = {}) => {
             scopes: state.scopes as never,
           })
         : Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({})),
-    listSessions: () =>
-      Effect.succeed([
-        {
-          sessionId: SESSION_ID,
-          client: { label: "Agent placement from MacBook" },
-        } as never,
-      ]),
-    issueSession: (input) =>
+    renewLinkSession: (sessionId, holderId) =>
       Effect.sync(() => {
-        state.issued.push({
-          ...(input?.subject ? { subject: input.subject } : {}),
-          ...(input?.scopes ? { scopes: input.scopes } : {}),
-          ...(input?.label ? { label: input.label } : {}),
-        });
-        return {
-          sessionId: AuthSessionId.make("session-new"),
-          token: "fresh-token",
-          method: "bearer-access-token",
-          scopes: input?.scopes ?? [],
-          subject: input?.subject ?? "",
-          client: { deviceType: "bot" },
-          expiresAt: DateTime.makeUnsafe(0),
-        } as never;
+        state.renewals.push({ sessionId, holderId });
+        return state.refusal === null
+          ? {
+              _tag: "Renewed" as const,
+              issued: {
+                sessionId: AuthSessionId.make("session-new"),
+                token: "fresh-token",
+                method: "bearer-access-token",
+                client: { deviceType: "bot" },
+                scopes: LINK_SCOPES as never,
+                expiresAt: DateTime.makeUnsafe(30 * 24 * 60 * 60 * 1000),
+              },
+            }
+          : { _tag: "Refused" as const, reason: state.refusal as never };
       }),
     revokeSession: (sessionId) =>
       Effect.sync(() => {
@@ -97,7 +92,7 @@ const json = (response: HttpServerResponse.HttpServerResponse) =>
   JSON.parse(new TextDecoder().decode((response.body as { body: Uint8Array }).body));
 
 describe("link token routes", () => {
-  it.effect("renews a link token: same scopes and label, tagged with the holder's id", () =>
+  it.effect("renews through the session store with the presenting session and the holder id", () =>
     Effect.gen(function* () {
       const auth = makeAuth();
       const response = yield* call(renew, auth, { authorization: "Bearer old-token" });
@@ -107,15 +102,18 @@ describe("link token routes", () => {
         token_type: "Bearer",
         expires_in: 30 * 24 * 60 * 60,
       });
-      expect(auth.state.issued).toEqual([
-        {
-          subject: "agent-machine:env-macbook",
-          scopes: LINK_SCOPES,
-          label: "Agent placement from MacBook",
-        },
-      ]);
-      // The old token is not revoked here: the holder retires it once the new one works.
-      expect(auth.state.revoked).toEqual([]);
+      expect(auth.state.renewals).toEqual([{ sessionId: SESSION_ID, holderId: "env-macbook" }]);
+    }),
+  );
+
+  it.effect("answers a refusal as 409 with its reason", () =>
+    Effect.gen(function* () {
+      for (const reason of ["too-early", "already-renewed", "not-renewable"]) {
+        const auth = makeAuth({ refusal: reason });
+        const response = yield* call(renew, auth, { authorization: "Bearer old-token" });
+        expect(response.status).toBe(409);
+        expect(json(response)).toEqual({ error: reason });
+      }
     }),
   );
 
@@ -124,7 +122,7 @@ describe("link token routes", () => {
       const auth = makeAuth();
       const response = yield* call(renew, auth, { cookie: "t3_session=abc" });
       expect(response.status).toBe(401);
-      expect(auth.state.issued).toEqual([]);
+      expect(auth.state.renewals).toEqual([]);
     }),
   );
 
@@ -133,7 +131,7 @@ describe("link token routes", () => {
       const auth = makeAuth({ valid: false });
       const response = yield* call(renew, auth, { authorization: "Bearer revoked" });
       expect(response.status).toBe(401);
-      expect(auth.state.issued).toEqual([]);
+      expect(auth.state.renewals).toEqual([]);
     }),
   );
 
@@ -142,15 +140,18 @@ describe("link token routes", () => {
       const auth = makeAuth({ scopes: [...LINK_SCOPES, "access:write"] });
       const response = yield* call(renew, auth, { authorization: "Bearer admin" });
       expect(response.status).toBe(403);
-      expect(auth.state.issued).toEqual([]);
+      expect(auth.state.renewals).toEqual([]);
     }),
   );
 
-  it.effect("rejects a body without the holder's id", () =>
+  it.effect("rejects a body without a usable holder id", () =>
     Effect.gen(function* () {
       const auth = makeAuth();
-      const response = yield* call(renew, auth, { authorization: "Bearer old" }, "{}");
-      expect(response.status).toBe(400);
+      expect((yield* call(renew, auth, { authorization: "Bearer old" }, "{}")).status).toBe(400);
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      const spaced = JSON.stringify({ environmentId: "has spaces/and slash" });
+      expect((yield* call(renew, auth, { authorization: "Bearer old" }, spaced)).status).toBe(400);
+      expect(auth.state.renewals).toEqual([]);
     }),
   );
 

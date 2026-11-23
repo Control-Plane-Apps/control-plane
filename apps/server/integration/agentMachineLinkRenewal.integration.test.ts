@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off globalDateInEffect:off globalFetch:off globalFetchInEffect:off globalConsole:off - A black-box test of two real server processes in real time over plain HTTP.
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off globalDateInEffect:off globalFetch:off globalFetchInEffect:off globalConsole:off preferSchemaOverJson:off - A black-box test of two real server processes in real time over plain HTTP.
 /**
  * Two real servers, each with a fresh data directory, linked both ways with
  * a link token shortened to 24 seconds (test-only `CP_TEST_LINK_TOKEN_TTL_SECONDS`).
@@ -215,10 +215,62 @@ const statusOf = (server: RunningServer, peer: RunningServer) =>
 
 const pause = (ms: number) => Effect.promise(() => sleep(ms));
 
-const pairingFrom = (issuer: RunningServer, forLabel: string) =>
+/** A machine link minted on `issuer`; tagged for `holder` when given (a relink), else untagged. */
+const pairingFrom = (issuer: RunningServer, forLabel: string, holder?: RunningServer) =>
   rpc<{ pairingUrl: string }>(issuer, (client) =>
-    client["server.agentMachinePairing"]({ baseUrl: issuer.baseUrl, label: forLabel }),
+    client["server.agentMachinePairing"]({
+      baseUrl: issuer.baseUrl,
+      label: forLabel,
+      ...(holder === undefined ? {} : { holderId: holder.environmentId }),
+    }),
   );
+
+/** A general pairing link (not a machine link), as Settings, Connections makes one. */
+const generalPairingFrom = (issuer: RunningServer) =>
+  Effect.promise(async () => {
+    const response = await fetch(`${issuer.baseUrl}/api/auth/pairing-token`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${issuer.adminToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    const body = (await response.json()) as { credential: string };
+    return `${issuer.baseUrl}/pair#token=${body.credential}`;
+  });
+
+/** The link token `holder` stores for `peer`, read from its secrets on disk (a thief's copy). */
+const storedToken = (holder: RunningServer, peer: RunningServer) => {
+  const name = `agent-machine-token-${Buffer.from(peer.environmentId, "utf8").toString("base64url")}.bin`;
+  return JSON.parse(
+    NodeFS.readFileSync(NodePath.join(holder.baseDir, "userdata", "secrets", name), "utf8"),
+  ) as { token: string; tagged?: boolean; expiresAt: string };
+};
+
+const postRenew = (issuer: RunningServer, token: string, environmentId: string) =>
+  Effect.promise(async () => {
+    const response = await fetch(`${issuer.baseUrl}/api/agent-machine/renew`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ environmentId }),
+    });
+    return {
+      status: response.status,
+      body: (await response.json().catch(() => null)) as {
+        access_token?: string;
+        error?: string;
+      } | null,
+    };
+  });
+
+const shellStatus = (issuer: RunningServer, token: string) =>
+  Effect.promise(async () => {
+    const response = await fetch(`${issuer.baseUrl}/api/orchestration/shell`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return response.status;
+  });
 
 describe.sequential("linked machines renew their link tokens", () => {
   let a: RunningServer;
@@ -248,11 +300,13 @@ describe.sequential("linked machines renew their link tokens", () => {
         yield* machines(a, { action: "link", pairingUrl, expectedId: b.environmentId });
         yield* machines(a, { action: "linkBack", id: b.environmentId, baseUrl: a.baseUrl });
 
+        // The untagged machine link was renewed at once, so B tagged it with A's id.
+        expect(storedToken(a, b).tagged).toBe(true);
+        expect(storedToken(b, a).tagged).toBe(true);
         const firstAtoB = yield* statusOf(a, b);
         const firstBtoA = yield* statusOf(b, a);
         expect(firstAtoB.status).toBe("connected");
         expect(firstBtoA.status).toBe("connected");
-        expect(firstAtoB.tokenRenewedAt).toBeUndefined();
         const firstExpiry = Math.max(
           Date.parse(firstAtoB.tokenExpiresAt!),
           Date.parse(firstBtoA.tokenExpiresAt!),
@@ -294,15 +348,15 @@ describe.sequential("linked machines renew their link tokens", () => {
         expect(refused).toBeDefined();
         expect(refused?.status).toBe("needs-relink");
 
-        // One click in Settings: mint on B, link on A with the machine pinned.
-        const { pairingUrl } = yield* pairingFrom(b, "a");
+        // One click in Settings: mint on B (tagged for A), link on A with the machine pinned.
+        const { pairingUrl } = yield* pairingFrom(b, "a", a);
         yield* machines(a, { action: "link", pairingUrl, expectedId: b.environmentId });
         const relinked = yield* statusOf(a, b);
         expect(relinked.status).toBe("connected");
         expect(relinked.tokenRenewal).toBeUndefined();
 
         // A link minted on another machine is refused when relinking a pinned one.
-        const wrong = yield* pairingFrom(a, "a");
+        const wrong = yield* pairingFrom(a, "a", a);
         const refusedLink = yield* Effect.flip(
           machines(a, {
             action: "link",
@@ -313,5 +367,61 @@ describe.sequential("linked machines renew their link tokens", () => {
         expect(refusedLink.detail).toContain("different machine");
       }),
     90_000,
+  );
+
+  it.live(
+    "a leaked token renews at most once, its parent dies after the grace, and the holder notices",
+    () =>
+      Effect.gen(function* () {
+        // The thief copies A's current token for B and races A to renew it.
+        const leaked = storedToken(a, b).token;
+        const early = yield* postRenew(b, leaked, "env-thief");
+        expect(early).toEqual({ status: 409, body: { error: "too-early" } });
+        let stolen: string | undefined;
+        const deadline = Date.now() + 30_000;
+        while (stolen === undefined && Date.now() < deadline) {
+          const attempt = yield* postRenew(b, leaked, "env-thief");
+          if (attempt.status === 200) stolen = attempt.body?.access_token;
+          else if (attempt.body?.error !== "too-early") break;
+          else yield* pause(100);
+        }
+        expect(stolen).toBeDefined();
+        // The same token never renews twice.
+        const again = yield* postRenew(b, leaked, "env-thief");
+        expect(again).toEqual({ status: 409, body: { error: "already-renewed" } });
+        // The parent stops working after the short grace, retired or not.
+        yield* pause(2_000);
+        expect(yield* shellStatus(b, leaked)).toBe(401);
+        // A's own renewal is refused, and A shows that the link needs relinking.
+        let status: AgentMachineStatus | undefined;
+        const until = Date.now() + 30_000;
+        while (Date.now() < until) {
+          status = yield* statusOf(a, b);
+          if (status.tokenRenewal === "stopped") break;
+          yield* pause(500);
+        }
+        expect(status?.tokenRenewal).toBe("stopped");
+        // The stolen child kept A's tag, so unlinking A on B revokes it.
+        expect(yield* shellStatus(b, stolen!)).toBe(200);
+        yield* machines(b, { action: "unlink", id: a.environmentId });
+        expect(yield* shellStatus(b, stolen!)).toBe(401);
+      }),
+    90_000,
+  );
+
+  it.live(
+    "a link made with a general pairing link works but never renews",
+    () =>
+      Effect.gen(function* () {
+        const pairingUrl = yield* generalPairingFrom(b);
+        yield* machines(a, { action: "link", pairingUrl, expectedId: b.environmentId });
+        const status = yield* statusOf(a, b);
+        expect(status.status).toBe("connected");
+        expect(status.tokenRenewal).toBe("not-renewable");
+        const token = storedToken(a, b).token;
+        const attempt = yield* postRenew(b, token, a.environmentId);
+        expect(attempt).toEqual({ status: 409, body: { error: "not-renewable" } });
+      }),
+    60_000,
   );
 });

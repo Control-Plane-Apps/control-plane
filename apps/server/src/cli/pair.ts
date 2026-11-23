@@ -11,6 +11,8 @@
  * tailnet URL instead.
  */
 import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   AuthStandardClientScopes,
   ExecutionEnvironmentDescriptor,
   PortSchema,
@@ -38,6 +40,7 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 
+import { UNTAGGED_LINK_SUBJECT } from "../agentMachines/linkToken.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { hasCloudPublicConfig } from "../cloud/publicConfig.ts";
 import * as ServerConfig from "../config.ts";
@@ -434,15 +437,26 @@ const mintPairingLink = Effect.fn("pair.mintPairingLink")(function* (input: {
   readonly config: ServerConfig.ServerConfig["Service"];
   readonly ttl: Option.Option<Duration.Duration>;
   readonly label: Option.Option<string>;
+  readonly machineLink: boolean;
 }) {
   return yield* Effect.gen(function* () {
     const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
-    return yield* environmentAuth.createPairingLink({
-      scopes: AuthStandardClientScopes,
-      subject: "one-time-token",
-      label: Option.getOrElse(input.label, () => "t3 pair"),
-      ...(Option.isSome(input.ttl) ? { ttl: input.ttl.value } : {}),
-    });
+    return yield* environmentAuth.createPairingLink(
+      input.machineLink
+        ? {
+            // A link another machine redeems under Agent machines: read and operate only, renewable.
+            scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+            subject: UNTAGGED_LINK_SUBJECT,
+            label: Option.getOrElse(input.label, () => "Machine link (t3 pair)"),
+            ...(Option.isSome(input.ttl) ? { ttl: input.ttl.value } : {}),
+          }
+        : {
+            scopes: AuthStandardClientScopes,
+            subject: "one-time-token",
+            label: Option.getOrElse(input.label, () => "t3 pair"),
+            ...(Option.isSome(input.ttl) ? { ttl: input.ttl.value } : {}),
+          },
+    );
   }).pipe(
     Effect.provide(
       EnvironmentAuth.runtimeLayer.pipe(
@@ -466,6 +480,13 @@ const labelFlag = Flag.String("label").pipe(
   Flag.optional,
 );
 
+const machineLinkFlag = Flag.Boolean("machine-link").pipe(
+  Flag.withDescription(
+    "Mint a machine link for Settings, Connections, Agent machines on another machine: read and operate only, and it renews automatically.",
+  ),
+  Flag.withDefault(false),
+);
+
 const tailscaleFlag = Flag.Boolean("tailscale").pipe(
   Flag.withDescription(
     "Publish the server over Tailscale Serve HTTPS and pair through the tailnet URL.",
@@ -483,6 +504,7 @@ export const pairCommand = Command.make("pair", {
   baseDir: baseDirFlag,
   ttl: ttlFlag,
   label: labelFlag,
+  machineLink: machineLinkFlag,
   tailscale: tailscaleFlag,
   tailscaleServePort: tailscaleServePortFlag,
 }).pipe(
@@ -522,7 +544,12 @@ export const pairCommand = Command.make("pair", {
       }
 
       const config = yield* makePairServerConfig({ target, logLevel });
-      const issued = yield* mintPairingLink({ config, ttl: flags.ttl, label: flags.label });
+      const issued = yield* mintPairingLink({
+        config,
+        ttl: flags.ttl,
+        label: flags.label,
+        machineLink: flags.machineLink,
+      });
       const pairingUrl = buildPairingUrl(pairingBaseUrl, issued.credential);
 
       yield* Console.log(

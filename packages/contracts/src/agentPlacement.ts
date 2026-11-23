@@ -106,9 +106,17 @@ export type AgentMachineStatusKind = typeof AgentMachineStatusKind.Type;
 /**
  * - `retrying`: the last renewal failed (machine offline); it is retried with backoff.
  * - `peer-outdated`: the linked machine runs a build without renewal; the token works until it expires.
- * - `stopped`: the linked machine refused the token (revoked or unlinked there), or it expired.
+ * - `stopped`: the linked machine refused the token (revoked or unlinked there, or renewed
+ *   elsewhere), or it expired.
+ * - `not-renewable`: linked with a general pairing link, not a machine link; it works until it
+ *   expires.
  */
-export const AgentMachineTokenRenewal = Schema.Literals(["retrying", "peer-outdated", "stopped"]);
+export const AgentMachineTokenRenewal = Schema.Literals([
+  "retrying",
+  "peer-outdated",
+  "stopped",
+  "not-renewable",
+]);
 export type AgentMachineTokenRenewal = typeof AgentMachineTokenRenewal.Type;
 
 export const AgentMachinePairingInput = Schema.Struct({
@@ -116,6 +124,12 @@ export const AgentMachinePairingInput = Schema.Struct({
   baseUrl: TrimmedNonEmptyString,
   /** Who the link is for, shown in Settings, Connections. */
   label: TrimmedNonEmptyString,
+  /**
+   * The environment id of the machine that will redeem it, when known (a
+   * relink): its token is tagged for that machine, so unlinking it here
+   * revokes it. Without it the link is an untagged machine link.
+   */
+  holderId: Schema.optionalKey(AgentMachineId.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/))),
 });
 export type AgentMachinePairingInput = typeof AgentMachinePairingInput.Type;
 

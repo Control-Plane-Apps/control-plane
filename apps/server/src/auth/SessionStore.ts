@@ -24,6 +24,18 @@ import * as Option from "effect/Option";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import {
+  isLinkTokenScopes,
+  isRenewableLinkSubject,
+  issuerAllowsRenewal,
+  LINK_HOLDER_ID_PATTERN,
+  LinkRenewRefusal,
+  linkSubjectHolder,
+  linkTokenSubject,
+  retireGraceMs,
+  tokenLifetimeMs,
+} from "../agentMachines/linkToken.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import {
   REUSABLE_DEV_SESSION_EXPIRES_AT,
@@ -362,6 +374,11 @@ export const SessionCredentialError = Schema.Union([
 ]);
 export type SessionCredentialError = typeof SessionCredentialError.Type;
 
+export type LinkRenewOutcome =
+  | { readonly _tag: "Renewed"; readonly issued: IssuedSession }
+  | { readonly _tag: "Refused"; readonly reason: LinkRenewRefusal };
+type Outcome = LinkRenewOutcome;
+
 export class SessionStore extends Context.Service<
   SessionStore,
   {
@@ -407,6 +424,17 @@ export class SessionStore extends Context.Service<
     readonly revokeAllExcept: (
       sessionId: AuthSessionId,
     ) => Effect.Effect<number, SessionCredentialInternalError>;
+    /**
+     * Renews a linked machine's token, once: issues a child that inherits the
+     * parent's machine tag (or names `holderId` for an untagged original),
+     * records the renewal so the parent never renews again, and cuts the
+     * parent's stored expiry to `now + grace`. See agentMachines/linkToken.ts.
+     */
+    readonly renewLink: (input: {
+      readonly sessionId: AuthSessionId;
+      readonly holderId: string;
+      readonly ttl: Duration.Duration;
+    }) => Effect.Effect<LinkRenewOutcome, SessionCredentialInternalError>;
     readonly markConnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
     readonly markDisconnected: (sessionId: AuthSessionId) => Effect.Effect<void, never>;
     readonly recordClientConnection: (
@@ -484,6 +512,7 @@ export const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
+  const sql = yield* SqlClient.SqlClient;
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
@@ -829,6 +858,14 @@ export const make = Effect.gen(function* () {
           revokedAt: row.value.revokedAt,
         });
       }
+      // The stored expiry can be earlier than the signed one: a renewed link token's grace ends there.
+      if (row.value.expiresAt.epochMilliseconds <= observedAt.epochMilliseconds) {
+        return yield* new SessionTokenExpiredError({
+          sessionId: claims.sid,
+          expiresAt: row.value.expiresAt,
+          observedAt,
+        });
+      }
 
       return {
         sessionId: claims.sid,
@@ -997,6 +1034,86 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const renewLink: SessionStore["Service"]["renewLink"] = (input) =>
+    Effect.gen(function* () {
+      const refuse = (reason: LinkRenewRefusal): Outcome => ({ _tag: "Refused", reason });
+      const fail = (cause: unknown) =>
+        new SessionCredentialIssueError({ sessionId: input.sessionId, cause });
+      const row = yield* authSessions
+        .getById({ sessionId: input.sessionId })
+        .pipe(Effect.mapError(fail));
+      const now = yield* DateTime.now;
+      const nowMs = now.epochMilliseconds;
+      if (
+        Option.isNone(row) ||
+        row.value.revokedAt !== null ||
+        row.value.expiresAt.epochMilliseconds <= nowMs ||
+        row.value.method !== "bearer-access-token" ||
+        !isLinkTokenScopes(row.value.scopes) ||
+        !isRenewableLinkSubject(row.value.subject)
+      ) {
+        return refuse(LinkRenewRefusal.notRenewable);
+      }
+      const parent = row.value;
+      const issuedAtMs = parent.issuedAt.epochMilliseconds;
+      const expiresAtMs = parent.expiresAt.epochMilliseconds;
+      if (!issuerAllowsRenewal({ subject: parent.subject, issuedAtMs, expiresAtMs, nowMs })) {
+        return refuse(LinkRenewRefusal.tooEarly);
+      }
+      // The child keeps the parent's machine tag; only an untagged original may name its holder.
+      const subject =
+        linkSubjectHolder(parent.subject) !== null
+          ? parent.subject
+          : LINK_HOLDER_ID_PATTERN.test(input.holderId)
+            ? linkTokenSubject(input.holderId)
+            : null;
+      if (subject === null) return refuse(LinkRenewRefusal.notRenewable);
+      const graceEndsAt = DateTime.formatIso(
+        DateTime.makeUnsafe(
+          Math.min(
+            expiresAtMs,
+            nowMs + retireGraceMs(tokenLifetimeMs({ issuedAtMs, expiresAtMs })),
+          ),
+        ),
+      );
+      const nowIso = DateTime.formatIso(now);
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const claimed = yield* sql<{ readonly parent: string }>`
+              INSERT INTO agent_machine_link_renewals (parent_session_id, child_session_id, renewed_at)
+              VALUES (${input.sessionId}, '', ${nowIso})
+              ON CONFLICT (parent_session_id) DO NOTHING
+              RETURNING parent_session_id AS "parent"
+            `;
+            if (claimed.length === 0) return refuse(LinkRenewRefusal.alreadyRenewed);
+            const issued = yield* issue({
+              subject,
+              method: "bearer-access-token",
+              scopes: parent.scopes,
+              client: {
+                ...(parent.client.label === null ? {} : { label: parent.client.label }),
+                deviceType: "bot",
+              },
+              ttl: input.ttl,
+            });
+            yield* sql`
+              UPDATE agent_machine_link_renewals
+              SET child_session_id = ${issued.sessionId}
+              WHERE parent_session_id = ${input.sessionId}
+            `;
+            yield* sql`
+              UPDATE auth_sessions
+              SET expires_at = ${graceEndsAt}
+              WHERE session_id = ${input.sessionId}
+                AND expires_at > ${graceEndsAt}
+            `;
+            return { _tag: "Renewed", issued } satisfies Outcome;
+          }),
+        )
+        .pipe(Effect.mapError(fail));
+    }).pipe(Effect.withSpan("SessionStore.renewLink"));
+
   const revokeAllExcept: SessionStore["Service"]["revokeAllExcept"] = Effect.fn(
     "SessionStore.revokeAllExcept",
   )(function* (sessionId) {
@@ -1044,6 +1161,7 @@ export const make = Effect.gen(function* () {
     },
     revoke,
     revokeAllExcept,
+    renewLink,
     markConnected,
     markDisconnected,
     recordClientConnection,

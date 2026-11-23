@@ -498,6 +498,11 @@ export class EnvironmentAuth extends Context.Service<
     readonly authenticateHttpRequest: (
       request: HttpServerRequest.HttpServerRequest,
     ) => Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError>;
+    /** Renews a linked machine's token once; see `SessionStore.renewLink`. */
+    readonly renewLinkSession: (
+      sessionId: AuthSessionId,
+      holderId: string,
+    ) => Effect.Effect<SessionStore.LinkRenewOutcome, ServerAuthInternalError>;
     readonly authenticateWebSocketUpgrade: (
       request: HttpServerRequest.HttpServerRequest,
     ) => Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError>;
@@ -1121,6 +1126,11 @@ export const make = Effect.gen(function* () {
     revokeClientSession,
     revokeOtherClientSessions,
     authenticateHttpRequest,
+    renewLinkSession: (sessionId, holderId) =>
+      sessions.renewLink({ sessionId, holderId, ttl: linkTokenTtl() }).pipe(
+        Effect.mapError((cause) => new ServerAuthAuthenticatedAccessTokenIssueError({ cause })),
+        Effect.withSpan("EnvironmentAuth.renewLinkSession"),
+      ),
     authenticateWebSocketUpgrade,
     issueWebSocketTicket,
     issueStartupPairingUrl,

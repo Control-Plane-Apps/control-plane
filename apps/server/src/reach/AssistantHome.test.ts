@@ -742,6 +742,22 @@ describe("AssistantHome", () => {
           pairingServerId = "env-mini";
           linked = [];
           miniLinkHealth = "needs-relink";
+          // This machine has env-mini at the pairing link's address.
+          const before = settings;
+          settings = {
+            ...settings,
+            agentPlacement: {
+              ...settings.agentPlacement,
+              machines: {
+                "env-mini": {
+                  label: "Mac mini",
+                  baseUrl: "http://127.0.0.1:47781",
+                  enabled: true,
+                  preference: 50,
+                },
+              },
+            },
+          };
           let confirms = 0;
           // The old link cannot confirm (its token expired); the new link can.
           const confirm = Effect.suspend(() =>
@@ -759,7 +775,21 @@ describe("AssistantHome", () => {
           expect(done).toMatchObject({ id: "env-mini" });
           expect(linked).toEqual(["link"]);
           expect(confirms).toBe(2);
+
+          // A pairing link at another address cannot take the link over, even with env-mini's id.
+          linked = [];
+          confirms = 0;
+          const elsewhere = yield* home
+            .redeemLinkBack(
+              "http://127.0.0.1:47799/pair#token=ABCDEF123456",
+              { environmentId: "env-mini", label: "Mac mini" },
+              confirm,
+            )
+            .pipe(Effect.flip);
+          expect(elsewhere.detail).toContain("different address");
+          expect(linked).toEqual([]);
           miniLinkHealth = "connected";
+          settings = before;
         }),
       ),
   );

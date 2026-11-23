@@ -75,30 +75,49 @@ agentPlacement: {
   machine's agents lost. `check` probes each machine and returns status, token expiry, renewal
   state and, per local Project, whether the peer has a matching Project. `link` takes an optional
   `expectedId`: relinking refuses a pairing link for any other machine.
-- **Link renewal** (`agentMachines/linkToken.ts`, `linkTokenRoute.ts`). A link token lasts 30
-  days and renews itself while both machines are online. Each server's renewal loop
-  (`AgentMachineLinkRenewalLive`) renews every stored token once 10 days (or a third of a shorter
-  lifetime) are left: it pins the peer's identity by descriptor, posts the current token to
-  `POST /api/agent-machine/renew` (bearer only, cookies dropped, and only for a token with exactly
-  read and operate scope), proves the new token with a shell read, stores it with `issuedAt` and
-  `renewedAt`, then retires the old one at `POST /api/agent-machine/retire` after a two-minute
-  grace for calls in flight. Failures back off from a minute, doubling to an hour, never past
-  expiry. A 401 or 403 stops renewal until a relink (the issuer revoked it or unlinked this
-  machine); a 404 means the peer predates renewal, so the token works until it expires and Settings
-  asks to update that machine. Both sides of a two-way link renew their own token independently.
-  Tokens stored by 0.0.91 have no `issuedAt` and are assumed to be 30 days long, so they start
-  renewing after the update. Test-only: `CP_TEST_LINK_TOKEN_TTL_SECONDS` shortens the lifetime of
-  link tokens a server issues (`agentMachineLinkRenewal.integration.test.ts` runs two real servers
-  at 24 seconds).
-- **Revocation.** A renewed token's session subject is `agent-machine:<holder id>`. Unlinking a
-  machine in Settings revokes every such session this server issued to it, and gives this
-  machine's own token back to the peer (best effort). Revoking the client in Settings, Connections
-  works too: renewal needs a token that still verifies.
+- **Machine links.** Only a token born from a pairing link made for machine linking can renew:
+  session subject `agent-machine:<holder id>` (tagged, minted when the holder is known: link back,
+  one-click relink) or `agent-machine-link` (untagged: Agent machines, **Create link**, or
+  `t3 pair --machine-link`). Migration 59 tags 0.0.91 link sessions (`one-time-token`, exact read
+  and operate scopes, labels `Agent placement from`/`Link back from`) as untagged. A general
+  pairing link narrowed to read and operate still links, but its token never renews (Settings says
+  so).
+- **Link renewal, issuer** (`SessionStore.renewLink`, `linkTokenRoute.ts`). `POST
+/api/agent-machine/renew` is bearer only (cookies dropped) and needs exactly read and operate
+  scope and a machine-link subject. In one transaction it: refuses a tagged token with more than 10
+  days left (or a third of a shorter lifetime, plus clock skew), records the parent in
+  `agent_machine_link_renewals` so it renews at most once (a second try gets `already-renewed`),
+  issues a child that keeps the parent's tag (the body's holder id is used only for an untagged
+  original), and cuts the parent's stored expiry to a short grace (two minutes, less for a short
+  lifetime; `verify` honours the stored expiry). So a leaked token cannot mint children forever:
+  if a thief renews first, the real holder's renewal is refused and it shows **Needs relink**, and
+  the thief's child carries the holder's tag, so unlinking that machine revokes it. Refusals are
+  409 `{ error: too-early | already-renewed | not-renewable }`.
+- **Link renewal, holder** (`AgentMachines.renewDueTokens`, `AgentMachineLinkRenewalLive`). A
+  new or untagged token is renewed at once (inside `link`, before link back uses it), so the issuer
+  tags it; `too-early` means it is already tagged. After that each token renews when its window
+  opens: identity pinned by descriptor, renew, prove the new token with a shell read, store it
+  (`issuedAt`, `renewedAt`, `tagged`), retire the old one after the grace (best effort: the issuer
+  ends it anyway). Failures back off from a minute, doubling to an hour, never past expiry. 401 or
+  403 or `already-renewed` stop renewal until a relink; `not-renewable` says the link must be
+  remade with a machine link; 404 means the peer predates renewal. Token writes, renewal and unlink
+  share one lock, so a renewal in flight cannot restore a token unlink removed. Test-only:
+  `CP_TEST_LINK_TOKEN_TTL_SECONDS` shortens issued link tokens
+  (`agentMachineLinkRenewal.integration.test.ts` runs two real servers at 24 seconds).
+- **Revocation.** Unlinking a machine revokes every session tagged for it on this server and
+  gives this machine's own token back to the peer (best effort). Revoking the client in Settings,
+  Connections works too: renewal needs a token that still verifies.
 - **Relink.** A row that needs relinking shows **Relink**. When the window is also connected to
-  that machine it calls `server.agentMachinePairing` there (scope `access:write`) for a one-time
-  link, relinks with `expectedId`, and links back; otherwise it opens the pairing dialog for that
-  machine. Link back on a machine whose old link was refused relinks first, then confirms the
-  request over the new link.
+  that machine it calls `server.agentMachinePairing` there (scope `access:write`, tagged for this
+  machine) and relinks with `expectedId`, then links back; otherwise it opens the pairing dialog
+  for that machine.
+- **Link back trust.** `/api/reach` passes the token's subject to the host. A token tagged for a
+  machine speaks only for that machine, and `link.back` needs a tagged token naming the caller, so
+  a holder of another token cannot claim another machine's id. Relinking an existing link whose
+  token was refused confirms over the new link, so the pairing link must point at the address
+  already stored for that machine: a server elsewhere claiming the id cannot take the link over.
+  Residual: an untagged token's first renewal names its holder on the holder's word; it happens
+  right after linking.
 - **The client Load balancing section is untouched.** It still governs composer drafts.
 
 **UI.** A folded **Agent machines** section under Settings > Connections, built from

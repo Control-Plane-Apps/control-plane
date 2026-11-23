@@ -129,6 +129,9 @@ export function tokenRenewalText(
   if (status.tokenRenewal === "peer-outdated") {
     return `This machine's link cannot renew until the other machine is updated${expiry === null ? "" : `; ${expiry}`}.`;
   }
+  if (status.tokenRenewal === "not-renewable") {
+    return `${status.tokenRenewalDetail ?? "Linked with a general pairing link, so it will not renew."}${expiry === null ? "" : ` Access ends: ${expiry}.`}`;
+  }
   if (status.tokenRenewal === "stopped") {
     return status.tokenRenewalDetail ?? "Automatic renewal stopped. Link the machine again.";
   }
@@ -152,6 +155,12 @@ export function agentMachineStatusPresentation(
       const expiresAt =
         status.tokenExpiresAt === undefined ? Number.NaN : Date.parse(status.tokenExpiresAt);
       const expiringSoon = !Number.isNaN(expiresAt) && expiresAt - now <= EXPIRY_WARNING_MS;
+      if (status.tokenRenewal === "not-renewable") {
+        return {
+          label: expiry === null ? "Connected, will not renew" : `Connected, ${expiry}`,
+          tone: "warning",
+        };
+      }
       if (status.tokenRenewal === "peer-outdated") {
         return {
           label: expiry === null ? "Connected, update to renew" : `Connected, ${expiry}`,

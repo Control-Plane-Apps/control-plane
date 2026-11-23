@@ -68,9 +68,43 @@ export function isLinkTokenScopes(scopes: ReadonlyArray<AuthEnvironmentScope>): 
   );
 }
 
-/** Session subject of a renewed link token, so unlinking on the issuer can revoke it. */
+/** Session subject of a link token whose holder is known, so unlinking on the issuer can revoke it. */
 export const linkTokenSubject = (holderEnvironmentId: string): string =>
-  `agent-machine:${holderEnvironmentId}`;
+  `${LINK_SUBJECT_PREFIX}${holderEnvironmentId}`;
+
+const LINK_SUBJECT_PREFIX = "agent-machine:";
+/**
+ * Subject of a link token minted for "a machine" before the holder is known:
+ * a machine link created in Settings or with `t3 pair --machine-link`, and
+ * links from 0.0.91 tagged by migration 59. Its first renewal names the holder.
+ */
+export const UNTAGGED_LINK_SUBJECT = "agent-machine-link";
+
+/** The holder a tagged link subject names, or null for any other subject. */
+export function linkSubjectHolder(subject: string): string | null {
+  return subject.startsWith(LINK_SUBJECT_PREFIX) && subject.length > LINK_SUBJECT_PREFIX.length
+    ? subject.slice(LINK_SUBJECT_PREFIX.length)
+    : null;
+}
+
+/** Only tokens from a pairing link made for machine linking may renew; any other client token may not. */
+export function isRenewableLinkSubject(subject: string): boolean {
+  return subject === UNTAGGED_LINK_SUBJECT || linkSubjectHolder(subject) !== null;
+}
+
+/** Why the issuer refused a renewal; the holder acts on each differently. */
+export const LinkRenewRefusal = {
+  /** More than the renewal window is left: the holder renews later. */
+  tooEarly: "too-early",
+  /** This token already renewed once: a second holder of the same token, or a lost answer. */
+  alreadyRenewed: "already-renewed",
+  /** Not a machine-link token (a general pairing link or another client): it never renews. */
+  notRenewable: "not-renewable",
+} as const;
+export type LinkRenewRefusal = (typeof LinkRenewRefusal)[keyof typeof LinkRenewRefusal];
+
+/** Holder ids are environment ids: kept to a safe charset since they end up in a session subject. */
+export const LINK_HOLDER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
 /** A token stored before renewal existed has no issue time: assume the full lifetime. */
 export function tokenLifetimeMs(input: {
@@ -115,6 +149,30 @@ export function retryDelayMs(input: {
   const delay = Math.min(cap, base * 2 ** exponent);
   const untilExpiry = input.expiresAtMs - input.nowMs;
   return untilExpiry > base ? Math.min(delay, untilExpiry - base) : delay;
+}
+
+/** Clock skew the issuer allows on the renewal window: five minutes, less for a short lifetime. */
+export function renewSkewMs(lifetimeMs: number): number {
+  return Math.min(5 * 60 * 1000, Math.floor(lifetimeMs / 20));
+}
+
+/**
+ * Whether the issuer lets a token renew now: a tagged token only inside its
+ * renewal window (plus skew); an untagged one at once, since its first renewal
+ * is what names the holder.
+ */
+export function issuerAllowsRenewal(input: {
+  readonly subject: string;
+  readonly issuedAtMs: number;
+  readonly expiresAtMs: number;
+  readonly nowMs: number;
+}): boolean {
+  if (input.subject === UNTAGGED_LINK_SUBJECT) return true;
+  const lifetimeMs = tokenLifetimeMs({
+    issuedAtMs: input.issuedAtMs,
+    expiresAtMs: input.expiresAtMs,
+  });
+  return input.expiresAtMs - input.nowMs <= renewWindowMs(lifetimeMs) + renewSkewMs(lifetimeMs);
 }
 
 /** How long the old token stays valid after renewal: two minutes, or less for a short lifetime. */

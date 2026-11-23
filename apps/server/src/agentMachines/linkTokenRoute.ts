@@ -9,7 +9,7 @@
  *
  * @module linkTokenRoute
  */
-import * as Duration from "effect/Duration";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -20,15 +20,17 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { bearerOnly } from "../reach/route.ts";
 import {
   isLinkTokenScopes,
+  LINK_HOLDER_ID_PATTERN,
   LINK_RENEW_ROUTE_PATH,
   LINK_RETIRE_ROUTE_PATH,
-  linkTokenSubject,
-  linkTokenTtl,
 } from "./linkToken.ts";
 
 const RenewRequest = Schema.Struct({
-  /** The holder's environment id; tags the new session so unlinking it here revokes it. */
-  environmentId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._:-]{1,128}$/)),
+  /**
+   * The holder's environment id. Used only when the presented token is an
+   * untagged original (`agent-machine-link`); a tagged token's child keeps its tag.
+   */
+  environmentId: Schema.String.check(Schema.isPattern(LINK_HOLDER_ID_PATTERN)),
 });
 const decodeRenewRequest = Schema.decodeUnknownOption(Schema.fromJsonString(RenewRequest));
 
@@ -57,6 +59,13 @@ const authenticateLinkToken = Effect.gen(function* () {
   return { auth, request, session } as const;
 });
 
+/**
+ * Renews a link token at most once, only inside its renewal window (an
+ * untagged original at once, to name its holder), and cuts the presenting
+ * token's lifetime to a short grace: a leaked token cannot mint children
+ * forever, and a second holder of the same token is refused (409
+ * `already-renewed`), which the real holder sees as needing a relink.
+ */
 /** @internal Exported for tests. */
 export const renew = Effect.gen(function* () {
   const authenticated = yield* authenticateLinkToken;
@@ -64,28 +73,19 @@ export const renew = Effect.gen(function* () {
   const { auth, request, session } = authenticated;
   const body = decodeRenewRequest(yield* request.text.pipe(Effect.orElseSucceed(() => "")));
   if (Option.isNone(body)) return HttpServerResponse.text("Bad Request", { status: 400 });
-  // Keep the label the user sees in Settings, Connections, so the renewed token reads as the same link.
-  const label = yield* auth.listSessions().pipe(
-    Effect.map(
-      (sessions) =>
-        sessions.find((candidate) => candidate.sessionId === session.sessionId)?.client.label,
-    ),
-    Effect.orElseSucceed(() => undefined),
-  );
-  const ttl = linkTokenTtl();
-  const issued = yield* auth
-    .issueSession({
-      subject: linkTokenSubject(body.value.environmentId),
-      scopes: session.scopes,
-      label: label ?? "Linked machine",
-      ttl,
-    })
+  const outcome = yield* auth
+    .renewLinkSession(session.sessionId, body.value.environmentId)
     .pipe(Effect.orElseSucceed(() => null));
-  if (issued === null) return HttpServerResponse.text("Could not renew", { status: 500 });
+  if (outcome === null) return HttpServerResponse.text("Could not renew", { status: 500 });
+  if (outcome._tag === "Refused") {
+    return HttpServerResponse.jsonUnsafe({ error: outcome.reason }, { status: 409 });
+  }
+  const remainingMs =
+    outcome.issued.expiresAt.epochMilliseconds - (yield* DateTime.now).epochMilliseconds;
   return HttpServerResponse.jsonUnsafe({
-    access_token: issued.token,
+    access_token: outcome.issued.token,
     token_type: "Bearer",
-    expires_in: Math.floor(Duration.toSeconds(ttl)),
+    expires_in: Math.max(0, Math.floor(remainingMs / 1000)),
   } satisfies RenewedLinkToken);
 });
 

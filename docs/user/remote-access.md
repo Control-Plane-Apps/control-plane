@@ -87,8 +87,10 @@ When the chosen machine is offline or has no matching Project, the agent starts 
 machine instead. Turn off **Use this machine if no other is available** to fail instead.
 Standing agents always stay on the coordinator's machine.
 
+Link with a **machine link**: on the other machine open **Settings → Connections → Agent
+machines → Create link** (or run `t3 pair --machine-link`) and paste it under **Add machine**.
 Access renews automatically while both machines are online; the row shows when it was last
-renewed. A machine that stays offline until its access expires shows **Needs relink**: click
+renewed. A general pairing link also links, but its access does not renew. A machine that stays offline until its access expires shows **Needs relink**: click
 **Relink** (one click when this window is also connected to that machine, otherwise paste a new
 pairing link from it). Unlinking ends access both ways; a link made before automatic renewal may
 stay in **Settings → Connections** on the other machine until it expires, so remove it there to

@@ -49,6 +49,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { AgentMachines } from "../agentMachines/AgentMachines.ts";
+import { linkTokenSubject } from "../agentMachines/linkToken.ts";
 import { EnvironmentAuth } from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -1341,6 +1342,8 @@ export const make = Effect.gen(function* () {
           ttl: Duration.minutes(10),
           label: `Link back from ${machine.label}`,
           scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+          // A machine link for that machine: renewable, and revoked when it is unlinked here.
+          subject: linkTokenSubject(machine.id),
         })
         .pipe(Effect.mapError(() => fail("Could not create a pairing link.")));
       const pairingUrl = yield* Effect.try({
@@ -1376,13 +1379,26 @@ export const make = Effect.gen(function* () {
       const confirmed = confirm.pipe(Effect.mapError((error) => fail(error.message)));
       const existed = (yield* reach.machines).some((machine) => machine.id === from.environmentId);
       // An existing link whose token was refused (expired or revoked) cannot confirm: relink it,
-      // then confirm over the new link. The pairing link proved to come from that machine above.
+      // then confirm over the new link. The new link's confirmation would come from whatever
+      // server the pairing link names, so a relink must stay at the address this machine already
+      // trusts for that machine: a server elsewhere claiming its id cannot take the link over.
       let relinking = false;
       if (existed) {
         const before = yield* Effect.result(confirmed);
         if (before._tag === "Failure") {
           const health = yield* agentMachines.healthOf(from.environmentId);
           if (health.status !== "needs-relink") return yield* before.failure;
+          const storedBaseUrl = yield* settingsService.getSettings.pipe(
+            Effect.map(
+              (settings) => settings.agentPlacement.machines[from.environmentId]?.baseUrl ?? null,
+            ),
+            Effect.orElseSucceed(() => null),
+          );
+          if (storedBaseUrl === null || !sameOrigin(storedBaseUrl, target.httpBaseUrl)) {
+            return yield* fail(
+              `The link back points at a different address than this machine has for ${from.label}. Relink it from this machine instead.`,
+            );
+          }
           relinking = true;
         }
       }
@@ -1422,6 +1438,15 @@ export const make = Effect.gen(function* () {
     confirmHome,
   } satisfies AssistantHomeShape;
 });
+
+/** Whether two addresses share scheme, host and port. False when either is not a URL. */
+export function sameOrigin(left: string, right: string): boolean {
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
+}
 
 export const AssistantHomeLive = Layer.effect(
   AssistantHome,

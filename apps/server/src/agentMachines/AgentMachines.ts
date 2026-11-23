@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 
@@ -47,6 +48,7 @@ import {
   type PeerCommand,
 } from "./AgentMachineClient.ts";
 import {
+  LinkRenewRefusal,
   MAX_RENEWAL_SLEEP_MS,
   renewalDueAtMs,
   retireGraceMs,
@@ -71,6 +73,13 @@ const TokenSecret = Schema.Struct({
   /** Absent on tokens stored before renewal (0.0.91): their lifetime is assumed to be 30 days. */
   issuedAt: Schema.optionalKey(Schema.String),
   renewedAt: Schema.optionalKey(Schema.String),
+  /**
+   * The issuer is known to have tagged this token with this machine's id (it
+   * renewed, or the issuer said it was too early to). Until then the token is
+   * renewed at once, so a link from a general machine link or from 0.0.91 gets
+   * a tag the issuer's unlink can revoke.
+   */
+  tagged: Schema.optionalKey(Schema.Boolean),
 });
 type TokenSecret = typeof TokenSecret.Type;
 const TokenSecretJson = Schema.fromJsonString(TokenSecret);
@@ -145,12 +154,14 @@ export interface AgentMachinesShape {
 
 /** Renewal that did not succeed, per machine, until it does or the machine is linked again. */
 interface RenewalTrouble {
-  readonly state: "retrying" | "peer-outdated" | "stopped";
+  readonly state: "retrying" | "peer-outdated" | "stopped" | "not-renewable";
   readonly detail: string;
   readonly failures: number;
   readonly nextAttemptAtMs: number;
   /** The token it applies to: a fresh link starts clean. */
   readonly token: string;
+  /** Only schedules the next attempt; nothing to show. */
+  readonly quiet?: boolean;
 }
 
 export interface MachineHealth {
@@ -189,6 +200,8 @@ const make = Effect.gen(function* () {
   const identities = new Map<string, number>();
   const renewal = new Map<string, RenewalTrouble>();
   const linkChanges = yield* Queue.sliding<void>(1);
+  /** Serializes token writes: a renewal in flight can never restore a token unlink removed. */
+  const tokenLock = yield* Semaphore.make(1);
 
   const nowMs = DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
   const withHttp = <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>) =>
@@ -415,7 +428,9 @@ const make = Effect.gen(function* () {
         onNone: () => undefined,
         onSome: (v) => {
           const known = renewal.get(machineId);
-          return known !== undefined && known.token === v.token ? known : undefined;
+          return known !== undefined && known.token === v.token && known.quiet !== true
+            ? known
+            : undefined;
         },
       });
       const token = {
@@ -502,7 +517,10 @@ const make = Effect.gen(function* () {
         token: exchanged.token,
         expiresAt,
         issuedAt: DateTime.formatIso(now),
-      }).pipe(Effect.mapError(() => fail("Could not store the machine's token.")));
+      }).pipe(
+        Effect.mapError(() => fail("Could not store the machine's token.")),
+        tokenLock.withPermit,
+      );
       const existing = (yield* placementSettings).machines[descriptor.environmentId];
       yield* settingsService
         .updateSettings({
@@ -525,6 +543,13 @@ const make = Effect.gen(function* () {
       shells.delete(descriptor.environmentId);
       identities.delete(descriptor.environmentId);
       renewal.delete(descriptor.environmentId);
+      // Renew at once so the issuer tags the token with this machine's id before anything uses
+      // it (link back needs a tagged token). A tagged link answers "too early", which is fine.
+      yield* renewToken(descriptor.environmentId, {
+        token: exchanged.token,
+        expiresAt,
+        issuedAt: DateTime.formatIso(now),
+      }).pipe(Effect.ignore);
       yield* Queue.offer(linkChanges, undefined);
       return { id: descriptor.environmentId, label: descriptor.label };
     });
@@ -540,26 +565,28 @@ const make = Effect.gen(function* () {
     }).pipe(withHttp, Effect.ignore);
 
   const unlink = (id: string) =>
-    Effect.gen(function* () {
-      const fail = (detail: string) => new AgentMachinesError({ detail });
-      yield* retireAtPeer(id);
-      yield* settingsService
-        .updateSettings({ agentPlacement: { machines: { [id]: null } } })
-        .pipe(Effect.mapError(() => fail("Could not save settings.")));
-      yield* secrets.remove(agentMachineSecretName(id)).pipe(Effect.ignore);
-      const at = DateTime.formatIso(yield* DateTime.now);
-      const records = yield* store.list.pipe(Effect.orElseSucceed(() => []));
-      for (const agent of records) {
-        if (agent.machineId !== id || agent.state === "lost") continue;
-        yield* store
-          .update(agent.threadId, (current) => ({ ...current, state: "lost", endedAt: at }))
-          .pipe(Effect.ignore);
-      }
-      health.delete(id);
-      shells.delete(id);
-      identities.delete(id);
-      renewal.delete(id);
-    });
+    tokenLock.withPermit(
+      Effect.gen(function* () {
+        const fail = (detail: string) => new AgentMachinesError({ detail });
+        yield* retireAtPeer(id);
+        yield* settingsService
+          .updateSettings({ agentPlacement: { machines: { [id]: null } } })
+          .pipe(Effect.mapError(() => fail("Could not save settings.")));
+        yield* secrets.remove(agentMachineSecretName(id)).pipe(Effect.ignore);
+        const at = DateTime.formatIso(yield* DateTime.now);
+        const records = yield* store.list.pipe(Effect.orElseSucceed(() => []));
+        for (const agent of records) {
+          if (agent.machineId !== id || agent.state === "lost") continue;
+          yield* store
+            .update(agent.threadId, (current) => ({ ...current, state: "lost", endedAt: at }))
+            .pipe(Effect.ignore);
+        }
+        health.delete(id);
+        shells.delete(id);
+        identities.delete(id);
+        renewal.delete(id);
+      }),
+    );
 
   /**
    * Trades the stored token for a fresh one over the link itself: identity
@@ -567,49 +594,62 @@ const make = Effect.gen(function* () {
    * old token is retired after a short grace, for calls already in flight.
    */
   const renewToken = (machineId: string, stored: TokenSecret) =>
-    Effect.gen(function* () {
-      const config = yield* machineConfig(machineId);
-      const selfId = yield* environment.getEnvironmentId;
-      yield* requirePeerIdentity(config.baseUrl, machineId);
-      const fresh = yield* renewPeerToken({
-        baseUrl: config.baseUrl,
-        token: stored.token,
-        environmentId: selfId,
-      });
-      const giveBack = retirePeerToken(config.baseUrl, fresh.token).pipe(Effect.ignore);
-      yield* fetchPeerShell(config.baseUrl, fresh.token).pipe(Effect.tapError(() => giveBack));
-      // Unlinked or relinked meanwhile: the new token is not wanted.
-      const current = yield* readToken(machineId);
-      const stillLinked = (yield* Effect.result(machineConfig(machineId)))._tag === "Success";
-      if (!stillLinked || Option.isNone(current) || current.value.token !== stored.token) {
-        yield* giveBack;
-        return;
-      }
-      const now = yield* DateTime.now;
-      const issuedAt = DateTime.formatIso(now);
-      yield* writeToken(machineId, {
-        token: fresh.token,
-        expiresAt: DateTime.formatIso(DateTime.add(now, { seconds: fresh.expiresInSeconds })),
-        issuedAt,
-        renewedAt: issuedAt,
-      }).pipe(
-        Effect.tapError(() => giveBack),
-        Effect.mapError(
-          () => new PeerError({ kind: "rejected", detail: "Could not store the renewed token." }),
-        ),
-      );
-      shells.delete(machineId);
-      yield* record(machineId, { status: "connected" });
-      lastSeen.set(machineId, DateTime.toEpochMillis(now));
-      const grace = retireGraceMs(fresh.expiresInSeconds * 1000);
-      yield* Effect.forkDetach(
-        Effect.sleep(grace).pipe(
-          Effect.andThen(retirePeerToken(config.baseUrl, stored.token)),
-          withHttp,
-          Effect.ignore,
-        ),
-      );
-    }).pipe(withHttp);
+    tokenLock.withPermit(
+      Effect.gen(function* () {
+        const config = yield* machineConfig(machineId);
+        const selfId = yield* environment.getEnvironmentId;
+        yield* requirePeerIdentity(config.baseUrl, machineId);
+        const fresh = yield* renewPeerToken({
+          baseUrl: config.baseUrl,
+          token: stored.token,
+          environmentId: selfId,
+        }).pipe(
+          Effect.catchIf(
+            (error) => error.code === LinkRenewRefusal.tooEarly,
+            (error) =>
+              // Already tagged by the issuer: remember it, and renew when due.
+              (stored.tagged === true
+                ? Effect.void
+                : writeToken(machineId, { ...stored, tagged: true }).pipe(Effect.ignore)
+              ).pipe(Effect.andThen(Effect.fail(error))),
+          ),
+        );
+        const giveBack = retirePeerToken(config.baseUrl, fresh.token).pipe(Effect.ignore);
+        yield* fetchPeerShell(config.baseUrl, fresh.token).pipe(Effect.tapError(() => giveBack));
+        // Unlinked or relinked meanwhile: the new token is not wanted.
+        const current = yield* readToken(machineId);
+        const stillLinked = (yield* Effect.result(machineConfig(machineId)))._tag === "Success";
+        if (!stillLinked || Option.isNone(current) || current.value.token !== stored.token) {
+          yield* giveBack;
+          return;
+        }
+        const now = yield* DateTime.now;
+        const issuedAt = DateTime.formatIso(now);
+        yield* writeToken(machineId, {
+          token: fresh.token,
+          expiresAt: DateTime.formatIso(DateTime.add(now, { seconds: fresh.expiresInSeconds })),
+          issuedAt,
+          renewedAt: issuedAt,
+          tagged: true,
+        }).pipe(
+          Effect.tapError(() => giveBack),
+          Effect.mapError(
+            () => new PeerError({ kind: "rejected", detail: "Could not store the renewed token." }),
+          ),
+        );
+        shells.delete(machineId);
+        yield* record(machineId, { status: "connected" });
+        lastSeen.set(machineId, DateTime.toEpochMillis(now));
+        const grace = retireGraceMs(fresh.expiresInSeconds * 1000);
+        yield* Effect.forkDetach(
+          Effect.sleep(grace).pipe(
+            Effect.andThen(retirePeerToken(config.baseUrl, stored.token)),
+            withHttp,
+            Effect.ignore,
+          ),
+        );
+      }).pipe(withHttp),
+    );
 
   const troubleAfter = (
     error: PeerError,
@@ -619,6 +659,35 @@ const make = Effect.gen(function* () {
   ): RenewalTrouble => {
     const failures = (previous?.failures ?? 0) + 1;
     const nextAttemptAtMs = timing.nowMs + retryDelayMs({ failures, ...timing });
+    if (error.code === LinkRenewRefusal.alreadyRenewed) {
+      return {
+        state: "stopped",
+        detail:
+          "This link's token was already renewed by another copy of it. Link the machine again, and unlink it on the other machine if you did not renew it there.",
+        failures,
+        nextAttemptAtMs: Number.POSITIVE_INFINITY,
+        token: stored.token,
+      };
+    }
+    if (error.code === LinkRenewRefusal.notRenewable) {
+      return {
+        state: "not-renewable",
+        detail:
+          "Linked with a general pairing link, so it will not renew. Link it again with a machine link (Agent machines, Create link on that machine).",
+        failures,
+        nextAttemptAtMs: Number.POSITIVE_INFINITY,
+        token: stored.token,
+      };
+    }
+    if (error.code === LinkRenewRefusal.tooEarly) {
+      return {
+        state: "retrying",
+        detail: "",
+        failures: 0,
+        nextAttemptAtMs,
+        token: stored.token,
+      };
+    }
     switch (error.kind) {
       case "unauthorized":
         return {
@@ -689,7 +758,9 @@ const make = Effect.gen(function* () {
         });
         continue;
       }
-      const attemptAtMs = Math.max(dueAtMs, previous?.nextAttemptAtMs ?? 0);
+      // Untagged: renew now so the issuer tags it; a "too early" answer means it already is.
+      const effectiveDueAtMs = stored.value.tagged === true ? dueAtMs : 0;
+      const attemptAtMs = Math.max(effectiveDueAtMs, previous?.nextAttemptAtMs ?? 0);
       if (now < attemptAtMs) {
         nextLookMs = Math.min(nextLookMs, attemptAtMs - now);
         continue;
@@ -704,6 +775,19 @@ const make = Effect.gen(function* () {
         nowMs: now,
         expiresAtMs,
       });
+      if (outcome.failure.code === LinkRenewRefusal.tooEarly) {
+        // Not trouble: wait for the due time (or a short retry if the clocks disagree).
+        renewal.set(machineId, {
+          ...trouble,
+          quiet: true,
+          nextAttemptAtMs: Math.max(dueAtMs, trouble.nextAttemptAtMs),
+        });
+        nextLookMs = Math.min(
+          nextLookMs,
+          Math.max(0, Math.max(dueAtMs, trouble.nextAttemptAtMs) - now),
+        );
+        continue;
+      }
       renewal.set(machineId, trouble);
       if (trouble.state === "stopped") {
         yield* record(machineId, { status: "needs-relink", detail: trouble.detail });

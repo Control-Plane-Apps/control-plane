@@ -54,6 +54,7 @@ import {
 } from "../mcp/toolkits/agents/tools.ts";
 import { Reach } from "./Reach.ts";
 import { acceptOnce, reachInputHash, wasAccepted, wasSent } from "./reachSent.ts";
+import { linkSubjectHolder } from "../agentMachines/linkToken.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
 import { AssistantHome } from "./AssistantHome.ts";
 import {
@@ -82,8 +83,13 @@ import {
   type ThreadSendResult,
 } from "./reachProtocol.ts";
 
+/** How the route authenticated the call: the subject of the presented token. */
+export interface ReachAuth {
+  readonly subject: string;
+}
+
 export interface ReachHostShape {
-  readonly handle: (request: ReachRequest) => Effect.Effect<ReachResponse>;
+  readonly handle: (request: ReachRequest, auth?: ReachAuth) => Effect.Effect<ReachResponse>;
 }
 
 class ReachOpError extends Schema.TaggedError<ReachOpError>()("ReachOpError", {
@@ -553,11 +559,25 @@ export const make = Effect.gen(function* () {
       }
     });
 
-  const handle = (request: ReachRequest): Effect.Effect<ReachResponse> =>
+  const handle = (request: ReachRequest, auth?: ReachAuth): Effect.Effect<ReachResponse> =>
     Effect.gen(function* () {
       const self = yield* environment.getEnvironmentId;
       if (request.caller.environmentId === self) {
         return { ok: false as const, error: "A machine cannot reach itself." };
+      }
+      // A token tagged for one machine speaks only for that machine.
+      const holder = auth === undefined ? null : linkSubjectHolder(auth.subject);
+      if (holder !== null && holder !== request.caller.environmentId) {
+        return { ok: false as const, error: "This link belongs to another machine." };
+      }
+      // Linking back trusts the pairing link the caller names, so only a token this machine
+      // tagged for the caller may ask: a holder of another token cannot claim another id.
+      if (request.op === "link.back" && holder === null) {
+        return {
+          ok: false as const,
+          error:
+            "Link back needs a link token tagged for the machine asking. Update that machine and wait for its link to renew, then try again.",
+        };
       }
       // A machine this one linked is called what the user named it here.
       const linkedLabel = yield* settings.getSettings.pipe(

@@ -17,7 +17,7 @@ import * as Effect from "effect/Effect";
 
 import type * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { buildPairingUrl } from "../startupAccess.ts";
-import { linkTokenSubject } from "./linkToken.ts";
+import { linkTokenSubject, UNTAGGED_LINK_SUBJECT } from "./linkToken.ts";
 
 type Auth = EnvironmentAuth.EnvironmentAuth["Service"];
 
@@ -39,7 +39,11 @@ export const revokeIssuedLinkTokens = (auth: Auth, holderId: string): Effect.Eff
     Effect.orElseSucceed(() => 0),
   );
 
-/** A one-time link with read and operate scope, for a machine relinking to this one. */
+/**
+ * A one-time machine link with read and operate scope. With `holderId` (a
+ * relink, where the machine is known) its token is tagged for that machine
+ * from the start; without, its first renewal names the holder.
+ */
 export const mintRelinkPairing = (
   auth: Auth,
   input: AgentMachinePairingInput,
@@ -50,6 +54,9 @@ export const mintRelinkPairing = (
         ttl: Duration.minutes(10),
         label: `Agent placement from ${input.label}`,
         scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+        // A machine link: renewable, and tagged with the holder when it is known.
+        subject:
+          input.holderId === undefined ? UNTAGGED_LINK_SUBJECT : linkTokenSubject(input.holderId),
       })
       .pipe(
         Effect.mapError(

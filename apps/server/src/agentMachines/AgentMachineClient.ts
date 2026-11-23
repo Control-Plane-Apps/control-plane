@@ -47,6 +47,8 @@ export class PeerError extends Schema.TaggedError<PeerError>()("PeerError", {
     "rejected",
   ]),
   detail: Schema.String,
+  /** A machine-readable reason the peer gave, such as a link renewal refusal. */
+  code: Schema.optionalKey(Schema.String),
 }) {
   override get message(): string {
     return this.detail;
@@ -370,6 +372,18 @@ const postLinkToken = (
         detail: "The linked machine runs an older version that cannot renew links. Update it.",
       });
     }
+    if (response.status === 409) {
+      const refusal = yield* response.json.pipe(Effect.orElseSucceed(() => null));
+      const code =
+        typeof refusal === "object" && refusal !== null && "error" in refusal
+          ? String((refusal as { readonly error: unknown }).error)
+          : "unknown";
+      return yield* new PeerError({
+        kind: "rejected",
+        code,
+        detail: `The linked machine refused to renew the link (${code}).`,
+      });
+    }
     if (response.status < 200 || response.status >= 300) {
       return yield* new PeerError({
         kind: "rejected",
@@ -377,7 +391,17 @@ const postLinkToken = (
       });
     }
     return yield* response.json;
-  }).pipe(Effect.timeout(PEER_REQUEST_TIMEOUT), noRedirects, Effect.mapError(classifyPeerFailure));
+  }).pipe(
+    Effect.timeout(LINK_TOKEN_REQUEST_TIMEOUT),
+    noRedirects,
+    Effect.mapError(classifyPeerFailure),
+  );
+
+/**
+ * The issuer cuts the old token to a short grace as it answers, so a lost
+ * answer costs the link: allow more than a probe.
+ */
+export const LINK_TOKEN_REQUEST_TIMEOUT = Duration.seconds(10);
 
 /** Trades a still-valid link token for a fresh one; the old one keeps working until retired. */
 export const renewPeerToken = (input: {
