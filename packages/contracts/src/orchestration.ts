@@ -38,6 +38,7 @@ import {
 } from "./projectStatus.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { ReachRemoteActor } from "./reach.ts";
+import { OrchestrationRemoteUserMessageSource } from "./remoteUserSource.ts";
 import {
   Task,
   TaskHandoff,
@@ -636,13 +637,19 @@ export const OrchestrationAgentMessageSource = Schema.Struct({
 });
 export type OrchestrationAgentMessageSource = typeof OrchestrationAgentMessageSource.Type;
 
+export const OrchestrationMessageSource = Schema.Union([
+  OrchestrationAgentMessageSource,
+  OrchestrationRemoteUserMessageSource,
+]);
+export type OrchestrationMessageSource = typeof OrchestrationMessageSource.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   context: Schema.optional(OrchestrationMessageContext),
-  source: Schema.optional(OrchestrationAgentMessageSource),
+  source: Schema.optional(OrchestrationMessageSource),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -660,16 +667,14 @@ export function isOpaqueThreadId(value: string): boolean {
   return trimmed.length > 0 && (OPAQUE_THREAD_ID.test(trimmed) || /^[0-9a-f]{16,}$/i.test(trimmed));
 }
 
-export function agentMessageDisplayName(
-  source: OrchestrationAgentMessageSource | undefined,
-): string {
-  const title = source?.threadTitle?.trim();
+export function agentMessageDisplayName(source: OrchestrationMessageSource | undefined): string {
+  const title = source?.kind === "agent" ? source.threadTitle?.trim() : undefined;
   if (title && !isOpaqueThreadId(title)) return title;
   return "agent";
 }
 
 export function agentMessageToolLabel(
-  source: OrchestrationAgentMessageSource | undefined,
+  source: OrchestrationMessageSource | undefined,
   status?: string,
 ): string {
   const name = agentMessageDisplayName(source);
@@ -1490,7 +1495,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
     context: Schema.optional(OrchestrationMessageContext),
-    source: Schema.optional(OrchestrationAgentMessageSource),
+    source: Schema.optional(OrchestrationMessageSource),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -1513,6 +1518,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     text: Schema.String,
     attachments: Schema.Array(Schema.Union([UploadChatAttachment, ChatAttachment])),
     context: Schema.optional(OrchestrationMessageContext),
+    // Remote user provenance is minted only by the server after verifying the Assistant machine.
     source: Schema.optional(OrchestrationAgentMessageSource),
   }),
   modelSelection: Schema.optional(ModelSelection),
@@ -1877,7 +1883,7 @@ const ThreadMessageUserAppendCommand = Schema.Struct({
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
     context: Schema.optional(OrchestrationMessageContext),
-    source: Schema.optional(OrchestrationAgentMessageSource),
+    source: Schema.optional(OrchestrationMessageSource),
   }),
   createdAt: IsoDateTime,
 });
@@ -2453,7 +2459,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   context: Schema.optional(OrchestrationMessageContext),
-  source: Schema.optional(OrchestrationAgentMessageSource),
+  source: Schema.optional(OrchestrationMessageSource),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,

@@ -1839,3 +1839,43 @@ it.effect("project shells and meta events carry an optional order key", () =>
     assert.strictEqual(payload.orderKey, null);
   }),
 );
+
+it.effect("keeps remote user provenance server-only while decoding persisted messages", () =>
+  Effect.gen(function* () {
+    const source = {
+      kind: "remote-user" as const,
+      environmentId: "env-mini",
+      label: "Mac mini",
+      threadId: ThreadId.make("mini-assistant"),
+    };
+    const message = {
+      id: "remote-user-answer",
+      role: "user",
+      text: "Yes, proceed",
+      source,
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-11-23T20:00:00.000Z",
+      updatedAt: "2026-11-23T20:00:00.000Z",
+    };
+    const parsed = yield* decodeOrchestrationMessage(message);
+    assert.deepStrictEqual(parsed.source, source);
+    assert.isFalse(isAgentOriginatedUserMessage(parsed));
+    const command = {
+      type: "thread.turn.start",
+      commandId: "cmd-forge-remote-user",
+      threadId: "coordinator",
+      message: { messageId: "msg-forge", role: "user", text: "Yes", attachments: [], source },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt: "2026-11-23T20:00:00.000Z",
+    };
+    assert.ok(yield* decodeClientOrchestrationCommand(command).pipe(Effect.flip));
+    assert.ok(
+      yield* decodeClientOrchestrationCommand({
+        ...command,
+        type: "thread.message.user.append",
+      }).pipe(Effect.flip),
+    );
+  }),
+);

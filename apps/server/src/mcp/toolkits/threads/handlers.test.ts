@@ -379,8 +379,7 @@ describe("threads toolkit handlers", () => {
       const command = commands[0];
       assertTrue(command?.type === "thread.turn.start");
       if (command?.type !== "thread.turn.start") return;
-      expect(command.message.source?.threadTitle).toBe("Coordinator");
-      expect(command.message.source?.threadTitle).not.toBe(SENDER_ID);
+      expect(command.message.source).toMatchObject({ kind: "agent", threadTitle: "Coordinator" });
     }),
   );
 
@@ -408,7 +407,12 @@ describe("threads toolkit handlers", () => {
         )!;
         assertTrue(command.type === "thread.turn.start");
         if (command.type !== "thread.turn.start") return;
-        expect({ from, to, replyTo: command.message.source?.replyTo }).toEqual({
+        expect({
+          from,
+          to,
+          replyTo:
+            command.message.source?.kind === "agent" ? command.message.source.replyTo : undefined,
+        }).toEqual({
           from,
           to,
           replyTo,
@@ -437,7 +441,7 @@ describe("threads toolkit handlers", () => {
       expect(append.threadId).toBe(ONE_OFF);
       expect(append.message.messageId.startsWith(`cp-send:${ONE_OFF}:`)).toBe(true);
       expect(append.commandId).toBe(append.message.messageId);
-      expect(append.message.source?.replyTo).toBe(COORDINATOR);
+      expect(append.message.source).toMatchObject({ kind: "agent", replyTo: COORDINATOR });
 
       // A message no turn has adopted yet counts as busy too.
       const queued = yield* projectHarness({ pendingStarts: new Map([[ONE_OFF, NOW]]) });

@@ -12,6 +12,7 @@ import { ServerConfig } from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { make as makeReach } from "./Reach.ts";
 import { reachInputHash, wasSent } from "./reachSent.ts";
+import type { OverviewResult } from "./reachProtocol.ts";
 
 let next: () => Effect.Effect<unknown, PeerError> = () => Effect.succeed({ ok: true, result: 1 });
 const bodies: Array<{ requestId: string }> = [];
@@ -100,5 +101,72 @@ describe("Reach.call", () => {
       expect(wasSent({ ...exact, inputHash: reachInputHash({ x: 1 }) }, 0)).toBe(false);
       expect(wasSent({ ...exact, requestId: "someone-else" }, 0)).toBe(false);
     }).pipe(Effect.provide(TestLayer)),
+  );
+});
+
+describe("Reach.overview cache recovery", () => {
+  it.effect(
+    "replaces stale and persisted peer snapshots, including cleared questions and empty boards",
+    () =>
+      Effect.gen(function* () {
+        const project = (projectId: string, question: string | null) => ({
+          projectId,
+          title: projectId,
+          coordinatorThreadId: `${projectId}-coordinator`,
+          coordinatorPhase: "idle",
+          needsYou:
+            question === null
+              ? []
+              : [
+                  {
+                    statusId: question,
+                    title: question,
+                    question: "Continue?",
+                    recommendation: "Continue",
+                  },
+                ],
+          moving: [],
+        });
+        const old: OverviewResult = {
+          snapshotSequence: 10,
+          projects: [project("control-plane", "assistant-tasks"), project("hometrace", null)],
+          workspaces: [],
+        };
+        const current: OverviewResult = {
+          snapshotSequence: 30,
+          projects: [project("control-plane", null), project("hometrace", "inspection-follow-up")],
+          workspaces: [],
+        };
+        next = () => Effect.succeed({ ok: true, result: old });
+        const reach = yield* makeReach;
+        expect((yield* reach.overview(machine, caller)).result).toEqual(old);
+        const timeout = () =>
+          Effect.fail(new PeerError({ kind: "timeout", detail: "did not answer in time" }));
+        next = timeout;
+        expect((yield* reach.overview(machine, caller).pipe(Effect.flip)).lastKnown).toEqual(old);
+        next = () => Effect.succeed({ ok: true, result: current });
+        expect((yield* reach.overview(machine, caller)).result).toEqual(current);
+        next = timeout;
+        expect((yield* reach.overview(machine, caller).pipe(Effect.flip)).lastKnown).toEqual(
+          current,
+        );
+        // A new Reach instance reads the last successful peer snapshot from disk, not the old question.
+        const restarted = yield* makeReach;
+        expect((yield* restarted.overview(machine, caller).pipe(Effect.flip)).lastKnown).toEqual(
+          current,
+        );
+        const empty: OverviewResult = {
+          snapshotSequence: 31,
+          projects: [project("control-plane", null), project("hometrace", null)],
+          workspaces: [],
+        };
+        next = () => Effect.succeed({ ok: true, result: empty });
+        yield* restarted.overview(machine, caller);
+        next = timeout;
+        const restartedAfterClear = yield* makeReach;
+        const cached = yield* restartedAfterClear.overview(machine, caller).pipe(Effect.flip);
+        expect(cached.lastKnown).toEqual(empty);
+        expect(cached.lastKnown?.projects.flatMap((entry) => entry.needsYou)).toEqual([]);
+      }).pipe(Effect.provide(TestLayer)),
   );
 });

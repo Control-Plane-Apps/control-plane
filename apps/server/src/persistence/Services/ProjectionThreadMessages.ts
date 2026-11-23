@@ -9,7 +9,7 @@
 import {
   ChatAttachment,
   MessageId,
-  OrchestrationAgentMessageSource,
+  OrchestrationMessageSource,
   OrchestrationMessageContext,
   OrchestrationMessageRole,
   ThreadId,
@@ -32,7 +32,7 @@ export const ProjectionThreadMessage = Schema.Struct({
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   context: Schema.optional(OrchestrationMessageContext),
-  source: Schema.optional(OrchestrationAgentMessageSource),
+  source: Schema.optional(OrchestrationMessageSource),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

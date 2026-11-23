@@ -54,6 +54,8 @@ interface EnvironmentQueryAtomOptions<Input, A, E, R> extends EnvironmentAtomOpt
   readonly staleTimeMs?: number;
   readonly idleTtlMs?: number;
   readonly refreshIntervalMs?: number;
+  /** Wait for an in-flight read to settle before scheduling its next poll. */
+  readonly skipRefreshWhileWaiting?: boolean;
   readonly refreshTrigger?: (target: {
     readonly environmentId: EnvironmentIdType;
     readonly input: Input;
@@ -558,10 +560,26 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
         }),
         Atom.setIdleTTL(idleTtlMs),
       );
-    const intervalQuery =
-      options.refreshIntervalMs === undefined
-        ? queryAtom
-        : queryAtom.pipe(Atom.withRefresh(options.refreshIntervalMs));
+    let intervalQuery = queryAtom;
+    if (options.refreshIntervalMs !== undefined) {
+      const scheduledQuery = queryAtom.pipe(Atom.withRefresh(options.refreshIntervalMs));
+      if (options.skipRefreshWhileWaiting === true) {
+        // Reaching several sleeping machines can take longer than one poll.
+        // Keep the request mounted, but dispose its poll timer until it settles.
+        const settledSchedule = scheduledQuery.pipe(Atom.setIdleTTL(0));
+        intervalQuery = queryAtom.pipe(
+          Atom.transform(
+            (get, source) => {
+              const value = get(source);
+              return value.waiting ? value : get(settledSchedule);
+            },
+            { initialValueTarget: queryAtom },
+          ),
+        );
+      } else {
+        intervalQuery = scheduledQuery;
+      }
+    }
     const refreshTrigger = options.refreshTrigger?.(target);
     return (
       refreshTrigger === undefined
@@ -625,6 +643,7 @@ export function createEnvironmentRpcQueryAtomFamily<R, ER, TTag extends Environm
     readonly staleTimeMs?: number;
     readonly idleTtlMs?: number;
     readonly refreshIntervalMs?: number;
+    readonly skipRefreshWhileWaiting?: boolean;
     readonly refreshTrigger?: (target: {
       readonly environmentId: EnvironmentIdType;
       readonly input: EnvironmentRpcInput<TTag>;
@@ -638,6 +657,9 @@ export function createEnvironmentRpcQueryAtomFamily<R, ER, TTag extends Environm
     ...(options.refreshIntervalMs === undefined
       ? {}
       : { refreshIntervalMs: options.refreshIntervalMs }),
+    ...(options.skipRefreshWhileWaiting === undefined
+      ? {}
+      : { skipRefreshWhileWaiting: options.skipRefreshWhileWaiting }),
     ...(options.refreshTrigger === undefined ? {} : { refreshTrigger: options.refreshTrigger }),
     execute: (input: EnvironmentRpcInput<TTag>) =>
       options.execute?.(input) ?? request(options.tag, input),

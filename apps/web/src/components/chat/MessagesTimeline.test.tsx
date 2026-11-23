@@ -1248,6 +1248,33 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("rounded-2xl bg-message p-3");
   });
 
+  it("attributes a forwarded user answer to the Assistant machine without rendering an agent tool", () => {
+    const entry = buildUserTimelineEntry("Yes, proceed");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...entry,
+            message: {
+              ...entry.message,
+              source: {
+                kind: "remote-user",
+                environmentId: "env-mini",
+                label: "Mac mini",
+                threadId: ThreadId.make("mini-assistant"),
+              },
+            },
+          },
+        ]}
+      />,
+    );
+    expect(markup).toContain("You via Assistant on");
+    expect(markup).toContain("Mac mini");
+    expect(markup).toContain("Yes, proceed");
+    expect(markup).not.toContain('data-agent-message="true"');
+  });
+
   it("renders agent-originated user messages as expandable tool calls", () => {
     const text = buildLongUserMessageText();
     const markup = renderToStaticMarkup(

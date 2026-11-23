@@ -5,7 +5,9 @@
  *
  * @module reachProtocol
  */
+import { AssistantNeedsYouReplyInput, ProjectStatus } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { NonNegativeInt } from "@t3tools/contracts";
 
 export { REACH_ROUTE_PATH } from "../agentMachines/AgentMachineClient.ts";
 
@@ -25,6 +27,7 @@ export const ReachOp = Schema.Literals([
   "ask",
   "results",
   "status.list",
+  "status.reply",
   "status.set",
   "thread.find",
   "thread.send",
@@ -141,6 +144,8 @@ export const ResultsResult = Schema.Struct({
 });
 export type ResultsResult = typeof ResultsResult.Type;
 
+export const StatusReplyInput = AssistantNeedsYouReplyInput;
+
 export const ProjectInput = Schema.Struct({ projectId: Schema.String });
 
 export const ProjectToolInput = Schema.Struct({
@@ -185,6 +190,7 @@ export const OverviewProject = Schema.Struct({
   coordinatorPhase: Schema.String,
   needsYou: Schema.Array(
     Schema.Struct({
+      status: Schema.optional(ProjectStatus),
       statusId: Schema.String,
       title: Schema.String,
       question: Schema.String,
@@ -215,6 +221,8 @@ export const OverviewWorkspaceThread = Schema.Struct({
 
 /** Every live, marked, non-global Project there, and recent workspace threads. Unfiltered: the Assistant's server applies its reach. */
 export const OverviewResult = Schema.Struct({
+  /** Optional for older peers and persisted caches. Versions belong to this source machine. */
+  snapshotSequence: Schema.optional(NonNegativeInt),
   projects: Schema.Array(OverviewProject),
   workspaces: Schema.Array(OverviewWorkspaceThread),
 });
@@ -237,6 +245,7 @@ export const ConfirmResult = Schema.Struct({ sent: Schema.Boolean });
 export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
   "ask",
   "status.set",
+  "status.reply",
   "thread.send",
   "assistant.note",
   "task.deliver",

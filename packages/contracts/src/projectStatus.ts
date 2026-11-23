@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 
+import { OrchestrationRemoteUserMessageSource } from "./remoteUserSource.ts";
+
 import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 // Fork-owned. A Project's Status board: one record per workstream, written by
@@ -80,6 +82,8 @@ export const ProjectStatusDecision = Schema.Struct({
   autoAccept: Schema.optional(Schema.Struct({ openedAt: IsoDateTime, enabledAt: IsoDateTime })),
   /** The user replied to this workstream; its deadline no longer fires. */
   answeredAt: Schema.optional(IsoDateTime),
+  /** The verified Assistant machine that forwarded this user answer. */
+  answerSource: Schema.optional(OrchestrationRemoteUserMessageSource),
   /**
    * How the user answered: with the recommended answer's button (or the
    * same message from a notification), or a reply of their own. Absent on

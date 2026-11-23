@@ -23,10 +23,12 @@ import {
   isAssistantChannel,
   type OrchestrationCommand,
   type OrchestrationReadModel,
+  type OrchestrationMessageSource,
   type ProjectAssistant,
   type ProjectStatus,
   type ProjectStatusDecision,
   isAutoAcceptArmed,
+  isStatusNeedingUser,
   parseStatusReply,
   STATUS_RECOMMENDATION_BODY_PREFIX,
   type ThreadId,
@@ -455,7 +457,7 @@ export const decideStatusAutomate = Effect.fn("decideStatusAutomate")(function* 
 });
 
 /**
- * The user's own message (no `source`) in a coordinator thread that starts
+ * The user's own message (local or forwarded by the verified Assistant) in a coordinator thread that starts
  * `Re: <title>` answers that workstream's open decision. Planned with the
  * message itself, so no deadline can act between the reply and its record.
  */
@@ -464,7 +466,7 @@ export const statusReplyEvents = Effect.fn("statusReplyEvents")(function* (
   input: {
     readonly threadId: ThreadId;
     readonly text: string;
-    readonly hasSource: boolean;
+    readonly source?: OrchestrationMessageSource | undefined;
     readonly commandId: OrchestrationCommand["commandId"];
     readonly createdAt: string;
   },
@@ -473,7 +475,7 @@ export const statusReplyEvents = Effect.fn("statusReplyEvents")(function* (
   PlatformError.PlatformError,
   Crypto.Crypto
 > {
-  if (input.hasSource) return [];
+  if (input.source?.kind === "agent") return [];
   const reply = parseStatusReply(input.text);
   if (reply === null) return [];
   const project = readModel.projects.find(
@@ -490,7 +492,7 @@ export const statusReplyEvents = Effect.fn("statusReplyEvents")(function* (
   if (project === undefined || status === undefined || decision === undefined) return [];
   // Only a question the user can see waiting on them is answerable; a record
   // that somehow holds a decision in another state never is.
-  if (status.state !== "needs-you" || decision.answeredAt !== undefined) return [];
+  if (project.assistant?.archivedAt != null || !isStatusNeedingUser(status)) return [];
   // An id-tagged reply answers only the question version the user saw: a reply
   // started before the question existed, or to an earlier wording, does not.
   if (reply.statusId !== undefined && reply.revision !== Date.parse(decision.openedAt)) return [];
@@ -512,6 +514,7 @@ export const statusReplyEvents = Effect.fn("statusReplyEvents")(function* (
           decision: {
             ...decision,
             answeredAt: input.createdAt,
+            ...(input.source?.kind === "remote-user" ? { answerSource: input.source } : {}),
             // The one-tap answer (or a notification's) sends exactly this body;
             // anything else is the user's own words.
             answeredWith: reply.body.startsWith(STATUS_RECOMMENDATION_BODY_PREFIX)

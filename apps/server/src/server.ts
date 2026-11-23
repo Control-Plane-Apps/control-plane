@@ -93,6 +93,7 @@ import { ReachLive } from "./reach/Reach.ts";
 import { ReachBridgeLive } from "./reach/ReachBridge.ts";
 import { TaskAuthorityLive } from "./reach/TaskAuthorityLive.ts";
 import { AssistantHomeLive } from "./reach/AssistantHome.ts";
+import { AssistantNeedsYouLive } from "./reach/AssistantNeedsYou.ts";
 import { reachRouteLayer } from "./reach/route.ts";
 import { linkTokenRouteLayer } from "./agentMachines/linkTokenRoute.ts";
 import * as AgentCompletionReactor from "./orchestration/AgentCompletionReactor.ts";
@@ -281,6 +282,7 @@ const BaseReactorLayerLive = Layer.empty.pipe(
       ReachBridgeLive,
       TaskAuthorityLive,
       AssistantHomeLive,
+      AssistantNeedsYouLive,
       AgentMachineLinkRenewalLive,
     ).pipe(
       Layer.provideMerge(ReachLive),

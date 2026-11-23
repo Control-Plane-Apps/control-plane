@@ -2,7 +2,7 @@ import {
   AgentSessionImportSource,
   ApprovalRequestId,
   ChatAttachment,
-  OrchestrationAgentMessageSource,
+  OrchestrationMessageSource,
   OrchestrationMessageContext,
   CheckpointRef,
   IsoDateTime,
@@ -119,7 +119,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
     context: Schema.NullOr(Schema.fromJsonString(OrchestrationMessageContext)),
-    source: Schema.NullOr(Schema.fromJsonString(OrchestrationAgentMessageSource)),
+    source: Schema.NullOr(Schema.fromJsonString(OrchestrationMessageSource)),
   }),
 );
 const ProjectionTurnStartMessageDbRowSchema = ProjectionThreadMessageDbRowSchema.mapFields(

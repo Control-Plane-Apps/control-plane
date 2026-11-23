@@ -9,6 +9,9 @@ import {
   isAgentPushMessageId,
   isGlobalAssistant,
   isStatusNeedingUser,
+  type AssistantNeedsYouEntry,
+  type AssistantNeedsYouMachine,
+  type EnvironmentId,
   type OrchestrationMessage,
   type OrchestrationProjectShell,
   type OrchestrationThreadActivity,
@@ -18,6 +21,8 @@ import {
   assistantAskTitle,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+
+import type { EnvironmentProject } from "./models.ts";
 
 // Fork-owned. Pure view logic for the cross-Project Assistant, shared by web
 // and mobile: which Project is the Assistant, what needs the user across every
@@ -78,6 +83,84 @@ export function collectNeedsYou<P extends OrchestrationProjectShell>(
     if (aDeadline !== undefined) return -1;
     if (bDeadline !== undefined) return 1;
     return b.status.decision.openedAt.localeCompare(a.status.decision.openedAt);
+  });
+}
+
+/** Stable identity even when two servers use the same Project and Status ids. */
+export function assistantNeedsYouKey(item: AssistantNeedsYouEntry): string {
+  return JSON.stringify([item.environmentId, item.projectId, item.status.id]);
+}
+
+/**
+ * Live client shells replace the aggregate for their entire environment, so
+ * answered or removed questions disappear immediately. Other environments
+ * come from the Assistant's server, including machines this client never
+ * connected to. Cached client shells are only a fallback before that first
+ * aggregate arrives or when their explicit source version is newer than a stale
+ * aggregate for that same machine. Cached choices remain stale and non-actionable.
+ */
+export function mergeAssistantNeedsYou(input: {
+  readonly projects: ReadonlyArray<EnvironmentProject>;
+  readonly reach: ReadonlyArray<string> | null;
+  readonly aggregateItems: ReadonlyArray<AssistantNeedsYouEntry> | null;
+  readonly aggregateMachines?: ReadonlyArray<AssistantNeedsYouMachine>;
+  readonly clientSnapshotSequences?: ReadonlyMap<EnvironmentId, number>;
+  readonly liveEnvironmentIds: ReadonlySet<EnvironmentId>;
+  readonly machineLabels?: ReadonlyMap<EnvironmentId, string>;
+}): AssistantNeedsYouEntry[] {
+  const items = new Map<string, AssistantNeedsYouEntry>();
+  const clientEnvironmentIds = new Set(input.liveEnvironmentIds);
+  for (const machine of input.aggregateMachines ?? []) {
+    const clientSequence = input.clientSnapshotSequences?.get(machine.environmentId);
+    // A newer cached snapshot carries removals too. Never infer freshness from the age of a surviving question.
+    if (
+      machine.state !== "online" &&
+      machine.snapshotSequence !== undefined &&
+      clientSequence !== undefined &&
+      clientSequence > machine.snapshotSequence
+    ) {
+      clientEnvironmentIds.add(machine.environmentId);
+    }
+  }
+  for (const item of input.aggregateItems ?? []) {
+    if (clientEnvironmentIds.has(item.environmentId)) continue;
+    if (input.reach !== null && !input.reach.includes(item.projectId)) continue;
+    if (!isStatusNeedingUser(item.status)) continue;
+    const key = assistantNeedsYouKey(item);
+    const previous = items.get(key);
+    if (previous === undefined || (previous.stale && !item.stale)) items.set(key, item);
+  }
+
+  const shellProjects =
+    input.aggregateItems === null
+      ? input.projects
+      : input.projects.filter((project) => clientEnvironmentIds.has(project.environmentId));
+  for (const { project, status } of collectNeedsYou(shellProjects, input.reach)) {
+    const item: AssistantNeedsYouEntry = {
+      environmentId: project.environmentId,
+      machineLabel: input.machineLabels?.get(project.environmentId) ?? project.environmentId,
+      projectId: project.id,
+      projectTitle: project.title,
+      coordinatorThreadId: project.assistant!.coordinatorThreadId,
+      status,
+      stale: !input.liveEnvironmentIds.has(project.environmentId),
+    };
+    items.set(assistantNeedsYouKey(item), item);
+  }
+
+  return [...items.values()].sort((a, b) => {
+    const aDeadline = a.status.decision.deadline;
+    const bDeadline = b.status.decision.deadline;
+    if (aDeadline !== undefined && bDeadline === undefined) return -1;
+    if (aDeadline === undefined && bDeadline !== undefined) return 1;
+    if (aDeadline !== undefined && bDeadline !== undefined) {
+      const deadlineOrder = aDeadline.localeCompare(bDeadline);
+      if (deadlineOrder !== 0) return deadlineOrder;
+    }
+    return (
+      b.status.decision.openedAt.localeCompare(a.status.decision.openedAt) ||
+      assistantNeedsYouKey(a).localeCompare(assistantNeedsYouKey(b))
+    );
   });
 }
 

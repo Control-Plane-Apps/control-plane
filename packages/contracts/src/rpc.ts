@@ -1,3 +1,9 @@
+import {
+  AssistantNeedsYouError,
+  AssistantNeedsYouResult,
+  AssistantNeedsYouReplyInput,
+  AssistantNeedsYouReplyResult,
+} from "./assistantNeedsYou.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
@@ -426,6 +432,8 @@ export const WS_METHODS = {
   serverGlobalInstructions: "server.globalInstructions",
   serverAssistantEnsure: "server.assistantEnsure",
   serverAssistantHome: "server.assistantHome",
+  serverAssistantNeedsYou: "server.assistantNeedsYou",
+  serverAssistantNeedsYouReply: "server.assistantNeedsYouReply",
   serverReportClientActivity: "server.reportClientActivity",
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
@@ -732,6 +740,17 @@ export const AssistantEnsureResult = Schema.Struct({
   created: Schema.Boolean,
 });
 export type AssistantEnsureResult = typeof AssistantEnsureResult.Type;
+
+const WsServerAssistantNeedsYouRpc = Rpc.make(WS_METHODS.serverAssistantNeedsYou, {
+  payload: Schema.Struct({}),
+  success: AssistantNeedsYouResult,
+  error: Schema.Union([EnvironmentAuthorizationError, AssistantNeedsYouError]),
+});
+const WsServerAssistantNeedsYouReplyRpc = Rpc.make(WS_METHODS.serverAssistantNeedsYouReply, {
+  payload: AssistantNeedsYouReplyInput,
+  success: AssistantNeedsYouReplyResult,
+  error: Schema.Union([EnvironmentAuthorizationError, AssistantNeedsYouError]),
+});
 
 const WsServerAssistantHomeRpc = Rpc.make(WS_METHODS.serverAssistantHome, {
   payload: AssistantHomeInput,
@@ -1556,6 +1575,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGlobalInstructionsRpc,
   WsServerAssistantEnsureRpc,
   WsServerAssistantHomeRpc,
+  WsServerAssistantNeedsYouRpc,
+  WsServerAssistantNeedsYouReplyRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,

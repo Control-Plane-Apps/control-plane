@@ -162,6 +162,7 @@ import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import { AgentMachines } from "./agentMachines/AgentMachines.ts";
 import { mintRelinkPairing, revokeIssuedLinkTokens } from "./agentMachines/linkTokenIssuer.ts";
 import { AssistantHome } from "./reach/AssistantHome.ts";
+import { AssistantNeedsYou } from "./reach/AssistantNeedsYou.ts";
 import { onTaskDeferralChange } from "./reach/taskAuthority.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
@@ -684,6 +685,7 @@ const makeWsRpcLayer = (
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const agentMachines = yield* AgentMachines;
       const assistantHome = yield* AssistantHome;
+      const assistantNeedsYou = yield* AssistantNeedsYou;
       const hostResources = yield* HostResources.HostResources;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
@@ -2743,6 +2745,16 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.serverAgentMachinePairing,
             mintRelinkPairing(serverAuth, input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverAssistantNeedsYou]: () =>
+          observeRpcEffect(WS_METHODS.serverAssistantNeedsYou, assistantNeedsYou.read, {
+            "rpc.aggregate": "server",
+          }),
+        [WS_METHODS.serverAssistantNeedsYouReply]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverAssistantNeedsYouReply,
+            assistantNeedsYou.reply(input),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverAssistantHome]: (input) =>

@@ -935,6 +935,20 @@ export function createServerEnvironmentAtoms<R, E>(
       );
     }).pipe(Atom.withLabel(`environment-data:server:usage-prices:${environmentId}`)),
   );
+  const assistantReachAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) =>
+      JSON.stringify(get(settingsValueAtom(environmentId))?.assistant?.projects ?? null),
+    ).pipe(Atom.withLabel(`environment-data:server:assistant-reach:${environmentId}`)),
+  );
+  const assistantNeedsYou = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:server:assistant-needs-you",
+    tag: WS_METHODS.serverAssistantNeedsYou,
+    staleTimeMs: 5_000,
+    refreshIntervalMs: 15_000,
+    skipRefreshWhileWaiting: true,
+    idleTtlMs: 0,
+    refreshTrigger: ({ environmentId }) => assistantReachAtom(environmentId),
+  });
   const providersValueAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) => get(configValueAtom(environmentId))?.providers ?? null).pipe(
       Atom.withLabel(`environment-data:server:providers:${environmentId}`),
@@ -1131,6 +1145,26 @@ export function createServerEnvironmentAtoms<R, E>(
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,
       },
+    }),
+    // Shared by every Needs you consumer, including the sidebar badge.
+    assistantNeedsYou,
+    assistantNeedsYouReply: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:assistant-needs-you-reply",
+      tag: WS_METHODS.serverAssistantNeedsYouReply,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([
+            environmentId,
+            input.environmentId,
+            input.projectId,
+            input.coordinatorThreadId,
+            input.statusId,
+            input.openedAt,
+          ]),
+      },
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => registry.refresh(assistantNeedsYou({ environmentId, input: {} }))),
     }),
     // Where the Assistant runs, and moving it between linked machines.
     assistantHome: createEnvironmentRpcCommand(runtime, {
