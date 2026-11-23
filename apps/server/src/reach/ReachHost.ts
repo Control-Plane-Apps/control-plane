@@ -59,6 +59,9 @@ import { linkSubjectHolder } from "../agentMachines/linkToken.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
 import { AssistantHome } from "./AssistantHome.ts";
 import {
+  AttachmentChunkInput,
+  HistoryPageInput,
+  HistoryVerifyInput,
   ConfirmInput,
   ConfirmResult,
   REACH_VERIFIED_OPS,
@@ -464,6 +467,18 @@ export const make = Effect.gen(function* () {
       case "assistant.abort":
         return decode(MoveIdInput)(request.input).pipe(
           Effect.flatMap((input) => home.abort(input.moveId, peerOf(request))),
+        );
+      case "assistant.history":
+        return decode(HistoryPageInput)(request.input).pipe(
+          Effect.flatMap((input) => home.historyPage(input, peerOf(request))),
+        );
+      case "assistant.attachment":
+        return decode(AttachmentChunkInput)(request.input).pipe(
+          Effect.flatMap((input) => home.attachmentChunk(input, peerOf(request))),
+        );
+      case "assistant.verify":
+        return decode(HistoryVerifyInput)(request.input).pipe(
+          Effect.flatMap((input) => home.verifyHistory(input, peerOf(request))),
         );
       case "assistant.moveStatus":
         return decode(MoveIdInput)(request.input).pipe(

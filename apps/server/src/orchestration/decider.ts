@@ -2209,17 +2209,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       if (
         thread.deletedAt !== null ||
         thread.archivedAt !== null ||
-        thread.messages.length > 0 ||
+        (command.append !== true && thread.messages.length > 0) ||
         thread.latestTurn !== null ||
         thread.session !== null ||
         openRequests(thread).size > 0
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: `Thread '${command.threadId}' must be active and empty before history can be imported.`,
+          detail:
+            command.append === true
+              ? `Thread '${command.threadId}' must be active and have no turns before more history can be imported.`
+              : `Thread '${command.threadId}' must be active and empty before history can be imported.`,
         });
       }
-      const firstMessage = command.messages[0];
+      // A page sent again (a retried move) adds nothing twice.
+      const present = new Set(thread.messages.map((message) => message.id));
+      const incoming = command.messages.filter((message) => !present.has(message.messageId));
+      const firstMessage = incoming[0] ?? command.messages[0];
       if (firstMessage === undefined) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -2228,7 +2234,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
 
       const events: Array<PlannedOrchestrationEvent> = [];
-      for (const message of command.messages) {
+      for (const message of incoming) {
         events.push({
           ...(yield* withEventBase({
             aggregateKind: "thread",
@@ -2243,6 +2249,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             messageId: message.messageId,
             role: message.role,
             text: message.text,
+            ...(message.attachments !== undefined && message.attachments.length > 0
+              ? { attachments: message.attachments }
+              : {}),
             turnId: null,
             streaming: false,
             createdAt: message.createdAt,

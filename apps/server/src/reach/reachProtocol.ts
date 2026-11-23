@@ -42,6 +42,9 @@ export const ReachOp = Schema.Literals([
   "assistant.yield",
   "link.back",
   "authority.poke",
+  "assistant.history",
+  "assistant.attachment",
+  "assistant.verify",
 ]);
 export type ReachOp = typeof ReachOp.Type;
 
@@ -53,6 +56,9 @@ const DEFAULT_BODY_LIMIT = 256 * 1024;
 const BODY_LIMITS: Partial<Record<string, number>> = {
   // Up to 200 messages and the memory file.
   "assistant.adopt": REACH_MAX_BODY_BYTES,
+  // A page of the Assistant's conversation, and one attachment chunk (base64).
+  "assistant.history": 16 * 1024 * 1024,
+  "assistant.attachment": 12 * 1024 * 1024,
 };
 
 /** The largest body accepted for one op. */
@@ -238,6 +244,9 @@ export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
   "assistant.abort",
   "assistant.handoff",
   "assistant.yield",
+  "assistant.history",
+  "assistant.attachment",
+  "assistant.verify",
 ]);
 
 /** Everything that moves with the Assistant. */
@@ -255,12 +264,23 @@ export const AssistantBundle = Schema.Struct({
     }),
   ),
   memory: Schema.NullOr(Schema.String),
+  /** The first page of the conversation; the rest follows as `assistant.history` pages. */
   messages: Schema.Array(
     Schema.Struct({
+      /** Kept on the new machine, so a resent page never duplicates. Absent from older builds. */
+      messageId: Schema.optional(Schema.String),
       role: Schema.Literals(["user", "assistant"]),
       text: Schema.String,
       createdAt: Schema.String,
+      attachments: Schema.optional(Schema.Array(Schema.Unknown)),
     }),
+  ),
+  /**
+   * The whole conversation the target must hold before the move may commit.
+   * Absent from older builds (they moved only the last 200 messages).
+   */
+  history: Schema.optional(
+    Schema.Struct({ count: Schema.Number, digest: Schema.String, attachments: Schema.Number }),
   ),
   /** Open asks of coordinators, which the new home keeps polling for. */
   asks: Schema.Array(
@@ -287,6 +307,49 @@ export const LinkBackInput = Schema.Struct({ pairingUrl: Schema.String });
 export const LinkBackResult = Schema.Struct({ id: Schema.String, label: Schema.String });
 
 export const MoveIdInput = Schema.Struct({ moveId: Schema.String });
+
+/** One message of the Assistant's conversation as it moves. Attachments are encoded `ChatAttachment`s. */
+export const HistoryMessage = Schema.Struct({
+  messageId: Schema.String,
+  role: Schema.Literals(["user", "assistant"]),
+  text: Schema.String,
+  createdAt: Schema.String,
+  attachments: Schema.optional(Schema.Array(Schema.Unknown)),
+});
+export type HistoryMessage = typeof HistoryMessage.Type;
+
+/** A page of the conversation after the adopt (the adopt carries the first). */
+export const HistoryPageInput = Schema.Struct({
+  moveId: Schema.String,
+  page: Schema.Number,
+  messages: Schema.Array(HistoryMessage),
+});
+
+/** One chunk of one attachment file, in order. The last chunk carries the whole file's hash. */
+export const AttachmentChunkInput = Schema.Struct({
+  moveId: Schema.String,
+  /** The attachment as the source stores it (encoded `ChatAttachment`). */
+  attachment: Schema.Unknown,
+  offset: Schema.Number,
+  totalBytes: Schema.Number,
+  sha256: Schema.String,
+  data: Schema.String,
+});
+export const AttachmentChunkResult = Schema.Struct({ received: Schema.Number });
+
+/** What the target must hold before commit: message count and a digest of the conversation. */
+export const HistoryVerifyInput = Schema.Struct({
+  moveId: Schema.String,
+  count: Schema.Number,
+  digest: Schema.String,
+  attachments: Schema.Number,
+});
+export const HistoryVerifyResult = Schema.Struct({
+  ok: Schema.Boolean,
+  count: Schema.Number,
+  digest: Schema.String,
+  attachments: Schema.Number,
+});
 export const YieldResult = Schema.Struct({ paused: Schema.Boolean });
 export const MoveStatusResult = Schema.Struct({
   phase: Schema.Literals(["adopted", "committed", "aborted", "unknown"]),

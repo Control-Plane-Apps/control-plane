@@ -63,6 +63,12 @@ export const MoveRecord = Schema.Union([
     created: Schema.Boolean,
     /** Reusing an archived Assistant: its coordinator before this move gave it a fresh thread. */
     previousThreadId: Schema.optional(Schema.String),
+    /** The conversation the source sends; commit waits until it is verified here. */
+    history: Schema.optional(
+      Schema.Struct({ count: Schema.Number, digest: Schema.String, attachments: Schema.Number }),
+    ),
+    /** The whole conversation and its attachments arrived and matched. */
+    verified: Schema.optional(Schema.Boolean),
     /** After commit: the previous coordinator was archived (or found gone); not tried again. */
     previousRetired: Schema.optional(Schema.Boolean),
     /** What adopting overwrote, put back on abort. */

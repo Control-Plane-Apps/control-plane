@@ -14,6 +14,7 @@
  *
  * @module AssistantHome
  */
+import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
@@ -23,6 +24,7 @@ import {
   AssistantSettings,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  ChatAttachment,
   CommandId,
   EventId,
   findGlobalAssistantProject,
@@ -57,6 +59,18 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import { ProjectionThreadMessageRepositoryLive } from "../persistence/Layers/ProjectionThreadMessages.ts";
+import { ProjectionThreadMessageRepository } from "../persistence/Services/ProjectionThreadMessages.ts";
+import { resolveAttachmentPath } from "../attachmentStore.ts";
+import {
+  ATTACHMENT_CHUNK_BYTES,
+  historyDigest,
+  movedAttachmentId,
+  orderHistory,
+  paginateHistory,
+  sha256Hex,
+  type MovingMessage,
+} from "./assistantHistory.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { buildPairingUrl, isLoopbackHost, isWildcardHost } from "../startupAccess.ts";
 import { Reach, type ReachMachine } from "./Reach.ts";
@@ -75,7 +89,12 @@ import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import {
   AdoptResult,
+  AttachmentChunkInput,
+  AttachmentChunkResult,
   DescribeResult,
+  HistoryPageInput,
+  HistoryVerifyInput,
+  HistoryVerifyResult,
   MoveStatusResult,
   LinkBackResult,
   YieldResult,
@@ -122,6 +141,21 @@ export interface AssistantHomeShape {
     from: MovePeer,
   ) => Effect.Effect<MoveStatus, AssistantHomeError>;
   readonly abort: (moveId: string, from: MovePeer) => Effect.Effect<MoveStatus, AssistantHomeError>;
+  /** A further page of the moving Assistant's conversation. */
+  readonly historyPage: (
+    input: typeof HistoryPageInput.Type,
+    from: MovePeer,
+  ) => Effect.Effect<{ readonly count: number }, AssistantHomeError>;
+  /** One chunk of one attachment of the moving Assistant's conversation. */
+  readonly attachmentChunk: (
+    input: typeof AttachmentChunkInput.Type,
+    from: MovePeer,
+  ) => Effect.Effect<{ readonly received: number }, AssistantHomeError>;
+  /** Whether the whole conversation arrived; commit waits for a yes. */
+  readonly verifyHistory: (
+    input: typeof HistoryVerifyInput.Type,
+    from: MovePeer,
+  ) => Effect.Effect<typeof HistoryVerifyResult.Type, AssistantHomeError>;
   readonly moveStatus: (moveId: string) => Effect.Effect<MoveStatus, AssistantHomeError>;
   /**
    * Another machine took the Assistant back while this one was unreachable:
@@ -160,6 +194,11 @@ type MovedAsk = Omit<ReachAskRecord, "replyTo">;
 export const ADOPT_TIMEOUT = Duration.seconds(60);
 /** Commit, abort and status checks of a move. */
 export const MOVE_STEP_TIMEOUT = Duration.seconds(15);
+/** One page of conversation or one attachment chunk. */
+export const HISTORY_STEP_TIMEOUT = Duration.seconds(60);
+
+const encodeChatAttachment = Schema.encodeSync(ChatAttachment);
+const decodeChatAttachment = Schema.decodeUnknownEffect(ChatAttachment);
 export const MOVE_RECONCILE_INTERVAL = Duration.minutes(1);
 /**
  * Whether a linked machine that could not say "no" blocks the Assistant's
@@ -192,6 +231,9 @@ export const AssistantHome = Context.Reference<AssistantHomeShape>("t3/reach/Ass
     adopt: () => unavailable,
     commit: () => unavailable,
     abort: () => unavailable,
+    historyPage: () => unavailable,
+    attachmentChunk: () => unavailable,
+    verifyHistory: () => unavailable,
     moveStatus: () => Effect.succeed({ phase: "unknown" as const }),
     handoff: () => unavailable,
     yieldTo: () => unavailable,
@@ -235,6 +277,7 @@ export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
   const projects = yield* ProjectionProjectRepository;
+  const messageRows = yield* ProjectionThreadMessageRepository;
   const settingsService = yield* ServerSettingsService;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const config = yield* ServerConfig.ServerConfig;
@@ -438,21 +481,34 @@ export const make = Effect.gen(function* () {
         .pipe(Effect.orElseSucceed(() => null));
       const detail = Option.getOrUndefined(
         yield* snapshots
-          .getThreadDetailSnapshot(threadId, { turnLimit: MOVED_MESSAGE_LIMIT })
+          .getThreadDetailSnapshot(threadId, { turnLimit: 1 })
           .pipe(Effect.mapError(() => fail("Could not read the Assistant's conversation."))),
       );
-      const messages = (detail?.thread.messages ?? [])
-        .filter(
-          (message): message is typeof message & { role: "user" | "assistant" } =>
-            (message.role === "user" || message.role === "assistant") &&
-            message.text.trim().length > 0,
-        )
-        .slice(-MOVED_MESSAGE_LIMIT)
-        .map((message) => ({
-          role: message.role,
-          text: message.text,
-          createdAt: message.createdAt,
-        }));
+      // The whole conversation, oldest first; tool activity stays behind.
+      const all = orderHistory(
+        (yield* messageRows
+          .listByThreadId({ threadId })
+          .pipe(Effect.mapError(() => fail("Could not read the Assistant's conversation."))))
+          .filter(
+            (row): row is typeof row & { role: "user" | "assistant" } =>
+              (row.role === "user" || row.role === "assistant") &&
+              !row.isStreaming &&
+              (row.text.trim().length > 0 || (row.attachments?.length ?? 0) > 0),
+          )
+          .map((row): MovingMessage & { readonly files: ReadonlyArray<ChatAttachment> } => ({
+            messageId: row.messageId,
+            role: row.role,
+            text: row.text,
+            createdAt: row.createdAt,
+            files: row.attachments ?? [],
+            ...(row.attachments !== undefined && row.attachments.length > 0
+              ? { attachments: row.attachments.map((file) => encodeChatAttachment(file)) }
+              : {}),
+          })),
+      );
+      const pages = paginateHistory(all);
+      const files = all.flatMap((message) => message.files);
+      const messages = (pages[0] ?? []).map(({ files: _files, ...message }) => message);
       const asks = (yield* bridge.open)
         .filter((record) => record.replyTo === threadId)
         .map(({ replyTo: _replyTo, ...rest }) => rest);
@@ -464,11 +520,15 @@ export const make = Effect.gen(function* () {
         schedules,
         memory,
         messages,
+        history: { count: all.length, digest: historyDigest(all), attachments: files.length },
         asks,
         modelSelection: detail?.thread.modelSelection ?? settings.defaultModelSelection,
         runtimeMode: detail?.thread.runtimeMode ?? "full-access",
       } satisfies AssistantBundle;
-      return { bundle, notes };
+      const laterPages = pages
+        .slice(1)
+        .map((page) => page.map(({ files: _files, ...message }) => message));
+      return { bundle, notes, laterPages, files };
     });
 
   const setArchived = (projectId: string, coordinatorThreadId: string, archived: boolean) =>
@@ -634,6 +694,89 @@ export const make = Effect.gen(function* () {
       return "rolled-back" as const;
     });
 
+  /** Sends pages 2..n, then each attachment in chunks, then asks the target to verify. */
+  const sendHistory = (
+    machine: ReachMachine,
+    threadId: string,
+    bundle: AssistantBundle,
+    laterPages: ReadonlyArray<ReadonlyArray<MovingMessage>>,
+    files: ReadonlyArray<ChatAttachment>,
+  ) =>
+    Effect.gen(function* () {
+      const caller = yield* selfCaller(threadId);
+      const step = <A>(
+        op: Parameters<typeof reach.call>[1],
+        input: unknown,
+        result: Schema.Codec<A>,
+      ) =>
+        reach
+          .call(machine, op, input, caller, result, { timeout: HISTORY_STEP_TIMEOUT })
+          .pipe(
+            Effect.mapError((error) =>
+              fail(`${machine.label} could not take the conversation: ${error.detail}`),
+            ),
+          );
+      for (const [index, messages] of laterPages.entries()) {
+        yield* step(
+          "assistant.history",
+          { moveId: bundle.moveId, page: index + 1, messages },
+          Schema.Struct({ count: Schema.Number }),
+        );
+      }
+      let sentFiles = 0;
+      for (const file of files) {
+        const path = resolveAttachmentPath({
+          attachmentsDir: config.attachmentsDir,
+          attachment: file,
+        });
+        if (path === null) continue;
+        const bytes = yield* Effect.promise(() =>
+          NodeFSP.readFile(path).then(
+            (data) => new Uint8Array(data),
+            () => null,
+          ),
+        );
+        // A file already gone here cannot move; the message keeps its reference.
+        if (bytes === null) continue;
+        const sha256 = sha256Hex(bytes);
+        let offset = 0;
+        do {
+          const chunk = bytes.subarray(offset, offset + ATTACHMENT_CHUNK_BYTES);
+          yield* step(
+            "assistant.attachment",
+            {
+              moveId: bundle.moveId,
+              attachment: encodeChatAttachment(file),
+              offset,
+              totalBytes: bytes.length,
+              sha256,
+              data: Buffer.from(chunk).toString("base64"),
+            },
+            AttachmentChunkResult,
+          );
+          offset += chunk.length;
+        } while (offset < bytes.length);
+        sentFiles += 1;
+      }
+      const history = bundle.history;
+      if (history === undefined) return;
+      const verified = yield* step(
+        "assistant.verify",
+        {
+          moveId: bundle.moveId,
+          count: history.count,
+          digest: history.digest,
+          attachments: sentFiles,
+        },
+        HistoryVerifyResult,
+      );
+      if (!verified.ok) {
+        return yield* fail(
+          `${machine.label} holds ${verified.count} of ${history.count} messages and ${verified.attachments} of ${sentFiles} attachments.`,
+        );
+      }
+    });
+
   /** The current home moves the Assistant to a linked machine. */
   const moveFromHere = (machine: ReachMachine) =>
     lock.withPermits(1)(
@@ -667,7 +810,7 @@ export const make = Effect.gen(function* () {
           return yield* fail("The Assistant is working. Move it when its turn ends.");
         }
         const moveId = (yield* crypto.randomUUIDv4.pipe(Effect.orDie)).replaceAll("-", "");
-        const { bundle, notes } = yield* bundleOf(project, thread.id, moveId);
+        const { bundle, notes, laterPages, files } = yield* bundleOf(project, thread.id, moveId);
         const record: SourceMove = {
           role: "source",
           moveId,
@@ -689,6 +832,15 @@ export const make = Effect.gen(function* () {
         if (adopted._tag === "Failure") {
           yield* sourceRollBack(record, machine);
           return yield* fail(`Not moved: ${adopted.failure.detail} Your Assistant stays here.`);
+        }
+        // The rest of the conversation and every attachment, then a check that
+        // the target holds all of it. Only then may it go live there.
+        const sent = yield* sendHistory(machine, thread.id, bundle, laterPages, files).pipe(
+          Effect.result,
+        );
+        if (sent._tag === "Failure") {
+          yield* sourceRollBack(record, machine);
+          return yield* fail(`Not moved: ${sent.failure.detail} Your Assistant stays here.`);
         }
         const outcome = yield* sourceCommit(record, machine);
         if (outcome === "rolled-back") {
@@ -757,6 +909,7 @@ export const make = Effect.gen(function* () {
           previousSettings,
           previousMemory,
           asks: bundle.asks,
+          ...(bundle.history !== undefined ? { history: bundle.history } : {}),
           startedAt: yield* nowIso,
         };
         // Journaled before anything exists, so an abort or a retry always finds what was made.
@@ -846,12 +999,14 @@ export const make = Effect.gen(function* () {
               .writeFileString(memoryPath, bundle.memory)
               .pipe(Effect.mapError(() => fail("Could not write the Assistant's memory.")));
           }
-          const moved = bundle.messages.map((message, index) => ({
-            messageId: MessageId.make(`moved:${bundle.moveId}:${index}`),
-            role: message.role,
-            text: message.text,
-            createdAt: message.createdAt,
-          }));
+          const moved = yield* Effect.forEach(bundle.messages, (message, index) =>
+            importedMessage(
+              message,
+              bundle.moveId,
+              home.threadId,
+              `moved:${bundle.moveId}:${index}`,
+            ),
+          );
           const [first, ...rest] = moved;
           if (first !== undefined) {
             yield* dispatch(
@@ -1019,6 +1174,178 @@ export const make = Effect.gen(function* () {
       Effect.catch((error) => Effect.logWarning("previous Assistant thread kept", { error })),
     );
 
+  /** A moving message as this machine stores it: its own id kept, attachments renamed for the new thread. */
+  const importedMessage = (
+    message: {
+      readonly messageId?: string | undefined;
+      readonly role: "user" | "assistant";
+      readonly text: string;
+      readonly createdAt: string;
+      readonly attachments?: ReadonlyArray<unknown> | undefined;
+    },
+    moveId: string,
+    threadId: string,
+    fallbackId: string,
+  ) =>
+    Effect.gen(function* () {
+      const attachments: ChatAttachment[] = [];
+      for (const raw of message.attachments ?? []) {
+        const decoded = yield* decodeChatAttachment(raw).pipe(Effect.option);
+        if (Option.isNone(decoded)) continue;
+        const id = movedAttachmentId({ moveId, threadId, attachmentId: decoded.value.id });
+        if (id === null) continue;
+        attachments.push({ ...decoded.value, id } as ChatAttachment);
+      }
+      return {
+        messageId: MessageId.make(message.messageId ?? fallbackId),
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      };
+    });
+
+  /** The move this peer is building here, still waiting for its commit. */
+  const adoptedMove = (moveId: string, from: MovePeer) =>
+    Effect.gen(function* () {
+      const known = yield* journal.getTarget(moveId);
+      if (Option.isNone(known)) return yield* fail("There is no such move here.");
+      yield* fromMovePeer(known.value, from);
+      if (known.value.phase !== "adopted") {
+        return yield* fail("That move is not waiting for its conversation here.");
+      }
+      return known.value;
+    });
+
+  const historyPage: AssistantHomeShape["historyPage"] = (input, from) =>
+    lock.withPermits(1)(
+      Effect.gen(function* () {
+        const record = yield* adoptedMove(input.moveId, from);
+        const messages = yield* Effect.forEach(input.messages, (message, index) =>
+          importedMessage(
+            message,
+            record.moveId,
+            record.threadId,
+            `moved:${record.moveId}:${input.page}:${index}`,
+          ),
+        );
+        const [first, ...rest] = messages;
+        if (first !== undefined) {
+          yield* dispatch(
+            {
+              type: "thread.history.import",
+              commandId: CommandId.make(
+                `assistant-home:history:${record.moveId}:${record.threadId}:${input.page}`,
+              ),
+              threadId: ThreadId.make(record.threadId),
+              messages: [first, ...rest],
+              append: true,
+            },
+            "Could not bring the conversation over",
+          );
+        }
+        return { count: messages.length };
+      }),
+    );
+
+  const attachmentChunk: AssistantHomeShape["attachmentChunk"] = (input, from) =>
+    Effect.gen(function* () {
+      const record = yield* adoptedMove(input.moveId, from);
+      const original = yield* decodeChatAttachment(input.attachment).pipe(
+        Effect.mapError(() => fail("That attachment could not be read.")),
+      );
+      const id = movedAttachmentId({
+        moveId: record.moveId,
+        threadId: record.threadId,
+        attachmentId: original.id,
+      });
+      const path =
+        id === null
+          ? null
+          : resolveAttachmentPath({
+              attachmentsDir: config.attachmentsDir,
+              attachment: { ...original, id } as ChatAttachment,
+            });
+      if (path === null) return yield* fail("That attachment has no place here.");
+      const part = `${path}.part`;
+      const data = Buffer.from(input.data, "base64");
+      const received = yield* Effect.tryPromise({
+        try: async () => {
+          await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+          const done = await NodeFSP.stat(path).then(
+            (stat) => stat.size === input.totalBytes,
+            () => false,
+          );
+          if (done) return input.totalBytes;
+          const have = await NodeFSP.stat(part).then(
+            (stat) => stat.size,
+            () => 0,
+          );
+          if (input.offset === 0 && have !== data.length) {
+            await NodeFSP.writeFile(part, data);
+          } else if (have === input.offset) {
+            await NodeFSP.appendFile(part, data);
+          } else if (have !== input.offset + data.length) {
+            throw new Error(`expected a chunk at ${have}, got ${input.offset}`);
+          }
+          const size = (await NodeFSP.stat(part)).size;
+          if (size < input.totalBytes) return size;
+          const whole = new Uint8Array(await NodeFSP.readFile(part));
+          if (sha256Hex(whole) !== input.sha256) {
+            await NodeFSP.rm(part, { force: true });
+            throw new Error("the file arrived damaged");
+          }
+          await NodeFSP.rename(part, path);
+          return size;
+        },
+        catch: (cause) =>
+          fail(`Could not store an attachment: ${String((cause as Error).message ?? cause)}`),
+      });
+      return { received };
+    });
+
+  const verifyHistory: AssistantHomeShape["verifyHistory"] = (input, from) =>
+    lock.withPermits(1)(
+      Effect.gen(function* () {
+        const record = yield* adoptedMove(input.moveId, from);
+        const rows = (yield* messageRows
+          .listByThreadId({ threadId: ThreadId.make(record.threadId) })
+          .pipe(Effect.mapError(() => fail("Could not read the conversation here.")))).filter(
+          (row): row is typeof row & { role: "user" | "assistant" } =>
+            row.role === "user" || row.role === "assistant",
+        );
+        const digest = historyDigest(
+          rows.map((row) => ({
+            messageId: row.messageId,
+            role: row.role,
+            text: row.text,
+            createdAt: row.createdAt,
+          })),
+        );
+        let attachments = 0;
+        for (const row of rows) {
+          for (const file of row.attachments ?? []) {
+            const path = resolveAttachmentPath({
+              attachmentsDir: config.attachmentsDir,
+              attachment: file,
+            });
+            if (
+              path !== null &&
+              (yield* fileSystem.exists(path).pipe(Effect.orElseSucceed(() => false)))
+            ) {
+              attachments += 1;
+            }
+          }
+        }
+        const ok =
+          rows.length === input.count &&
+          digest === input.digest &&
+          attachments >= input.attachments;
+        if (ok) yield* journal.put({ ...record, verified: true });
+        return { ok, count: rows.length, digest, attachments };
+      }),
+    );
+
   const commit: AssistantHomeShape["commit"] = (moveId, from) =>
     lock.withPermits(1)(
       Effect.gen(function* () {
@@ -1028,6 +1355,10 @@ export const make = Effect.gen(function* () {
         yield* fromMovePeer(record, from);
         if (record.phase === "committed") return { phase: "committed" as const };
         if (record.phase !== "adopted") return yield* fail("There is no such move to finish here.");
+        // A move that sends its whole conversation goes live only once it all arrived.
+        if (record.history !== undefined && record.verified !== true) {
+          return yield* fail("The Assistant's conversation has not fully arrived here yet.");
+        }
         yield* setArchived(record.projectId, record.threadId, false);
         const asks = Array.isArray(record.asks) ? (record.asks as ReadonlyArray<MovedAsk>) : [];
         for (const ask of asks) yield* bridge.track({ ...ask, replyTo: record.threadId });
@@ -1492,6 +1823,9 @@ export const make = Effect.gen(function* () {
     adopt,
     commit,
     abort,
+    historyPage,
+    attachmentChunk,
+    verifyHistory,
     moveStatus,
     handoff,
     yieldTo,
@@ -1543,4 +1877,7 @@ export const AssistantHomeLive = Layer.effect(
     );
     return home;
   }),
-).pipe(Layer.provide(ProjectionProjectRepositoryLive));
+).pipe(
+  Layer.provide(ProjectionProjectRepositoryLive),
+  Layer.provide(ProjectionThreadMessageRepositoryLive),
+);

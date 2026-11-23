@@ -4,6 +4,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   findGlobalAssistantProject,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -49,6 +50,7 @@ import {
   taskSyncMoveRefusal,
 } from "./AssistantHome.ts";
 import { MoveRecord } from "./assistantMoves.ts";
+import { historyDigest, sha256Hex } from "./assistantHistory.ts";
 import { ReachBridge, type ReachAskRecord } from "./ReachBridge.ts";
 import type { AssistantBundle } from "./reachProtocol.ts";
 import { noteAssistantHost } from "./taskAuthority.ts";
@@ -70,6 +72,8 @@ let commitAnswer: "committed" | "timeout" | "refuse" = "committed";
 let abortAnswer: "aborted" | "offline" = "aborted";
 let statusAnswer: "adopted" | "committed" | "aborted" | "unknown" = "committed";
 const adoptedBundles: Array<AssistantBundle> = [];
+const historyPages: Array<{ page: number; messages: ReadonlyArray<unknown> }> = [];
+let verifyAnswer: "ok" | "short" = "ok";
 /** Whether the mini says it runs a live Assistant. */
 let miniHosts = false;
 /** When set, the mini answers `describe` with this error (an older build, a token to relink). */
@@ -114,6 +118,20 @@ const mini: ScriptedMachine = {
       case "assistant.yield":
         calls.push(op);
         return { paused: true };
+      case "assistant.history":
+        historyPages.push(input as { page: number; messages: ReadonlyArray<unknown> });
+        return { count: (input as { messages: ReadonlyArray<unknown> }).messages.length };
+      case "assistant.attachment":
+        return { received: (input as { totalBytes: number }).totalBytes };
+      case "assistant.verify": {
+        calls.push(op);
+        const asked = input as { count: number; digest: string; attachments: number };
+        return {
+          ok: verifyAnswer === "ok",
+          ...asked,
+          count: verifyAnswer === "ok" ? asked.count : 0,
+        };
+      }
       default:
         throw new Error(`unexpected ${op}`);
     }
@@ -357,6 +375,8 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     tracked.length = 0;
     dropped.length = 0;
     adoptedBundles.length = 0;
+    historyPages.length = 0;
+    verifyAnswer = "ok";
     calls.length = 0;
     adoptAnswer = "ok";
     commitAnswer = "committed";
@@ -417,6 +437,151 @@ describe("AssistantHome", () => {
         expect(bundle?.asks.map((ask) => ask.messageId)).toEqual(["cp-send:c:ask:a:reach:1"]);
       }),
     ),
+  );
+
+  const seedHistory = (count: number) =>
+    Effect.flatMap(OrchestrationEngineService, (engine) =>
+      engine.dispatch({
+        type: "thread.history.import",
+        commandId: CommandId.make(`test:history:${count}`),
+        threadId: ThreadId.make("old-assistant"),
+        messages: Array.from({ length: count }, (_, index) => ({
+          messageId: MessageId.make(`hist-${String(index).padStart(4, "0")}`),
+          role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+          text: `message ${index}`,
+          createdAt: `2026-11-0${1 + Math.floor(index / 1000)}T00:00:${String(index % 60).padStart(2, "0")}.${String(index).padStart(3, "0").slice(-3)}Z`,
+        })) as never,
+        append: true,
+      }),
+    );
+
+  it.effect(
+    "moves the whole conversation in pages and commits only after the target verifies",
+    () =>
+      run(
+        Effect.gen(function* () {
+          yield* seedAssistant;
+          yield* seedHistory(450);
+          const home = yield* AssistantHome;
+          yield* home.manage({ action: "move", to: "env-mini" });
+          const sent = adoptedBundles[0]!;
+          expect(sent.messages).toHaveLength(200);
+          // The seeded Assistant already has 2 messages: 452 in all.
+          expect(sent.history?.count).toBe(452);
+          expect(historyPages.map((page) => [page.page, page.messages.length])).toEqual([
+            [1, 200],
+            [2, 52],
+          ]);
+          expect(calls).toEqual(["assistant.adopt", "assistant.verify", "assistant.commit"]);
+        }),
+      ),
+  );
+
+  it.effect("keeps the Assistant here when the target is missing part of the conversation", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        yield* seedHistory(250);
+        verifyAnswer = "short";
+        const home = yield* AssistantHome;
+        const failed = yield* home.manage({ action: "move", to: "env-mini" }).pipe(Effect.flip);
+        expect(failed.detail).toContain("holds 0 of 252 messages");
+        expect(calls).toEqual(["assistant.adopt", "assistant.verify", "assistant.abort"]);
+        expect((yield* liveAssistant)?.id).toBe("old-home");
+      }),
+    ),
+  );
+
+  it.effect(
+    "takes a conversation in pages with attachments, and goes live only once it is all here",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const home = yield* AssistantHome;
+          const config = yield* ServerConfig;
+          const original = {
+            type: "image" as const,
+            id: "old_thread-0b1e8d2a-1234-4abc-9def-0123456789ab-png",
+            name: "shot.png",
+            mimeType: "image/png",
+            sizeBytes: 10,
+          };
+          const first = {
+            ...bundle("full"),
+            messages: [
+              {
+                messageId: "m-1",
+                role: "user" as const,
+                text: "Hi",
+                createdAt: AT,
+                attachments: [original],
+              },
+            ],
+            history: { count: 3, digest: "", attachments: 1 },
+          };
+          const later = [
+            {
+              messageId: "m-2",
+              role: "assistant" as const,
+              text: "Hello",
+              createdAt: "2026-11-21T10:00:01.000Z",
+            },
+            {
+              messageId: "m-3",
+              role: "user" as const,
+              text: "Again",
+              createdAt: "2026-11-21T10:00:02.000Z",
+            },
+          ];
+          const digest = historyDigest([
+            { messageId: "m-1", role: "user", text: "Hi", createdAt: AT },
+            ...later,
+          ]);
+          const adopted = yield* home.adopt(
+            { ...first, history: { ...first.history, digest } },
+            FROM,
+          );
+          // Not everything is here yet: no commit.
+          expect((yield* home.commit("full", FROM).pipe(Effect.flip)).detail).toContain(
+            "has not fully arrived",
+          );
+          yield* home.historyPage({ moveId: "full", page: 1, messages: later }, FROM);
+          // A page sent again adds nothing twice.
+          yield* home.historyPage({ moveId: "full", page: 1, messages: later }, FROM);
+          const bytes = Buffer.from("0123456789");
+          const sha256 = sha256Hex(new Uint8Array(bytes));
+          const chunk = (offset: number, data: Buffer) =>
+            home.attachmentChunk(
+              {
+                moveId: "full",
+                attachment: original,
+                offset,
+                totalBytes: 10,
+                sha256,
+                data: data.toString("base64"),
+              },
+              FROM,
+            );
+          expect((yield* chunk(0, bytes.subarray(0, 6))).received).toBe(6);
+          expect((yield* chunk(6, bytes.subarray(6))).received).toBe(10);
+          const verified = yield* home.verifyHistory(
+            { moveId: "full", count: 3, digest, attachments: 1 },
+            FROM,
+          );
+          expect(verified).toMatchObject({ ok: true, count: 3, attachments: 1 });
+          expect(yield* home.commit("full", FROM)).toEqual({ phase: "committed" });
+          const rows = yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
+            threadId: ThreadId.make(adopted.threadId),
+          });
+          expect(rows.map((row) => row.messageId)).toEqual(["m-1", "m-2", "m-3"]);
+          const moved = rows[0]!.attachments![0]!;
+          expect(moved.id).not.toBe(original.id);
+          const stored = yield* (yield* FileSystem.FileSystem).readFile(
+            `${config.attachmentsDir}/${moved.id}.png`,
+          );
+          expect(Buffer.from(stored).toString()).toBe("0123456789");
+        }),
+      ),
   );
 
   it.effect("keeps the Assistant here when the target fails to adopt it", () =>
