@@ -283,7 +283,23 @@ export function TasksPage(props: { readonly view: TasksView; readonly search: Ta
   const quickAddShortcut = shortcutLabelForCommand(keybindings, "tasks.quickAdd");
   const { expandedId, toggle } = useExpandedTask();
   const [showCompleted, setShowCompleted] = useState(false);
-  const projectFilter = search.project ?? null;
+  // A link that names an excluded Project (the Assistant, an archived Project)
+  // falls back to All projects, in the filter and in the URL.
+  const projectFilterExcluded =
+    search.project !== undefined &&
+    search.project !== "none" &&
+    projects.some((project) => project.id === search.project) &&
+    !selectTaskProjectOptions(projects).some((project) => project.id === search.project);
+  const projectFilter = projectFilterExcluded ? null : (search.project ?? null);
+  useEffect(() => {
+    if (!projectFilterExcluded) return;
+    void navigate({
+      to: "/tasks/$view",
+      params: { view },
+      search: tasksSearch(search, { project: undefined }),
+      replace: true,
+    });
+  }, [projectFilterExcluded, navigate, search, view]);
   const tasks = useMemo(
     () => filterTasksByProject(allTaskRecords, projectFilter),
     [allTaskRecords, projectFilter],
