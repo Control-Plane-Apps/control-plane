@@ -1,4 +1,5 @@
 import {
+  AssistantNeedsYouReplyResult,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -356,6 +357,78 @@ describe("ReachHost", () => {
         expect(messages.at(-1)?.text).toContain("Deploy is stuck");
       }),
       true,
+    ),
+  );
+
+  it.effect("accepts a verified remote user reply as the user and refuses a duplicate answer", () =>
+    run(
+      Effect.gen(function* () {
+        yield* dispatch({
+          type: "project.status.set",
+          commandId: cid(),
+          projectId: ACME,
+          actorThreadId: ACME_COORD,
+          change: {
+            kind: "upsert",
+            id: "question",
+            title: "Approve",
+            state: "needs-you",
+            summary: "Waiting",
+            question: "Proceed?",
+            recommendation: "Proceed",
+            answer: "Proceed",
+          },
+          createdAt: AT,
+        });
+        const input = {
+          environmentId: SELF,
+          projectId: ACME,
+          coordinatorThreadId: ACME_COORD,
+          statusId: "question",
+          openedAt: AT,
+          text: "Yes, proceed",
+        };
+        expect(yield* call("status.reply", input, AssistantNeedsYouReplyResult)).toEqual({
+          ok: true,
+          value: { queued: false },
+        });
+        expect((yield* call("status.reply", input, AssistantNeedsYouReplyResult)).ok).toBe(false);
+        const messages = yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
+          threadId: ACME_COORD,
+        });
+        expect(messages).toHaveLength(1);
+        expect(messages[0]?.source).toBeUndefined();
+        expect(messages[0]?.text).toContain("Yes, proceed");
+      }),
+    ),
+  );
+  it.effect("refuses an unconfirmed or misrouted user reply without writing", () =>
+    run(
+      Effect.gen(function* () {
+        const input = {
+          environmentId: SELF,
+          projectId: ACME,
+          coordinatorThreadId: ACME_COORD,
+          statusId: "question",
+          openedAt: AT,
+          text: "Yes",
+        };
+        confirms = false;
+        expect((yield* call("status.reply", input, AssistantNeedsYouReplyResult)).ok).toBe(false);
+        confirms = true;
+        expect(
+          (yield* call(
+            "status.reply",
+            { ...input, environmentId: "env-other" },
+            AssistantNeedsYouReplyResult,
+          )).ok,
+        ).toBe(false);
+        expect(
+          yield* (yield* ProjectionThreadMessageRepository).listByThreadId({
+            threadId: ACME_COORD,
+          }),
+        ).toHaveLength(0);
+      }),
     ),
   );
 

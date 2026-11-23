@@ -30,6 +30,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("separates reading Assistant questions from sending the user's answer", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverAssistantNeedsYou)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverAssistantNeedsYouReply)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

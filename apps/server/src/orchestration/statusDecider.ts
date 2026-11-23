@@ -27,6 +27,7 @@ import {
   type ProjectStatus,
   type ProjectStatusDecision,
   isAutoAcceptArmed,
+  isStatusNeedingUser,
   parseStatusReply,
   STATUS_RECOMMENDATION_BODY_PREFIX,
   type ThreadId,
@@ -490,7 +491,7 @@ export const statusReplyEvents = Effect.fn("statusReplyEvents")(function* (
   if (project === undefined || status === undefined || decision === undefined) return [];
   // Only a question the user can see waiting on them is answerable; a record
   // that somehow holds a decision in another state never is.
-  if (status.state !== "needs-you" || decision.answeredAt !== undefined) return [];
+  if (project.assistant?.archivedAt != null || !isStatusNeedingUser(status)) return [];
   // An id-tagged reply answers only the question version the user saw: a reply
   // started before the question existed, or to an earlier wording, does not.
   if (reply.statusId !== undefined && reply.revision !== Date.parse(decision.openedAt)) return [];

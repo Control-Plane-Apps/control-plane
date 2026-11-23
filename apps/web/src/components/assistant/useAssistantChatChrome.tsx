@@ -34,7 +34,7 @@ import {
 } from "./AssistantTimelineCards";
 import { useAssistantHomeEnvironment, useSendToThread } from "./useAssistant";
 
-import { useAssistantNeedsYou } from "./useAssistantNeedsYou";
+import { useAssistantNeedsYouState } from "./useAssistantNeedsYou";
 
 // Fork-owned. Everything ChatView swaps in when the thread on screen is one
 // of the Assistant's channels, kept here so ChatView only gains a few lines.
@@ -75,7 +75,8 @@ export function useAssistantChatChrome(input: {
   const inboxKey = `${environmentId}:${threadId}`;
   const assistantSettings = useAssistantHomeEnvironment()?.serverConfig?.settings.assistant ?? null;
   const reach = assistantSettings?.projects ?? null;
-  const needsYou = useAssistantNeedsYou();
+  const needsYouState = useAssistantNeedsYouState();
+  const needsYou = needsYouState.items;
   const { tasks } = useTasks();
   const taskToday = useTaskToday();
   const tasksTodayCount = useMemo(
@@ -196,6 +197,7 @@ export function useAssistantChatChrome(input: {
       <AssistantOverview
         assistant={project}
         needsYou={needsYou}
+        needsYouStatus={needsYouState}
         asks={asks}
         tasksToday={tasksReach === "off" ? null : { count: tasksTodayCount, onOpen: openTasks }}
       />

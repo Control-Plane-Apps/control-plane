@@ -6,13 +6,14 @@ import {
   pendingAskCards,
 } from "@t3tools/client-runtime/state/assistant-home";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import type { ProjectStatus, ThreadId } from "@t3tools/contracts";
+import type { AssistantNeedsYouEntry, ProjectStatus, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { CheckIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { cn } from "~/lib/utils";
-import { useThreadShell } from "~/state/entities";
+import { useProjects, useThreadShell } from "~/state/entities";
+import { useEnvironment } from "~/state/environments";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { formatStatusAge, recommendationButtonLabel } from "../status/projectStatus.logic";
@@ -23,13 +24,20 @@ import { useAssistantOverviewStore } from "./assistantOverviewStore";
 import { AssistantTodayTasks } from "./AssistantTodayTasks";
 import { recommendationTextFor, useSendToThread } from "./useAssistant";
 
+import { AssistantRemoteNeedsYouRow } from "./AssistantRemoteNeedsYouRow";
+import type { AssistantNeedsYouState } from "./useAssistantNeedsYou";
+
 // Fork-owned. The Assistant's Overview right-panel tab: what needs the user
 // across every Project, what the Assistant is working on, and today's tasks.
-// Computed on the client from the shell stream, so it costs no model run.
+// Combines connected shell streams with the home server reach query.
 
 export interface AssistantOverviewProps {
   readonly assistant: EnvironmentProject;
-  readonly needsYou: ReadonlyArray<AssistantNeedsYouItem<EnvironmentProject>>;
+  readonly needsYou: ReadonlyArray<AssistantNeedsYouEntry>;
+  readonly needsYouStatus?: Pick<
+    AssistantNeedsYouState,
+    "loading" | "failed" | "machines" | "refresh" | "liveEnvironmentIds"
+  >;
   readonly asks: ReadonlyArray<AssistantAskCard>;
   /** Today's tasks once the Tasks feature is available; null hides the row. */
   readonly tasksToday?: { readonly count: number; readonly onOpen: () => void } | null;
@@ -37,6 +45,12 @@ export interface AssistantOverviewProps {
 
 export function AssistantOverview(props: AssistantOverviewProps) {
   const { needsYou } = props;
+  const unavailableMachines =
+    props.needsYouStatus?.machines.filter(
+      (machine) =>
+        machine.state !== "online" &&
+        !props.needsYouStatus?.liveEnvironmentIds.has(machine.environmentId),
+    ) ?? [];
   const now = useMinuteNow();
   const dismissedAskIds = useAssistantOverviewStore((state) => state.dismissedAskIds);
   const dismissAsk = useAssistantOverviewStore((state) => state.dismissAsk);
@@ -76,17 +90,47 @@ export function AssistantOverview(props: AssistantOverviewProps) {
       <h3 className="flex items-center gap-1.5 text-xs font-medium text-warning-foreground">
         Needs you<span className="font-normal opacity-80 tabular-nums">{needsYou.length}</span>
       </h3>
+      {props.needsYouStatus?.loading && needsYou.length > 0 ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Checking other Projects…
+        </p>
+      ) : null}
+      {props.needsYouStatus?.failed ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          Could not refresh questions from the Assistant. Questions may be incomplete.{" "}
+          <Button size="sm" variant="ghost" onClick={props.needsYouStatus.refresh}>
+            Retry
+          </Button>
+        </p>
+      ) : null}
+      {unavailableMachines.map((machine) => (
+        <p key={machine.environmentId} role="status" className="text-xs text-muted-foreground">
+          Could not check {machine.label}.{" "}
+          {machine.detail ?? "Showing last known questions, if available."}
+        </p>
+      ))}
       {needsYou.length === 0 ? (
         <p className="rounded-xl border border-border bg-card px-3.5 py-3 text-sm text-muted-foreground">
-          Nothing needs you right now.
+          {props.needsYouStatus?.loading
+            ? "Checking your Projects…"
+            : props.needsYouStatus?.failed || unavailableMachines.length > 0
+              ? "Some Projects could not be checked."
+              : "Nothing needs you right now."}
         </p>
       ) : (
         <ul className="overflow-hidden rounded-xl border border-border bg-card">
           {needsYou.map((item, index) => (
             <NeedsYouRow
-              key={`${item.project.environmentId}:${item.project.id}:${item.status.id}`}
+              key={JSON.stringify([
+                item.environmentId,
+                item.projectId,
+                item.status.id,
+                item.coordinatorThreadId,
+                item.status.decision.openedAt,
+              ])}
               item={item}
               first={index === 0}
+              live={props.needsYouStatus?.liveEnvironmentIds.has(item.environmentId) ?? false}
             />
           ))}
         </ul>
@@ -146,6 +190,32 @@ export function AssistantOverview(props: AssistantOverviewProps) {
 }
 
 function NeedsYouRow({
+  item,
+  first,
+  live,
+}: {
+  item: AssistantNeedsYouEntry;
+  first: boolean;
+  live: boolean;
+}) {
+  const environment = useEnvironment(item.environmentId);
+  const projects = useProjects();
+  const project = projects.find(
+    (candidate) =>
+      candidate.environmentId === item.environmentId && candidate.id === item.projectId,
+  );
+  if (
+    live &&
+    project?.assistant?.coordinatorThreadId === item.coordinatorThreadId &&
+    environment?.connection.phase === "connected" &&
+    !item.stale
+  ) {
+    return <ConnectedNeedsYouRow item={{ project, status: item.status }} first={first} />;
+  }
+  return <AssistantRemoteNeedsYouRow item={item} first={first} />;
+}
+
+function ConnectedNeedsYouRow({
   item,
   first,
 }: {

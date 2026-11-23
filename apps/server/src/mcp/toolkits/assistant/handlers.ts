@@ -101,6 +101,7 @@ export function overviewProjectsOf(snapshot: OrchestrationShellSnapshot) {
         status.decision !== undefined && isStatusNeedingUser(status)
           ? [
               {
+                status,
                 statusId: status.id,
                 title: status.title,
                 question: status.decision.question,

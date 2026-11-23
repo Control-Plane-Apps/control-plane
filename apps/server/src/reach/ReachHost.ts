@@ -1,9 +1,10 @@
 /**
  * The called side of cross-server reach: runs one op from a linked server
  * against this server's own Projects, coordinators and Assistant. Ops act
- * only here and never call another server, so a call cannot loop. Every
- * message they leave is a held `cp-send:` append, which the
- * AgentCompletionReactor starts once its thread is idle. Fork-owned; see
+ * only here and never call another server, so a call cannot loop. Agent
+ * messages use held `cp-send:` appends; explicit user answers use version-checked
+ * `cp-status:` appends without an agent source. The AgentCompletionReactor
+ * starts held messages once their thread is idle. Fork-owned; see
  * docs/internals/assistant-cross-server-reach.md.
  *
  * @module ReachHost
@@ -58,6 +59,7 @@ import { acceptOnce, reachInputHash, wasAccepted, wasSent } from "./reachSent.ts
 import { linkSubjectHolder } from "../agentMachines/linkToken.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
 import { AssistantHome } from "./AssistantHome.ts";
+import { makeStatusQuestionReply } from "./statusQuestionReply.ts";
 import {
   AttachmentChunkInput,
   LegacyAttachmentInput,
@@ -80,6 +82,7 @@ import {
   TaskDeliverInput,
   ThreadFindInput,
   ThreadSendInput,
+  StatusReplyInput,
   type AskResult,
   type DescribeResult,
   type OverviewResult,
@@ -119,6 +122,7 @@ export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
   const turns = yield* ProjectionTurnRepository;
+  const statusQuestionReply = yield* makeStatusQuestionReply;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const sql = yield* SqlClient.SqlClient;
   const statusCore = yield* makeStatusCore;
@@ -453,6 +457,8 @@ export const make = Effect.gen(function* () {
         return statusSet(request);
       case "thread.find":
         return threadFind(request);
+      case "status.reply":
+        return decode(StatusReplyInput)(request.input).pipe(Effect.flatMap(statusQuestionReply));
       case "thread.send":
         return threadSend(request);
       case "assistant.note":
