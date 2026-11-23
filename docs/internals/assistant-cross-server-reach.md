@@ -236,6 +236,10 @@ timeout or crash never leaves two Assistants, and an interrupted move finishes o
    (commit and abort from any other linked machine are refused). The target puts its copy live and starts polling the asks.
    Only the source sends a commit, and only after a successful adopt, so the target's copy can
    never be live while the source's is.
+   When the copy reused an archived Project (A to B to A), the coordinator swap leaves the old
+   coordinator pinned as "Assistant (previous)"; on commit the target unpins and archives it
+   (`retirePreviousThread`), and reconcile does the same for moves committed by older builds. Only
+   abort needs that thread, and a committed move is never aborted.
 5. **Outcomes on the source:**
    - Adopt failed or timed out: send `assistant.abort` and resume here. Resuming is safe even if
      the abort cannot be delivered, because the target's copy stays paused without a commit; the

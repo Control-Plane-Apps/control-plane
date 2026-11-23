@@ -967,6 +967,49 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  /**
+   * After a move back onto a reused Assistant Project commits, its old
+   * coordinator is history: a coordinator swap leaves it pinned as a standing
+   * agent named "Assistant (previous)", which nothing needs once the move can
+   * no longer be undone (a committed move is never aborted). Unpin and archive
+   * it, so the sidebar shows one Assistant. Idempotent; also run by reconcile
+   * for moves committed before this existed.
+   */
+  const retirePreviousThread = (record: TargetMove) =>
+    Effect.gen(function* () {
+      if (record.phase !== "committed" || record.previousThreadId === undefined) return;
+      if (record.previousThreadId === record.threadId) return;
+      const found = yield* snapshots
+        .getThreadShellById(ThreadId.make(record.previousThreadId))
+        .pipe(Effect.orElseSucceed(() => Option.none()));
+      if (Option.isNone(found)) return;
+      const thread = found.value;
+      if (thread.archivedAt != null) return;
+      // Checked state first, so a fresh id per attempt: an older build may have
+      // unarchived or re-pinned it after a retire with the same move id.
+      const attempt = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      if (thread.pinnedAt != null) {
+        yield* dispatch(
+          {
+            type: "thread.unpin",
+            commandId: CommandId.make(`assistant-home:retire-unpin:${record.moveId}:${attempt}`),
+            threadId: thread.id,
+          },
+          "Could not unpin the previous Assistant thread",
+        );
+      }
+      yield* dispatch(
+        {
+          type: "thread.archive",
+          commandId: CommandId.make(`assistant-home:retire-archive:${record.moveId}:${attempt}`),
+          threadId: thread.id,
+        },
+        "Could not archive the previous Assistant thread",
+      );
+    }).pipe(
+      Effect.catch((error) => Effect.logWarning("previous Assistant thread kept", { error })),
+    );
+
   const commit: AssistantHomeShape["commit"] = (moveId, from) =>
     lock.withPermits(1)(
       Effect.gen(function* () {
@@ -984,6 +1027,7 @@ export const make = Effect.gen(function* () {
           at: DateTime.toEpochMillis(yield* DateTime.now),
         });
         yield* journal.put({ ...record, phase: "committed" });
+        yield* retirePreviousThread({ ...record, phase: "committed" });
         yield* note(
           record.threadId,
           `assistant-home:arrived:${moveId}`,
@@ -1020,6 +1064,7 @@ export const make = Effect.gen(function* () {
           // Under the lock no adopt is running: a `preparing` copy is what a crash left behind.
           if (record.role === "target") {
             if (record.phase === "preparing") yield* abortTarget(record);
+            if (record.phase === "committed") yield* retirePreviousThread(record);
             continue;
           }
           if (record.role === "reclaim") {

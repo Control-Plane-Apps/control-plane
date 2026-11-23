@@ -16,6 +16,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
@@ -546,6 +547,99 @@ describe("AssistantHome", () => {
           threadId: ThreadId.make(returned.threadId),
         })).map((message) => message.text);
         expect(texts).toEqual(["Remember: I like short answers.", "Noted.", "Said on the mini"]);
+      }),
+    ),
+  );
+
+  const threadState = (threadId: string) =>
+    Effect.gen(function* () {
+      const snapshots = yield* ProjectionSnapshotQuery;
+      const thread = (yield* snapshots.getCommandReadModel()).threads.find(
+        (entry) => entry.id === threadId,
+      );
+      return {
+        archived: thread?.archivedAt != null,
+        pinned: thread?.pinnedAt != null,
+        deleted: thread?.deletedAt != null,
+      };
+    });
+
+  it.effect(
+    "moving back leaves no pinned previous Assistant: the old coordinator is archived",
+    () =>
+      run(
+        Effect.gen(function* () {
+          yield* seedAssistant;
+          const home = yield* AssistantHome;
+          yield* home.manage({ action: "move", to: "env-mini" });
+          const returned = yield* home.adopt(bundle("move-back"), FROM);
+          // Before commit the old coordinator is kept as is: an abort makes it the coordinator again.
+          expect((yield* threadState("old-assistant")).archived).toBe(false);
+          yield* home.commit("move-back", FROM);
+          expect(yield* threadState("old-assistant")).toEqual({
+            archived: true,
+            pinned: false,
+            deleted: false,
+          });
+          const live = yield* liveAssistant;
+          expect(live?.assistant?.coordinatorThreadId).toBe(returned.threadId);
+          expect(yield* threadState(returned.threadId)).toEqual({
+            archived: false,
+            pinned: false,
+            deleted: false,
+          });
+        }),
+      ),
+  );
+
+  it.effect("an aborted move back keeps the old coordinator live and in charge", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const home = yield* AssistantHome;
+        yield* home.manage({ action: "move", to: "env-mini" });
+        yield* home.adopt(bundle("move-back"), FROM);
+        yield* home.abort("move-back", FROM);
+        expect((yield* threadState("old-assistant")).archived).toBe(false);
+        const snapshots = yield* ProjectionSnapshotQuery;
+        const project = (yield* snapshots.getShellSnapshot()).projects.find(
+          (entry) => entry.id === "old-home",
+        );
+        expect(project?.assistant?.coordinatorThreadId).toBe("old-assistant");
+      }),
+    ),
+  );
+
+  it.effect("reconcile archives a previous coordinator an older build left pinned", () =>
+    run(
+      Effect.gen(function* () {
+        yield* seedAssistant;
+        const home = yield* AssistantHome;
+        const engine = yield* OrchestrationEngineService;
+        yield* home.manage({ action: "move", to: "env-mini" });
+        yield* home.adopt(bundle("move-back"), FROM);
+        yield* home.commit("move-back", FROM);
+        // As an older build left it: unarchived and pinned as a standing agent.
+        yield* engine.dispatch({
+          type: "thread.unarchive",
+          commandId: CommandId.make("test:unarchive-old"),
+          threadId: ThreadId.make("old-assistant"),
+        });
+        yield* engine.dispatch({
+          type: "thread.pin",
+          commandId: CommandId.make("test:pin-old"),
+          threadId: ThreadId.make("old-assistant"),
+        });
+        expect(yield* threadState("old-assistant")).toMatchObject({
+          archived: false,
+          pinned: true,
+        });
+        yield* home.reconcile;
+        expect(yield* threadState("old-assistant")).toEqual({
+          archived: true,
+          pinned: false,
+          deleted: false,
+        });
       }),
     ),
   );
