@@ -335,18 +335,32 @@ function linkedViews(): LinkedTaskView[] {
  * and the local setting decides.
  */
 export function taskRolloverPermit(local: RolloverChoice, nowMs: number): RolloverPermit {
-  if (live === null) {
-    const rolls = local.enabled && current.authority;
-    return { enabled: local.enabled, choice: local, rolls, stale: false };
-  }
-  return rolloverPermit({
-    decision: current,
-    selfAccount: live.selfAccount,
-    local,
-    linked: linkedViews(),
-    refreshedAt: live.refreshedAt,
-    nowMs,
-  });
+  const permit: RolloverPermit =
+    live === null
+      ? {
+          enabled: local.enabled,
+          choice: local,
+          rolls: local.enabled && current.authority,
+          stale: false,
+        }
+      : rolloverPermit({
+          decision: current,
+          selfAccount: live.selfAccount,
+          local,
+          linked: linkedViews(),
+          refreshedAt: live.refreshedAt,
+          nowMs,
+        });
+  // While the Assistant moves away from here, this server stops rolling (and
+  // says so in describe); the target starts once it commits and sees that.
+  return moveHold ? { ...permit, rolls: false } : permit;
+}
+
+let moveHold = false;
+
+/** Held while this server moves the Assistant away; released on commit or rollback. */
+export function setRolloverMoveHold(held: boolean): void {
+  moveHold = held;
 }
 
 /**

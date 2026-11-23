@@ -5,6 +5,7 @@ import {
   currentHome,
   LOCAL_HOME,
   moveBlockedReason,
+  moveNeedsTaskSync,
   moveTaskNote,
   offlineHomeText,
   pendingMoveText,
@@ -142,5 +143,33 @@ describe("moveTaskNote", () => {
         "Mac mini",
       ),
     ).toBe("Your tasks follow it through Task Sync.");
+  });
+});
+
+describe("moveNeedsTaskSync", () => {
+  const machine = {
+    id: "env-mini",
+    label: "Mac mini",
+    state: "online" as const,
+    hostsAssistant: false,
+    linksBack: true,
+    projects: [],
+  };
+  const status = (taskSynced: boolean | undefined, target: boolean | null | undefined) => ({
+    here: true,
+    elsewhere: null,
+    conflicts: [],
+    addresses: [],
+    ...(taskSynced === undefined ? {} : { taskSynced }),
+    machines: [{ ...machine, ...(target === undefined ? {} : { taskSynced: target }) }],
+  });
+  it("blocks a move to an unsigned machine only when this one is signed in", () => {
+    expect(moveNeedsTaskSync(status(true, false), "env-mini", "Mac mini")).toContain(
+      "Sign Mac mini in to Task Sync first",
+    );
+    expect(moveNeedsTaskSync(status(true, null), "env-mini", "Mac mini")).toContain("Update it");
+    expect(moveNeedsTaskSync(status(true, true), "env-mini", "Mac mini")).toBeNull();
+    expect(moveNeedsTaskSync(status(false, false), "env-mini", "Mac mini")).toBeNull();
+    expect(moveNeedsTaskSync(status(true, false), LOCAL_HOME, "This Mac")).toBeNull();
   });
 });

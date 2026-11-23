@@ -105,6 +105,7 @@ import {
 import {
   type HomeCheck,
   describeTaskState,
+  setRolloverMoveHold,
   lastAssistantHost,
   noteAssistantHost,
   refreshTaskAuthority,
@@ -840,6 +841,8 @@ export const make = Effect.gen(function* () {
         };
         // Recorded, then paused here: until the target commits, no machine runs one.
         yield* journal.put(record);
+        // Rollover stops here for the move: the target takes it over with the commit.
+        setRolloverMoveHold(true);
         yield* setArchived(project.id, thread.id, true);
         const adopted = yield* reach
           .call(machine, "assistant.adopt", bundle, yield* selfCaller(thread.id), AdoptResult, {
@@ -871,7 +874,7 @@ export const make = Effect.gen(function* () {
           );
         }
         return notes;
-      }),
+      }).pipe(Effect.ensuring(Effect.sync(() => setRolloverMoveHold(false)))),
     );
 
   /** The target side of a move: a paused copy, idempotent by move id. */

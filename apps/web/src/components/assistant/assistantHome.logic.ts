@@ -156,3 +156,20 @@ export function moveTaskNote(
   if (targetSynced === true) return "Your tasks follow it through Task Sync.";
   return "Its tasks follow it once that machine is signed in to Task Sync.";
 }
+
+/**
+ * A move needs the target signed in to Task Sync when this machine is: the
+ * server refuses it otherwise. Null when the move may go ahead.
+ */
+export function moveNeedsTaskSync(
+  status: AssistantHomeStatus,
+  target: string,
+  targetLabel: string,
+): string | null {
+  if (target === LOCAL_HOME || status.taskSynced !== true) return null;
+  const synced = status.machines.find((machine) => machine.id === target)?.taskSynced;
+  if (synced === true) return null;
+  return synced === false
+    ? `Sign ${targetLabel} in to Task Sync first, so your Assistant can see your tasks there.`
+    : `${targetLabel} has not said whether it is signed in to Task Sync. Update it first.`;
+}

@@ -7,6 +7,8 @@ import { useCallback, useEffect, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { serverEnvironment } from "~/state/server";
+import { useServerConfigs } from "~/state/entities";
+import { TaskSyncCard } from "../tasks/TaskSyncCard";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { agentMachinesErrorMessage } from "../settings/AgentMachinesSettings.logic";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout";
@@ -26,6 +28,7 @@ import {
   currentHome,
   LOCAL_HOME,
   machineStateText,
+  moveNeedsTaskSync,
   moveTaskNote,
   offlineHomeText,
   pendingMoveText,
@@ -120,6 +123,7 @@ export function AssistantHomeSection({
   readonly onReclaim: () => Promise<AssistantHomeStatus | null>;
 }) {
   const [pending, setPending] = useState<{ value: string; label: string } | null>(null);
+  const serverConfigs = useServerConfigs();
   const [reclaiming, setReclaiming] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -143,6 +147,9 @@ export function AssistantHomeSection({
   const offline = offlineHomeText(status);
   const moving = pendingMoveText(status);
   const takeBack = reclaimWarning(status);
+  const signInFirst =
+    pending === null ? null : moveNeedsTaskSync(status, pending.value, pending.label);
+  const connectedToTarget = pending !== null && serverConfigs.has(pending.value as EnvironmentId);
 
   const confirmReclaim = async () => {
     setBusy(true);
@@ -267,18 +274,34 @@ export function AssistantHomeSection({
           <AlertDialogHeader>
             <AlertDialogTitle>Move your Assistant to {pending?.label}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Its settings, schedules, memory and last 200 messages move to {pending?.label}. It
-              pauses on its current machine first, so only one Assistant ever acts for you, and the
-              copy left there stays read-only.{" "}
+              Its whole conversation, settings, schedules and memory move to {pending?.label}. It
+              pauses on its current machine first, so only one Assistant ever acts for you, and
+              nothing is left behind there.{" "}
               {pending === null ? null : moveTaskNote(status, pending.value, pending.label)} If
               anything fails, it stays where it is.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {signInFirst !== null && pending !== null ? (
+            <div className="flex flex-col gap-2 px-6 pb-2">
+              <p className="text-sm text-warning-foreground">{signInFirst}</p>
+              {connectedToTarget ? (
+                <TaskSyncCard
+                  compact
+                  environmentId={pending.value as EnvironmentId}
+                  serverLabel={pending.label}
+                />
+              ) : (
+                <p className="text-muted-foreground text-xs">
+                  Open Settings, Task Sync from a window connected to {pending.label} to sign it in.
+                </p>
+              )}
+            </div>
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" disabled={busy} />}>
               Cancel
             </AlertDialogClose>
-            <Button onClick={() => void confirm()} disabled={busy}>
+            <Button onClick={() => void confirm()} disabled={busy || signInFirst !== null}>
               {busy ? "Moving…" : "Move Assistant"}
             </Button>
           </AlertDialogFooter>

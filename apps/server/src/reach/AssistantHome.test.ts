@@ -54,7 +54,7 @@ import { MoveRecord } from "./assistantMoves.ts";
 import { historyDigest, sha256Hex } from "./assistantHistory.ts";
 import { ReachBridge, type ReachAskRecord } from "./ReachBridge.ts";
 import type { AssistantBundle } from "./reachProtocol.ts";
-import { noteAssistantHost } from "./taskAuthority.ts";
+import { noteAssistantHost, taskRolloverPermit } from "./taskAuthority.ts";
 import { makeScriptedReach, type ScriptedMachine } from "./testReach.ts";
 
 const CODEX = ProviderInstanceId.make("codex");
@@ -74,6 +74,7 @@ let abortAnswer: "aborted" | "offline" = "aborted";
 let statusAnswer: "adopted" | "committed" | "aborted" | "unknown" = "committed";
 const adoptedBundles: Array<AssistantBundle> = [];
 const historyPages: Array<{ page: number; messages: ReadonlyArray<unknown> }> = [];
+const rollsDuringMove: Array<boolean> = [];
 let verifyAnswer: "ok" | "short" = "ok";
 /** Whether the mini says it runs a live Assistant. */
 let miniHosts = false;
@@ -99,6 +100,7 @@ const mini: ScriptedMachine = {
         return { projects: [], workspaces: [] };
       case "assistant.adopt":
         calls.push(op);
+        rollsDuringMove.push(taskRolloverPermit({ enabled: true, setAt: null }, 0).rolls);
         if (adoptAnswer === "fail") throw new Error("disk full");
         if (adoptAnswer === "timeout") throw new Error("timeout: no answer");
         adoptedBundles.push(input as AssistantBundle);
@@ -377,6 +379,7 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     dropped.length = 0;
     adoptedBundles.length = 0;
     historyPages.length = 0;
+    rollsDuringMove.length = 0;
     verifyAnswer = "ok";
     calls.length = 0;
     adoptAnswer = "ok";
@@ -483,6 +486,22 @@ describe("AssistantHome", () => {
             [2, 52],
           ]);
           expect(calls).toEqual(["assistant.adopt", "assistant.verify", "assistant.commit"]);
+        }),
+      ),
+  );
+
+  it.effect(
+    "stops rolling commitments here while the Assistant moves, and after a failed move rolls again",
+    () =>
+      run(
+        Effect.gen(function* () {
+          yield* seedAssistant;
+          const home = yield* AssistantHome;
+          expect(taskRolloverPermit({ enabled: true, setAt: null }, 0).rolls).toBe(true);
+          adoptAnswer = "fail";
+          yield* home.manage({ action: "move", to: "env-mini" }).pipe(Effect.flip);
+          expect(rollsDuringMove).toEqual([false]);
+          expect(taskRolloverPermit({ enabled: true, setAt: null }, 0).rolls).toBe(true);
         }),
       ),
   );
