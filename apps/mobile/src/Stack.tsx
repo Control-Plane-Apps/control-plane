@@ -33,6 +33,7 @@ import { ReviewSheet } from "./features/review/ReviewSheet";
 import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
 import { ProjectStatusRouteScreen } from "./features/status/ProjectStatusRouteScreen";
 import { ControlPlanePushWorker } from "./features/push/ControlPlanePush";
+import { ThreadPrefetchWorker } from "./features/threads/ThreadPrefetchWorker";
 import { PlanTasksScreen } from "./features/tasks/PlanTasksScreen";
 import { TaskMoveSheet } from "./features/tasks/TaskMoveSheet";
 import { TaskQuickAddSheet } from "./features/tasks/TaskQuickAddSheet";
@@ -567,6 +568,7 @@ function RootStackLayout(props: {
     <HardwareKeyboardCommandProvider pathname={pathname}>
       <ThreadOutboxDrainWorker />
       <ControlPlanePushWorker />
+      <ThreadPrefetchWorker />
       <ShowcaseCaptureCoordinator pathname={pathname} />
       <ExistingThreadSettingsRouteProvider>
         <AdaptiveWorkspaceLayout
