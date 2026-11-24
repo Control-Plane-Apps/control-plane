@@ -1,3 +1,5 @@
+import { notificationRequestData } from "../push/notificationRequestData";
+
 function dataFromNotificationResponse(response: unknown): Record<string, unknown> | null {
   if (typeof response !== "object" || response === null) {
     return null;
@@ -6,16 +8,7 @@ function dataFromNotificationResponse(response: unknown): Record<string, unknown
   if (typeof notification !== "object" || notification === null) {
     return null;
   }
-  const request = (notification as { readonly request?: unknown }).request;
-  if (typeof request !== "object" || request === null) {
-    return null;
-  }
-  const content = (request as { readonly content?: unknown }).content;
-  if (typeof content !== "object" || content === null) {
-    return null;
-  }
-  const data = (content as { readonly data?: unknown }).data;
-  return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : null;
+  return notificationRequestData((notification as { readonly request?: unknown }).request);
 }
 
 function identifierFromNotificationResponse(response: unknown): string | null {
