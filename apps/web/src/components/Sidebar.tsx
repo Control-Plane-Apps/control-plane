@@ -153,6 +153,7 @@ import {
   readThreadShell,
   readEnvironmentSupportsProjectReorder,
   useAllEnvironmentProjectSnapshotsReady,
+  useShellCachesSettled,
   useThreadShells,
 } from "../state/entities";
 import { useProjectsWithOrderOverrides } from "../projectOrderOverrides";
@@ -2464,6 +2465,9 @@ export default function Sidebar() {
   const updateSettings = useUpdateClientSettings();
   const [folderOrderLocked, setFolderOrderLocked] = useState(false);
   const threads = useThreadShells();
+  // Hold the list until every environment's cached shell has landed so launch
+  // paints all Projects once instead of one environment at a time.
+  const shellCachesSettled = useShellCachesSettled();
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -5284,7 +5288,12 @@ export default function Sidebar() {
           ) : null
         }
       >
-        <SidebarGroup className="flex-1 px-[var(--sidebar-content-inset)] pb-1 pt-3">
+        <SidebarGroup
+          className={cn(
+            "flex-1 px-[var(--sidebar-content-inset)] pb-1 pt-3",
+            !shellCachesSettled && "invisible",
+          )}
+        >
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (
               <TooltipProvider

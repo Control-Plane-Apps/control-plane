@@ -41,6 +41,18 @@ const EMPTY_SHELL_STATE: EnvironmentShellState = {
   error: Option.none(),
 };
 
+/**
+ * True until an environment's shell state first emits, i.e. while its cached
+ * shell is still being read. The state atoms start from this exact object and
+ * every emitted state is a new one.
+ */
+export function isPendingEnvironmentShellState(state: EnvironmentShellState): boolean {
+  return state === EMPTY_SHELL_STATE;
+}
+
+/** The state an environment reports before its cached shell has been read. */
+export const PENDING_ENVIRONMENT_SHELL_STATE: EnvironmentShellState = EMPTY_SHELL_STATE;
+
 function shellStatusForSnapshot(
   snapshot: Option.Option<OrchestrationShellSnapshot>,
 ): EnvironmentShellStatus {
@@ -285,6 +297,12 @@ function shellStateChanges(environmentId: EnvironmentId) {
 
 export interface EnvironmentShellSummary {
   readonly hasSnapshot: boolean;
+  /**
+   * An enabled environment has not finished reading its cached shell yet.
+   * Lists hold their first paint on this so environments whose caches land a
+   * few hundred milliseconds apart appear together instead of one at a time.
+   */
+  readonly hasPendingCachedShell: boolean;
   readonly hasSynchronizingShell: boolean;
   readonly hasCachedShell: boolean;
   readonly hasLiveShell: boolean;
@@ -294,6 +312,7 @@ export interface EnvironmentShellSummary {
 
 const EMPTY_ENVIRONMENT_SHELL_SUMMARY: EnvironmentShellSummary = Object.freeze({
   hasSnapshot: false,
+  hasPendingCachedShell: false,
   hasSynchronizingShell: false,
   hasCachedShell: false,
   hasLiveShell: false,
@@ -309,6 +328,7 @@ function shellSummariesEqual(
 ): boolean {
   return (
     left.hasSnapshot === right.hasSnapshot &&
+    left.hasPendingCachedShell === right.hasPendingCachedShell &&
     left.hasSynchronizingShell === right.hasSynchronizingShell &&
     left.hasCachedShell === right.hasCachedShell &&
     left.hasLiveShell === right.hasLiveShell &&
@@ -336,6 +356,7 @@ export function createEnvironmentShellSummaryAtom(input: {
   let previousSummary = EMPTY_ENVIRONMENT_SHELL_SUMMARY;
   return Atom.make((get) => {
     let hasSnapshot = false;
+    let hasPendingCachedShell = false;
     let hasSynchronizingShell = false;
     let hasCachedShell = false;
     let hasLiveShell = false;
@@ -344,6 +365,7 @@ export function createEnvironmentShellSummaryAtom(input: {
 
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
       const state = get(input.shellStateValueAtom(environmentId));
+      hasPendingCachedShell ||= isPendingEnvironmentShellState(state);
       hasSynchronizingShell ||= state.status === "synchronizing";
       hasCachedShell ||= state.status === "cached";
       hasLiveShell ||= state.status === "live";
@@ -362,6 +384,7 @@ export function createEnvironmentShellSummaryAtom(input: {
 
     const next: EnvironmentShellSummary = {
       hasSnapshot,
+      hasPendingCachedShell,
       hasSynchronizingShell,
       hasCachedShell,
       hasLiveShell,

@@ -8,7 +8,7 @@ import {
   type EnvironmentThreadSearchMatch,
 } from "@t3tools/client-runtime/state/thread-search";
 import { LegendList, type LegendListProps } from "@legendapp/list/react-native";
-import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, View } from "react-native";
 import { GestureDetector, type NativeGesture } from "react-native-gesture-handler";
 import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
@@ -55,6 +55,9 @@ import { useThreadListActions } from "./useThreadListActions";
 // own row surfaces and header "+" buttons.
 
 type ThreadSelection = Pick<EnvironmentThreadShell, "environmentId" | "id">;
+
+const LIST_REVEAL_FALLBACK_MS = 500;
+const HIDDEN_UNTIL_LOADED = { opacity: 0 } as const;
 
 type HomeSectionListProps = Pick<
   LegendListProps<HomeSectionItem>,
@@ -829,6 +832,19 @@ export function HomeSectionList(
     ],
   );
 
+  // LegendList keeps its rows invisible until they are measured but paints
+  // the header (Assistant, Plan tasks) at once, so launch showed those rows
+  // alone for a few frames before the Projects appeared under them. Hold the
+  // whole list to the same moment; the fallback covers a list that never
+  // reports load.
+  const [listRevealed, setListRevealed] = useState(false);
+  const revealList = useCallback(() => setListRevealed(true), []);
+  useEffect(() => {
+    if (listRevealed) return;
+    const id = setTimeout(revealList, LIST_REVEAL_FALLBACK_MS);
+    return () => clearTimeout(id);
+  }, [listRevealed, revealList]);
+
   const list = (
     <LegendList
       data={props.ready === false ? NO_ITEMS : listItems}
@@ -848,7 +864,8 @@ export function HomeSectionList(
       recycleItems
       scrollEventThrottle={16}
       showsVerticalScrollIndicator={false}
-      style={props.style}
+      onLoad={revealList}
+      style={listRevealed ? props.style : [props.style, HIDDEN_UNTIL_LOADED]}
       ListHeaderComponent={
         <>
           {props.ListHeaderComponent}

@@ -18,12 +18,13 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { selectWorkspaceProjects } from "@t3tools/client-runtime/state/assistants";
 import { arrayElementsEqual } from "@t3tools/client-runtime/state/entities";
 import { Atom } from "effect/unstable/reactivity";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom } from "./server";
 import {
   allEnvironmentProjectSnapshotsReadyAtom,
+  allEnvironmentShellCachesReadAtom,
   allEnvironmentShellsBootstrappedAtom,
 } from "./shell";
 import { environmentThreadDetails, environmentThreadShells } from "./threads";
@@ -112,6 +113,30 @@ export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
 
 export function useAllEnvironmentShellsBootstrapped(): boolean {
   return useAtomValue(allEnvironmentShellsBootstrappedAtom);
+}
+
+/** How long launch waits for the slowest environment's cached shell. */
+export const SHELL_CACHE_SETTLE_MS = 1_000;
+// Once settled in this window, a newly added environment never hides the list.
+let shellCachesSettledOnce = false;
+
+/**
+ * True once every enabled environment has read its cached shell, or after the
+ * settle window, so the sidebar paints every environment's Projects at once.
+ */
+export function useShellCachesSettled(): boolean {
+  const cachesRead = useAtomValue(allEnvironmentShellCachesReadAtom);
+  const [expired, setExpired] = useState(false);
+  const settled = shellCachesSettledOnce || cachesRead || expired;
+  useEffect(() => {
+    if (settled) return;
+    const id = setTimeout(() => setExpired(true), SHELL_CACHE_SETTLE_MS);
+    return () => clearTimeout(id);
+  }, [settled]);
+  useEffect(() => {
+    if (settled) shellCachesSettledOnce = true;
+  }, [settled]);
+  return settled;
 }
 
 export function useAllEnvironmentProjectSnapshotsReady(): boolean {

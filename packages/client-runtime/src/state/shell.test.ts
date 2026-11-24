@@ -6,7 +6,12 @@ import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import { PrimaryConnectionTarget } from "../connection/model.ts";
 import type { EnvironmentShellState } from "./shell.ts";
-import { createEnvironmentServerConfigsAtom, createEnvironmentShellSummaryAtom } from "./shell.ts";
+import {
+  createEnvironmentServerConfigsAtom,
+  createEnvironmentShellSummaryAtom,
+  isPendingEnvironmentShellState,
+  PENDING_ENVIRONMENT_SHELL_STATE,
+} from "./shell.ts";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
 const OTHER_ENVIRONMENT_ID = EnvironmentId.make("environment-2");
@@ -95,6 +100,7 @@ describe("environment shell projections", () => {
 
     expect(summary).toEqual({
       hasSnapshot: true,
+      hasPendingCachedShell: false,
       hasSynchronizingShell: true,
       hasCachedShell: true,
       hasLiveShell: false,
@@ -112,6 +118,26 @@ describe("environment shell projections", () => {
     );
 
     expect(harness.registry.get(harness.summaryAtom)).toBe(summary);
+  });
+
+  it("reports a pending cached shell until every environment has read its cache", () => {
+    const harness = makeHarness();
+    harness.registry.set(
+      harness.shellStateAtom(OTHER_ENVIRONMENT_ID),
+      PENDING_ENVIRONMENT_SHELL_STATE,
+    );
+
+    const pending = harness.registry.get(harness.summaryAtom);
+    expect(pending.hasSnapshot).toBe(true);
+    expect(pending.hasPendingCachedShell).toBe(true);
+    // An empty cache read is a new object, so it no longer counts as pending.
+    expect(isPendingEnvironmentShellState(shellState({ status: "empty" }))).toBe(false);
+
+    harness.registry.set(
+      harness.shellStateAtom(OTHER_ENVIRONMENT_ID),
+      shellState({ status: "cached", updatedAt: "2026-06-02T00:00:00.000Z" }),
+    );
+    expect(harness.registry.get(harness.summaryAtom).hasPendingCachedShell).toBe(false);
   });
 
   it("preserves server-config map identity until a config reference changes", () => {
