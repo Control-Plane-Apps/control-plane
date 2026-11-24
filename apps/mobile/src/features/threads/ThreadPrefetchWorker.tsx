@@ -12,6 +12,7 @@ import { getThreadVisitMap } from "../../state/thread-visits";
 import { environmentThreads } from "../../state/threads";
 import { useWorkspaceState } from "../../state/workspace";
 import { controlPlanePushData } from "../push/notificationRouting";
+import { notificationRequestData } from "../push/notificationRequestData";
 import {
   createPrefetchQueue,
   isWarm,
@@ -61,20 +62,8 @@ const atomWarmer: ThreadWarmer = {
     }),
 };
 
-/**
- * expo-notifications reports a remote push's `content.data` as its `body` key
- * (NotificationRecords.swift), which our payloads do not use; the whole APNs
- * payload, `cp` included, is on the push trigger.
- */
-function pushData(request: Notifications.NotificationRequest): unknown {
-  const trigger = request.trigger as { readonly payload?: unknown } | null;
-  return controlPlanePushData(request.content.data) !== null
-    ? request.content.data
-    : (trigger?.payload ?? null);
-}
-
 function pushTarget(request: Notifications.NotificationRequest): PrefetchTarget | null {
-  const push = controlPlanePushData(pushData(request));
+  const push = controlPlanePushData(notificationRequestData(request));
   if (push === null || typeof push.threadId !== "string" || push.threadId.length === 0) {
     return null;
   }
