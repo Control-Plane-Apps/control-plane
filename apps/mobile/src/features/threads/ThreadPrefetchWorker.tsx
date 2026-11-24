@@ -61,8 +61,20 @@ const atomWarmer: ThreadWarmer = {
     }),
 };
 
-function pushTarget(data: unknown): PrefetchTarget | null {
-  const push = controlPlanePushData(data);
+/**
+ * expo-notifications reports a remote push's `content.data` as its `body` key
+ * (NotificationRecords.swift), which our payloads do not use; the whole APNs
+ * payload, `cp` included, is on the push trigger.
+ */
+function pushData(request: Notifications.NotificationRequest): unknown {
+  const trigger = request.trigger as { readonly payload?: unknown } | null;
+  return controlPlanePushData(request.content.data) !== null
+    ? request.content.data
+    : (trigger?.payload ?? null);
+}
+
+function pushTarget(request: Notifications.NotificationRequest): PrefetchTarget | null {
+  const push = controlPlanePushData(pushData(request));
   if (push === null || typeof push.threadId !== "string" || push.threadId.length === 0) {
     return null;
   }
@@ -125,11 +137,11 @@ export function ThreadPrefetchWorker() {
   // A notification about a thread: warm that thread first.
   useEffect(() => {
     const received = Notifications.addNotificationReceivedListener((notification) => {
-      const target = pushTarget(notification.request.content.data);
+      const target = pushTarget(notification.request);
       if (target !== null) queue.enqueue([target], { front: true });
     });
     const tapped = Notifications.addNotificationResponseReceivedListener((response) => {
-      const target = pushTarget(response.notification.request.content.data);
+      const target = pushTarget(response.notification.request);
       if (target !== null) queue.enqueue([target], { front: true });
     });
     return () => {
