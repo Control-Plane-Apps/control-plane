@@ -39,7 +39,12 @@ export function useWorkspaceState(relevantOnly = false) {
         environments: projectedEnvironments,
         shellSummary:
           relevantOnly && projectedEnvironments.length === 0
-            ? { ...shellSummary, hasSnapshot: false, hasSynchronizingShell: false }
+            ? {
+                ...shellSummary,
+                hasSnapshot: false,
+                hasPendingCachedShell: false,
+                hasSynchronizingShell: false,
+              }
             : shellSummary,
       }),
     [isReady, networkStatus, projectedEnvironments, shellSummary, relevantOnly],

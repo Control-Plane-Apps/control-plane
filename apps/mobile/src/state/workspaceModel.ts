@@ -20,6 +20,8 @@ export interface WorkspaceState {
   readonly isLoadingConnections: boolean;
   readonly hasConnections: boolean;
   readonly hasLoadedShellSnapshot: boolean;
+  /** An enabled environment is still reading its cached shell from disk. */
+  readonly hasPendingCachedShell: boolean;
   readonly hasPendingShellSnapshot: boolean;
   readonly hasReadyEnvironment: boolean;
   readonly hasConnectingEnvironment: boolean;
@@ -96,6 +98,7 @@ export function projectWorkspaceState(input: {
     isLoadingConnections: !input.isReady,
     hasConnections: input.environments.length > 0,
     hasLoadedShellSnapshot: input.shellSummary.hasSnapshot,
+    hasPendingCachedShell: input.shellSummary.hasPendingCachedShell,
     hasPendingShellSnapshot: input.shellSummary.hasSynchronizingShell,
     hasReadyEnvironment:
       input.networkStatus !== "offline" &&

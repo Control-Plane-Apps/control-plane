@@ -32,6 +32,7 @@ import { HomeSectionList } from "./HomeSectionList";
 import type { HomeProjectSortOrder } from "./homeThreadList";
 import { useHomeSections } from "./useHomeSections";
 import { useConnectionStatusVisible } from "../connection/useConnectionStatusVisible";
+import { useShellListReady } from "./shellListReady";
 
 /* ─── Types ──────────────────────────────────────────────────────────── */
 
@@ -213,6 +214,11 @@ export function HomeScreen(props: HomeScreenProps) {
     props.environments.map((environment) => environment.environmentId).join(","),
   );
 
+  // One environment's cached shell can land a beat before another's; hold the
+  // list until all of them have read their caches so it paints once.
+  const shellListReady = useShellListReady(props.catalogState);
+  const settlingCachedShells = props.catalogState.hasLoadedShellSnapshot && !shellListReady;
+
   const hasSavedEnvironment =
     props.catalogState.hasConnections || Object.keys(props.savedConnectionsById).length > 0;
   const showComposer = hasSavedEnvironment || props.catalogState.hasReadyEnvironment;
@@ -220,7 +226,7 @@ export function HomeScreen(props: HomeScreenProps) {
 
   // Connection state surfaces in the header title slot
   // (WorkspaceConnectionTitle), so reconnects never shift the rows.
-  if (!props.catalogState.hasLoadedShellSnapshot) {
+  if (!shellListReady) {
     const emptyState = deriveEmptyState(props.catalogState);
     return (
       <View className={Platform.OS === "android" ? "flex-1 bg-header" : "flex-1 bg-screen"}>
@@ -241,7 +247,7 @@ export function HomeScreen(props: HomeScreenProps) {
             paddingTop: NATIVE_LIQUID_GLASS_SUPPORTED ? insets.top + 72 : 0,
           }}
         >
-          {emptyState.loading && !loadingTextVisible ? null : (
+          {settlingCachedShells || (emptyState.loading && !loadingTextVisible) ? null : (
             <View className="w-full max-w-[430px]">
               <EmptyState
                 title={emptyState.title}

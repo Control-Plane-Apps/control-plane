@@ -43,6 +43,7 @@ import { MaterialThreadListToolbar } from "../home/MaterialThreadListToolbar";
 import { useMaterialToolbarHeight } from "../../components/useMaterialToolbarHeight";
 import { SidebarFilterButton } from "./sidebar-filter-button";
 import { createSidebarHeaderItems } from "./sidebar-native-header-items";
+import { useShellListReady } from "../home/shellListReady";
 import { SidebarNavigationShell } from "./sidebar-navigation-shell";
 
 const SIDEBAR_STICKY_HEADER_HEIGHT = 106;
@@ -347,9 +348,10 @@ function ThreadNavigationSidebarPane(
       }),
     [filterIcon, filterMenu, props.onOpenSettings],
   );
-  // The sections always render once a shell snapshot arrives, so the list is
-  // only empty before that or when a search matches nothing.
-  const listReady = catalogState.hasLoadedShellSnapshot;
+  // The sections always render once every environment's cached shell has
+  // landed (see useShellListReady), so the list is only empty before that or
+  // when a search matches nothing.
+  const listReady = useShellListReady(catalogState);
   const listEmpty = (
     <Text
       className={
