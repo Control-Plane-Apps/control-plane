@@ -28,6 +28,7 @@ import { resolveApsEnvironment } from "../agent-awareness/registrationPayload";
 import { consumeLastAgentNotificationResponse } from "../agent-awareness/notificationResponseConsumer";
 import { setStatusReplyTag } from "../status/statusReplyStore";
 import { controlPlanePushData, routeForPushResponse } from "./notificationRouting";
+import { notificationRequestData } from "./notificationRequestData";
 import {
   canRegisterPushWith,
   pushRegistrationBody,
@@ -155,7 +156,7 @@ function useControlPlanePushRouting(): void {
     const handleResponse = (response: Notifications.NotificationResponse) => {
       const id = `${response.notification.request.identifier}:${response.actionIdentifier}`;
       if (handled.current.has(id)) return;
-      const data = controlPlanePushData(response.notification.request.content.data);
+      const data = controlPlanePushData(notificationRequestData(response.notification.request));
       if (data === null) return;
       handled.current.add(id);
       const route = routeForPushResponse(data, response.actionIdentifier);
