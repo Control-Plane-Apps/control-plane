@@ -7,6 +7,7 @@ import {
   createEnvironmentSnapshotAtom,
   createShellEnvironmentAtoms,
   type EnvironmentShellState,
+  isPendingEnvironmentShellState,
 } from "@t3tools/client-runtime/state/shell";
 import {
   type EnvironmentCatalogState,
@@ -48,6 +49,25 @@ export const allEnvironmentShellsBootstrappedAtom = Atom.make((get) => {
   }
   return true;
 }).pipe(Atom.withLabel("web-all-environment-shells-bootstrapped"));
+
+/**
+ * Every enabled environment has finished reading its cached shell. At launch
+ * each environment reads its cache on its own, so lists that render as soon as
+ * the first lands show one environment's Projects and then reflow when the
+ * next one arrives.
+ */
+export const allEnvironmentShellCachesReadAtom = Atom.make((get) => {
+  const catalog = AsyncResult.value(get(environmentCatalog.catalogAtom));
+  if (Option.isNone(catalog)) {
+    return false;
+  }
+  for (const environmentId of enabledEnvironmentIds(catalog.value)) {
+    if (isPendingEnvironmentShellState(get(environmentShell.stateValueAtom(environmentId)))) {
+      return false;
+    }
+  }
+  return true;
+}).pipe(Atom.withLabel("web-all-environment-shell-caches-read"));
 
 /** Cached or missing snapshots cannot establish that a saved project no longer exists. */
 export function createAllEnvironmentProjectSnapshotsReadyAtom(input: {

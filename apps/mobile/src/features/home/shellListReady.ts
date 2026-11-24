@@ -41,7 +41,9 @@ export function useShellListReady(
     const id = setTimeout(() => setSettleExpired(true), SHELL_CACHE_SETTLE_MS);
     return () => clearTimeout(id);
   }, [readiness]);
-  if (readiness === "ready") shellListShown = true;
+  useEffect(() => {
+    if (readiness === "ready") shellListShown = true;
+  }, [readiness]);
   return readiness === "ready";
 }
 

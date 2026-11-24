@@ -50,6 +50,9 @@ export function isPendingEnvironmentShellState(state: EnvironmentShellState): bo
   return state === EMPTY_SHELL_STATE;
 }
 
+/** The state an environment reports before its cached shell has been read. */
+export const PENDING_ENVIRONMENT_SHELL_STATE: EnvironmentShellState = EMPTY_SHELL_STATE;
+
 function shellStatusForSnapshot(
   snapshot: Option.Option<OrchestrationShellSnapshot>,
 ): EnvironmentShellStatus {
