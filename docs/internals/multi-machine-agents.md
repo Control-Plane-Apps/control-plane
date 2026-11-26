@@ -39,7 +39,9 @@ upstream settings file gains one line). Defaults keep today's behaviour.
 
 ```ts
 agentPlacement: {
-  mode: "local" | "single" | "balanced"; // default "local"
+  mode: "local" | "single" | "balanced" | "priority"; // default "local"
+  machineOrder?: readonly string[]; // default ["local"]
+  projectMachineOrders?: Record<string, readonly string[]>; // keyed by the home Project id
   singleMachineId: string | null; // "single": a machine id, or "local"
   localPreference: 0 | 25 | 50 | 100; // this machine's weight in "balanced"
   allowLocalFallback: boolean; // default true
@@ -148,6 +150,18 @@ per-candidate `{ reachable, load, projectMatch }`.
 5. **Nothing eligible:** fall back to this machine when `allowLocalFallback` and no explicit
    `machine` was given (the result carries a `placement` note); otherwise fail with each machine's
    reason. An explicit `machine` never falls back.
+
+**Priority order.** Settings > Connections > Agent machines lets the operator order candidates for
+all Projects and override the list for an individual Project. A Project inherits the global order
+after its override is cleared. The first ready listed machine wins, regardless of load. Skipped
+machines and their reasons appear in the create result. If none qualify, creation fails. Standing
+agents and retries of existing requests retain their existing placement.
+
+Priority mode checks the checkout, GitHub CLI configuration and selected provider status. When the
+home has Sentry, read replica, EAS, Vercel, PostHog or MCP configuration, the destination also needs
+a marker for that service. The readiness endpoint looks up the registered Project by ID, requires
+operate scope and returns only booleans. These checks cannot verify that a service accepts the
+credentials, that MCP servers are equivalent, or that uncommitted work exists on both machines.
 
 **Load** is running agents on the whole machine (`isAgentCountedRunning` over every non-archived
 thread in the peer's shell snapshot) plus this home's placements from the last 2 minutes that the
