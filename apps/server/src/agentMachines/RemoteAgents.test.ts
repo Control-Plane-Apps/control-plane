@@ -117,6 +117,26 @@ describe("RemoteAgents.reserve and start", () => {
     }),
   );
 
+  it.effect("keeps legacy pending placements pinned across a failed preflight", () =>
+    Effect.gen(function* () {
+      const { peer, run } = harness();
+      yield* run(
+        Effect.gen(function* () {
+          const remote = yield* RemoteAgents;
+          const store = yield* RemoteAgentStore;
+          const { record } = yield* remote.reserve(createInput());
+          expect(record.createAttempted).toBe(false);
+          const { createAttempted: _marker, ...legacy } = record;
+          yield* store.put(legacy);
+          peer.state.reachable = false;
+          const failure = yield* Effect.flip(remote.start(createInput(), legacy));
+          expect(failure.stage).toBe("start");
+          expect(Option.getOrThrow(yield* store.get(record.threadId))).toEqual(legacy);
+        }),
+      );
+    }),
+  );
+
   it.effect("keeps the original placement when create acknowledgement is ambiguous", () =>
     Effect.gen(function* () {
       const { peer, run } = harness({ failOn: ["thread.create"] });

@@ -519,29 +519,76 @@ describe("RemoteAgentBridge machine health", () => {
     }),
   );
 
-  it.effect("keeps the original request while its workspace is offline for days", () =>
-    Effect.gen(function* () {
-      const h = harness();
-      const record = yield* h.run(
-        Effect.gen(function* () {
-          const bridge = yield* RemoteAgentBridge;
-          const store = yield* RemoteAgentStore;
-          yield* seed(h, {}, {}, finishedMessages);
-          h.peer.state.reachable = false;
-          yield* bridge.pollOnce;
-          yield* TestClock.adjust(Duration.days(3));
-          yield* bridge.pollOnce;
-          return Option.getOrThrow(yield* store.get("remote-1"));
-        }),
-      );
-      expect(record.state).toBe("open");
-      expect(record.inFlight).not.toBeNull();
-      expect(
-        h.appended.filter((command) => command.type === "thread.activity.append"),
-      ).toHaveLength(1);
-      expect(record.lastPhase).toBe("stale");
-      expect(h.pushes()).toEqual([]);
-    }),
+  it.effect(
+    "holds the original request and notifies the home coordinator once when a standing agent created the sleeper",
+    () =>
+      Effect.gen(function* () {
+        const h = harness();
+        const record = yield* h.run(
+          Effect.gen(function* () {
+            const bridge = yield* RemoteAgentBridge;
+            const store = yield* RemoteAgentStore;
+            yield* seed(h, { creatorThreadId: STANDING }, {}, finishedMessages);
+            h.peer.state.reachable = false;
+            yield* bridge.pollOnce;
+            yield* TestClock.adjust(Duration.days(3));
+            yield* bridge.pollOnce;
+            return Option.getOrThrow(yield* store.get("remote-1"));
+          }),
+        );
+        expect(record.state).toBe("open");
+        expect(record.inFlight).not.toBeNull();
+        const notices = h.appended.filter((command) => command.type === "thread.activity.append");
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toMatchObject({
+          threadId: COORDINATOR,
+          commandId: `cp-agent-wait:${record.waitId}`,
+          activity: {
+            id: `cp-agent-wait:${record.waitId}`,
+            kind: "agent.machine.waiting",
+            payload: {
+              agentThreadId: record.threadId,
+              detail: expect.stringContaining(
+                "Settings > Connections > Agent machines > Waiting agents",
+              ),
+            },
+          },
+        });
+        expect(record.notifiedWaitId).toBe(record.waitId);
+        expect(record.lastPhase).toBe("stale");
+        expect(h.pushes()).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "reuses the coordinator activity receipt if the registry lost its notification acknowledgement",
+    () =>
+      Effect.gen(function* () {
+        const h = harness();
+        yield* h.run(
+          Effect.gen(function* () {
+            const bridge = yield* RemoteAgentBridge;
+            const store = yield* RemoteAgentStore;
+            yield* seed(h, { creatorThreadId: STANDING });
+            h.peer.state.reachable = false;
+            yield* bridge.pollOnce;
+            const { notifiedWaitId, ...beforeAck } = Option.getOrThrow(
+              yield* store.get("remote-1"),
+            );
+            expect(notifiedWaitId).toBe(beforeAck.waitId);
+            yield* store.put(beforeAck);
+            yield* TestClock.adjust(Duration.minutes(2));
+            yield* bridge.pollOnce;
+            const attempts = h.appended.filter(
+              (command) => command.type === "thread.activity.append",
+            );
+            expect(attempts.map((command) => [command.threadId, command.commandId])).toEqual([
+              [COORDINATOR, `cp-agent-wait:${beforeAck.waitId}`],
+              [COORDINATOR, `cp-agent-wait:${beforeAck.waitId}`],
+            ]);
+          }),
+        );
+      }),
   );
 
   it.effect("loses an agent whose thread is gone from the machine", () =>
@@ -569,7 +616,9 @@ describe("RemoteAgentBridge machine health", () => {
         Effect.gen(function* () {
           const bridge = yield* RemoteAgentBridge;
           const store = yield* RemoteAgentStore;
-          yield* store.put(makeRecord({ state: "pending", inFlight: null }));
+          yield* store.put(
+            makeRecord({ state: "pending", createAttempted: false, inFlight: null }),
+          );
           h.peer.threads.set("remote-1", makePeerThread("remote-1"));
           yield* TestClock.adjust(Duration.minutes(5));
           yield* bridge.pollOnce;

@@ -378,6 +378,7 @@ const make = Effect.gen(function* () {
         runtimeMode: input.runtimeMode,
         createdAt: input.createdAt,
         state: "pending",
+        createAttempted: false,
         endedAt: null,
         inFlight: null,
         queuedSends: [],
@@ -394,16 +395,18 @@ const make = Effect.gen(function* () {
       if (record.firstMessageAccepted || record.state !== "pending") return record;
 
       if (record.waitId) return yield* onHold(record);
+      // Historical pending records predate the dispatch marker. Keep their placement pinned.
+      const possiblyDispatched = record.createAttempted !== false;
       const peerShell = yield* machines.shell(record.machineId).pipe(
         Effect.mapError((error) => unavailable(record.machineLabel, error)),
         Effect.tapError(() =>
-          record.createAttempted ? Effect.void : store.remove(record.threadId).pipe(Effect.ignore),
+          possiblyDispatched ? Effect.void : store.remove(record.threadId).pipe(Effect.ignore),
         ),
         Effect.mapError(
           (error) =>
             new RemoteAgentError({
               detail: error.detail,
-              stage: record.createAttempted ? "start" : "create",
+              stage: possiblyDispatched ? "start" : "create",
             }),
         ),
       );
@@ -420,13 +423,11 @@ const make = Effect.gen(function* () {
             (error) =>
               new RemoteAgentError({
                 detail: error.detail,
-                stage: record.createAttempted ? "start" : "create",
+                stage: possiblyDispatched ? "start" : "create",
               }),
           ),
           Effect.tapError(() =>
-            record.createAttempted
-              ? Effect.void
-              : store.remove(record.threadId).pipe(Effect.ignore),
+            possiblyDispatched ? Effect.void : store.remove(record.threadId).pipe(Effect.ignore),
           ),
         );
 

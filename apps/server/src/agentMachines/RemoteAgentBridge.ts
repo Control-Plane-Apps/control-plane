@@ -12,6 +12,7 @@ import {
   CommandId,
   EventId,
   MessageId,
+  ProjectId,
   ThreadId,
   canManageAgent,
   type OrchestrationProjectShell,
@@ -138,14 +139,16 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
     waitId: string,
   ) {
     if (record.notifiedWaitId === waitId) return;
-    const resolved = yield* resolveRecipient(record, record.creatorThreadId);
-    if (!resolved) return;
+    const project = Option.getOrNull(
+      yield* snapshots.getProjectShellById(ProjectId.make(record.homeProjectId)),
+    );
+    if (!project?.assistant || project.assistant.archivedAt != null) return;
     const createdAt = yield* nowIso;
     const id = `cp-agent-wait:${waitId}`;
     yield* engine.dispatch({
       type: "thread.activity.append",
       commandId: CommandId.make(id),
-      threadId: resolved.target,
+      threadId: project.assistant.coordinatorThreadId,
       activity: {
         id: EventId.make(id),
         tone: "info",
@@ -153,7 +156,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
         summary: `${record.title} is waiting for ${record.machineLabel}`,
         payload: {
           detail:
-            "Wake or reconnect the machine. Open Settings > Connections > Waiting agents to review its workspace and resume.",
+            "Wake or reconnect the machine. Open Settings > Connections > Agent machines > Waiting agents to review its workspace and resume.",
           agentThreadId: record.threadId,
         },
         turnId: null,
@@ -321,7 +324,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       );
       if (record.waitId) yield* notifyWait(record, record.waitId);
       if (record.stoppingAt || record.handoff) continue;
-      if (record.createAttempted && record.state === "pending") continue;
+      if (record.createAttempted !== false && record.state === "pending") continue;
       const age = now - toMs(record.createdAt);
       if (thread === undefined) {
         if (record.state === "pending" && age < PENDING_LIMIT_MS) continue;
