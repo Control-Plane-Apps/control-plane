@@ -17,6 +17,11 @@ export function WaitingAgentsSettings({
   return (
     <section aria-label="Waiting agents" className="space-y-2 border-y px-3 py-3 sm:px-4">
       <h3 className="text-sm font-medium">Waiting agents</h3>
+      <p className="text-xs text-muted-foreground">
+        To start a move, both machines must be reachable. Prepare a separate destination checkout
+        with the same branch, commit, staged changes, unstaged changes and non-ignored untracked
+        files. Moving stops and archives the original agent.
+      </p>
       <ul className="space-y-3">
         {agents.map((agent) => (
           <li key={agent.threadId} className="flex flex-wrap items-center justify-between gap-2">
@@ -35,11 +40,6 @@ export function WaitingAgentsSettings({
             </div>
             {onResume && agent.destinations?.length ? (
               <div className="basis-full space-y-1 text-xs">
-                <p>
-                  To move this agent, prepare a separate destination checkout with the same branch,
-                  commit, staged changes and non-ignored untracked files. Moving stops and archives
-                  the original agent.
-                </p>
                 <select
                   aria-label={`Destination for ${agent.title}`}
                   value={selected[agent.waitId] ?? ""}

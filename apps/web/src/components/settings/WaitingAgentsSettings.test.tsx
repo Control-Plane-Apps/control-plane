@@ -37,7 +37,8 @@ describe("waiting agent controls", () => {
       />,
     );
     expect(html).toContain("Other machine");
-    expect(html).toContain("untracked files");
+    expect(html).toContain("both machines must be reachable");
+    expect(html).toContain("staged changes, unstaged changes and non-ignored untracked files");
     expect(html).toContain("stops and archives");
     expect(html).toContain("Verify and move");
     expect(/<button[^>]*\bdisabled(?:=|\s|>)/.test(html)).toBe(true);
