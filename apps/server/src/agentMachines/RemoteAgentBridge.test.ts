@@ -542,9 +542,9 @@ describe("RemoteAgentBridge machine health", () => {
         expect(notices).toHaveLength(1);
         expect(notices[0]).toMatchObject({
           threadId: COORDINATOR,
-          commandId: `cp-agent-wait:${record.waitId}`,
+          commandId: `cp-agent-wait-coordinator:${COORDINATOR}:${record.waitId}`,
           activity: {
-            id: `cp-agent-wait:${record.waitId}`,
+            id: `cp-agent-wait-coordinator:${COORDINATOR}:${record.waitId}`,
             kind: "agent.machine.waiting",
             payload: {
               agentThreadId: record.threadId,
@@ -583,11 +583,48 @@ describe("RemoteAgentBridge machine health", () => {
               (command) => command.type === "thread.activity.append",
             );
             expect(attempts.map((command) => [command.threadId, command.commandId])).toEqual([
-              [COORDINATOR, `cp-agent-wait:${beforeAck.waitId}`],
-              [COORDINATOR, `cp-agent-wait:${beforeAck.waitId}`],
+              [COORDINATOR, `cp-agent-wait-coordinator:${COORDINATOR}:${beforeAck.waitId}`],
+              [COORDINATOR, `cp-agent-wait-coordinator:${COORDINATOR}:${beforeAck.waitId}`],
             ]);
           }),
         );
+      }),
+  );
+
+  it.effect(
+    "repairs a legacy notice sent to a standing creator and preserves a coordinator's existing receipt",
+    () =>
+      Effect.gen(function* () {
+        for (const creator of [STANDING, COORDINATOR]) {
+          const h = harness();
+          yield* h.run(
+            Effect.gen(function* () {
+              const bridge = yield* RemoteAgentBridge;
+              const store = yield* RemoteAgentStore;
+              yield* seed(h, {
+                creatorThreadId: creator,
+                waitId: "historic",
+                notifiedWaitId: "historic",
+              });
+              h.peer.state.reachable = false;
+              yield* bridge.pollOnce;
+              yield* TestClock.adjust(Duration.minutes(2));
+              yield* bridge.pollOnce;
+              const attempts = h.appended.filter(
+                (command) => command.type === "thread.activity.append",
+              );
+              expect(attempts.map((command) => [command.threadId, command.commandId])).toEqual(
+                creator === STANDING
+                  ? [[COORDINATOR, `cp-agent-wait-coordinator:${COORDINATOR}:historic`]]
+                  : [],
+              );
+              if (creator === STANDING)
+                expect(Option.getOrThrow(yield* store.get("remote-1")).notifiedCoordinatorId).toBe(
+                  COORDINATOR,
+                );
+            }),
+          );
+        }
       }),
   );
 
@@ -607,6 +644,25 @@ describe("RemoteAgentBridge machine health", () => {
       expect(record.state).toBe("lost");
       expect(h.pushes()).toHaveLength(1);
     }),
+  );
+
+  it.effect(
+    "retains a pre-marker pending placement through expiry when the thread cannot be found",
+    () =>
+      Effect.gen(function* () {
+        const h = harness();
+        yield* h.run(
+          Effect.gen(function* () {
+            const bridge = yield* RemoteAgentBridge;
+            const store = yield* RemoteAgentStore;
+            yield* store.put(makeRecord({ state: "pending", inFlight: null }));
+            yield* TestClock.adjust(Duration.minutes(5));
+            yield* bridge.pollOnce;
+            expect(Option.getOrThrow(yield* store.get("remote-1")).state).toBe("pending");
+          }),
+        );
+        expect(h.pushes()).toEqual([]);
+      }),
   );
 
   it.effect("drops a pending record whose start never landed", () =>

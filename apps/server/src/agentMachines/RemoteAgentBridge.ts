@@ -138,17 +138,27 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
     record: RemoteAgentRecord,
     waitId: string,
   ) {
-    if (record.notifiedWaitId === waitId) return;
     const project = Option.getOrNull(
       yield* snapshots.getProjectShellById(ProjectId.make(record.homeProjectId)),
     );
     if (!project?.assistant || project.assistant.archivedAt != null) return;
+    const coordinatorId = project.assistant.coordinatorThreadId;
+    // Older records store only the wait ID. A coordinator-created agent already sent
+    // this receipt to the right thread. Standing creators previously received it themselves.
+    if (
+      record.notifiedWaitId === waitId &&
+      (record.notifiedCoordinatorId ?? record.creatorThreadId) === coordinatorId
+    )
+      return;
     const createdAt = yield* nowIso;
-    const id = `cp-agent-wait:${waitId}`;
+    const id =
+      record.creatorThreadId === coordinatorId
+        ? `cp-agent-wait:${waitId}`
+        : `cp-agent-wait-coordinator:${encodeURIComponent(coordinatorId)}:${waitId}`;
     yield* engine.dispatch({
       type: "thread.activity.append",
       commandId: CommandId.make(id),
-      threadId: project.assistant.coordinatorThreadId,
+      threadId: coordinatorId,
       activity: {
         id: EventId.make(id),
         tone: "info",
@@ -165,7 +175,9 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       createdAt,
     });
     yield* update(record, (current) =>
-      current.waitId === waitId ? { ...current, notifiedWaitId: waitId } : current,
+      current.waitId === waitId
+        ? { ...current, notifiedWaitId: waitId, notifiedCoordinatorId: coordinatorId }
+        : current,
     );
   });
 
