@@ -47,6 +47,7 @@ export class PeerError extends Schema.TaggedError<PeerError>()("PeerError", {
     "incompatible",
     "wrong-environment",
     "rejected",
+    "turn-refused",
   ]),
   detail: Schema.String,
   /** A machine-readable reason the peer gave, such as a link renewal refusal. */
@@ -351,10 +352,25 @@ export const dispatchPeerCommand = (baseUrl: string, token: string, command: Pee
     ? call(
         Effect.gen(function* () {
           const client = yield* makeClient(baseUrl);
-          yield* client.orchestration.dispatch({
-            headers: bearer(token),
-            payload: command,
-          } as Parameters<typeof client.orchestration.dispatch>[0]);
+          yield* client.orchestration
+            .dispatch({
+              headers: bearer(token),
+              payload: command,
+            } as Parameters<typeof client.orchestration.dispatch>[0])
+            .pipe(
+              Effect.catchTag("EnvironmentTurnRefusedError", (refusal) =>
+                Effect.fail(
+                  command.type === "thread.turn.start" &&
+                    refusal.commandId === command.commandId &&
+                    refusal.threadId === command.threadId
+                    ? new PeerError({ kind: "turn-refused", detail: refusal.detail })
+                    : new PeerError({
+                        kind: "unreachable",
+                        detail: "Received a refusal for a different command.",
+                      }),
+                ),
+              ),
+            );
         }),
       )
     : Effect.fail(

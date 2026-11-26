@@ -80,6 +80,7 @@ export const RemoteAgentRecord = Schema.Struct({
         senderThreadId: Schema.String,
         text: Schema.String,
         refusal: Schema.optionalKey(Schema.String),
+        refusalWindowClosed: Schema.optionalKey(Schema.Literal(true)),
       }),
     ),
   ),

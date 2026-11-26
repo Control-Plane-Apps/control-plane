@@ -3,6 +3,7 @@ import {
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
   CommandId,
+  MessageId,
   ThreadId,
   type ClientOrchestrationCommand,
 } from "@t3tools/contracts";
@@ -470,6 +471,46 @@ describe("dispatchPeerCommand", () => {
       expect(decodeJson(request.body ?? "null")).toEqual(stop);
     }).pipe(Effect.provide(peer.layer));
   });
+
+  it.effect("only a typed refusal of the same command and thread is terminal", () =>
+    Effect.gen(function* () {
+      const commandId = CommandId.make("cp-remote-send:agent:peer:r");
+      const threadId = ThreadId.make("agent");
+      const turn = {
+        type: "thread.turn.start",
+        commandId,
+        threadId,
+        message: {
+          messageId: MessageId.make(commandId),
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: "2026-09-29T12:00:00.000Z",
+      } satisfies PeerCommand;
+      for (const [receiptId, recipient, expected] of [
+        [commandId, threadId, "turn-refused"],
+        ["other", threadId, "unreachable"],
+        [commandId, "other", "unreachable"],
+      ]) {
+        const peer = fakePeer(() => ({
+          status: 409,
+          body: {
+            _tag: "EnvironmentTurnRefusedError",
+            commandId: receiptId,
+            threadId: recipient,
+            detail: "Peer budget exhausted.",
+          },
+        }));
+        const failure = yield* failureOf(dispatchPeerCommand(BASE_URL, "token", turn)).pipe(
+          Effect.provide(peer.layer),
+        );
+        expect(failure.kind).toBe(expected);
+      }
+    }),
+  );
 
   it.effect("an opaque peer failure (500) is rejected", () => {
     const peer = fakePeer(() => ({

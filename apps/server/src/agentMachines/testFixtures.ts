@@ -132,6 +132,7 @@ export const peerProject: OrchestrationProjectShell = {
 export interface FakePeerOptions {
   /** Fails these command types with an unreachable error. */
   readonly resolveModel?: AgentMachinesShape["resolveModel"];
+  readonly refuseTurn?: (messageId: string) => boolean;
   readonly failOn?: ReadonlyArray<PeerCommand["type"]>;
   readonly machineId?: string;
 }
@@ -190,22 +191,26 @@ export function makeFakePeer(options: FakePeerOptions = {}) {
     );
   const dispatchApi: AgentMachinesShape["dispatch"] = (_machine, command) =>
     guard(
-      failOn.has(command.type)
-        ? Effect.fail(new PeerError({ kind: "unreachable", detail: `${command.type} failed` }))
-        : Effect.sync(() => {
-            commands.push(command);
-            if (command.type === "thread.create") {
-              threads.set(
-                command.threadId,
-                makePeerThread(command.threadId, {
-                  projectId: command.projectId,
-                  title: command.title,
-                  runtimeMode: command.runtimeMode,
-                  modelSelection: command.modelSelection,
-                }),
-              );
-            }
-          }),
+      command.type === "thread.turn.start" && options.refuseTurn?.(command.message.messageId)
+        ? Effect.fail(
+            new PeerError({ kind: "turn-refused", detail: "Destination peer budget exhausted." }),
+          )
+        : failOn.has(command.type)
+          ? Effect.fail(new PeerError({ kind: "unreachable", detail: `${command.type} failed` }))
+          : Effect.sync(() => {
+              commands.push(command);
+              if (command.type === "thread.create") {
+                threads.set(
+                  command.threadId,
+                  makePeerThread(command.threadId, {
+                    projectId: command.projectId,
+                    title: command.title,
+                    runtimeMode: command.runtimeMode,
+                    modelSelection: command.modelSelection,
+                  }),
+                );
+              }
+            }),
     );
 
   const service: AgentMachinesShape = {

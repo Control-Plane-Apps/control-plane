@@ -27,6 +27,7 @@ import {
 import {
   DpopFailureReason,
   AuthSessionId,
+  CommandId,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -281,6 +282,17 @@ export class EnvironmentHttpInternalServerError extends Schema.TaggedError<Envir
   }
 }
 
+/** The server persisted a rejection for this exact turn command and thread. */
+export class EnvironmentTurnRefusedError extends Schema.TaggedError<EnvironmentTurnRefusedError>()(
+  "EnvironmentTurnRefusedError",
+  { commandId: CommandId, threadId: ThreadId, detail: Schema.String },
+  { httpApiStatus: 409 },
+) {
+  [HttpServerRespondable.symbol]() {
+    return HttpServerResponse.schemaJson(EnvironmentTurnRefusedError)(this, { status: 409 });
+  }
+}
+
 export class EnvironmentHttpConflictError extends Schema.TaggedError<EnvironmentHttpConflictError>()(
   "EnvironmentHttpConflictError",
   {
@@ -339,6 +351,7 @@ const EnvironmentOrchestrationThreadSnapshotErrors = [
   EnvironmentInternalError,
 ] as const;
 const EnvironmentOrchestrationDispatchErrors = [
+  EnvironmentTurnRefusedError,
   EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,

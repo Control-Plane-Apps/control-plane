@@ -50,6 +50,7 @@ export class RemoteAgentError extends Schema.TaggedError<RemoteAgentError>()("Re
    * place the agent elsewhere. `start`: the peer thread may exist; only a retry
    * with the same ids is safe.
    */
+  turnRefused: Schema.optionalKey(Schema.Literal(true)),
   stage: Schema.optional(Schema.Literals(["create", "start"])),
 }) {
   override get message(): string {
@@ -68,10 +69,13 @@ export function isRemotePeerRequestId(messageId: string): boolean {
 
 const unavailable = (label: string, error: PeerError) =>
   new RemoteAgentError({
+    ...(error.kind === "turn-refused" ? { turnRefused: true as const } : {}),
     detail:
-      error.kind === "unauthorized"
-        ? `${label} refused this machine's token. Link it again in Settings > Connections > Agent machines.`
-        : `Could not reach ${label}: ${error.detail}`,
+      error.kind === "turn-refused"
+        ? error.detail
+        : error.kind === "unauthorized"
+          ? `${label} refused this machine's token. Link it again in Settings > Connections > Agent machines.`
+          : `Could not reach ${label}: ${error.detail}`,
   });
 
 export interface PlanResult {
@@ -309,6 +313,32 @@ const make = Effect.gen(function* () {
           createdAt: input.createdAt,
         },
         record,
+      ).pipe(
+        Effect.tapError((error) => {
+          if (!error.turnRefused || !queued || !isRemotePeerRequestId(input.messageId))
+            return Effect.void;
+          return store
+            .update(record.threadId, (latest) => {
+              const receipts = latest.peerReceipts ?? [];
+              const refusal = {
+                messageId: input.messageId,
+                senderThreadId: input.sender.id,
+                text: queued.text,
+                refusal: error.detail,
+              };
+              return {
+                ...latest,
+                peerReceipts: [
+                  ...receipts.filter((item) => item.messageId !== input.messageId),
+                  refusal,
+                ],
+                queuedSends: latest.queuedSends.filter(
+                  (item) => item.messageId !== input.messageId,
+                ),
+              };
+            })
+            .pipe(Effect.mapError(storeFailed));
+        }),
       );
       const request: RemoteAgentRequest = {
         messageId: input.messageId,
@@ -327,9 +357,15 @@ const make = Effect.gen(function* () {
           ...(!isRemotePeerRequestId(input.messageId)
             ? {
                 peerReceipts:
-                  current.peerReceipts?.filter((r) =>
-                    current.queuedSends.some((q) => q.messageId === r.messageId),
-                  ) ?? [],
+                  current.peerReceipts?.flatMap((receipt) => {
+                    if (current.queuedSends.some((q) => q.messageId === receipt.messageId))
+                      return [receipt];
+                    // The next budget window can retry the text with a new command id.
+                    // Preserve the negative receipt for replays of the original command id.
+                    return receipt.refusal !== undefined
+                      ? [{ ...receipt, text: "", refusalWindowClosed: true as const }]
+                      : [];
+                  }) ?? [],
               }
             : {}),
           ...(input.origin === "create" ? { firstMessageAccepted: true } : {}),
@@ -647,6 +683,18 @@ const make = Effect.gen(function* () {
       const latest = Option.getOrNull(
         yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
       );
+      const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${input.receiptId ?? NodeCrypto.randomUUID()}`;
+      if (input.peer && latest?.machineId === record.machineId) {
+        const refused = latest.peerReceipts?.find(
+          (item) =>
+            item.refusal !== undefined &&
+            item.senderThreadId === input.sender.id &&
+            (item.messageId === messageId ||
+              (!item.refusalWindowClosed && item.text === input.text)),
+        );
+        if (refused?.refusal !== undefined)
+          return yield* new RemoteAgentError({ detail: refused.refusal, turnRefused: true });
+      }
       if (
         !latest ||
         latest.handoff ||
@@ -657,7 +705,6 @@ const make = Effect.gen(function* () {
         return yield* new RemoteAgentError({ detail: "This agent cannot receive messages." });
       if (latest.waitId) return yield* onHold(latest);
       const createdAt = yield* nowIso;
-      const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${input.receiptId ?? NodeCrypto.randomUUID()}`;
       const detail = yield* readView(record, 1);
       if (Option.isNone(detail)) return yield* lostError(record);
       const view = viewOf(detail.value.thread);
@@ -672,7 +719,9 @@ const make = Effect.gen(function* () {
             if (current.state !== "open" || current.stoppingAt || current.waitId) return current;
             const previous = current.peerReceipts ?? [];
             decision = decidePeerBudget({
-              window: previous.map((entry) => ({ ...entry, role: "user" })),
+              window: previous
+                .filter((entry) => entry.refusal === undefined)
+                .map((entry) => ({ ...entry, role: "user" })),
               senderThreadId: receipt.senderThreadId,
               text: receipt.text,
             });

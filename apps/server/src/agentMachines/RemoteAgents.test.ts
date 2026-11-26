@@ -583,6 +583,118 @@ describe("RemoteAgents.send and startQueued", () => {
     }),
   );
 
+  it.effect(
+    "persists a terminal peer refusal, reports it on retry, and admits the next delivery",
+    () =>
+      Effect.gen(function* () {
+        const { peer, run } = harness({ refuseTurn: (id) => id.endsWith(":refused") });
+        peer.threads.set("remote-1", makePeerThread("remote-1"));
+        const refusedId = "cp-remote-send:remote-1:peer:refused";
+        const acceptedId = "cp-remote-send:remote-1:peer:second";
+        const entries = [refusedId, acceptedId].map((messageId) => ({
+          messageId,
+          text: messageId,
+          replyTo: sender.id,
+          sender,
+          queuedAt: TEST_NOW,
+        }));
+        const queued = makeRecord({
+          queuedSends: entries,
+          peerReceipts: entries.map((item) => ({
+            messageId: item.messageId,
+            text: item.text,
+            senderThreadId: sender.id,
+          })),
+        });
+        yield* run(
+          Effect.gen(function* () {
+            const service = yield* RemoteAgents;
+            const store = yield* RemoteAgentStore;
+            yield* store.put(queued);
+            const view = makePeerThread("remote-1");
+            const failure = yield* Effect.flip(service.startQueued(queued, view));
+            expect(failure.turnRefused).toBe(true);
+            const saved = Option.getOrThrow(yield* store.get(queued.threadId));
+            expect(saved.queuedSends.map((item) => item.messageId)).toEqual([acceptedId]);
+            expect(saved.peerReceipts?.find((item) => item.messageId === refusedId)?.refusal).toBe(
+              failure.detail,
+            );
+            const retry = yield* Effect.flip(
+              service.send(saved, {
+                text: refusedId,
+                sender,
+                peer: true,
+                replyTo: null,
+                runtimeMode: "approval-required",
+                receiptId: "refused",
+              }),
+            );
+            expect(retry.detail).toBe(failure.detail);
+            yield* service.startQueued(saved, view);
+            expect(Option.getOrThrow(yield* store.get(queued.threadId)).inFlight?.messageId).toBe(
+              acceptedId,
+            );
+            expect(peer.commands).toHaveLength(1);
+            // A manager's follow-up releases the budget window. The same command ID is still refused.
+            yield* store.update(queued.threadId, (current) => ({ ...current, inFlight: null }));
+            yield* service.send(saved, {
+              text: "Next task",
+              sender,
+              peer: false,
+              replyTo: null,
+              runtimeMode: "approval-required",
+            });
+            const reopened = Option.getOrThrow(yield* store.get(queued.threadId));
+            const replay = yield* Effect.flip(
+              service.send(reopened, {
+                text: refusedId,
+                sender,
+                peer: true,
+                replyTo: null,
+                runtimeMode: "approval-required",
+                receiptId: "refused",
+              }),
+            );
+            expect(replay.detail).toBe(failure.detail);
+            const fresh = yield* service.send(reopened, {
+              text: refusedId,
+              sender,
+              peer: true,
+              replyTo: null,
+              runtimeMode: "approval-required",
+              receiptId: "new-window",
+            });
+            expect(fresh.queued).toBe(true);
+          }),
+        );
+      }),
+  );
+
+  it.effect("retains an ambiguously acknowledged peer delivery and its original id", () =>
+    Effect.gen(function* () {
+      const { run } = harness({ failOn: ["thread.turn.start"] });
+      const id = "cp-remote-send:remote-1:peer:ambiguous";
+      const queued = makeRecord({
+        queuedSends: [
+          { messageId: id, text: "later", sender, replyTo: sender.id, queuedAt: TEST_NOW },
+        ],
+        peerReceipts: [{ messageId: id, text: "later", senderThreadId: sender.id }],
+      });
+      yield* run(
+        Effect.gen(function* () {
+          const store = yield* RemoteAgentStore;
+          const remote = yield* RemoteAgents;
+          yield* store.put(queued);
+          const error = yield* Effect.flip(remote.startQueued(queued, makePeerThread("remote-1")));
+          expect(error.turnRefused).toBeUndefined();
+          const stored = Option.getOrThrow(yield* store.get(queued.threadId));
+          expect(stored.queuedSends.map((item) => item.messageId)).toEqual([id]);
+          expect(stored.peerReceipts).toEqual(queued.peerReceipts);
+        }),
+      );
+    }),
+  );
+
   it.effect("queues a send while a request is in flight, and sends nothing", () =>
     Effect.gen(function* () {
       const { peer, run } = harness();

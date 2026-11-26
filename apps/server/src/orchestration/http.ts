@@ -2,6 +2,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
+  EnvironmentTurnRefusedError,
   ProviderInstanceId,
   type OrchestrationCommand,
 } from "@t3tools/contracts";
@@ -12,6 +13,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
+import { OrchestrationCommandReceiptRepository } from "../persistence/Services/OrchestrationCommandReceipts.ts";
+import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { isPeerDelivery } from "./agentPeers.ts";
+import { isOrchestrationCommandRejection } from "./Errors.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { workspaceFingerprint } from "../agentMachines/workspaceFingerprint.ts";
 import { cleanWorkspace } from "../agentMachines/workspaceResume.ts";
@@ -59,6 +64,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     const projectReadiness = yield* makeProjectReadiness;
     const providers = yield* ProviderRegistry;
     const turns = yield* ProjectionTurnRepository;
+    const receipts = yield* OrchestrationCommandReceiptRepository;
     const git = yield* GitVcsDriver;
     const fs = yield* FileSystem.FileSystem;
     return handlers
@@ -323,7 +329,34 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
               cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
             ),
             Effect.catch((cause) =>
-              failEnvironmentInternal("orchestration_dispatch_failed", cause),
+              Effect.gen(function* () {
+                if (
+                  normalizedCommand.type === "thread.turn.start" &&
+                  isPeerDelivery(normalizedCommand.message.messageId) &&
+                  (isOrchestrationCommandRejection(cause) ||
+                    cause._tag === "OrchestrationCommandPreviouslyRejectedError")
+                ) {
+                  const receipt = Option.getOrNull(
+                    yield* receipts
+                      .getByCommandId({
+                        commandId: normalizedCommand.commandId,
+                      })
+                      .pipe(Effect.orElseSucceed(() => Option.none())),
+                  );
+                  if (
+                    receipt?.status === "rejected" &&
+                    receipt.aggregateKind === "thread" &&
+                    receipt.aggregateId === normalizedCommand.threadId
+                  ) {
+                    return yield* new EnvironmentTurnRefusedError({
+                      commandId: normalizedCommand.commandId,
+                      threadId: normalizedCommand.threadId,
+                      detail: receipt.error ?? "The destination refused this turn.",
+                    });
+                  }
+                }
+                return yield* failEnvironmentInternal("orchestration_dispatch_failed", cause);
+              }),
             ),
           );
           yield* ProjectCloneTracker.discardCloneForDeletedProject(
@@ -334,4 +367,4 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         }),
       );
   }),
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(Layer.provide([ProjectionTurnRepositoryLive, OrchestrationCommandReceiptRepositoryLive]));
