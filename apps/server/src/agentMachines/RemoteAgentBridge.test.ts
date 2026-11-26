@@ -490,6 +490,8 @@ describe("RemoteAgentBridge machine health", () => {
       );
       expect(results.down.lastPhase).toBe("stale");
       expect(results.down.inFlight).not.toBeNull();
+      expect(results.down.waitId).toBeTruthy();
+      expect(results.up.waitId).toBe(results.down.waitId);
       expect(h.pushes()).toHaveLength(1);
       expect(results.up.state).toBe("open");
       expect(results.up.inFlight).toBeNull();

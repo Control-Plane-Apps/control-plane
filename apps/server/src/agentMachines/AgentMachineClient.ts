@@ -14,6 +14,7 @@ import {
   AuthTokenExchangeGrantType,
   EnvironmentHttpApi,
   ProjectId,
+  ThreadId,
   type ClientOrchestrationCommand,
   type ExecutionEnvironmentDescriptor,
   type OrchestrationShellSnapshot,
@@ -222,6 +223,22 @@ export const exchangePairingCredential = (input: {
         token: result.access_token,
         expiresInSeconds: result.expires_in,
       };
+    }),
+  );
+
+export const fetchPeerWorkspace = (
+  baseUrl: string,
+  token: string,
+  projectId: string,
+  threadId: string,
+) =>
+  call(
+    Effect.gen(function* () {
+      const client = yield* makeClient(baseUrl);
+      return yield* client.orchestration.agentWorkspace({
+        headers: bearer(token),
+        params: { projectId: ProjectId.make(projectId), threadId: ThreadId.make(threadId) },
+      });
     }),
   );
 

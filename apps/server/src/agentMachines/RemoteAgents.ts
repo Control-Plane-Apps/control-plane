@@ -23,6 +23,7 @@ import * as Schema from "effect/Schema";
 
 import { AgentMachines, type HomeProject } from "./AgentMachines.ts";
 import { PeerError, type PeerCommand } from "./AgentMachineClient.ts";
+import { resumeBlocker } from "./workspaceResume.ts";
 import { placeAgent, type PlacementDecision } from "./placement.ts";
 import {
   isThreadBusy,
@@ -190,6 +191,11 @@ const make = Effect.gen(function* () {
       Effect.mapError((error) => unavailable(record.machineLabel, error)),
     );
 
+  const onHold = (record: RemoteAgentRecord) =>
+    new RemoteAgentError({
+      detail: `Waiting for manual resume on ${record.machineLabel}. Open Settings > Connections > Agent machines to verify the original workspace.`,
+    });
+
   const startRequest = (
     record: RemoteAgentRecord,
     input: {
@@ -203,6 +209,29 @@ const make = Effect.gen(function* () {
     },
   ) =>
     Effect.gen(function* () {
+      const current = Option.getOrNull(
+        yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
+      );
+      if (!current || current.state === "settled" || current.state === "lost")
+        return yield* new RemoteAgentError({ detail: "This agent is no longer open." });
+      if (current.waitId) return yield* onHold(current);
+      if (current.resumeCheckpoint) {
+        const probe = yield* machines
+          .workspace(current.machineId, current.peerProjectId, current.threadId, true)
+          .pipe(Effect.orElseSucceed(() => null));
+        const reason = resumeBlocker(current.resumeCheckpoint, probe);
+        if (reason) {
+          const waitId = `${current.threadId}:${yield* nowIso}`;
+          yield* store
+            .update(current.threadId, (latest) =>
+              latest.state === "open" && !latest.waitId && latest.resumeCheckpoint
+                ? { ...latest, waitId, workspaceCheckpoint: current.resumeCheckpoint ?? null }
+                : latest,
+            )
+            .pipe(Effect.mapError(storeFailed));
+          return yield* new RemoteAgentError({ detail: reason });
+        }
+      }
       yield* send(
         {
           type: "thread.turn.start",
@@ -239,6 +268,8 @@ const make = Effect.gen(function* () {
           state: "open",
           endedAt: null,
           inFlight: request,
+          resumeCheckpoint: null,
+          queuedSends: current.queuedSends.filter((queued) => queued.messageId !== input.messageId),
           lastPhase: "starting",
         }))
         .pipe(Effect.mapError(storeFailed));
@@ -296,6 +327,7 @@ const make = Effect.gen(function* () {
       // A retry after a start that landed finds the request already in flight.
       if (record.state === "open" && record.inFlight !== null) return record;
 
+      if (record.waitId) return yield* onHold(record);
       const peerShell = yield* machines.shell(record.machineId).pipe(
         Effect.mapError((error) => unavailable(record.machineLabel, error)),
         Effect.tapError(() => store.remove(record.threadId).pipe(Effect.ignore)),
@@ -328,6 +360,17 @@ const make = Effect.gen(function* () {
         Effect.mapError((error) => new RemoteAgentError({ detail: error.detail, stage: "create" })),
       );
 
+      const checkpoint = yield* machines
+        .workspace(record.machineId, record.peerProjectId, record.threadId)
+        .pipe(
+          Effect.map((probe) => probe.workspace),
+          Effect.orElseSucceed(() => null),
+        );
+      yield* store
+        .update(record.threadId, (current) =>
+          current.waitId ? current : { ...current, workspaceCheckpoint: checkpoint },
+        )
+        .pipe(Effect.mapError(storeFailed));
       const preamble = `You are running on ${record.machineLabel} for the Project "${input.home.project.title}", started by ${input.creator.title} on ${input.home.label}. This machine has its own copy of the Project folder: read its AGENTS.md here, and your changes stay on this machine.\n\n`;
       yield* startRequest(record, {
         messageId: input.ids.messageId,
@@ -489,6 +532,7 @@ const make = Effect.gen(function* () {
 
   const sendMessage: RemoteAgentsShape["send"] = (record, input) =>
     Effect.gen(function* () {
+      if (record.waitId) return yield* onHold(record);
       const createdAt = yield* nowIso;
       const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${createdAt}:${record.queuedSends.length}`;
       const detail = yield* readView(record, 1);
@@ -529,15 +573,9 @@ const make = Effect.gen(function* () {
   const startQueued: RemoteAgentsShape["startQueued"] = (record, view) =>
     Effect.gen(function* () {
       const next = record.queuedSends[0];
-      if (next === undefined || record.inFlight !== null || isThreadBusy(view)) return;
+      if (record.waitId || next === undefined || record.inFlight !== null || isThreadBusy(view))
+        return;
       const createdAt = yield* nowIso;
-      // Off the queue first: a failed start is retried by the sender, never doubled.
-      yield* store
-        .update(record.threadId, (current) => ({
-          ...current,
-          queuedSends: current.queuedSends.filter((entry) => entry.messageId !== next.messageId),
-        }))
-        .pipe(Effect.mapError(storeFailed));
       yield* startRequest(record, {
         messageId: next.messageId,
         text: next.text,

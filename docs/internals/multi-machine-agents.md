@@ -265,7 +265,7 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Peer offline at create                                         | Ineligible; fall back or fail per setting. No record left.                                                                    |
 | Peer offline mid-run                                           | Agent keeps running there; phase `stale`; polling backs off; results arrive on return.                                        |
-| Peer gone 24 hours                                             | Keep the original request and queued sends. The agent list reports the workspace is waiting for its machine.                  |
+| Peer gone 24 hours                                             | Keep the original request and queued sends. Settings > Connections > Agent machines shows the waiting agent and its machine.  |
 | Home restarts                                                  | Registry and push receipts recompute what is owed.                                                                            |
 | 401 or 403 (revoked, unlinked there, or expired while offline) | Machine marked needs relink and ineligible; the bridge holds and pushes nothing; resumes after relink. Settings shows Relink. |
 | Create partly applied                                          | Retry with the same `clientRequestId` finishes it via the registry.                                                           |
@@ -273,6 +273,14 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
 | Model unavailable on the peer                                  | Case (b) or (c) delivers a failed result; the coordinator can retry with `machine: "local"`.                                  |
 | Peer protocol version differs                                  | Link refused; a later mismatch marks the machine ineligible.                                                                  |
 | Unlink with agents running                                     | Allowed; those records become `lost` and are reported.                                                                        |
+
+### Resume a waiting agent
+
+Open **Settings > Connections > Agent machines** on the coordinator's machine. **Waiting agents**
+shows the original machine, known branch and commit, and the current eligibility reason. After
+waking or reconnecting the machine, select **Refresh**. **Resume** becomes available when the
+server verifies the original checkout and thread are ready to continue. Resuming releases held
+work on that machine. If the queue is empty, the agent waits for its next request.
 
 ## Security
 

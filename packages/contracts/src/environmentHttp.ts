@@ -31,6 +31,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { AgentWorkspaceProbe } from "./agentPlacement.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   ClientOrchestrationCommand,
@@ -523,6 +524,18 @@ export const AgentProjectReadiness = Schema.Struct({
 export type AgentProjectReadiness = typeof AgentProjectReadiness.Type;
 
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
+  .add(
+    HttpApiEndpoint.get(
+      "agentWorkspace",
+      "/api/orchestration/projects/:projectId/agents/:threadId/workspace",
+      {
+        headers: OptionalBearerHeaders,
+        params: { projectId: ProjectId, threadId: ThreadId },
+        success: AgentWorkspaceProbe,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.get("projectReadiness", "/api/orchestration/projects/:projectId/readiness", {
       headers: OptionalBearerHeaders,

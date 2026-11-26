@@ -211,6 +211,13 @@ export function makeFakePeer(options: FakePeerOptions = {}) {
     manage: () => Effect.die("not stubbed"),
     placementInputs: () => Effect.die("not stubbed"),
     shell: shellApi,
+    workspace: () =>
+      guard(
+        Effect.succeed({
+          workspace: { root: "/work/acme", branch: "main", commit: "a".repeat(40) },
+          idle: true,
+        }),
+      ),
     thread: threadApi,
     dispatch: dispatchApi,
     markNeedsRelink: () => Effect.sync(() => void (state.needsRelink = true)),

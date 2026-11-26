@@ -1,3 +1,4 @@
+import { GitVcsDriver } from "./vcs/GitVcsDriver.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 // @effect-diagnostics nodeBuiltinImport:off - CLI integration exercises Node HTTP and filesystem boundaries.
 import * as NodeHttp from "node:http";
@@ -382,6 +383,7 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
     const routesLayer = HttpApiBuilder.layer(ProjectCliHttpApi).pipe(
       Layer.provide(
         orchestrationHttpApiLayer.pipe(
+          Layer.provide(Layer.mock(GitVcsDriver)({})),
           Layer.provide(Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) })),
           Layer.provide(
             Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({

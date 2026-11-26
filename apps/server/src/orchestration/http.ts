@@ -4,10 +4,19 @@ import {
   EnvironmentHttpApi,
   type OrchestrationCommand,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
+import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { cleanWorkspace } from "../agentMachines/workspaceResume.ts";
+import { isThreadBusy } from "../agentMachines/remoteAgentState.ts";
+import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
+import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
+import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { makeProjectReadiness } from "../agentMachines/projectReadiness.ts";
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
@@ -46,7 +55,82 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
 
     const projectReadiness = yield* makeProjectReadiness;
     const providers = yield* ProviderRegistry;
+    const turns = yield* ProjectionTurnRepository;
+    const git = yield* GitVcsDriver;
+    const fs = yield* FileSystem.FileSystem;
     return handlers
+      .handle(
+        "agentWorkspace",
+        Effect.fn("environment.orchestration.agentWorkspace")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          const { projectId, threadId } = args.params;
+          const project = Option.getOrUndefined(
+            yield* projectionSnapshotQuery
+              .getProjectShellById(projectId)
+              .pipe(
+                Effect.catch((cause) =>
+                  failEnvironmentInternal("orchestration_snapshot_failed", cause),
+                ),
+              ),
+          );
+          const thread = Option.getOrUndefined(
+            yield* projectionSnapshotQuery
+              .getThreadShellById(threadId)
+              .pipe(
+                Effect.catch((cause) =>
+                  failEnvironmentInternal("orchestration_snapshot_failed", cause),
+                ),
+              ),
+          );
+          if (
+            !project ||
+            !thread ||
+            thread.projectId !== projectId ||
+            project.assistant?.archivedAt != null ||
+            thread.archivedAt !== null ||
+            thread.settledAt !== null
+          ) {
+            return yield* failEnvironmentNotFound("thread_not_found");
+          }
+          const now = DateTime.formatIso(yield* DateTime.now);
+          const pending = yield* turns
+            .getPendingTurnStartByThreadId({ threadId })
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("orchestration_snapshot_failed", cause),
+              ),
+            );
+          const idle =
+            Option.isNone(pending) &&
+            !isThreadBusy(thread) &&
+            thread.backgroundLiveness == null &&
+            thread.latestTurn?.state !== "running" &&
+            !threadHasQueuedTurnStart(thread, now);
+          const workspace = yield* Effect.gen(function* () {
+            const root = yield* fs.realPath(thread.worktreePath ?? project.workspaceRoot);
+            const result = yield* git.execute({
+              operation: "agent.workspace",
+              cwd: root,
+              args: [
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--untracked-files=normal",
+                "--ignore-submodules=none",
+              ],
+              timeoutMs: 2000,
+              maxOutputBytes: 4096,
+            });
+            const checkpoint = result.stdoutTruncated ? null : cleanWorkspace(root, result.stdout);
+            return checkpoint && (!thread.branch || thread.branch === checkpoint.branch)
+              ? checkpoint
+              : null;
+          }).pipe(Effect.orElseSucceed(() => null));
+          return { workspace, idle };
+        }),
+      )
       .handle(
         "projectReadiness",
         Effect.fn("environment.orchestration.projectReadiness")(function* (args) {
@@ -164,4 +248,4 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         }),
       );
   }),
-);
+).pipe(Layer.provide(ProjectionTurnRepositoryLive));

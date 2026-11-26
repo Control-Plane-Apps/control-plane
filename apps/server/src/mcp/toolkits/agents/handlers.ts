@@ -675,9 +675,9 @@ const make = Effect.gen(function* () {
             settled: record.state === "settled" || record.state === "lost",
             lastActivityAt: record.lastActivityAt ?? record.createdAt,
             machine: record.machineLabel,
-            ...(phase === "stale"
+            ...(record.waitId || phase === "stale"
               ? {
-                  notice: `Waiting for ${record.machineLabel}. Wake or reconnect it to continue in the original workspace. Before starting a replacement manually, verify the original agent has stopped and its workspace changes are available.`,
+                  notice: `Waiting for ${record.machineLabel}. Wake or reconnect it, then open Settings > Connections > Agent machines to verify the original workspace and resume.`,
                 }
               : {}),
           }));

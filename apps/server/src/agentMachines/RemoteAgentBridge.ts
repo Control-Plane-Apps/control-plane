@@ -258,7 +258,15 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       backoffMs.set(machineId, wait);
       nextPollAt.set(machineId, now + wait);
       for (const record of records) {
-        yield* setPhase(record, "stale", null);
+        if (record.state === "open" && !record.waitId) {
+          yield* update(record, (current) =>
+            current.state === "open" && !current.waitId
+              ? { ...current, lastPhase: "stale", waitId: `${record.threadId}:${now}` }
+              : current,
+          );
+        } else {
+          yield* setPhase(record, "stale", null);
+        }
       }
       return;
     }
@@ -279,6 +287,27 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
         // The start never landed and no retry finished it.
         if (age >= PENDING_LIMIT_MS) yield* markLost(record, "The agent never started.");
         continue;
+      }
+      if (
+        record.state === "open" &&
+        !record.waitId &&
+        record.workspaceObservedFor !== thread.updatedAt
+      ) {
+        const checkpoint = yield* machines
+          .workspace(record.machineId, record.peerProjectId, record.threadId)
+          .pipe(
+            Effect.map((probe) => probe.workspace),
+            Effect.orElseSucceed(() => null),
+          );
+        yield* update(record, (current) =>
+          current.waitId
+            ? current
+            : {
+                ...current,
+                workspaceCheckpoint: checkpoint,
+                workspaceObservedFor: thread.updatedAt,
+              },
+        );
       }
       const request = record.inFlight;
       const verdict =
@@ -302,7 +331,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
         yield* finishRequest(record, thread, verdict);
         continue;
       }
-      if (request === null && record.queuedSends.length > 0) {
+      if (!record.waitId && request === null && record.queuedSends.length > 0) {
         yield* remote.startQueued(record, thread).pipe(
           Effect.catch((error) =>
             Effect.logWarning("queued send to a remote agent was not started", {

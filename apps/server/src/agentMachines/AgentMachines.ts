@@ -10,6 +10,8 @@ import {
   LOCAL_AGENT_MACHINE,
   AgentMachinesError,
   type AgentMachineConfig,
+  type AgentWorkspaceProbe,
+  type WaitingAgent,
   type ModelSelection,
   type AgentPlacementSettings,
   type AgentMachinesInput,
@@ -43,6 +45,7 @@ import {
   fetchPeerDescriptor,
   fetchPeerShell,
   fetchPeerReadiness,
+  fetchPeerWorkspace,
   fetchPeerThread,
   PeerError,
   postPeerReach,
@@ -63,7 +66,8 @@ import {
 import { type PlacementCandidate } from "./placement.ts";
 import { matchPeerProject, type ProjectMatch } from "./projectMatch.ts";
 import { PLACEMENT_GRACE_MS, machineLoad } from "./remoteAgentState.ts";
-import { RemoteAgentStore } from "./RemoteAgentStore.ts";
+import { resumeBlocker } from "./workspaceResume.ts";
+import { RemoteAgentStore, type RemoteAgentRecord } from "./RemoteAgentStore.ts";
 import { isAgentCountedRunning, resolveAgentModel } from "../mcp/toolkits/agents/agentScope.ts";
 import { forkParked } from "../serverActivation.ts";
 
@@ -134,6 +138,12 @@ export interface AgentMachinesShape {
     threadId: string,
     turnLimit: number,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, PeerError>;
+  readonly workspace: (
+    machineId: string,
+    projectId: string,
+    threadId: string,
+    freshIdentity?: boolean,
+  ) => Effect.Effect<AgentWorkspaceProbe, PeerError>;
   readonly dispatch: (machineId: string, command: PeerCommand) => Effect.Effect<void, PeerError>;
   /** Marks a machine as needing a fresh link after the peer refused its token. */
   readonly markNeedsRelink: (machineId: string) => Effect.Effect<void>;
@@ -280,6 +290,7 @@ const make = Effect.gen(function* () {
       token: string;
       config: AgentMachineConfig;
     }) => Effect.Effect<A, PeerError, HttpClient.HttpClient>,
+    freshIdentity = false,
   ): Effect.Effect<A, PeerError> =>
     Effect.gen(function* () {
       const config = yield* machineConfig(machineId);
@@ -293,7 +304,7 @@ const make = Effect.gen(function* () {
       }
       const verifiedAt = identities.get(machineId);
       const now = yield* nowMs;
-      if (verifiedAt === undefined || now - verifiedAt > IDENTITY_TTL_MS) {
+      if (freshIdentity || verifiedAt === undefined || now - verifiedAt > IDENTITY_TTL_MS) {
         yield* requirePeerIdentity(config.baseUrl, machineId);
         identities.set(machineId, now);
       }
@@ -891,6 +902,87 @@ const make = Effect.gen(function* () {
     return Math.max(250, nextLookMs);
   });
 
+  const workspace: AgentMachinesShape["workspace"] = (
+    machineId,
+    projectId,
+    threadId,
+    freshIdentity,
+  ) =>
+    withPeer(
+      machineId,
+      ({ baseUrl, token }) => fetchPeerWorkspace(baseUrl, token, projectId, threadId),
+      freshIdentity,
+    );
+
+  const storeFailure = () =>
+    new AgentMachinesError({ detail: "Could not access the remote agent registry." });
+  const waitingStatus = (agent: RemoteAgentRecord, waitId: string) =>
+    Effect.gen(function* () {
+      const probe = yield* workspace(
+        agent.machineId,
+        agent.peerProjectId,
+        agent.threadId,
+        true,
+      ).pipe(Effect.orElseSucceed(() => null));
+      const reason =
+        resumeBlocker(agent.workspaceCheckpoint, probe) ??
+        (agent.inFlight !== null ? "Wait for the outstanding result to be collected." : null);
+      return {
+        threadId: agent.threadId,
+        title: agent.title,
+        machineId: agent.machineId,
+        machineLabel: agent.machineLabel,
+        branch: agent.workspaceCheckpoint?.branch ?? null,
+        commit: agent.workspaceCheckpoint?.commit ?? null,
+        canResume: reason === null,
+        detail: reason ?? "The original agent is idle in its verified workspace.",
+        waitId,
+      } satisfies WaitingAgent;
+    });
+  const checkedMachines = Effect.gen(function* () {
+    const machines = yield* check;
+    const records = yield* store.list.pipe(Effect.mapError(storeFailure));
+    const waitingAgents = yield* Effect.forEach(
+      records.flatMap((agent) =>
+        agent.state === "open" && agent.waitId ? [{ agent, waitId: agent.waitId }] : [],
+      ),
+      ({ agent, waitId }) => waitingStatus(agent, waitId),
+      { concurrency: 2 },
+    );
+    return { machines, waitingAgents };
+  });
+  const resume = (threadId: string, waitId: string) =>
+    Effect.gen(function* () {
+      const agent = Option.getOrNull(
+        yield* store.get(threadId).pipe(Effect.mapError(storeFailure)),
+      );
+      const stale = () =>
+        new AgentMachinesError({
+          detail: "This agent's waiting state changed. Refresh Agent machines.",
+        });
+      if (!agent || agent.state !== "open") return yield* stale();
+      if (agent.waitId == null && agent.lastResumedWaitId === waitId) return;
+      if (agent.waitId !== waitId) return yield* stale();
+      const status = yield* waitingStatus(agent, waitId);
+      if (!status.canResume) return yield* new AgentMachinesError({ detail: status.detail });
+      const updated = Option.getOrNull(
+        yield* store
+          .update(threadId, (current) =>
+            current.waitId === waitId && current.state === "open" && current.inFlight === null
+              ? {
+                  ...current,
+                  waitId: null,
+                  lastResumedWaitId: waitId,
+                  resumeCheckpoint: agent.workspaceCheckpoint ?? null,
+                }
+              : current,
+          )
+          .pipe(Effect.mapError(storeFailure)),
+      );
+      if (!updated || updated.waitId != null || updated.lastResumedWaitId !== waitId)
+        return yield* stale();
+    });
+
   const manage: AgentMachinesShape["manage"] = (input) =>
     Effect.gen(function* () {
       switch (input.action) {
@@ -905,13 +997,17 @@ const make = Effect.gen(function* () {
           yield* unlink(input.id);
           return { machines: yield* check };
         }
+        case "resume":
+          yield* resume(input.threadId, input.waitId);
+          return yield* checkedMachines;
         case "check":
-          return { machines: yield* check };
+          return yield* checkedMachines;
       }
     });
 
   return {
     manage,
+    workspace,
     placementInputs,
     shell,
     thread: (machineId, threadId, turnLimit) =>

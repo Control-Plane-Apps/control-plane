@@ -62,6 +62,8 @@ interface PeerState {
   projects: ReadonlyArray<OrchestrationProjectShell>;
   threads: ReadonlyArray<ReturnType<typeof makePeerThread>>;
   reachable: boolean;
+  workspace: { root: string; branch: string; commit: string };
+  idle: boolean;
   tokenStatus: number;
   renewStatus: number;
   renewRefusal: string | null;
@@ -80,6 +82,8 @@ const makePeer = (overrides: Partial<PeerState> = {}) => {
     projects: [peerProject],
     threads: [],
     reachable: true,
+    workspace: { root: "/original", branch: "feature", commit: "a".repeat(40) },
+    idle: true,
     tokenStatus: 200,
     renewStatus: 200,
     renewRefusal: null,
@@ -166,6 +170,9 @@ const makePeer = (overrides: Partial<PeerState> = {}) => {
         );
       }
       if (url.pathname === "/api/agent-machine/retire") return answer(200, { revoked: true });
+      if (url.pathname === "/api/orchestration/projects/peer-project/agents/remote-1/workspace") {
+        return answer(200, { workspace: state.workspace, idle: state.idle });
+      }
       if (url.pathname === "/api/orchestration/shell") {
         return answer(200, {
           snapshotSequence: 1,
@@ -438,6 +445,56 @@ describe("AgentMachines.manage unlink and check", () => {
       }),
     );
   });
+
+  it.effect(
+    "requires a fresh matching branch, commit, root and idle origin to release one sleep hold",
+    () => {
+      const peer = makePeer();
+      const h = harness({ placement: linkedMini, peer });
+      return h.run(
+        Effect.gen(function* () {
+          const machines = yield* AgentMachines;
+          const store = yield* RemoteAgentStore;
+          yield* storeToken();
+          const checkpoint = { ...peer.state.workspace };
+          const record = makeRecord({
+            machineId: "env-mini",
+            workspaceCheckpoint: checkpoint,
+            waitId: "first",
+          });
+          yield* store.put(record);
+          const release = machines.manage({
+            action: "resume",
+            threadId: record.threadId,
+            waitId: "first",
+          });
+          for (const changed of [
+            { branch: "main" },
+            { commit: "b".repeat(40) },
+            { root: "/other" },
+          ]) {
+            peer.state.workspace = { ...checkpoint, ...changed };
+            expect((yield* Effect.result(release))._tag).toBe("Failure");
+          }
+          peer.state.workspace = checkpoint;
+          peer.state.idle = false;
+          expect((yield* Effect.result(release))._tag).toBe("Failure");
+          peer.state.idle = true;
+          const ready = yield* machines.manage({ action: "check" });
+          expect(ready.waitingAgents?.[0]).toMatchObject({ branch: "feature", canResume: true });
+          yield* release;
+          yield* release;
+          expect(Option.getOrThrow(yield* store.get(record.threadId))).toMatchObject({
+            waitId: null,
+            resumeCheckpoint: checkpoint,
+          });
+          yield* store.put({ ...record, waitId: "second" });
+          expect((yield* Effect.result(release))._tag).toBe("Failure");
+          expect(Option.getOrThrow(yield* store.get(record.threadId)).waitId).toBe("second");
+        }),
+      );
+    },
+  );
 
   it.effect("check reports an unreachable machine as offline", () => {
     const h = harness({ placement: linkedMini, peer: makePeer({ reachable: false }) });

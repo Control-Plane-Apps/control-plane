@@ -99,6 +99,11 @@ export const AgentMachinesInput = Schema.Union([
     baseUrl: TrimmedNonEmptyString,
   }),
   Schema.Struct({ action: Schema.Literal("check") }),
+  Schema.Struct({
+    action: Schema.Literal("resume"),
+    threadId: TrimmedNonEmptyString,
+    waitId: TrimmedNonEmptyString,
+  }),
 ]);
 export type AgentMachinesInput = typeof AgentMachinesInput.Type;
 
@@ -162,7 +167,34 @@ export const AgentMachineStatus = Schema.Struct({
 });
 export type AgentMachineStatus = typeof AgentMachineStatus.Type;
 
+export const AgentWorkspaceCheckpoint = Schema.Struct({
+  root: TrimmedNonEmptyString,
+  branch: TrimmedNonEmptyString,
+  commit: TrimmedNonEmptyString,
+});
+export type AgentWorkspaceCheckpoint = typeof AgentWorkspaceCheckpoint.Type;
+
+export const AgentWorkspaceProbe = Schema.Struct({
+  workspace: Schema.NullOr(AgentWorkspaceCheckpoint),
+  idle: Schema.Boolean,
+});
+export type AgentWorkspaceProbe = typeof AgentWorkspaceProbe.Type;
+
+export const WaitingAgent = Schema.Struct({
+  threadId: Schema.String,
+  title: Schema.String,
+  machineId: Schema.String,
+  machineLabel: Schema.String,
+  branch: Schema.NullOr(Schema.String),
+  commit: Schema.NullOr(Schema.String),
+  canResume: Schema.Boolean,
+  detail: Schema.String,
+  waitId: Schema.String,
+});
+export type WaitingAgent = typeof WaitingAgent.Type;
+
 export const AgentMachinesResult = Schema.Struct({
+  waitingAgents: Schema.optionalKey(Schema.Array(WaitingAgent)),
   /** The entry `link` added. */
   linked: Schema.optionalKey(Schema.Struct({ id: AgentMachineId, label: Schema.String })),
   machines: Schema.Array(AgentMachineStatus),

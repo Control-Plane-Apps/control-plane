@@ -2,6 +2,8 @@ import {
   LOCAL_AGENT_MACHINE,
   type AgentMachinePreference,
   type AgentMachineStatus,
+  type AgentMachinesResult,
+  type WaitingAgent,
   type AgentPlacementSettings,
   type AgentPlacementSettingsPatch,
   type EnvironmentId,
@@ -13,7 +15,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { MoreVertical, PlusIcon } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { useUpdateEnvironmentSettings } from "~/hooks/useSettings";
 import {
@@ -65,6 +67,7 @@ import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { loadPreferences } from "./LoadBalancingSettings";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
+import { WaitingAgentsSettings } from "./WaitingAgentsSettings";
 
 /**
  * Folded section under Load balancing: where coordinators on the environment
@@ -224,11 +227,17 @@ export interface AgentMachinesCheckState {
   readonly statuses: ReadonlyMap<string, AgentMachineStatus>;
   /** When `statuses` arrived; token expiry is measured from here, not from render. */
   readonly checkedAt: number;
+  readonly waitingAgents?: AgentMachinesResult["waitingAgents"];
   readonly error?: string;
 }
 
-function checkedState(statuses: ReadonlyArray<AgentMachineStatus>): AgentMachinesCheckState {
-  return { phase: "done", statuses: agentMachineStatusesById(statuses), checkedAt: Date.now() };
+function checkedState(result: AgentMachinesResult): AgentMachinesCheckState {
+  return {
+    phase: "done",
+    statuses: agentMachineStatusesById(result.machines),
+    waitingAgents: result.waitingAgents,
+    checkedAt: Date.now(),
+  };
 }
 
 /** Mounts when the fold opens, so each opening checks the machines once. */
@@ -252,6 +261,8 @@ function AgentMachinesBody({
     statuses: new Map(),
     checkedAt: 0,
   });
+  const latestCheck = useRef(0);
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [unlinking, setUnlinking] = useState<string | null>(null);
   const [linkBackTarget, setLinkBackTarget] = useState<{ id: string; label: string } | null>(null);
@@ -265,9 +276,11 @@ function AgentMachinesBody({
 
   // Starts in "checking"; the caller sets that phase for a manual refresh.
   const requestCheck = useCallback(async () => {
+    const generation = ++latestCheck.current;
     const result = await agentMachines({ environmentId, input: { action: "check" } });
+    if (generation !== latestCheck.current) return;
     if (result._tag === "Success") {
-      setCheck(checkedState(result.value.machines));
+      setCheck(checkedState(result.value));
     } else if (!isAtomCommandInterrupted(result)) {
       setCheck((previous) => ({
         ...previous,
@@ -285,6 +298,49 @@ function AgentMachinesBody({
   const refresh = () => {
     setCheck((previous) => ({ ...previous, phase: "checking" }));
     void requestCheck();
+  };
+
+  const afterLinkChange = (result: AgentMachinesResult) => {
+    if (result.waitingAgents !== undefined) {
+      latestCheck.current++;
+      setCheck(checkedState(result));
+      return;
+    }
+    // Link operations return machine statuses. Refresh eligibility against the changed links.
+    setCheck((previous) => ({
+      ...checkedState(result),
+      phase: "checking",
+      waitingAgents: previous.waitingAgents,
+    }));
+    void requestCheck();
+  };
+
+  const resume = async (agent: WaitingAgent) => {
+    if (resumingId !== null || check.phase !== "done" || !agent.canResume) return;
+    setResumingId(agent.threadId);
+    try {
+      const result = await agentMachines({
+        environmentId,
+        input: { action: "resume", threadId: agent.threadId, waitId: agent.waitId },
+      });
+      if (result._tag === "Success") {
+        latestCheck.current++;
+        setCheck(checkedState(result.value));
+        toastManager.add({
+          type: "success",
+          title: `Resumed ${agent.title} on ${agent.machineLabel}`,
+        });
+      } else if (!isAtomCommandInterrupted(result)) {
+        toastManager.add({
+          type: "error",
+          title: `Could not resume ${agent.title}`,
+          description: agentMachinesErrorMessage(squashAtomCommandFailure(result)),
+        });
+        await requestCheck();
+      }
+    } finally {
+      setResumingId(null);
+    }
   };
 
   /**
@@ -323,7 +379,7 @@ function AgentMachinesBody({
       }
       return;
     }
-    setCheck(checkedState(linked.value.machines));
+    afterLinkChange(linked.value);
     const back =
       selfAddress === null
         ? null
@@ -332,7 +388,7 @@ function AgentMachinesBody({
             input: { action: "linkBack", id: machine.id, baseUrl: selfAddress },
           });
     setRelinking(null);
-    if (back !== null && back._tag === "Success") setCheck(checkedState(back.value.machines));
+    if (back !== null && back._tag === "Success") afterLinkChange(back.value);
     toastManager.add(
       back !== null && back._tag === "Success"
         ? { type: "success", title: `Relinked ${machine.label} both ways` }
@@ -352,7 +408,7 @@ function AgentMachinesBody({
     });
     setUnlinking(null);
     if (result._tag === "Success") {
-      setCheck(checkedState(result.value.machines));
+      afterLinkChange(result.value);
       toastManager.add({
         type: "success",
         title: `Unlinked ${label}`,
@@ -382,6 +438,8 @@ function AgentMachinesBody({
         placement={placement}
         projects={projects}
         check={check}
+        resumingId={resumingId}
+        onResume={(agent) => void resume(agent)}
         unlinking={unlinking}
         update={update}
         onRefresh={refresh}
@@ -404,7 +462,7 @@ function AgentMachinesBody({
         onClose={() => setLinkBackTarget(null)}
         environmentId={environmentId}
         environmentLabel={environment.label}
-        onLinked={(statuses) => setCheck(checkedState(statuses))}
+        onLinked={afterLinkChange}
       />
       <AddAgentMachineDialog
         open={addOpen || relinkTarget !== null}
@@ -415,7 +473,7 @@ function AgentMachinesBody({
         }}
         environmentId={environmentId}
         environmentLabel={environment.label}
-        onLinked={(statuses) => setCheck(checkedState(statuses))}
+        onLinked={afterLinkChange}
       />
     </>
   );
@@ -438,6 +496,8 @@ export function AgentMachinesView({
   machineKind,
   placement,
   check,
+  resumingId = null,
+  onResume,
   unlinking,
   update,
   onRefresh,
@@ -455,6 +515,8 @@ export function AgentMachinesView({
   readonly machineKind: (machineId: string) => EnvironmentMachineKind;
   readonly placement: AgentPlacementSettings;
   readonly check: AgentMachinesCheckState;
+  readonly resumingId?: string | null;
+  readonly onResume?: (agent: WaitingAgent) => void;
   readonly unlinking: string | null;
   readonly update: (patch: AgentPlacementSettingsPatch | null) => void;
   readonly onRefresh: () => void;
@@ -479,7 +541,7 @@ export function AgentMachinesView({
         <Button
           size="xs"
           variant="ghost-muted"
-          disabled={checking}
+          disabled={checking || resumingId !== null}
           onClick={onRefresh}
           aria-label="Refresh machine status"
         >
@@ -498,6 +560,14 @@ export function AgentMachinesView({
         <p role="status" className="px-3 py-2.5 text-xs text-destructive sm:px-4">
           Could not check machines: {check.error}
         </p>
+      ) : null}
+      {check.waitingAgents?.length ? (
+        <WaitingAgentsSettings
+          agents={check.waitingAgents}
+          fresh={check.phase === "done"}
+          resumingId={resumingId}
+          onResume={onResume}
+        />
       ) : null}
       <SettingLine label="Where new agents run">
         <Select
@@ -737,7 +807,7 @@ function AddAgentMachineDialog({
   readonly onOpenChange: (open: boolean) => void;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
-  readonly onLinked: (statuses: ReadonlyArray<AgentMachineStatus>) => void;
+  readonly onLinked: (result: AgentMachinesResult) => void;
 }) {
   const agentMachines = useAtomCommand(serverEnvironment.agentMachines, { reportFailure: false });
   const [pairingUrl, setPairingUrl] = useState("");
@@ -768,7 +838,7 @@ function AddAgentMachineDialog({
       ),
     });
     if (result._tag === "Success") {
-      onLinked(result.value.machines);
+      onLinked(result.value);
       const linked = result.value.linked;
       if (linkBack && linked !== undefined) {
         const back = await agentMachines({
@@ -777,7 +847,7 @@ function AddAgentMachineDialog({
         });
         setBusy(false);
         if (back._tag === "Success") {
-          onLinked(back.value.machines);
+          onLinked(back.value);
           toastManager.add({
             type: "success",
             title: `Linked ${linked.label} both ways`,
@@ -943,7 +1013,7 @@ function LinkBackDialog({
   readonly onClose: () => void;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
-  readonly onLinked: (statuses: ReadonlyArray<AgentMachineStatus>) => void;
+  readonly onLinked: (result: AgentMachinesResult) => void;
 }) {
   const agentMachines = useAtomCommand(serverEnvironment.agentMachines, { reportFailure: false });
   const suggested = useSelfAddress(environmentId, target !== null);
@@ -965,7 +1035,7 @@ function LinkBackDialog({
     });
     setBusy(false);
     if (result._tag === "Success") {
-      onLinked(result.value.machines);
+      onLinked(result.value);
       toastManager.add({
         type: "success",
         title: `${target.label} can reach ${environmentLabel}`,

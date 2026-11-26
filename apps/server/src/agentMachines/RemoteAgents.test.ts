@@ -501,7 +501,7 @@ describe("RemoteAgents.send and startQueued", () => {
   );
 
   it.effect(
-    "starts the oldest queued send once the peer is idle, and takes it off the queue first",
+    "starts the oldest queued send once the peer is idle, and removes only the accepted request",
     () =>
       Effect.gen(function* () {
         const { peer, run } = harness();
@@ -540,6 +540,35 @@ describe("RemoteAgents.send and startQueued", () => {
         expect(start?.type === "thread.turn.start" && start.message.text).toBe("First.");
         expect(record.queuedSends.map((entry) => entry.text)).toEqual(["Second."]);
         expect(record.inFlight?.messageId).toBe("cp-remote-send:remote-1:q1");
+      }),
+  );
+
+  it.effect(
+    "retains the queue and restores the hold when the branch changes after a manual resume",
+    () =>
+      Effect.gen(function* () {
+        const { peer, run } = harness();
+        const record = makeRecord({
+          resumeCheckpoint: { root: "/work/acme", branch: "feature", commit: "a".repeat(40) },
+          queuedSends: [
+            { messageId: "queued", text: "Finish.", replyTo: "coordinator", queuedAt: TEST_NOW },
+          ],
+        });
+        yield* run(
+          Effect.gen(function* () {
+            const store = yield* RemoteAgentStore;
+            const agents = yield* RemoteAgents;
+            yield* store.put(record);
+            const result = yield* Effect.result(
+              agents.startQueued(record, makePeerThread(record.threadId)),
+            );
+            expect(result._tag).toBe("Failure");
+            const held = Option.getOrThrow(yield* store.get(record.threadId));
+            expect(held.waitId).toBeTruthy();
+            expect(held.queuedSends).toEqual(record.queuedSends);
+            expect(peer.commands).toEqual([]);
+          }),
+        );
       }),
   );
 
