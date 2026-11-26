@@ -67,7 +67,7 @@ describe("coordinator integration readiness", () => {
         try {
           yield* fs.writeFileString(
             path.join(workspace, "app.json"),
-            JSON.stringify({ expo: { extra: { eas: { projectId: id } } } }),
+            `{"expo":{"extra":{"eas":{"projectId":"${id}"}}}}`,
           );
           yield* fs.writeFileString(
             path.join(workspace, "app.config.js"),

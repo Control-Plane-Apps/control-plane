@@ -92,18 +92,15 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
             self: Effect.succeed({ environmentId: id, label: id }),
             machines: Effect.succeed([peer]),
             call: (machine, _op, input, _caller, result) =>
-              decodeStep(input).pipe(
-                Effect.flatMap((step) =>
-                  Effect.tryPromise(() => send(step)).pipe(
-                    Effect.flatMap((reply) => {
-                      if (step.action === drop) {
-                        drop = null;
-                        return Effect.fail("Lost acknowledgement.");
-                      }
-                      return Schema.decodeUnknownEffect(result)(reply);
-                    }),
-                  ),
-                ),
+              Effect.gen(function* () {
+                const step = yield* decodeStep(input);
+                const reply = yield* Effect.tryPromise(() => send(step));
+                if (step.action === drop) {
+                  drop = null;
+                  return yield* Effect.fail("Lost acknowledgement.");
+                }
+                return yield* Schema.decodeUnknownEffect(result)(reply);
+              }).pipe(
                 Effect.mapError(
                   (e) =>
                     new ReachError({
