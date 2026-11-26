@@ -281,7 +281,7 @@ waking or reconnecting the machine, select **Refresh**. **Resume** becomes avail
 server verifies the original checkout and thread are ready to continue. Resuming releases held
 work on that machine. If the queue is empty, the agent waits for its next request.
 
-The home manager receives a waiting notice when the bridge loses contact with an agent. For
+The home Project coordinator receives a waiting notice when the bridge loses contact with an agent. For
 an alternate machine, prepare a separate destination Project checkout with the same repository, branch,
 commit, staged changes, working tree changes and non-ignored untracked files. Ignored local
 configuration stays on each machine. Select the destination in **Waiting agents** and choose
