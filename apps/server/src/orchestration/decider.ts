@@ -57,6 +57,7 @@ import {
   requireSettleable,
   resolveCoordinatorMetaUpdate,
 } from "./assistantDecider.ts";
+import { agentDeliveryStartId } from "./agentProtocol.ts";
 import { decidePeerBudget, isPeerDelivery, peerWindow } from "./agentPeers.ts";
 import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 import { projectEvent } from "./projector.ts";
@@ -97,6 +98,25 @@ function rejectUnavailablePeerDelivery(
   if (!isPeerDelivery(command.message.messageId)) return Effect.void;
   const source = command.message.source;
   const senderThreadId = source?.kind === "agent" ? source.threadId : undefined;
+  // The reactor starts an already admitted queue item using its stable command receipt.
+  // Its append consumed the budget. The later start must still require an active recipient.
+  if (
+    command.type === "thread.turn.start" &&
+    thread.settledAt === null &&
+    thread.archivedAt === null &&
+    senderThreadId &&
+    command.commandId === agentDeliveryStartId(command.message.messageId) &&
+    thread.messages.some(
+      (row) =>
+        row.id === command.message.messageId &&
+        row.role === "user" &&
+        row.turnId === null &&
+        row.text === command.message.text &&
+        row.source?.kind === "agent" &&
+        row.source.threadId === senderThreadId,
+    )
+  )
+    return Effect.void;
   const available =
     senderThreadId &&
     thread.settledAt === null &&
