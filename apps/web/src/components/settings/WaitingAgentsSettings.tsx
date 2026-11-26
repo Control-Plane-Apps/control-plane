@@ -49,7 +49,15 @@ export function WaitingAgentsSettings({
               )}
               <p className="break-words text-xs text-muted-foreground">{agent.detail}</p>
             </div>
-            {onResume && agent.destinations?.length ? (
+            {onResume && agent.activationDestination ? (
+              <Button
+                size="xs"
+                disabled={!fresh || resumingId !== null}
+                onClick={() => onResume(agent, agent.activationDestination)}
+              >
+                Retry activation
+              </Button>
+            ) : onResume && agent.destinations?.length ? (
               <div className="basis-full space-y-1 text-xs">
                 <select
                   aria-label={`Destination for ${agent.title}`}
@@ -84,10 +92,10 @@ export function WaitingAgentsSettings({
                 size="xs"
                 variant="outline"
                 disabled={!fresh || resumingId !== null}
-                aria-label={`Resume ${agent.title} on ${agent.machineLabel}`}
+                aria-label={`${agent.recoveryLabel ?? "Resume"} ${agent.title} on ${agent.machineLabel}`}
                 onClick={() => onResume(agent)}
               >
-                {resumingId === agent.threadId ? "Resuming…" : "Resume"}
+                {resumingId === agent.threadId ? "Working…" : (agent.recoveryLabel ?? "Resume")}
               </Button>
             ) : null}
           </li>

@@ -288,8 +288,11 @@ configuration stays on each machine. Select the destination in **Waiting agents*
 **Verify and move**. Both machines must be reachable. Each hashes its checkout locally. The home
 checks matching fingerprints and destination requirements, stops the original session, and
 archives the original thread with a durable execution fence before creating the destination agent.
-After destination verification the home releases the held queue. A failed acknowledgement keeps
-the move bound to that destination so the same action can safely retry it. The original thread
+The destination begins archived and bound to its home Project. Before ownership commits, **Cancel
+handoff** verifies the original is unfenced. **Recover original machine** can restore a fenced
+original even when the destination is offline. Both actions leave the queue waiting for workspace
+verification. Once the home commits ownership, **Retry activation** completes the move on the
+destination using the same receipt. The home releases queued work after confirming activation. The original thread
 holds its full history. The agent's first destination request includes recent conversation text.
 
 ## Security
@@ -297,7 +300,7 @@ holds its full history. The agent's first destination request includes recent co
 - **Linking is trust.** `orchestration:operate` lets the home run any client command on the peer,
   including code execution in `full-access`. Link only machines you would let the coordinator's
   machine act on. The runtime-mode rule constrains the MCP path only.
-- **Allowlist.** The peer client refuses any command outside the six above, so a bug or a
+- **Allowlist.** The peer client refuses commands outside the agent allowlist, which includes a scoped handoff release, so a bug or a
   prompt-injected tool call cannot reach `project.delete` or `thread.delete`.
 - **Least privilege token.** Read and operate only; never `access:write` or relay scopes. Unlink
   retires the local token at the peer and deletes it; a token is also listed in the peer's client

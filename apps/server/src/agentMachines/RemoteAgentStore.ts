@@ -6,7 +6,7 @@
  *
  * @module RemoteAgentStore
  */
-import { AgentWorkspaceCheckpoint, RuntimeMode } from "@t3tools/contracts";
+import { AgentHandoffPhase, AgentWorkspaceCheckpoint, RuntimeMode } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -92,6 +92,9 @@ export const RemoteAgentRecord = Schema.Struct({
     Schema.NullOr(
       Schema.Struct({
         waitId: Schema.String,
+        phase: Schema.optionalKey(AgentHandoffPhase),
+        sourceKey: Schema.optionalKey(Schema.String),
+        destinationKey: Schema.optionalKey(Schema.String),
         destinationId: Schema.String,
         projectId: Schema.String,
         sourceRoot: Schema.String,
@@ -107,6 +110,7 @@ export const RemoteAgentRecord = Schema.Struct({
   notifiedWaitId: Schema.optionalKey(Schema.String),
   waitId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   resumeCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
+  lastRecoveredWaitId: Schema.optionalKey(Schema.String),
   lastResumedWaitId: Schema.optionalKey(Schema.String),
 });
 export type RemoteAgentRecord = typeof RemoteAgentRecord.Type;

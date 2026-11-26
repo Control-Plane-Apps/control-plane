@@ -102,10 +102,11 @@ const command = (type: string) =>
   }) as unknown as ClientOrchestrationCommand;
 
 describe("peer command allowlist", () => {
-  it("allows exactly the six agent commands", () => {
+  it("allows agent commands and restricts unarchive to handoff releases", () => {
     expect([...PEER_COMMAND_ALLOWLIST].toSorted()).toEqual(
       [
         "thread.archive",
+        "thread.unarchive",
         "thread.create",
         "thread.session.stop",
         "thread.settle",
@@ -114,7 +115,7 @@ describe("peer command allowlist", () => {
       ].toSorted(),
     );
     for (const type of PEER_COMMAND_ALLOWLIST) {
-      expect(isPeerCommand(command(type)), type).toBe(true);
+      expect(isPeerCommand(command(type)), type).toBe(type !== "thread.unarchive");
     }
   });
 

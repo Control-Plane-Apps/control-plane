@@ -6,6 +6,7 @@ import {
   canManageAgent,
   isAssistantChannel,
   isStandingAgent,
+  type ProjectId,
   type OrchestrationAgentMessageSource,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
@@ -284,6 +285,11 @@ const make = Effect.gen(function* () {
 
   const placementHomeOf = (sender: OrchestrationThreadShell) =>
     Effect.gen(function* () {
+      const markers = yield* snapshots
+        .getHandoffActivities(sender.id)
+        .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause })));
+      const held = markers.find((marker) => marker.kind === "agent.handoff.held");
+      if (held) return held.payload as { machineId: string; projectId: ProjectId };
       const messages = yield* messageRows
         .listByThreadId({ threadId: sender.id })
         .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause })));

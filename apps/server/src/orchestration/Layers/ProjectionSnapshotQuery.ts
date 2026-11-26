@@ -26,7 +26,7 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationProject,
   type OrchestrationSession,
-  type OrchestrationThreadActivity,
+  OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   ModelSelection,
   ProjectId,
@@ -1316,7 +1316,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             handoff
               ? sql`project_id = ${handoff.projectId} AND (archived_at IS NULL OR EXISTS (
             SELECT 1 FROM projection_thread_activities AS fences WHERE fences.thread_id = ${threadId}
-            AND fences.kind = 'agent.handoff.fenced' AND fences.activity_id = ${"cp-handoff-fence:" + handoff.waitId}
+            AND ((fences.kind = 'agent.handoff.fenced' AND fences.activity_id = ${"cp-handoff-fence:" + handoff.waitId})
+              OR (fences.kind = 'agent.handoff.held' AND fences.activity_id = ${"cp-handoff-hold:" + handoff.waitId}))
+            AND NOT EXISTS (SELECT 1 FROM projection_thread_activities AS released WHERE released.thread_id = fences.thread_id
+              AND released.kind = 'agent.handoff.released' AND released.activity_id = ${"cp-handoff-release:" + handoff.waitId})
           ))`
               : sql`archived_at IS NULL`
           }
@@ -1499,6 +1502,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           activity_id ASC
       `,
   });
+
+  const handoffActivityRows = SqlSchema.findAll({
+    Request: ThreadId,
+    Result: Schema.Struct({ activity: Schema.fromJsonString(OrchestrationThreadActivity) }),
+    // The creation boundary matters when a deleted thread ID is reused. The
+    // event stream preserves the binding even after conversation history is trimmed.
+    execute: (threadId) => sql`SELECT json_extract(payload_json,'$.activity') AS activity
+      FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+      AND sequence > COALESCE((SELECT MAX(sequence) FROM orchestration_events WHERE aggregate_kind = 'thread'
+        AND stream_id = ${threadId} AND event_type = 'thread.created'), 0)
+      AND event_type = 'thread.activity-appended' AND json_extract(payload_json,'$.activity.kind')
+        IN ('agent.handoff.fenced','agent.handoff.held','agent.handoff.released') ORDER BY sequence`,
+  });
+  const getHandoffActivities: ProjectionSnapshotQueryShape["getHandoffActivities"] = (id) =>
+    handoffActivityRows(id).pipe(
+      Effect.map((rows) => rows.map((row) => row.activity)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.handoff:query",
+          "ProjectionSnapshotQuery.handoff:decode",
+        ),
+      ),
+    );
 
   const getUserInputActivityRow = SqlSchema.findOneOption({
     Request: Schema.Struct({ threadId: ThreadId, requestId: ApprovalRequestId }),
@@ -3846,6 +3872,7 @@ pending_approval_requests AS (
 
   return {
     getCommandReadModel,
+    getHandoffActivities,
     getUserInputActivity,
     listActivitiesByKind,
     getSnapshot,

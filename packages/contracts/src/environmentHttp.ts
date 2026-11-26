@@ -615,6 +615,14 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(
+    HttpApiEndpoint.post("handoffDispatch", "/api/orchestration/handoff-dispatch", {
+      headers: OptionalBearerHeaders,
+      payload: ClientOrchestrationCommand,
+      success: DispatchResult,
+      error: EnvironmentOrchestrationDispatchErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
     HttpApiEndpoint.post("dispatch", "/api/orchestration/dispatch", {
       headers: OptionalBearerHeaders,
       payload: ClientOrchestrationCommand,

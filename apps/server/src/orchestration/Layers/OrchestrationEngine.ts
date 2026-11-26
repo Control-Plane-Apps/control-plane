@@ -271,26 +271,20 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
         }
 
-        if (
+        // Compact snapshots omit activities. Consult the durable markers for every
+        // archived-thread mutation and for a fence that could race with cancellation.
+        const handoffActivities =
           aggregateRef.aggregateKind === "thread" &&
-          commandReadModel.threads.some(
-            (thread) => thread.id === aggregateRef.aggregateId && thread.archivedAt != null,
-          )
-        ) {
-          // Compact command snapshots omit activities. A handoff fence survives restart
-          // in the activity projection, committed atomically with the archive event.
-          const fences = yield* sql<{
-            activity_id: string;
-          }>`SELECT activity_id FROM projection_thread_activities
-            WHERE thread_id = ${aggregateRef.aggregateId} AND kind = 'agent.handoff.fenced' LIMIT 1`.pipe(
-            Effect.mapError(toPersistenceSqlError("OrchestrationEngine.handoffFence")),
-          );
-          if (fences.length > 0)
-            return yield* new OrchestrationCommandInvariantError({
-              commandType: envelope.command.type,
-              detail: "This agent was moved to another machine. Its original thread is read-only.",
-            });
-        }
+          ((envelope.command.type === "thread.session.stop" && envelope.command.handoffWaitId) ||
+            (envelope.command.type === "thread.archive" && envelope.command.handoff) ||
+            (envelope.command.type === "thread.unarchive" && envelope.command.handoffRelease) ||
+            commandReadModel.threads.some(
+              (t) => t.id === aggregateRef.aggregateId && t.archivedAt != null,
+            ))
+            ? yield* projectionSnapshotQuery.getHandoffActivities(
+                aggregateRef.aggregateId as ThreadId,
+              )
+            : undefined;
         if (
           envelope.command.type === "thread.archive" &&
           envelope.command.handoff &&
@@ -312,6 +306,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
+          ...(handoffActivities ? { handoffActivities } : {}),
           ...(Option.isSome(userInputActivity)
             ? { userInputActivity: userInputActivity.value }
             : {}),

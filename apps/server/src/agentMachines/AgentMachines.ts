@@ -6,6 +6,7 @@
  *
  * @module AgentMachines
  */
+import { createHash, randomUUID } from "node:crypto";
 import {
   CommandId,
   ProjectId,
@@ -956,6 +957,40 @@ const make = Effect.gen(function* () {
     new AgentMachinesError({ detail: "Could not access the remote agent registry." });
   const waitingStatus = (agent: RemoteAgentRecord, waitId: string) =>
     Effect.gen(function* () {
+      if (agent.handoff) {
+        const phase = agent.handoff.phase;
+        const labels = (yield* placementSettings).machines;
+        const destination = agent.handoff.destinationId;
+        const activating = phase === "committed";
+        return {
+          threadId: agent.threadId,
+          title: agent.title,
+          machineId: agent.machineId,
+          machineLabel: agent.machineLabel,
+          waitId,
+          branch: agent.handoff.branch,
+          commit: agent.handoff.commit,
+          ...(phase ? { handoffPhase: phase } : {}),
+          canResume: !!phase && !activating,
+          ...(phase && !activating
+            ? {
+                recoveryLabel: phase === "prepared" ? "Cancel handoff" : "Recover original machine",
+              }
+            : {}),
+          ...(activating ? { activationDestination: destination } : {}),
+          destinations:
+            phase && phase !== "recovering"
+              ? [{ id: destination, label: labels[destination]?.label ?? destination }]
+              : [],
+          detail: activating
+            ? "Ownership is committed. Retry activation on the destination."
+            : phase === "recovering"
+              ? "Original-machine recovery is in progress. Retry recovery to finish."
+              : phase
+                ? "Retry the handoff or recover the original machine. Recovery needs only the original machine online."
+                : "This older handoff has no ownership receipts. Inspect both machines before recovery.",
+        } satisfies WaitingAgent;
+      }
       const probe = yield* workspace(
         agent.machineId,
         agent.peerProjectId,
@@ -968,18 +1003,12 @@ const make = Effect.gen(function* () {
         (agent.inFlight !== null ? "Wait for the outstanding result to be collected." : null);
       const enabled = (yield* placementSettings).machines;
       const destinations =
-        agent.handoff ||
-        ((agent.workspacePosition || agent.workspaceCheckpoint) &&
-          probe?.idle &&
-          agent.inFlight === null &&
-          !agent.stoppingAt)
+        (agent.workspacePosition || agent.workspaceCheckpoint) &&
+        probe?.idle &&
+        agent.inFlight === null &&
+        !agent.stoppingAt
           ? Object.entries(enabled)
-              .filter(
-                ([id, config]) =>
-                  config.enabled &&
-                  id !== agent.machineId &&
-                  (!agent.handoff || agent.handoff.destinationId === id),
-              )
+              .filter(([id, config]) => config.enabled && id !== agent.machineId)
               .map(([id, config]) => ({ id, label: config.label }))
           : [];
       return {
@@ -990,7 +1019,7 @@ const make = Effect.gen(function* () {
         machineLabel: agent.machineLabel,
         branch: (agent.workspacePosition ?? agent.workspaceCheckpoint)?.branch ?? null,
         commit: (agent.workspacePosition ?? agent.workspaceCheckpoint)?.commit ?? null,
-        canResume: reason === null && !agent.handoff,
+        canResume: reason === null,
         detail: reason ?? "The original agent is idle in its verified workspace.",
         waitId,
       } satisfies WaitingAgent;
@@ -1043,6 +1072,164 @@ const make = Effect.gen(function* () {
     });
 
   const moveError = (detail: string) => new AgentMachinesError({ detail });
+  const dispatchHandoff = (id: string, command: PeerCommand) =>
+    withPeer(id, ({ baseUrl, token }) => dispatchPeerCommand(baseUrl, token, command), true);
+  const releaseThread = (
+    id: string,
+    threadId: string,
+    waitId: string,
+    role: "source" | "destination",
+    key: string,
+  ) =>
+    dispatchHandoff(id, {
+      type: "thread.unarchive",
+      threadId: ThreadId.make(threadId),
+      commandId: CommandId.make(`cp-handoff-release:${role}:${waitId}`),
+      handoffRelease: { waitId, role, key },
+    });
+  const handoffUpdate = (
+    threadId: string,
+    waitId: string,
+    change: (
+      record: RemoteAgentRecord,
+      intent: NonNullable<RemoteAgentRecord["handoff"]>,
+    ) => RemoteAgentRecord,
+  ) =>
+    Effect.gen(function* () {
+      let applied = false;
+      const saved = Option.getOrNull(
+        yield* store
+          .update(threadId, (latest) => {
+            if (
+              latest.waitId !== waitId ||
+              latest.handoff?.waitId !== waitId ||
+              latest.state !== "open" ||
+              latest.stoppingAt ||
+              latest.inFlight
+            )
+              return latest;
+            applied = true;
+            return change(latest, latest.handoff);
+          })
+          .pipe(Effect.mapError(storeFailure)),
+      );
+      if (!applied || !saved)
+        return yield* moveError("The waiting agent changed. Refresh Waiting agents.");
+      return saved;
+    });
+  const activate = (record: RemoteAgentRecord, waitId: string) =>
+    Effect.gen(function* () {
+      const intent = record.handoff;
+      if (
+        intent?.phase !== "committed" ||
+        !intent.destinationKey ||
+        intent.destinationId !== record.machineId
+      )
+        return yield* moveError("Destination ownership is unconfirmed.");
+      const destinationThread = () =>
+        withPeer(
+          record.machineId,
+          ({ baseUrl, token }) =>
+            fetchHandoffThread(baseUrl, token, record.peerProjectId, record.threadId, waitId),
+          true,
+        );
+      if ((yield* destinationThread()).thread.archivedAt) {
+        const workspace = yield* withPeer(
+          record.machineId,
+          ({ baseUrl, token }) =>
+            fetchHandoffWorkspace(baseUrl, token, record.peerProjectId, record.threadId, waitId),
+          true,
+        );
+        if (
+          workspace.root !== intent.targetRoot ||
+          workspace.branch !== intent.branch ||
+          workspace.commit !== intent.commit ||
+          workspace.digest !== intent.digest
+        ) {
+          return yield* moveError(
+            "Restore the verified destination checkout before retrying activation.",
+          );
+        }
+      }
+      yield* releaseThread(
+        record.machineId,
+        record.threadId,
+        waitId,
+        "destination",
+        intent.destinationKey,
+      );
+      const active = (yield* destinationThread()).thread;
+      if (active.archivedAt || active.projectId !== record.peerProjectId)
+        return yield* moveError("Destination activation is unconfirmed. Retry activation.");
+      yield* handoffUpdate(record.threadId, waitId, (latest) => ({
+        ...latest,
+        handoff: null,
+        waitId: null,
+        lastResumedWaitId: waitId,
+      }));
+    });
+
+  const recoverHandoff = (threadId: string, waitId: string) =>
+    withRemoteAgentLock(
+      threadId,
+      Effect.gen(function* () {
+        const record = Option.getOrNull(
+          yield* store.get(threadId).pipe(Effect.mapError(storeFailure)),
+        );
+        if (record?.lastRecoveredWaitId === waitId) return;
+        if (!record?.handoff) return yield* moveError("This handoff is no longer pending.");
+        const intent = record.handoff;
+        if (
+          record.waitId !== waitId ||
+          !intent.phase ||
+          intent.phase === "committed" ||
+          !intent.sourceKey
+        )
+          return yield* moveError(
+            "The original machine cannot be recovered from this ownership state.",
+          );
+        const source = () =>
+          withPeer(
+            record.machineId,
+            ({ baseUrl, token }) =>
+              fetchHandoffThread(baseUrl, token, record.peerProjectId, threadId, waitId),
+            true,
+          );
+        const original = (yield* source()).thread;
+        if (original.projectId !== record.peerProjectId || original.settledAt != null)
+          return yield* moveError("Verify the original thread before recovery.");
+        if (intent.phase === "prepared") {
+          if (original.archivedAt)
+            return yield* moveError(
+              "The original thread is archived. Recovery requires its fence receipt.",
+            );
+        } else {
+          // Commit to rollback before revealing the source release key. From here the
+          // destination activation key can never be sent, even after a lost response.
+          yield* handoffUpdate(threadId, waitId, (latest, move) => ({
+            ...latest,
+            handoff: { ...move, phase: "recovering" },
+          }));
+          yield* releaseThread(record.machineId, threadId, waitId, "source", intent.sourceKey);
+          if ((yield* source()).thread.archivedAt)
+            return yield* moveError("The original machine has not confirmed recovery.");
+        }
+        // Rotate the wait ID so delayed clicks or receipts cannot restart this move.
+        yield* handoffUpdate(threadId, waitId, (latest) => ({
+          ...latest,
+          handoff: null,
+          waitId: randomUUID(),
+          lastRecoveredWaitId: waitId,
+          workspaceCheckpoint: {
+            root: intent.sourceRoot,
+            branch: intent.branch,
+            commit: intent.commit,
+            digest: intent.digest,
+          },
+        }));
+      }).pipe(Effect.mapError((e) => moveError(e.detail))),
+    );
+
   const moveWaiting = (threadId: string, waitId: string, destinationId: string) =>
     withRemoteAgentLock(
       threadId,
@@ -1056,6 +1243,14 @@ const make = Effect.gen(function* () {
           !record.waitId
         )
           return;
+        if (
+          record?.waitId === waitId &&
+          record.handoff?.phase === "committed" &&
+          record.machineId === destinationId
+        )
+          return yield* activate(record, waitId);
+        if (record?.handoff && (!record.handoff.phase || record.handoff.phase === "recovering"))
+          return yield* moveError("Complete original-machine recovery before another move.");
         if (
           !record ||
           record.state !== "open" ||
@@ -1109,8 +1304,7 @@ const make = Effect.gen(function* () {
         );
         if (destinationBusy)
           return yield* moveError("Wait for other agents in the destination Project to finish.");
-        const remoteThread = (id: string) =>
-          withPeer(id, ({ baseUrl, token }) => fetchPeerThread(baseUrl, token, threadId, 8), true);
+
         const sourceDetail = () =>
           withPeer(
             sourceId,
@@ -1129,13 +1323,7 @@ const make = Effect.gen(function* () {
           withPeer(
             id,
             ({ baseUrl, token }) =>
-              fetchHandoffWorkspace(
-                baseUrl,
-                token,
-                projectId,
-                agent,
-                id === sourceId ? waitId : undefined,
-              ),
+              fetchHandoffWorkspace(baseUrl, token, projectId, agent, agent ? waitId : undefined),
             true,
           );
         const prior = record.workspacePosition ?? record.workspaceCheckpoint;
@@ -1145,6 +1333,10 @@ const make = Effect.gen(function* () {
           );
         const before = yield* proof(sourceId, record.peerProjectId, threadId);
         const target = yield* proof(destinationId, targetProject);
+        if (!before.heldHandoff || !target.heldHandoff)
+          return yield* moveError(
+            "Update both machines to a version that supports held agent handoffs.",
+          );
         const same = (a: Pick<typeof before, "branch" | "commit" | "digest">, b: typeof before) =>
           a.branch === b.branch && a.commit === b.commit && a.digest === b.digest;
         if (
@@ -1179,7 +1371,10 @@ const make = Effect.gen(function* () {
             missing ?? "The original model is unavailable on this destination.",
           );
         const timestamp = record.handoff?.createdAt ?? DateTime.formatIso(yield* DateTime.now);
-        const intent = {
+        const intent = record.handoff ?? {
+          phase: "prepared" as const,
+          sourceKey: randomUUID(),
+          destinationKey: randomUUID(),
           waitId,
           destinationId,
           projectId: targetProject,
@@ -1205,16 +1400,22 @@ const make = Effect.gen(function* () {
         );
         if (current?.handoff?.destinationId !== destinationId)
           return yield* moveError("The agent changed before handoff.");
-        const dispatch = (id: string, command: PeerCommand) =>
-          withPeer(id, ({ baseUrl, token }) => dispatchPeerCommand(baseUrl, token, command), true);
+        if (!intent.sourceKey || !intent.destinationKey)
+          return yield* moveError("Missing handoff ownership receipt.");
+        const releaseHash = (key: string) => createHash("sha256").update(key).digest("hex");
         const tid = ThreadId.make(threadId);
         if (!fence) {
           const original = yield* workspace(sourceId, record.peerProjectId, threadId, true);
           if (!original.idle)
             return yield* moveError("Wait for the original agent to finish before moving it.");
+          yield* handoffUpdate(threadId, waitId, (latest, move) => ({
+            ...latest,
+            handoff: { ...move, phase: "fencing" },
+          }));
           if (source.session && source.session.status !== "stopped") {
-            yield* dispatch(sourceId, {
+            yield* dispatchHandoff(sourceId, {
               type: "thread.session.stop",
+              handoffWaitId: waitId,
               commandId: CommandId.make(`cp-handoff-stop:${waitId}:${source.updatedAt}`),
               threadId: tid,
               createdAt: timestamp,
@@ -1225,16 +1426,29 @@ const make = Effect.gen(function* () {
             return yield* moveError(
               "Waiting for the original session to stop. Retry this handoff.",
             );
-          yield* dispatch(sourceId, {
+          yield* dispatchHandoff(sourceId, {
             type: "thread.archive",
             commandId: CommandId.make(`cp-handoff-fence:${waitId}:${stopped.updatedAt}`),
             threadId: tid,
-            handoff: { waitId, expectedUpdatedAt: stopped.updatedAt },
+            handoff: {
+              waitId,
+              expectedUpdatedAt: stopped.updatedAt,
+              releaseHash: releaseHash(intent.sourceKey),
+            },
           });
         }
         const sealed = (yield* sourceDetail()).thread;
-        if (!sealed.archivedAt)
+        const sourceReceipt = sealed.activities.find(
+          (activity) =>
+            activity.kind === "agent.handoff.fenced" &&
+            activity.id === `cp-handoff-fence:${waitId}`,
+        )?.payload as { releaseHash?: string } | undefined;
+        if (!sealed.archivedAt || sourceReceipt?.releaseHash !== releaseHash(intent.sourceKey))
           return yield* moveError("The original machine has not confirmed its execution fence.");
+        yield* handoffUpdate(threadId, waitId, (latest, move) => ({
+          ...latest,
+          handoff: { ...move, phase: "fenced" },
+        }));
         if (
           !same(before, yield* proof(sourceId, record.peerProjectId, threadId)) ||
           !same(target, yield* proof(destinationId, targetProject))
@@ -1242,7 +1456,15 @@ const make = Effect.gen(function* () {
           return yield* moveError(
             "Workspace contents changed. Execution is held on both machines.",
           );
-        yield* dispatch(destinationId, {
+        const homeMachine = (yield* environment.getDescriptor).environmentId;
+        const hold = {
+          waitId,
+          machineId: homeMachine,
+          projectId: home.id,
+          releaseHash: releaseHash(intent.destinationKey),
+        };
+        yield* dispatchHandoff(destinationId, {
+          handoffHold: hold,
           type: "thread.create",
           commandId: CommandId.make(`cp-handoff-create:${waitId}`),
           threadId: tid,
@@ -1255,12 +1477,23 @@ const make = Effect.gen(function* () {
           worktreePath: null,
           createdAt: timestamp,
         });
-        const landed = Option.getOrNull(yield* remoteThread(destinationId))?.thread;
+        const landed = (yield* withPeer(
+          destinationId,
+          ({ baseUrl, token }) =>
+            fetchHandoffThread(baseUrl, token, targetProject, threadId, waitId),
+          true,
+        )).thread;
+        const held = landed.activities.find(
+          (a) => a.kind === "agent.handoff.held" && a.id === `cp-handoff-hold:${waitId}`,
+        )?.payload as Partial<typeof hold> | undefined;
         const landedProof = yield* proof(destinationId, targetProject, threadId);
         if (
           !landed ||
           landed.projectId !== targetProject ||
-          landed.archivedAt ||
+          !landed.archivedAt ||
+          held?.releaseHash !== hold.releaseHash ||
+          held?.machineId !== homeMachine ||
+          held?.projectId !== home.id ||
           landed.settledAt ||
           !same(target, landedProof) ||
           landedProof.root !== target.root
@@ -1271,12 +1504,12 @@ const make = Effect.gen(function* () {
           .map((msg) => `${msg.role}: ${msg.text}`)
           .join("\n")
           .slice(-24000);
-        const homeMachine = (yield* environment.getDescriptor).environmentId;
         const committed = Option.getOrNull(
           yield* store
             .update(threadId, (latest) =>
               latest.machineId === sourceId &&
               latest.handoff?.waitId === waitId &&
+              latest.handoff.phase === "fenced" &&
               latest.state === "open" &&
               !latest.stoppingAt &&
               latest.inFlight === null
@@ -1285,11 +1518,10 @@ const make = Effect.gen(function* () {
                     machineId: destinationId,
                     machineLabel: destination.label,
                     peerProjectId: targetProject,
-                    handoff: null,
+                    handoff: { ...latest.handoff, phase: "committed" },
                     handoffHomeMachine: homeMachine,
                     handoffContext: `Continued from ${record.machineLabel}. The original thread is archived. Recent conversation:\n${context}`,
-                    waitId: null,
-                    lastResumedWaitId: waitId,
+                    waitId,
                     workspacePosition: target,
                     workspaceCheckpoint: target,
                     resumeCheckpoint: target,
@@ -1305,6 +1537,7 @@ const make = Effect.gen(function* () {
         );
         if (committed?.machineId !== destinationId)
           return yield* moveError("Ownership changed during handoff. Inspect both threads.");
+        yield* activate(committed, waitId);
       }).pipe(Effect.mapError((e) => moveError(e.detail))),
     );
 
@@ -1322,10 +1555,13 @@ const make = Effect.gen(function* () {
           yield* unlink(input.id);
           return { machines: yield* check };
         }
+        case "recoverHandoff":
+          yield* recoverHandoff(input.threadId, input.waitId);
+          return yield* checkedMachines;
         case "resume":
           if (input.destinationId)
             yield* moveWaiting(input.threadId, input.waitId, input.destinationId);
-          else yield* resume(input.threadId, input.waitId);
+          else yield* withRemoteAgentLock(input.threadId, resume(input.threadId, input.waitId));
           return yield* checkedMachines;
         case "check":
           return yield* checkedMachines;

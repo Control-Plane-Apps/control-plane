@@ -82,6 +82,9 @@ export interface HandoffReadScope {
 }
 
 export interface ProjectionSnapshotQueryShape {
+  readonly getHandoffActivities: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
   /** Read the latest request or resolution without loading the thread history. */
   readonly getUserInputActivity: (input: {
     readonly threadId: ThreadId;
