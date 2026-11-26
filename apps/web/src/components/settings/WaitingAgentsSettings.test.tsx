@@ -27,6 +27,25 @@ describe("waiting agent controls", () => {
     expect(html).not.toContain("<button");
   });
 
+  it.each([
+    ["prepared", "original machine still owns"],
+    ["fencing", "confirming its execution fence"],
+    ["fenced", "Destination ownership is pending"],
+    ["recovering", "Restoring ownership"],
+    ["committed", "Activation is pending"],
+  ] as const)("shows durable move phase %s on refresh", (handoffPhase, expected) => {
+    expect(
+      renderToStaticMarkup(
+        <WaitingAgentsSettings
+          agents={[{ ...agent, handoffPhase }]}
+          fresh
+          resumingId={null}
+          onResume={vi.fn()}
+        />,
+      ),
+    ).toContain(expected);
+  });
+
   it("explains the prepared copy and original stop before enabling a destination", () => {
     const html = renderToStaticMarkup(
       <WaitingAgentsSettings

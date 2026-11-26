@@ -1,6 +1,14 @@
-import type { WaitingAgent } from "@t3tools/contracts";
+import type { AgentHandoffPhase, WaitingAgent } from "@t3tools/contracts";
 import { useState } from "react";
 import { Button } from "../ui/button";
+
+const handoffPhaseLabels: Record<AgentHandoffPhase, string> = {
+  prepared: "Prepared. The original machine still owns the agent.",
+  fencing: "Stopping the original agent and confirming its execution fence.",
+  fenced: "Original fenced. Destination ownership is pending.",
+  recovering: "Restoring ownership on the original machine.",
+  committed: "Destination owns the agent. Activation is pending.",
+};
 
 export function WaitingAgentsSettings({
   agents,
@@ -36,6 +44,9 @@ export function WaitingAgentsSettings({
                   {agent.commit?.slice(0, 12)}
                 </p>
               ) : null}
+              {agent.handoffPhase && (
+                <p className="text-xs font-medium">{handoffPhaseLabels[agent.handoffPhase]}</p>
+              )}
               <p className="break-words text-xs text-muted-foreground">{agent.detail}</p>
             </div>
             {onResume && agent.destinations?.length ? (

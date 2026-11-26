@@ -207,7 +207,17 @@ export const AgentWorkspaceProbe = Schema.Struct({
 });
 export type AgentWorkspaceProbe = typeof AgentWorkspaceProbe.Type;
 
+export const AgentHandoffPhase = Schema.Literals([
+  "prepared",
+  "fencing",
+  "fenced",
+  "recovering",
+  "committed",
+]);
+export type AgentHandoffPhase = typeof AgentHandoffPhase.Type;
+
 export const WaitingAgent = Schema.Struct({
+  handoffPhase: Schema.optionalKey(AgentHandoffPhase),
   threadId: Schema.String,
   title: Schema.String,
   machineId: Schema.String,
