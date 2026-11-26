@@ -498,9 +498,12 @@ describe("AgentMachines.manage unlink and check", () => {
     },
   );
 
-  it.effect(
-    "keeps the source fenced after a lost create acknowledgement and finishes the same handoff on retry",
-    () => {
+  for (const scenario of [
+    "pre-fence cancel",
+    "post-fence recover",
+    "retry create and activation",
+  ] as const)
+    it.effect(`recovers a handoff after ${scenario}`, () => {
       const identity = {
         canonicalKey: "fixture/acme",
         locator: {
@@ -515,12 +518,21 @@ describe("AgentMachines.manage unlink and check", () => {
       const tid = "remote-1";
       const waitId = "handoff-1";
       const shell = makePeerThread(tid);
+      let sourceReachable = true;
+      let targetReachable = true;
+      let activated = false;
+      let hold:
+        | { waitId: string; releaseHash: string; machineId: string; projectId: string }
+        | undefined;
+      let sourceHash: string | undefined;
       let fenced = false;
       let created = false;
       const http = Layer.succeed(
         HttpClient.HttpClient,
         HttpClient.make((req, url) => {
           const to = url.port === "4001";
+          if ((to && !targetReachable) || (!to && !sourceReachable))
+            return Effect.fail(new Error("offline") as never);
           const respond = (body: unknown) =>
             Effect.succeed(
               HttpClientResponse.fromWeb(
@@ -539,12 +551,19 @@ describe("AgentMachines.manage unlink and check", () => {
             });
           if (url.pathname.endsWith("/handoff-workspace"))
             return respond({
+              heldHandoff: true,
               root: to ? "/target" : "/source",
               branch: "feature",
               commit: "a".repeat(40),
               digest: "f".repeat(64),
             });
-          if (url.pathname.endsWith("/workspace")) return respond({ workspace: null, idle: true });
+          if (url.pathname.endsWith("/workspace")) {
+            if (scenario === "pre-fence cancel" && sourceReachable && !to) {
+              sourceReachable = false;
+              return Effect.fail(new Error("source offline") as never);
+            }
+            return respond({ workspace: null, idle: true });
+          }
           if (url.pathname.endsWith("/readiness"))
             return respond({
               checkout: true,
@@ -561,6 +580,7 @@ describe("AgentMachines.manage unlink and check", () => {
           if (
             !to &&
             fenced &&
+            req.method === "GET" &&
             (url.pathname.includes("/threads/") || url.searchParams.get("waitId") !== waitId)
           )
             return Effect.succeed(
@@ -571,36 +591,65 @@ describe("AgentMachines.manage unlink and check", () => {
               snapshotSequence: 1,
               thread: {
                 ...shell,
-                archivedAt: !to && fenced ? TEST_NOW : null,
+                archivedAt: (to ? created && !activated : fenced) ? TEST_NOW : null,
                 deletedAt: null,
                 messages: [],
                 checkpoints: [],
                 activities:
-                  !to && fenced
+                  to && hold
                     ? [
                         {
-                          id: `cp-handoff-fence:${waitId}`,
+                          id: `cp-handoff-hold:${waitId}`,
                           tone: "info",
-                          kind: "agent.handoff.fenced",
-                          summary: "Moved",
+                          kind: "agent.handoff.held",
+                          summary: "Held",
                           createdAt: TEST_NOW,
                           turnId: null,
-                          payload: { waitId },
+                          payload: hold,
                         },
                       ]
-                    : [],
+                    : !to && fenced
+                      ? [
+                          {
+                            id: `cp-handoff-fence:${waitId}`,
+                            tone: "info",
+                            kind: "agent.handoff.fenced",
+                            summary: "Moved",
+                            createdAt: TEST_NOW,
+                            turnId: null,
+                            payload: { waitId, releaseHash: sourceHash },
+                          },
+                        ]
+                      : [],
               },
             });
-          if (url.pathname.endsWith("/dispatch") && req.body._tag === "Uint8Array") {
+          if (url.pathname.endsWith("/handoff-dispatch") && req.body._tag === "Uint8Array") {
             const cmd = JSON.parse(new TextDecoder().decode(req.body.body)) as {
               type: string;
               commandId: string;
+              handoff?: { releaseHash: string };
+              handoffHold?: typeof hold;
+              handoffRelease?: { role: string; key: string };
             };
             commandIds.push(cmd.commandId);
-            if (cmd.type === "thread.archive") fenced = true;
+            if (cmd.type === "thread.archive") {
+              fenced = true;
+              sourceHash = cmd.handoff?.releaseHash;
+            }
             if (cmd.type === "thread.create" && !created) {
               created = true;
+              hold = cmd.handoffHold;
+              expect(hold?.waitId).toBe(waitId);
+              expect(hold?.projectId).toBe(project.id);
+              expect(hold?.releaseHash).toMatch(/^[0-9a-f]{64}$/);
               return Effect.fail(new Error("lost acknowledgement") as never);
+            }
+            if (cmd.type === "thread.unarchive") {
+              if (cmd.handoffRelease?.role === "source") fenced = false;
+              else if (!activated) {
+                activated = true;
+                return Effect.fail(new Error("lost activation acknowledgement") as never);
+              }
             }
             return respond({ sequence: 3 });
           }
@@ -644,29 +693,52 @@ describe("AgentMachines.manage unlink and check", () => {
             destinationId: "target",
           });
           expect((yield* Effect.result(move))._tag).toBe("Failure");
+          const get = store.get(tid).pipe(Effect.map(Option.getOrThrow));
+          const recover = machines.manage({ action: "recoverHandoff", threadId: tid, waitId });
+          if (scenario === "pre-fence cancel") {
+            expect((yield* get).handoff?.phase).toBe("prepared");
+            expect((yield* Effect.result(recover))._tag).toBe("Failure");
+            sourceReachable = true;
+            targetReachable = false;
+            yield* recover;
+            expect((yield* get).handoff).toBeNull();
+            expect((yield* get).waitId).not.toBe(waitId);
+            expect(commandIds).toEqual([]);
+            return;
+          }
+          expect((yield* get).handoff?.phase).toBe("fenced");
           expect(fenced).toBe(true);
-          expect(Option.getOrThrow(yield* store.get(tid))).toMatchObject({
-            machineId: "env-mini",
-            waitId,
-            handoff: { destinationId: "target" },
-          });
+          expect(created).toBe(true);
+          expect(activated).toBe(false);
+          if (scenario === "post-fence recover") {
+            targetReachable = false;
+            yield* recover;
+            expect(fenced).toBe(false);
+            expect(activated).toBe(false);
+            expect((yield* get).machineId).toBe("env-mini");
+            expect((yield* get).handoff).toBeNull();
+            expect((yield* Effect.result(move))._tag).toBe("Failure");
+            return;
+          }
+          expect((yield* Effect.result(move))._tag).toBe("Failure");
+          expect((yield* get).handoff?.phase).toBe("committed");
+          expect((yield* get).machineId).toBe("target");
+          expect((yield* Effect.result(recover))._tag).toBe("Failure");
+          sourceReachable = false;
           yield* move;
           yield* move;
-          expect(Option.getOrThrow(yield* store.get(tid))).toMatchObject({
-            machineId: "target",
-            waitId: null,
-            lastResumedWaitId: waitId,
-            resumeCheckpoint: { root: "/target", digest: "f".repeat(64) },
-          });
+          expect((yield* get).waitId).toBeNull();
+          expect((yield* get).lastResumedWaitId).toBe(waitId);
           expect(commandIds).toEqual([
             `cp-handoff-fence:${waitId}:${shell.updatedAt}`,
             `cp-handoff-create:${waitId}`,
             `cp-handoff-create:${waitId}`,
+            `cp-handoff-release:destination:${waitId}`,
+            `cp-handoff-release:destination:${waitId}`,
           ]);
         }),
       );
-    },
-  );
+    });
 
   it.effect("check reports an unreachable machine as offline", () => {
     const h = harness({ placement: linkedMini, peer: makePeer({ reachable: false }) });

@@ -4,6 +4,8 @@ import {
   EnvironmentHttpApi,
   EnvironmentTurnRefusedError,
   ProviderInstanceId,
+  isGuardedHandoffCommand,
+  type ClientOrchestrationCommand,
   type OrchestrationCommand,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -67,6 +69,61 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     const receipts = yield* OrchestrationCommandReceiptRepository;
     const git = yield* GitVcsDriver;
     const fs = yield* FileSystem.FileSystem;
+    const dispatch = Effect.fn("environment.orchestration.dispatch")(function* (
+      endpoint: string,
+      payload: ClientOrchestrationCommand,
+    ) {
+      yield* annotateEnvironmentRequest(endpoint);
+      yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+      if (endpoint === "handoffDispatch" && !isGuardedHandoffCommand(payload))
+        return yield* failEnvironmentInvalidRequest("invalid_command");
+      yield* ProjectCloneTracker.rejectCommandsDuringClone(projectCloneTracker, payload).pipe(
+        Effect.catch((cause) => failEnvironmentInternal("orchestration_dispatch_failed", cause)),
+      );
+      const normalizedCommand = withHttpAgentMessageSource(
+        yield* normalizeDispatchCommand(payload).pipe(
+          Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
+        ),
+      );
+      const result = yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
+        Effect.tapError(() => cleanupFailedUploadedAttachments(payload, normalizedCommand)),
+        Effect.catch((cause) =>
+          Effect.gen(function* () {
+            if (
+              normalizedCommand.type === "thread.turn.start" &&
+              isPeerDelivery(normalizedCommand.message.messageId) &&
+              (isOrchestrationCommandRejection(cause) ||
+                cause._tag === "OrchestrationCommandPreviouslyRejectedError")
+            ) {
+              const receipt = Option.getOrNull(
+                yield* receipts
+                  .getByCommandId({
+                    commandId: normalizedCommand.commandId,
+                  })
+                  .pipe(Effect.orElseSucceed(() => Option.none())),
+              );
+              if (
+                receipt?.status === "rejected" &&
+                receipt.aggregateKind === "thread" &&
+                receipt.aggregateId === normalizedCommand.threadId
+              ) {
+                return yield* new EnvironmentTurnRefusedError({
+                  commandId: normalizedCommand.commandId,
+                  threadId: normalizedCommand.threadId,
+                  detail: receipt.error ?? "The destination refused this turn.",
+                });
+              }
+            }
+            return yield* failEnvironmentInternal("orchestration_dispatch_failed", cause);
+          }),
+        ),
+      );
+      yield* ProjectCloneTracker.discardCloneForDeletedProject(
+        projectCloneTracker,
+        normalizedCommand,
+      );
+      return result;
+    });
     return handlers
       .handle(
         "agentWorkspace",
@@ -182,6 +239,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           return yield* Effect.tryPromise(() =>
             workspaceFingerprint(directory, project.repositoryIdentity ?? undefined),
           ).pipe(
+            Effect.map((proof) => ({ ...proof, heldHandoff: true as const })),
             Effect.catch((cause) =>
               failEnvironmentInternal("orchestration_snapshot_failed", cause),
             ),
@@ -306,65 +364,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           );
         }),
       )
-      .handle(
-        "dispatch",
-        Effect.fn("environment.orchestration.dispatch")(function* (args) {
-          yield* annotateEnvironmentRequest(args.endpoint.name);
-          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-          yield* ProjectCloneTracker.rejectCommandsDuringClone(
-            projectCloneTracker,
-            args.payload,
-          ).pipe(
-            Effect.catch((cause) =>
-              failEnvironmentInternal("orchestration_dispatch_failed", cause),
-            ),
-          );
-          const normalizedCommand = withHttpAgentMessageSource(
-            yield* normalizeDispatchCommand(args.payload).pipe(
-              Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
-            ),
-          );
-          const result = yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
-            Effect.tapError(() =>
-              cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
-            ),
-            Effect.catch((cause) =>
-              Effect.gen(function* () {
-                if (
-                  normalizedCommand.type === "thread.turn.start" &&
-                  isPeerDelivery(normalizedCommand.message.messageId) &&
-                  (isOrchestrationCommandRejection(cause) ||
-                    cause._tag === "OrchestrationCommandPreviouslyRejectedError")
-                ) {
-                  const receipt = Option.getOrNull(
-                    yield* receipts
-                      .getByCommandId({
-                        commandId: normalizedCommand.commandId,
-                      })
-                      .pipe(Effect.orElseSucceed(() => Option.none())),
-                  );
-                  if (
-                    receipt?.status === "rejected" &&
-                    receipt.aggregateKind === "thread" &&
-                    receipt.aggregateId === normalizedCommand.threadId
-                  ) {
-                    return yield* new EnvironmentTurnRefusedError({
-                      commandId: normalizedCommand.commandId,
-                      threadId: normalizedCommand.threadId,
-                      detail: receipt.error ?? "The destination refused this turn.",
-                    });
-                  }
-                }
-                return yield* failEnvironmentInternal("orchestration_dispatch_failed", cause);
-              }),
-            ),
-          );
-          yield* ProjectCloneTracker.discardCloneForDeletedProject(
-            projectCloneTracker,
-            normalizedCommand,
-          );
-          return result;
-        }),
-      );
+      .handle("dispatch", (args) => dispatch(args.endpoint.name, args.payload))
+      .handle("handoffDispatch", (args) => dispatch(args.endpoint.name, args.payload));
   }),
 ).pipe(Layer.provide([ProjectionTurnRepositoryLive, OrchestrationCommandReceiptRepositoryLive]));

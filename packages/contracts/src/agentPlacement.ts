@@ -118,6 +118,11 @@ export const AgentMachinesInput = Schema.Union([
   }),
   Schema.Struct({ action: Schema.Literal("check") }),
   Schema.Struct({
+    action: Schema.Literal("recoverHandoff"),
+    threadId: TrimmedNonEmptyString,
+    waitId: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
     action: Schema.Literal("resume"),
     destinationId: Schema.optional(AgentMachineId),
     threadId: TrimmedNonEmptyString,
@@ -196,6 +201,7 @@ export type AgentWorkspaceCheckpoint = typeof AgentWorkspaceCheckpoint.Type;
 
 export const HandoffFingerprint = Schema.Struct({
   ...AgentWorkspaceCheckpoint.fields,
+  heldHandoff: Schema.optionalKey(Schema.Literal(true)),
   digest: TrimmedNonEmptyString,
 });
 export type HandoffFingerprint = typeof HandoffFingerprint.Type;
@@ -215,6 +221,8 @@ export const WaitingAgent = Schema.Struct({
   branch: Schema.NullOr(Schema.String),
   commit: Schema.NullOr(Schema.String),
   canResume: Schema.Boolean,
+  recoveryLabel: Schema.optionalKey(Schema.String),
+  activationDestination: Schema.optionalKey(AgentMachineId),
   destinations: Schema.optional(
     Schema.Array(Schema.Struct({ id: AgentMachineId, label: TrimmedNonEmptyString })),
   ),

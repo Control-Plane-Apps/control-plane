@@ -15,6 +15,7 @@ import {
   EnvironmentHttpApi,
   ProjectId,
   ThreadId,
+  isGuardedHandoffCommand,
   type ClientOrchestrationCommand,
   type ExecutionEnvironmentDescriptor,
   type OrchestrationShellSnapshot,
@@ -94,6 +95,7 @@ export const PEER_COMMAND_ALLOWLIST = [
   "thread.turn.interrupt",
   "thread.session.stop",
   "thread.archive",
+  "thread.unarchive",
   "thread.settle",
 ] as const satisfies ReadonlyArray<ClientOrchestrationCommand["type"]>;
 
@@ -103,6 +105,7 @@ export type PeerCommand = Extract<
 >;
 
 export const isPeerCommand = (command: ClientOrchestrationCommand): command is PeerCommand =>
+  (command.type !== "thread.unarchive" || !!command.handoffRelease) &&
   (PEER_COMMAND_ALLOWLIST as ReadonlyArray<string>).includes(command.type);
 
 const noRedirects = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -352,25 +355,28 @@ export const dispatchPeerCommand = (baseUrl: string, token: string, command: Pee
     ? call(
         Effect.gen(function* () {
           const client = yield* makeClient(baseUrl);
-          yield* client.orchestration
-            .dispatch({
-              headers: bearer(token),
-              payload: command,
-            } as Parameters<typeof client.orchestration.dispatch>[0])
-            .pipe(
-              Effect.catchTag("EnvironmentTurnRefusedError", (refusal) =>
-                Effect.fail(
-                  command.type === "thread.turn.start" &&
-                    refusal.commandId === command.commandId &&
-                    refusal.threadId === command.threadId
-                    ? new PeerError({ kind: "turn-refused", detail: refusal.detail })
-                    : new PeerError({
-                        kind: "unreachable",
-                        detail: "Received a refusal for a different command.",
-                      }),
-                ),
+          // Older servers strip unknown optional fields. A distinct route makes a
+          // downgrade fail closed instead of creating a runnable destination.
+          const dispatch = isGuardedHandoffCommand(command)
+            ? client.orchestration.handoffDispatch
+            : client.orchestration.dispatch;
+          yield* dispatch({
+            headers: bearer(token),
+            payload: command,
+          } as Parameters<typeof client.orchestration.dispatch>[0]).pipe(
+            Effect.catchTag("EnvironmentTurnRefusedError", (refusal) =>
+              Effect.fail(
+                command.type === "thread.turn.start" &&
+                  refusal.commandId === command.commandId &&
+                  refusal.threadId === command.threadId
+                  ? new PeerError({ kind: "turn-refused", detail: refusal.detail })
+                  : new PeerError({
+                      kind: "unreachable",
+                      detail: "Received a refusal for a different command.",
+                    }),
               ),
-            );
+            ),
+          );
         }),
       )
     : Effect.fail(

@@ -364,7 +364,7 @@ function AgentMachinesBody({
       const result = await agentMachines({
         environmentId,
         input: {
-          action: "resume",
+          action: agent.recoveryLabel && !destinationId ? "recoverHandoff" : "resume",
           threadId: agent.threadId,
           waitId: agent.waitId,
           ...(destinationId ? { destinationId } : {}),
@@ -375,7 +375,10 @@ function AgentMachinesBody({
         setCheck(checkedState(result.value));
         toastManager.add({
           type: "success",
-          title: `Resumed ${agent.title} on ${agent.destinations?.find((item) => item.id === destinationId)?.label ?? agent.machineLabel}`,
+          title:
+            agent.recoveryLabel && !destinationId
+              ? `Handoff cancelled. Review ${agent.title} before resuming.`
+              : `Resumed ${agent.title} on ${agent.destinations?.find((item) => item.id === destinationId)?.label ?? agent.machineLabel}`,
         });
       } else if (!isAtomCommandInterrupted(result)) {
         toastManager.add({

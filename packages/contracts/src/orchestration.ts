@@ -1295,6 +1295,14 @@ const ProjectDeleteCommand = Schema.Struct({
 });
 
 const ThreadCreateCommand = Schema.Struct({
+  handoffHold: Schema.optionalKey(
+    Schema.Struct({
+      waitId: TrimmedNonEmptyString,
+      releaseHash: TrimmedNonEmptyString,
+      machineId: TrimmedNonEmptyString,
+      projectId: ProjectId,
+    }),
+  ),
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1321,7 +1329,11 @@ const ThreadDeleteCommand = Schema.Struct({
 
 const ThreadArchiveCommand = Schema.Struct({
   handoff: Schema.optional(
-    Schema.Struct({ waitId: TrimmedNonEmptyString, expectedUpdatedAt: IsoDateTime }),
+    Schema.Struct({
+      waitId: TrimmedNonEmptyString,
+      expectedUpdatedAt: IsoDateTime,
+      releaseHash: Schema.optionalKey(TrimmedNonEmptyString),
+    }),
   ),
   type: Schema.Literal("thread.archive"),
   commandId: CommandId,
@@ -1329,6 +1341,13 @@ const ThreadArchiveCommand = Schema.Struct({
 });
 
 const ThreadUnarchiveCommand = Schema.Struct({
+  handoffRelease: Schema.optionalKey(
+    Schema.Struct({
+      waitId: TrimmedNonEmptyString,
+      key: TrimmedNonEmptyString,
+      role: Schema.Literals(["source", "destination"]),
+    }),
+  ),
   type: Schema.Literal("thread.unarchive"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1590,6 +1609,7 @@ const ThreadConversationRevertCommand = Schema.Struct({
 });
 
 const ThreadSessionStopCommand = Schema.Struct({
+  handoffWaitId: Schema.optionalKey(TrimmedNonEmptyString),
   type: Schema.Literal("thread.session.stop"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1799,6 +1819,16 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadSessionStopCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
+
+/** Commands whose handoff guards must survive the wire even when a peer is downgraded. */
+export function isGuardedHandoffCommand(command: ClientOrchestrationCommand): boolean {
+  return !!(
+    (command.type === "thread.create" && command.handoffHold) ||
+    (command.type === "thread.archive" && command.handoff?.releaseHash) ||
+    (command.type === "thread.session.stop" && command.handoffWaitId) ||
+    (command.type === "thread.unarchive" && command.handoffRelease)
+  );
+}
 
 const ThreadSessionSetCommand = Schema.Struct({
   type: Schema.Literal("thread.session.set"),

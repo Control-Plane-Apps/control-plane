@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   EventId,
   MAX_SCRIPT_ID_LENGTH,
@@ -294,9 +295,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   command,
   readModel,
   userInputActivity,
+  handoffActivities,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  readonly handoffActivities?: ReadonlyArray<OrchestrationThreadActivity>;
   readonly userInputActivity?: OrchestrationThreadActivity;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
@@ -305,14 +308,42 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 > {
   if ("threadId" in command) {
     const thread = readModel.threads.find((entry) => entry.id === command.threadId);
-    if (
-      thread?.archivedAt &&
-      thread.activities.some((entry) => entry.kind === "agent.handoff.fenced")
-    ) {
+    const markers = handoffActivities ?? thread?.activities ?? [];
+    const release = command.type === "thread.unarchive" ? command.handoffRelease : undefined;
+    const released = (waitId: string) =>
+      markers.some(
+        (m) => m.kind === "agent.handoff.released" && m.id === `cp-handoff-release:${waitId}`,
+      );
+    const fence = markers.find((m) => {
+      if (m.kind !== "agent.handoff.fenced" && m.kind !== "agent.handoff.held") return false;
+      return !released((m.payload as { waitId: string }).waitId);
+    });
+    const pendingFence =
+      command.type === "thread.archive"
+        ? command.handoff?.waitId
+        : command.type === "thread.session.stop"
+          ? command.handoffWaitId
+          : undefined;
+    if (pendingFence && released(pendingFence))
       return yield* new OrchestrationCommandInvariantError({
         commandType: command.type,
-        detail: "This agent was moved to another machine. Its original thread is read-only.",
+        detail: "This handoff was cancelled.",
       });
+    if ((thread?.archivedAt && fence) || release) {
+      const payload = fence?.payload as { releaseHash?: string; waitId: string } | undefined;
+      const allowed =
+        release &&
+        (fence
+          ? payload?.waitId === release.waitId &&
+            payload.releaseHash === createHash("sha256").update(release.key).digest("hex") &&
+            fence.kind ===
+              (release.role === "source" ? "agent.handoff.fenced" : "agent.handoff.held")
+          : release.role === "source" && !!thread && thread.archivedAt === null);
+      if (!allowed)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This agent was moved to another machine. Its original thread is read-only.",
+        });
     }
   }
   switch (command.type) {
@@ -626,7 +657,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       yield* requireAgentCreator(readModel, command);
-      return {
+      const created = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -634,7 +665,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
           ...(command.historyImport === true ? { metadata: { historyImport: true } } : {}),
         })),
-        type: "thread.created",
+        type: "thread.created" as const,
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
@@ -651,6 +682,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
         },
       };
+      if (!command.handoffHold) return created;
+      const { threadId, commandId, createdAt: occurredAt, handoffHold } = command;
+      const base = () =>
+        withEventBase({ aggregateKind: "thread", aggregateId: threadId, commandId, occurredAt });
+      return [
+        created,
+        {
+          ...(yield* base()),
+          type: "thread.archived" as const,
+          payload: { threadId, archivedAt: occurredAt, updatedAt: occurredAt },
+        },
+        {
+          ...(yield* base()),
+          type: "thread.activity-appended" as const,
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`cp-handoff-hold:${handoffHold.waitId}`),
+              tone: "info" as const,
+              kind: "agent.handoff.held",
+              summary: "Waiting for home ownership confirmation",
+              turnId: null,
+              createdAt: occurredAt,
+              payload: handoffHold,
+            },
+          },
+        },
+      ];
     }
 
     case "thread.delete": {
@@ -729,7 +788,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               kind: "agent.handoff.fenced",
               summary: "Moved to another machine",
               turnId: null,
-              payload: { waitId: command.handoff.waitId },
+              payload: {
+                waitId: command.handoff.waitId,
+                ...(command.handoff.releaseHash
+                  ? { releaseHash: command.handoff.releaseHash }
+                  : {}),
+              },
               createdAt: occurredAt,
             },
           },
@@ -738,25 +802,54 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.unarchive": {
-      yield* requireThreadArchived({
+      const release = command.handoffRelease;
+      const thread = yield* (release ? requireThread : requireThreadArchived)({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
+      const marker = release
+        ? {
+            ...(yield* withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt,
+              commandId: command.commandId,
+            })),
+            type: "thread.activity-appended" as const,
+            payload: {
+              threadId: command.threadId,
+              activity: {
+                id: EventId.make(`cp-handoff-release:${release.waitId}`),
+                kind: "agent.handoff.released",
+                tone: "info" as const,
+                summary:
+                  release.role === "source"
+                    ? "Handoff cancelled on original machine"
+                    : "Home confirmed ownership",
+                createdAt: occurredAt,
+                turnId: null,
+                payload: { waitId: release.waitId },
+              },
+            },
+          }
+        : null;
+      if (marker && !thread.archivedAt) return marker;
+      const unarchived = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "thread.unarchived",
+        type: "thread.unarchived" as const,
         payload: {
           threadId: command.threadId,
           updatedAt: occurredAt,
         },
       };
+      return marker ? [unarchived, marker] : unarchived;
     }
 
     case "thread.settle":
@@ -2505,7 +2598,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.activity.append": {
-      if (command.activity.kind === "agent.handoff.fenced")
+      if (
+        command.activity.kind.startsWith("agent.handoff.") ||
+        command.activity.id.startsWith("cp-handoff-")
+      )
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "Only a verified handoff archive can write the execution fence.",

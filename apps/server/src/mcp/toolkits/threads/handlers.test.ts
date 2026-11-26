@@ -1,4 +1,5 @@
 import {
+  EventId,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -162,6 +163,7 @@ const creators = new Map([
 
 const makeHarness = Effect.fn("makeThreadsToolkitHarness")(function* (
   options: {
+    readonly heldThread?: ThreadId;
     readonly threads?: ReadonlyArray<OrchestrationThreadShell>;
     readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
     readonly reach?: ReturnType<typeof makeScriptedReach>;
@@ -207,6 +209,22 @@ const makeHarness = Effect.fn("makeThreadsToolkitHarness")(function* (
   const dependencies = Layer.mergeAll(
     options.reach?.layer ?? Layer.empty,
     Layer.mock(ProjectionSnapshotQuery)({
+      getHandoffActivities: (id) =>
+        Effect.succeed(
+          id === options.heldThread
+            ? [
+                {
+                  id: EventId.make("hold"),
+                  kind: "agent.handoff.held",
+                  tone: "info" as const,
+                  turnId: null,
+                  createdAt: NOW,
+                  summary: "Held",
+                  payload: { machineId: "home", projectId: PROJECT_ID },
+                },
+              ]
+            : [],
+        ),
       getThreadShellById: (threadId) => Effect.succeed(Option.fromNullishOr(byId.get(threadId))),
       getProjectShellById: (projectId) =>
         Effect.succeed(Option.fromNullishOr(projectById.get(projectId))),
@@ -600,72 +618,83 @@ describe("cp_thread_send to an agent on a linked machine", () => {
 });
 
 describe("cp_agent_message and cp_agent_peers", () => {
-  it.effect("a placed agent discovers its home coordinator and uses only the peer operations", () =>
-    Effect.gen(function* () {
-      const coordinator = {
-        threadId: "home-coord",
-        title: "Home coordinator",
-        role: "coordinator",
-        phase: "idle",
-        machine: null,
-      };
-      const reach = makeScriptedReach([
-        {
-          id: "home",
-          label: "Home Mac",
-          online: true,
-          answer: (op, raw) => {
-            expect(op).toBe("agent.peers");
-            const value = raw as {
-              action: string;
-              threadId: string;
-              projectId: string;
-              target?: { agent: string };
-              thread?: string;
-            };
-            expect(value.threadId).toBe(PLAIN);
-            expect(value.projectId).toBe(WORKSPACE_ID);
-            if (value.action === "list") return { peers: [coordinator] };
-            if (value.action === "read") {
-              expect(value.target?.agent).toBe(coordinator.threadId);
-              return { ...coordinator, turns: [] };
-            }
-            expect(value.action).toBe("message");
-            expect(value.thread).toBe(coordinator.threadId);
-            return { ...coordinator, duplicate: false, queued: true, coordinatorNotified: false };
+  for (const moved of [false, true])
+    it.effect(`a placed agent uses its home for peer operations (handoff: ${moved})`, () =>
+      Effect.gen(function* () {
+        const coordinator = {
+          threadId: "home-coord",
+          title: "Home coordinator",
+          role: "coordinator",
+          phase: "idle",
+          machine: null,
+        };
+        const reach = makeScriptedReach([
+          {
+            id: "home",
+            label: "Home Mac",
+            online: true,
+            answer: (op, raw) => {
+              expect(op).toBe("agent.peers");
+              const value = raw as {
+                action: string;
+                threadId: string;
+                projectId: string;
+                target?: { agent: string };
+                thread?: string;
+              };
+              expect(value.threadId).toBe(PLAIN);
+              expect(value.projectId).toBe(WORKSPACE_ID);
+              if (value.action === "list") return { peers: [coordinator] };
+              if (value.action === "read") {
+                expect(value.target?.agent).toBe(coordinator.threadId);
+                return { ...coordinator, turns: [] };
+              }
+              expect(value.action).toBe("message");
+              expect(value.thread).toBe(coordinator.threadId);
+              return { ...coordinator, duplicate: false, queued: true, coordinatorNotified: false };
+            },
           },
-        },
-      ]);
-      const harness = yield* makeHarness({
-        threads: projectThreads,
-        messages: [
-          userMessage(PLAIN, "start", "Initial task", {
-            source: { kind: "agent", placementHome: { machineId: "home", projectId: PROJECT_ID } },
-          }),
-        ],
-        projects: [projects[0]!, makeProject(WORKSPACE_ID, { coordinatorThreadId: PLAIN_TARGET })],
-        reach,
-      });
-      expect((yield* harness.readPeer(PLAIN_TARGET, PLAIN).pipe(Effect.flip))._tag).toBe(
-        "PeerNotFoundError",
-      );
-      expect(
-        (yield* harness.message({ to: PLAIN_TARGET, message: "Blocked" }, PLAIN).pipe(Effect.flip))
-          ._tag,
-      ).toBe("PeerNotFoundError");
-      expect(
-        (yield* harness
-          .send({ threadId: PLAIN_TARGET, message: "Blocked" }, PLAIN)
-          .pipe(Effect.flip))._tag,
-      ).toBe("ThreadSendFailedError");
-      const result = yield* harness.peers(PLAIN);
-      expect(result.peers).toEqual([{ ...coordinator, machine: "Home Mac" }]);
-      const sent = yield* harness.message({ to: coordinator.title, message: "Ready" }, PLAIN);
-      expect(sent.machine).toBe("Home Mac");
-      expect(isAgentReadResult(yield* harness.readPeer(coordinator.threadId, PLAIN))).toBe(true);
-      expect(yield* Ref.get(harness.commands)).toEqual([]);
-    }),
-  );
+        ]);
+        const harness = yield* makeHarness({
+          threads: projectThreads,
+          ...(moved ? { heldThread: PLAIN } : {}),
+          messages: moved
+            ? [userMessage(PLAIN, "direct", "First direct user message")]
+            : [
+                userMessage(PLAIN, "start", "Initial task", {
+                  source: {
+                    kind: "agent",
+                    placementHome: { machineId: "home", projectId: PROJECT_ID },
+                  },
+                }),
+              ],
+          projects: [
+            projects[0]!,
+            makeProject(WORKSPACE_ID, { coordinatorThreadId: PLAIN_TARGET }),
+          ],
+          reach,
+        });
+        expect((yield* harness.readPeer(PLAIN_TARGET, PLAIN).pipe(Effect.flip))._tag).toBe(
+          "PeerNotFoundError",
+        );
+        expect(
+          (yield* harness
+            .message({ to: PLAIN_TARGET, message: "Blocked" }, PLAIN)
+            .pipe(Effect.flip))._tag,
+        ).toBe("PeerNotFoundError");
+        expect(
+          (yield* harness
+            .send({ threadId: PLAIN_TARGET, message: "Blocked" }, PLAIN)
+            .pipe(Effect.flip))._tag,
+        ).toBe("ThreadSendFailedError");
+        const result = yield* harness.peers(PLAIN);
+        expect(result.peers).toEqual([{ ...coordinator, machine: "Home Mac" }]);
+        const sent = yield* harness.message({ to: coordinator.title, message: "Ready" }, PLAIN);
+        expect(sent.machine).toBe("Home Mac");
+        expect(isAgentReadResult(yield* harness.readPeer(coordinator.threadId, PLAIN))).toBe(true);
+        expect(yield* Ref.get(harness.commands)).toEqual([]);
+      }),
+    );
   const peerIdPrefix = (to: ThreadId, from: ThreadId) => `cp-send:${to}:peer:${from}:`;
 
   const commandsOfType = <T extends OrchestrationCommand["type"]>(

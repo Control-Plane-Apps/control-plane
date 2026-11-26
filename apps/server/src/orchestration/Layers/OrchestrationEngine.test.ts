@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import { createHash } from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -130,6 +131,81 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("keeps a newly created handoff destination held across restart until authorized activation", async () => {
+    const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "handoff-held-"));
+    const db = NodePath.join(dir, "state.sqlite");
+    let system = await createOrchestrationSystem(db);
+    const projectId = ProjectId.make("project");
+    const threadId = ThreadId.make("held");
+    const dispatch = (command: OrchestrationCommand) => system.run(system.engine.dispatch(command));
+    try {
+      await dispatch({
+        type: "project.create",
+        commandId: CommandId.make("project"),
+        projectId,
+        title: "Project",
+        workspaceRoot: dir,
+        createdAt: now(),
+      });
+      const create = {
+        type: "thread.create" as const,
+        commandId: CommandId.make("held"),
+        threadId,
+        projectId,
+        title: "Held",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        branch: null,
+        worktreePath: null,
+        createdAt: now(),
+        handoffHold: {
+          waitId: "wait",
+          machineId: "home",
+          projectId,
+          releaseHash: createHash("sha256").update("release-key").digest("hex"),
+        },
+      };
+      const initial = await dispatch(create);
+      await system.dispose();
+      system = await createOrchestrationSystem(db);
+      expect(await dispatch(create)).toEqual(initial);
+      const start = {
+        type: "thread.turn.start" as const,
+        threadId,
+        commandId: CommandId.make("early"),
+        message: {
+          messageId: MessageId.make("work"),
+          role: "user" as const,
+          text: "Work",
+          attachments: [],
+        },
+        runtimeMode: create.runtimeMode,
+        interactionMode: create.interactionMode,
+        createdAt: now(),
+      };
+      await expect(dispatch(start)).rejects.toThrow(/read-only/);
+      await expect(
+        dispatch({
+          type: "thread.unarchive",
+          commandId: CommandId.make("early-unarchive"),
+          threadId,
+        }),
+      ).rejects.toThrow(/read-only/);
+      const activate = {
+        type: "thread.unarchive" as const,
+        commandId: CommandId.make("activate"),
+        threadId,
+        handoffRelease: { role: "destination" as const, waitId: "wait", key: "release-key" },
+      };
+      const receipt = await dispatch(activate);
+      expect(await dispatch(activate)).toEqual(receipt);
+      await dispatch({ ...start, commandId: CommandId.make("after-release") });
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(dir, { recursive: true, force: true });
+    }
+  });
   it.each(["running", "stopped"] as const)(
     "sends async answers with a %s session and rejects old duplicate replies",
     async (status) => {

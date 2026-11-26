@@ -43,6 +43,21 @@ describe("waiting agent controls", () => {
     expect(/<button[^>]*\bdisabled(?:=|\s|>)/.test(html)).toBe(true);
   });
 
+  it("offers recovery before commit and activation after commit", () => {
+    const controls = (value: WaitingAgent) =>
+      renderToStaticMarkup(
+        <WaitingAgentsSettings agents={[value]} fresh resumingId={null} onResume={vi.fn()} />,
+      );
+    expect(controls({ ...agent, canResume: true, recoveryLabel: "Cancel handoff" })).toContain(
+      "Cancel handoff",
+    );
+    expect(
+      controls({ ...agent, canResume: true, recoveryLabel: "Recover original machine" }),
+    ).toContain("Recover original machine");
+    const committed = controls({ ...agent, activationDestination: "target" });
+    expect(committed).toContain("Retry activation");
+    expect(committed).not.toContain("Recover original machine");
+  });
   it.each([
     { fresh: true, resumingId: null, disabled: false },
     { fresh: false, resumingId: null, disabled: true },
