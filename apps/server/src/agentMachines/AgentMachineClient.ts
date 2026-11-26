@@ -227,6 +227,7 @@ export const fetchHandoffWorkspace = (
   token: string,
   projectId: string,
   threadId?: string,
+  waitId?: string,
 ) =>
   call(
     Effect.gen(function* () {
@@ -234,10 +235,30 @@ export const fetchHandoffWorkspace = (
       return yield* client.orchestration.handoffWorkspace({
         headers: bearer(token),
         params: { projectId: ProjectId.make(projectId) },
-        payload: threadId ? { threadId: ThreadId.make(threadId) } : {},
+        payload: threadId
+          ? { threadId: ThreadId.make(threadId), ...(waitId ? { waitId } : {}) }
+          : {},
       });
     }),
     Duration.minutes(2),
+  );
+
+export const fetchHandoffThread = (
+  baseUrl: string,
+  token: string,
+  projectId: string,
+  threadId: string,
+  waitId: string,
+) =>
+  call(
+    Effect.gen(function* () {
+      const client = yield* makeClient(baseUrl);
+      return yield* client.orchestration.handoffThread({
+        headers: bearer(token),
+        params: { projectId: ProjectId.make(projectId), threadId: ThreadId.make(threadId) },
+        payload: { waitId },
+      });
+    }),
   );
 
 export const fetchPeerWorkspace = (

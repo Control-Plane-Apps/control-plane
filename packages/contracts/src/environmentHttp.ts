@@ -544,8 +544,24 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       {
         headers: OptionalBearerHeaders,
         params: { projectId: ProjectId },
-        payload: { threadId: Schema.optional(ThreadId) },
+        payload: {
+          threadId: Schema.optional(ThreadId),
+          waitId: Schema.optional(TrimmedNonEmptyString),
+        },
         success: HandoffFingerprint,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "handoffThread",
+      "/api/orchestration/projects/:projectId/agents/:threadId/handoff",
+      {
+        headers: OptionalBearerHeaders,
+        params: { projectId: ProjectId, threadId: ThreadId },
+        payload: { waitId: TrimmedNonEmptyString },
+        success: OrchestrationThreadDetailSnapshot,
         error: EnvironmentOrchestrationThreadSnapshotErrors,
       },
     ).middleware(EnvironmentAuthenticatedAuth),

@@ -49,6 +49,7 @@ import {
   fetchPeerShell,
   fetchPeerReadiness,
   fetchHandoffWorkspace,
+  fetchHandoffThread,
   fetchPeerWorkspace,
   fetchPeerThread,
   PeerError,
@@ -1110,19 +1111,31 @@ const make = Effect.gen(function* () {
           return yield* moveError("Wait for other agents in the destination Project to finish.");
         const remoteThread = (id: string) =>
           withPeer(id, ({ baseUrl, token }) => fetchPeerThread(baseUrl, token, threadId, 8), true);
-        const source = Option.getOrNull(yield* remoteThread(sourceId))?.thread;
+        const sourceDetail = () =>
+          withPeer(
+            sourceId,
+            ({ baseUrl, token }) =>
+              fetchHandoffThread(baseUrl, token, record.peerProjectId, threadId, waitId),
+            true,
+          );
+        const source = (yield* sourceDetail()).thread;
         if (!source || source.projectId !== record.peerProjectId || source.settledAt != null)
           return yield* moveError("The original agent is missing or settled.");
-        const fence = source.activities.some(
-          (entry) =>
-            entry.kind === "agent.handoff.fenced" && entry.id === `cp-handoff-fence:${waitId}`,
-        );
-        if (source.archivedAt && (!record.handoff || !fence))
+        // The scoped source endpoint returns an archived row only with this wait's durable fence.
+        const fence = source.archivedAt !== null;
+        if (source.archivedAt && !record.handoff)
           return yield* moveError("The original agent was archived independently.");
         const proof = (id: string, projectId: string, agent?: string) =>
           withPeer(
             id,
-            ({ baseUrl, token }) => fetchHandoffWorkspace(baseUrl, token, projectId, agent),
+            ({ baseUrl, token }) =>
+              fetchHandoffWorkspace(
+                baseUrl,
+                token,
+                projectId,
+                agent,
+                id === sourceId ? waitId : undefined,
+              ),
             true,
           );
         const prior = record.workspacePosition ?? record.workspaceCheckpoint;
@@ -1207,7 +1220,7 @@ const make = Effect.gen(function* () {
               createdAt: timestamp,
             });
           }
-          const stopped = Option.getOrNull(yield* remoteThread(sourceId))?.thread;
+          const stopped = (yield* sourceDetail()).thread;
           if (!stopped || (stopped.session && stopped.session.status !== "stopped"))
             return yield* moveError(
               "Waiting for the original session to stop. Retry this handoff.",
@@ -1219,14 +1232,8 @@ const make = Effect.gen(function* () {
             handoff: { waitId, expectedUpdatedAt: stopped.updatedAt },
           });
         }
-        const sealed = Option.getOrNull(yield* remoteThread(sourceId))?.thread;
-        if (
-          !sealed?.archivedAt ||
-          !sealed.activities.some(
-            (entry) =>
-              entry.kind === "agent.handoff.fenced" && entry.id === `cp-handoff-fence:${waitId}`,
-          )
-        )
+        const sealed = (yield* sourceDetail()).thread;
+        if (!sealed.archivedAt)
           return yield* moveError("The original machine has not confirmed its execution fence.");
         if (
           !same(before, yield* proof(sourceId, record.peerProjectId, threadId)) ||

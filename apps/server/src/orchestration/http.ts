@@ -157,7 +157,12 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           if (args.payload.threadId) {
             const thread = Option.getOrNull(
               yield* projectionSnapshotQuery
-                .getThreadShellById(args.payload.threadId)
+                .getThreadShellById(
+                  args.payload.threadId,
+                  args.payload.waitId
+                    ? { projectId: project.id, waitId: args.payload.waitId }
+                    : undefined,
+                )
                 .pipe(
                   Effect.catch((cause) =>
                     failEnvironmentInternal("orchestration_snapshot_failed", cause),
@@ -175,6 +180,26 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
               failEnvironmentInternal("orchestration_snapshot_failed", cause),
             ),
           );
+        }),
+      )
+      .handle(
+        "handoffThread",
+        Effect.fn("environment.orchestration.handoffThread")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          const detail = yield* projectionSnapshotQuery
+            .getThreadDetailSnapshot(
+              args.params.threadId,
+              { turnLimit: 8 },
+              { projectId: args.params.projectId, waitId: args.payload.waitId },
+            )
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
+              ),
+            );
+          if (Option.isNone(detail)) return yield* failEnvironmentNotFound("thread_not_found");
+          return projectThreadDetailSnapshot(detail.value, false);
         }),
       )
       .handle(

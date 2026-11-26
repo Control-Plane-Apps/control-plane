@@ -558,7 +558,15 @@ describe("AgentMachines.manage unlink and check", () => {
               mcp: false,
               modelSelection: shell.modelSelection,
             });
-          if (url.pathname.includes("/threads/"))
+          if (
+            !to &&
+            fenced &&
+            (url.pathname.includes("/threads/") || url.searchParams.get("waitId") !== waitId)
+          )
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(req, new Response(null, { status: 404 })),
+            );
+          if (url.pathname.includes("/threads/") || url.pathname.endsWith("/handoff"))
             return respond({
               snapshotSequence: 1,
               thread: {
