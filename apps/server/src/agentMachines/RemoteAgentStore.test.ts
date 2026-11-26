@@ -1,3 +1,4 @@
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -55,7 +56,10 @@ const withStore = <A, E>(
     return yield* body(store);
   }).pipe(
     Effect.provide(
-      RemoteAgentStoreLive.pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir))),
+      RemoteAgentStoreLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+        Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)),
+      ),
     ),
   );
 
@@ -231,9 +235,15 @@ it.layer(NodeServices.layer)("RemoteAgentStore", (it) => {
       const { fs, baseDir, filePath } = yield* setup;
       yield* fs.writeFileString(filePath, "{ not json");
 
+      const strictFailure = yield* withStore(baseDir, (store) => Effect.flip(store.listForMove));
+      assert.match(strictFailure.detail, /unreadable/);
+      assert.strictEqual(yield* fs.readFileString(filePath), "{ not json");
       const listed = yield* withStore(baseDir, (store) => store.list);
       assert.deepEqual(listed, []);
       assert.isFalse(yield* fs.exists(filePath));
+      const legacyFailure = yield* withStore(baseDir, (store) => Effect.flip(store.listForMove));
+      assert.match(legacyFailure.detail, /unreadable/);
+
       assert.strictEqual(yield* fs.readFileString(`${filePath}.unreadable`), "{ not json");
 
       // A file from a newer build with an unknown version is set aside too.

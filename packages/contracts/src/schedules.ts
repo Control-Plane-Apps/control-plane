@@ -73,10 +73,12 @@ export type SchedulesRunResult = typeof SchedulesRunResult.Type;
 
 export class ScheduleUnavailableError extends Schema.TaggedError<ScheduleUnavailableError>()(
   "ScheduleUnavailableError",
-  { reason: Schema.Literals(["archived", "unknown-schedule", "backend-off"]) },
+  { reason: Schema.Literals(["archived", "unknown-schedule", "backend-off", "project-moving"]) },
 ) {
   override get message(): string {
     switch (this.reason) {
+      case "project-moving":
+        return "This Project is paused on this environment for a coordinator move.";
       case "archived":
         return "This Project is archived. Unarchive it to run its schedules.";
       case "unknown-schedule":

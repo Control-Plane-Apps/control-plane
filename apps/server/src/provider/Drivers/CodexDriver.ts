@@ -47,6 +47,7 @@ import {
   probeCodexSkillsForCwd,
   withCodexAppServerClient,
 } from "../Layers/CodexProvider.ts";
+import { probeCodexWorkspaceMcp } from "../Layers/codexWorkspaceMcp.ts";
 import { resolveCodexLaunchArgs } from "../Layers/codexLaunchArgs.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -343,6 +344,25 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         snapshot,
         snapshotForCwd,
+        verifyWorkspaceMcp: (workspace) =>
+          fileSystem.makeTempDirectoryScoped({ prefix: "cplane-mcp-readiness-" }).pipe(
+            Effect.flatMap((cwd) =>
+              probeCodexWorkspaceMcp(
+                {
+                  binaryPath: effectiveConfig.binaryPath,
+                  homePath: effectiveConfig.homePath,
+                  launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+                  environment: processEnv,
+                  cwd,
+                },
+                workspace,
+              ),
+            ),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.timeout("20 seconds"),
+            Effect.scoped,
+            Effect.orElseSucceed(() => false),
+          ),
         consumeResetCredit,
         adapter,
         textGeneration,

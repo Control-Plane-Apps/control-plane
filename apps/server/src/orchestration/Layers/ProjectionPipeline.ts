@@ -1,4 +1,5 @@
 import {
+  projectionEvent,
   ApprovalRequestId,
   isImportedAgentSessionMessageId,
   UserInputAttachmentAnswerPayload,
@@ -21,7 +22,11 @@ import {
   threadPullRequestKeysEqual,
 } from "@t3tools/shared/threadPullRequests";
 
-import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import {
+  PersistenceDecodeError,
+  toPersistenceSqlError,
+  type ProjectionRepositoryError,
+} from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
@@ -2129,7 +2134,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
       yield* sql.withTransaction(
         Effect.gen(function* () {
-          yield* projector.apply(event, attachmentSideEffects);
+          yield* projector.apply(projectionEvent(event), attachmentSideEffects);
           yield* projectionStateRepository.upsert({
             projector: projector.name,
             lastAppliedSequence: event.sequence,
@@ -2156,6 +2161,45 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           ),
         );
 
+    // Several projection identities (messages, plans, activities, approvals) are global.
+    // Check their owner in the same write transaction as replay, before an UPSERT
+    // can silently reassign a record that belongs to another thread.
+    const guardRestoredIdentity = Effect.fnUntraced(function* (
+      restored: Extract<OrchestrationEvent, { type: "thread.history-restored" }>,
+    ) {
+      const { threadId, event } = restored.payload;
+      const collisions = [];
+      if (event.type === "thread.created")
+        collisions.push(sql`SELECT 1 FROM projection_threads
+        WHERE thread_id=${threadId} AND (project_id<>${event.payload.projectId} OR deleted_at IS NULL) LIMIT 1`);
+      if (event.type === "thread.message-sent")
+        collisions.push(sql`SELECT 1 FROM projection_thread_messages
+        WHERE message_id=${event.payload.messageId} AND thread_id<>${threadId} LIMIT 1`);
+      if (event.type === "thread.proposed-plan-upserted")
+        collisions.push(sql`SELECT 1 FROM projection_thread_proposed_plans
+        WHERE plan_id=${event.payload.proposedPlan.id} AND thread_id<>${threadId} LIMIT 1`);
+      if (event.type === "thread.activity-appended")
+        collisions.push(sql`SELECT 1 FROM projection_thread_activities
+        WHERE activity_id=${event.payload.activity.id} AND thread_id<>${threadId} LIMIT 1`);
+      const requestId =
+        event.type === "thread.approval-response-requested"
+          ? event.payload.requestId
+          : event.type === "thread.activity-appended"
+            ? (extractActivityRequestId(event.payload.activity.payload) ?? event.metadata.requestId)
+            : undefined;
+      if (requestId)
+        collisions.push(
+          sql`SELECT 1 FROM projection_pending_approvals WHERE request_id=${requestId} AND thread_id<>${threadId} LIMIT 1`,
+        );
+      for (const query of collisions)
+        if ((yield* query).length) {
+          return yield* new PersistenceDecodeError({
+            operation: "Project coordinator move",
+            issue: "A restored identity belongs to another local record.",
+          });
+        }
+    });
+
     const projectEventDeferred: OrchestrationProjectionPipelineShape["projectEventDeferred"] =
       Effect.fn("projectEventDeferred")(
         function* (event) {
@@ -2165,9 +2209,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           };
           yield* sql.withTransaction(
             Effect.gen(function* () {
+              if (event.type === "thread.history-restored") yield* guardRestoredIdentity(event);
               yield* Effect.forEach(
                 projectors,
-                (projector) => projector.apply(event, attachmentSideEffects),
+                (projector) => projector.apply(projectionEvent(event), attachmentSideEffects),
                 { concurrency: 1, discard: true },
               );
               // Runtime projectors commit together. Bootstrap still advances each cursor separately.

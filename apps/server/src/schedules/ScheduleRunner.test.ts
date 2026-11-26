@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import { TestClock } from "effect/testing";
 import { vi } from "vite-plus/test";
 
+import { acquireProjectMoveFence, releaseProjectMoveFence } from "../reach/projectMoveFence.ts";
 import { HostTimeZoneSource } from "./hostZone.ts";
 import { registerAssistantHomeCheck } from "../reach/taskAuthority.ts";
 import * as ScheduleRunner from "./ScheduleRunner.ts";
@@ -91,6 +92,43 @@ const cronMessage = (projectId: ProjectId, scheduleId: string, slot = SLOT) =>
   `cp-schedule:${projectId}:${scheduleId}:${slot}`;
 
 describe("ScheduleRunner fires", () => {
+  it.effect("claims a moved Project slot on only its active environment across repeat fires", () =>
+    Effect.gen(function* () {
+      const runEnvironment = (role: "source" | "destination") =>
+        Effect.gen(function* () {
+          const fixture = yield* makeRunnerFixture();
+          yield* fixture.setSchedules(PROJECT, [{ id: "daily", cron: DAILY }]);
+          yield* acquireProjectMoveFence(PROJECT, "synthetic-move");
+          if (role === "destination") yield* releaseProjectMoveFence(PROJECT, "synthetic-move");
+          yield* fixture.withRunner((runner) =>
+            Effect.gen(function* () {
+              yield* fixture.fireAt(runner, "2026-09-28T13:00:30.000Z");
+              yield* fixture.fireAt(runner, "2026-09-28T13:05:00.000Z");
+              if (role === "source") {
+                const error = yield* Effect.flip(runner.runNow(PROJECT, "daily"));
+                assert.strictEqual(error.reason, "project-moving");
+              }
+            }),
+          );
+          return {
+            messages: yield* fixture.messageIds(COORDINATOR),
+            receipts: yield* fixture.receipts("cp-schedule"),
+            runs: yield* fixture.runsOf(PROJECT),
+          };
+        }).pipe(Effect.provide(makeScheduleEngineLayer(`t3-move-schedule-${role}-`)));
+      const source = yield* runEnvironment("source");
+      const destination = yield* runEnvironment("destination");
+      assert.deepStrictEqual(source, { messages: [], receipts: [], runs: {} });
+      const message = cronMessage(PROJECT, "daily");
+      assert.deepStrictEqual(destination.messages, [message]);
+      assert.deepStrictEqual(destination.receipts, [
+        `accepted cp-schedule-run:${PROJECT}:daily:${SLOT}`,
+        `accepted ${message}`,
+      ]);
+      assert.strictEqual(destination.runs.daily?.outcome, "sent");
+    }),
+  );
+
   test(
     "skips the Assistant's schedule when another machine may run the Assistant",
     Effect.gen(function* () {
@@ -358,6 +396,9 @@ describe("ScheduleRunner holds", () => {
           assert.deepStrictEqual(yield* runner.holds(PROJECT), {
             daily: { since: "2026-09-28T13:00:30.000Z" },
           });
+
+          const blocked = yield* Effect.flip(acquireProjectMoveFence(PROJECT, "held"));
+          assert.match(blocked.message, /unfinished schedule/);
 
           yield* TestClock.setTime(Date.parse("2026-09-28T13:04:00.000Z"));
           yield* runner.drain;

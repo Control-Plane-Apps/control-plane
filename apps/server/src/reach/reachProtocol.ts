@@ -48,6 +48,7 @@ export const ReachOp = Schema.Literals([
   "schedule.create",
   "schedule.update",
   "schedule.delete",
+  "project.moveStep",
   "assistant.adopt",
   "assistant.commit",
   "assistant.abort",
@@ -73,6 +74,7 @@ const DEFAULT_BODY_LIMIT = 256 * 1024;
 /** Ops that carry more, by op. */
 const BODY_LIMITS: Partial<Record<string, number>> = {
   // Up to 200 messages and the memory file.
+  "project.moveStep": REACH_MAX_BODY_BYTES,
   "assistant.adopt": REACH_MAX_BODY_BYTES,
   // A page of the Assistant's conversation, and one attachment chunk (base64).
   "assistant.history": 16 * 1024 * 1024,
@@ -264,6 +266,7 @@ export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
   "schedule.create",
   "schedule.update",
   "schedule.delete",
+  "project.moveStep",
   "assistant.adopt",
   "assistant.commit",
   "assistant.abort",

@@ -1276,10 +1276,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const getActiveThreadRowById = SqlSchema.findOneOption({
     Request: Schema.Struct({
       ...ThreadIdLookupInput.fields,
+      includeArchived: Schema.optional(Schema.Boolean),
       handoff: Schema.optional(Schema.Struct({ projectId: ProjectId, waitId: Schema.String })),
     }),
     Result: ProjectionThreadDbRowSchema,
-    execute: ({ threadId, handoff }) =>
+    execute: ({ threadId, handoff, includeArchived }) =>
       sql`
         SELECT
           thread_id AS "threadId",
@@ -1324,7 +1325,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             AND NOT EXISTS (SELECT 1 FROM projection_thread_activities AS released WHERE released.thread_id = fences.thread_id
               AND released.kind = 'agent.handoff.released' AND released.activity_id = ${"cp-handoff-release:" + handoff.waitId})
           ))`
-              : sql`archived_at IS NULL`
+              : includeArchived
+                ? sql`1=1`
+                : sql`archived_at IS NULL`
           }
         LIMIT 1
       `,
@@ -3576,7 +3579,12 @@ pending_approval_requests AS (
         latestTurnRow,
         sessionRow,
       ] = yield* Effect.all([
-        getActiveThreadRowById({ threadId, handoff }).pipe(
+        getActiveThreadRowById({
+          threadId,
+          handoff,
+          includeArchived:
+            activityRead.mode === "raw" && activityRead.query?.includeArchived === true,
+        }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",

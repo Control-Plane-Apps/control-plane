@@ -17,6 +17,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { withProjectWriter } from "../reach/projectMoveFence.ts";
 import { writeFileStringAtomically } from "../atomicWrite.ts";
 import * as ServerConfig from "../config.ts";
 import { AgentPhase } from "./agentPhase.ts";
@@ -142,6 +144,8 @@ export class RemoteAgentStoreError extends Schema.TaggedError<RemoteAgentStoreEr
 
 export interface RemoteAgentStoreShape {
   readonly list: Effect.Effect<ReadonlyArray<RemoteAgentRecord>, RemoteAgentStoreError>;
+  /** Verify the on-disk association inventory before a coordinator move. */
+  readonly listForMove: Effect.Effect<ReadonlyArray<RemoteAgentRecord>, RemoteAgentStoreError>;
   readonly get: (
     threadId: string,
   ) => Effect.Effect<Option.Option<RemoteAgentRecord>, RemoteAgentStoreError>;
@@ -159,6 +163,7 @@ export class RemoteAgentStore extends Context.Service<RemoteAgentStore, RemoteAg
 ) {}
 
 const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
@@ -192,9 +197,14 @@ const make = Effect.gen(function* () {
     return cache;
   });
 
-  const prune = (records: ReadonlyArray<RemoteAgentRecord>, nowMs: number) =>
+  const prune = (
+    records: ReadonlyArray<RemoteAgentRecord>,
+    nowMs: number,
+    fenced: ReadonlySet<string>,
+  ) =>
     records.filter(
       (record) =>
+        fenced.has(record.homeProjectId) ||
         record.endedAt === null ||
         nowMs - DateTime.toEpochMillis(DateTime.makeUnsafe(record.endedAt)) <
           REMOTE_AGENT_RETENTION_MS,
@@ -203,7 +213,16 @@ const make = Effect.gen(function* () {
   const persist = (next: ReadonlyArray<RemoteAgentRecord>) =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const kept = prune(next, DateTime.toEpochMillis(now));
+      const fences = yield* sql<{
+        project_id: string;
+      }>`SELECT project_id FROM project_move_fences`.pipe(
+        Effect.mapError(fail("read Project fences")),
+      );
+      const kept = prune(
+        next,
+        DateTime.toEpochMillis(now),
+        new Set(fences.map((row) => row.project_id)),
+      );
       yield* writeFileStringAtomically({
         filePath,
         contents: encodeStoreFile({ version: 1, agents: kept }),
@@ -217,6 +236,39 @@ const make = Effect.gen(function* () {
 
   const list = lock.withPermits(1)(load.pipe(Effect.map((records) => [...records])));
 
+  const listForMove = lock.withPermits(1)(
+    Effect.gen(function* () {
+      const unreadable = new RemoteAgentStoreError({
+        detail: "Recover the unreadable linked-agent registry before moving a coordinator.",
+      });
+      if (
+        yield* fileSystem.exists(`${filePath}.unreadable`).pipe(Effect.mapError(() => unreadable))
+      )
+        return yield* unreadable;
+      const exists = yield* fileSystem.exists(filePath).pipe(Effect.mapError(() => unreadable));
+      const records: RemoteAgentRecord[] = [];
+      if (exists) {
+        const raw = yield* fileSystem
+          .readFileString(filePath)
+          .pipe(Effect.mapError(() => unreadable));
+        const decoded = decodeStoreFile(raw);
+        if (Option.isNone(decoded)) return yield* unreadable;
+        records.push(...decoded.value.agents);
+      }
+      if (
+        cache !== null &&
+        encodeStoreFile({ version: 1, agents: cache }) !==
+          encodeStoreFile({ version: 1, agents: records })
+      ) {
+        return yield* new RemoteAgentStoreError({
+          detail:
+            "The linked-agent registry changed outside this server. Reconcile it before moving a coordinator.",
+        });
+      }
+      return records;
+    }),
+  );
+
   const get = (threadId: string) =>
     list.pipe(
       Effect.map((records) => Option.fromNullishOr(records.find((r) => r.threadId === threadId))),
@@ -226,7 +278,16 @@ const make = Effect.gen(function* () {
     lock.withPermits(1)(
       Effect.gen(function* () {
         const records = yield* load;
-        yield* persist([...records.filter((r) => r.threadId !== record.threadId), record]);
+        const previous = records.find((r) => r.threadId === record.threadId);
+        if (previous && previous.homeProjectId !== record.homeProjectId)
+          return yield* new RemoteAgentStoreError({
+            detail: "The agent belongs to another Project.",
+          });
+        yield* withProjectWriter(
+          sql,
+          record.homeProjectId,
+          persist([...records.filter((r) => r.threadId !== record.threadId), record]),
+        ).pipe(Effect.mapError(fail("write agent")));
       }),
     );
 
@@ -237,7 +298,15 @@ const make = Effect.gen(function* () {
         const current = records.find((r) => r.threadId === threadId);
         if (current === undefined) return Option.none<RemoteAgentRecord>();
         const next = change(current);
-        yield* persist(records.map((r) => (r.threadId === threadId ? next : r)));
+        if (current.homeProjectId !== next.homeProjectId)
+          return yield* new RemoteAgentStoreError({
+            detail: "The agent belongs to another Project.",
+          });
+        yield* withProjectWriter(
+          sql,
+          current.homeProjectId,
+          persist(records.map((r) => (r.threadId === threadId ? next : r))),
+        ).pipe(Effect.mapError(fail("update agent")));
         return Option.some(next);
       }),
     );
@@ -246,12 +315,17 @@ const make = Effect.gen(function* () {
     lock.withPermits(1)(
       Effect.gen(function* () {
         const records = yield* load;
-        if (!records.some((r) => r.threadId === threadId)) return;
-        yield* persist(records.filter((r) => r.threadId !== threadId));
+        const current = records.find((r) => r.threadId === threadId);
+        if (!current) return;
+        yield* withProjectWriter(
+          sql,
+          current.homeProjectId,
+          persist(records.filter((r) => r.threadId !== threadId)),
+        ).pipe(Effect.mapError(fail("remove agent")));
       }),
     );
 
-  return { list, get, put, update, remove } satisfies RemoteAgentStoreShape;
+  return { list, listForMove, get, put, update, remove } satisfies RemoteAgentStoreShape;
 });
 
 export const RemoteAgentStoreLive = Layer.effect(RemoteAgentStore, make);

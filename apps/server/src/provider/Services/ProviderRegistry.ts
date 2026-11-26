@@ -48,6 +48,17 @@ export interface ProviderRegistryShape {
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
+  /** The unmerged result of probing this live instance. Missing, replaced or failed instances
+   * cannot contribute cached status or retained models to a coordinator move. */
+  readonly probeMoveProvider?: (
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<ServerProvider | undefined>;
+
+  readonly verifyWorkspaceMcp?: (
+    instanceId: ProviderInstanceId,
+    cwd: string,
+  ) => Effect.Effect<boolean>;
+
   readonly refreshWorkspaceSnapshot: (input: {
     readonly instanceId: ProviderInstanceId;
     readonly cwd: string;

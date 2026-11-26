@@ -423,7 +423,7 @@ export const make = Effect.gen(function* () {
           yield* recordScheduleRun(engine, {
             projectId: row.projectId,
             scheduleId: schedule.id,
-            runKey: cronRunKey(row.projectId, schedule.id, slotIso),
+            runKey: cronRunKey(assistant.scheduleProjectId ?? row.projectId, schedule.id, slotIso),
             run,
           });
         }

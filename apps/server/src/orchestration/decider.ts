@@ -1,6 +1,8 @@
 import * as NodeCrypto from "node:crypto";
 import {
   EventId,
+  HistoricalOrchestrationEvent,
+  ProjectMetaUpdatedPayload,
   MAX_SCRIPT_ID_LENGTH,
   SCRIPT_RUN_COMMAND_PATTERN,
   MessageId,
@@ -410,6 +412,76 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+    }
+
+    case "project.coordinator.restore": {
+      yield* requireProject({ readModel, command, projectId: command.projectId });
+      const invalid = () =>
+        new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Invalid Project recovery snapshot.",
+        });
+      const meta = yield* Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload)(command.meta).pipe(
+        Effect.mapError(invalid),
+      );
+      if (
+        meta.projectId !== command.projectId ||
+        meta.workspaceRoot !== undefined ||
+        meta.assistant?.scope === "global"
+      )
+        return yield* invalid();
+      const events: PlannedOrchestrationEvent[] = [];
+      for (const threadId of command.removeThreads) {
+        const thread = yield* requireThread({ readModel, command, threadId });
+        if (thread.projectId !== command.projectId || meta.assistant != null)
+          return yield* invalid();
+        events.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: meta.updatedAt,
+            commandId: command.commandId,
+            metadata: { historyImport: true },
+          })),
+          type: "thread.deleted",
+          payload: { threadId, deletedAt: meta.updatedAt },
+        });
+      }
+      for (const encoded of command.events) {
+        const event = yield* Schema.decodeUnknownEffect(HistoricalOrchestrationEvent)(encoded).pipe(
+          Effect.mapError(invalid),
+        );
+        if (
+          event.aggregateKind !== "thread" ||
+          !("threadId" in event.payload) ||
+          event.payload.threadId !== event.aggregateId ||
+          ("projectId" in event.payload && event.payload.projectId !== command.projectId)
+        )
+          return yield* invalid();
+        events.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: event.aggregateId,
+            occurredAt: event.occurredAt,
+            commandId: command.commandId,
+            metadata: { historyImport: true },
+          })),
+          type: "thread.history-restored",
+          payload: { threadId: event.payload.threadId, event },
+        });
+      }
+      events.push({
+        ...(yield* withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt: meta.updatedAt,
+          commandId: command.commandId,
+          metadata: { historyImport: true },
+        })),
+        type: "project.meta-updated",
+        payload: meta,
+      });
+      return events;
     }
 
     case "project.meta.update": {

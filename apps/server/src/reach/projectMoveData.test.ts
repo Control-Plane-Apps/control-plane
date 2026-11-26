@@ -1,0 +1,211 @@
+import { expect, it } from "@effect/vitest";
+import { CommandId, MessageId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+
+import { AgentLineage } from "../orchestration/agentLineage.ts";
+import { RemoteAgentStoreLive } from "../agentMachines/RemoteAgentStore.ts";
+import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
+import { ServerConfig } from "../config.ts";
+import {
+  makeScheduleEngineLayer,
+  makeScheduleFixture,
+} from "../schedules/schedules.testFixtures.ts";
+import { acquireProjectMoveFence, releaseProjectMoveFence } from "./projectMoveFence.ts";
+import { makeProjectMoveData } from "./projectMoveData.ts";
+
+it.effect(
+  "round trips a fenced Project through separate SQLite environments and verifies destination writes before cleanup",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const setup = (name: string) =>
+          Layer.build(
+            Layer.mergeAll(
+              ProjectionProjectRepositoryLive,
+              RemoteAgentStoreLive,
+              AgentLineage.layer,
+            ).pipe(Layer.provideMerge(makeScheduleEngineLayer("project-move-" + name))),
+          );
+        const source = yield* setup("source");
+        const target = yield* setup("destination");
+        const original = ProjectId.make("synthetic-origin");
+        const destination = ProjectId.make("synthetic-target");
+        const coordinator = ThreadId.make("synthetic-manager");
+        const agent = ThreadId.make("synthetic-worker");
+        const moveId = "synthetic-transfer";
+        const create = (id: ProjectId) =>
+          Effect.gen(function* () {
+            const fixture = yield* makeScheduleFixture;
+            const config = yield* ServerConfig;
+            const fs = yield* FileSystem.FileSystem;
+            const root = config.stateDir + "/checkout";
+            yield* fs.makeDirectory(root, { recursive: true });
+            yield* fixture.dispatch({
+              type: "project.create",
+              projectId: id,
+              commandId: CommandId.make("init"),
+              title: "Synthetic",
+              workspaceRoot: root,
+              createdAt: yield* fixture.now,
+            });
+            return {
+              fixture,
+              root,
+              fs,
+              config,
+              lineage: yield* AgentLineage,
+              data: yield* makeProjectMoveData,
+            };
+          });
+        const src = yield* Effect.provide(create(original), source);
+        const dst = yield* Effect.provide(create(destination), target);
+        const backup = yield* dst.data.capture(destination);
+        yield* src.fixture.createThread(original, coordinator, "Coordinator");
+        yield* src.fixture.dispatch({
+          type: "project.meta.update",
+          projectId: original,
+          commandId: CommandId.make("marker"),
+          assistant: { coordinatorThreadId: coordinator },
+        });
+        yield* src.fixture.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("spawn"),
+          projectId: original,
+          threadId: agent,
+          title: "Worker",
+          createdByThreadId: coordinator,
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: yield* src.fixture.now,
+        });
+        yield* src.fixture.dispatch({
+          type: "thread.pin",
+          commandId: CommandId.make("pin"),
+          threadId: agent,
+        });
+        yield* src.fixture.setSchedules(original, [
+          { id: "daily", cron: "0 9 * * *", target: agent },
+        ]);
+        const stamp = yield* src.fixture.now;
+        yield* src.fixture.dispatch({
+          type: "project.schedule.record",
+          createdAt: stamp,
+          projectId: original,
+          scheduleId: "daily",
+          commandId: CommandId.make(`cp-schedule-run:${original}:daily:${stamp}`),
+          run: { slot: stamp, at: stamp, trigger: "cron", outcome: "sent", threadId: agent },
+        });
+        yield* src.fixture.dispatch({
+          type: "project.status.set",
+          actorThreadId: coordinator,
+          projectId: original,
+          commandId: CommandId.make("status"),
+          createdAt: stamp,
+          change: {
+            kind: "upsert",
+            id: "tests",
+            title: "Tests",
+            state: "queued",
+            summary: "Awaiting review",
+            agents: [agent],
+          },
+        });
+        const append = (id: string, text: string) => ({
+          type: "thread.message.user.append" as const,
+          commandId: CommandId.make(id),
+          threadId: coordinator,
+          createdAt: stamp,
+          message: { messageId: MessageId.make(id), text, attachments: [] },
+        });
+        const message = append("source-msg", "Move this history");
+        const attachment = {
+          type: "file" as const,
+          id: "synthetic-manager-785d58f4-3fa3-4f41-8e25-6f383aade103-txt",
+          name: "evidence.txt",
+          mimeType: "text/plain",
+          sizeBytes: 5,
+        };
+        yield* src.fs.makeDirectory(src.config.attachmentsDir, { recursive: true });
+        yield* src.fs.writeFileString(
+          src.config.attachmentsDir + "/" + attachment.id + ".txt",
+          "proof",
+        );
+        yield* dst.fs.makeDirectory(dst.config.attachmentsDir, { recursive: true });
+        yield* src.fixture.dispatch({
+          ...message,
+          message: { ...message.message, attachments: [attachment] },
+        });
+        yield* src.fs.writeFileString(src.root + "/MEMORY.md", "Source memory\n");
+        yield* Effect.provide(acquireProjectMoveFence(original, moveId), source);
+        yield* Effect.provide(acquireProjectMoveFence(destination, "aborted-staging"), target);
+        const bundle = yield* src.data.capture(original);
+        expect(bundle.project.assistant?.scheduleRuns?.daily?.slot).toBe(stamp);
+        // Simulate refusal after the attachment lands but before projections commit.
+        const refused = yield* Effect.result(
+          dst.data.install(destination, "aborted-staging", {
+            ...bundle,
+            receipts: [...bundle.receipts, ...bundle.receipts],
+          }),
+        );
+        expect(refused._tag).toBe("Failure");
+        const targetFile = dst.config.attachmentsDir + "/" + attachment.id + ".txt";
+        expect(yield* dst.fs.readFileString(targetFile)).toBe("proof");
+        yield* dst.data.install(destination, "aborted-staging", backup, dst.data.digest(backup));
+        expect(yield* dst.fs.exists(targetFile)).toBe(false);
+        yield* Effect.provide(releaseProjectMoveFence(destination, "aborted-staging"), target);
+        yield* Effect.provide(acquireProjectMoveFence(destination, moveId), target);
+        yield* dst.data.install(destination, moveId, bundle);
+        yield* dst.data.install(destination, moveId, bundle);
+        expect(dst.data.digest(yield* dst.data.capture(destination))).toBe(src.data.digest(bundle));
+        expect(yield* dst.lineage.creatorOf(agent)).toBe(coordinator);
+        expect(
+          yield* dst.fs.readFileString(dst.config.attachmentsDir + "/" + attachment.id + ".txt"),
+        ).toBe("proof");
+        yield* Effect.provide(releaseProjectMoveFence(destination, moveId), target);
+        const response = append("new-message", "Destination wrote after activation");
+        yield* dst.fixture.dispatch({
+          ...response,
+          message: {
+            ...response.message,
+            source: { kind: "agent", threadId: agent, threadTitle: "Worker" },
+          },
+        });
+        const temporary = ThreadId.make("synthetic-removed-agent");
+        yield* dst.fixture.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("destination-create-temporary"),
+          threadId: temporary,
+          projectId: destination,
+          title: "Temporary",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: stamp,
+        });
+        yield* dst.fixture.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("remove-agent"),
+          threadId: temporary,
+        });
+        yield* dst.fs.writeFileString(dst.root + "/MEMORY.md", "Destination memory\n");
+        yield* Effect.provide(acquireProjectMoveFence(destination, moveId), target);
+        const back = yield* dst.data.capture(destination);
+        yield* src.data.install(original, moveId, back);
+        expect(src.data.digest(yield* src.data.capture(original))).toBe(dst.data.digest(back));
+        expect(yield* src.fs.readFileString(src.root + "/MEMORY.md")).toBe("Destination memory\n");
+        yield* dst.data.install(destination, moveId, backup, dst.data.digest(back));
+        expect(dst.data.digest(yield* dst.data.capture(destination))).toBe(dst.data.digest(backup));
+        yield* Effect.provide(releaseProjectMoveFence(destination, moveId), target);
+        yield* Effect.provide(acquireProjectMoveFence(destination, "second-move"), target);
+        yield* dst.data.install(destination, "second-move", back);
+        expect(dst.data.digest(yield* dst.data.capture(destination))).toBe(dst.data.digest(back));
+      }),
+    ),
+);

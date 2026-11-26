@@ -4,7 +4,11 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { summarizeSchedules } from "@t3tools/client-runtime/state/schedules";
-import { isArchivedAssistant, type ProjectIconOverride } from "@t3tools/contracts";
+import {
+  isArchivedAssistant,
+  isGlobalAssistant,
+  type ProjectIconOverride,
+} from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -44,6 +48,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { CoordinatorPlacementRow } from "./CoordinatorPlacementRow";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 
 const ProjectIconPickerDialog = lazy(() =>
@@ -172,6 +177,9 @@ export function AssistantSettingsPanel({ group }: { group: SidebarProjectSnapsho
               ) : null
             }
           />
+          {!isGlobalAssistant(project) && coordinatorThreadId !== null && (
+            <CoordinatorPlacementRow environmentId={project.environmentId} projectId={project.id} />
+          )}
           <SettingsRow
             title="Default model for new agents"
             description="The coordinator's own model is changed in its composer."

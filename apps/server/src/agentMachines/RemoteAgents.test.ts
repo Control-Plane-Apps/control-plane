@@ -1,3 +1,4 @@
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -40,6 +41,7 @@ const createInput = (overrides: Partial<CreateRemoteInput> = {}): CreateRemoteIn
 const harness = (options?: FakePeerOptions) => {
   const peer = makeFakePeer(options);
   const layer = RemoteAgentsLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
     Layer.provideMerge(peer.layer),
     Layer.provideMerge(MemoryRemoteAgentStore),
   );

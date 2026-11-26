@@ -10,3 +10,9 @@ The move applies to one Project. The Project owner selects a linked destination,
 6. Before activation, rollback releases the source fence after abandoning the staged import. After activation, fence the destination first. Reconcile every write and schedule receipt since the cutover watermark back to the source and verify parity before restoring source ownership. If either fence or reconciliation cannot be proved, leave execution paused for operator recovery.
 
 Stage B requires a two-environment rehearsal covering a crash at each ownership transition and rollback after a destination write. Moving the top-level Assistant does not demonstrate per-Project coordinator recovery.
+
+## Recovery and scope
+
+Open the source Project settings and choose a linked environment under **Coordinator runs on**. The destination needs a registered, empty workspace for the same repository. Review the checkout and access checks before selecting **Move coordinator**. After an interrupted request, reopen those settings and refresh the receipt. Retry continues the recorded move. Rollback fences the destination and verifies the returned state before enabling the source.
+
+The move keeps each machine’s original Project ID and checkout path. Coordinator and agent thread IDs remain stable. The source retains its history and a durable recovery copy while its write fence is held. A different worktree or an agent whose responses still route through a third environment requires separate verified routing. The move stops during inventory in those cases.

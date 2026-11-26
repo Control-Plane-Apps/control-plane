@@ -6,6 +6,9 @@
  *
  * @module TerminalManager
  */
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { registerProjectTerminalCheck } from "../reach/projectMoveFence.ts";
+import { withWorkspaceWriter } from "../reach/projectWorkspaceWriter.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -19,6 +22,7 @@ import {
   TerminalProviderInstanceNotFoundError,
   TerminalProviderEnvironmentError,
   TerminalResizeError,
+  TerminalProjectMoveError,
   TerminalSessionLookupError,
   TerminalWriteError,
   type TerminalAttachInput,
@@ -1313,6 +1317,7 @@ function normalizedRuntimeEnv(
 }
 
 interface TerminalManagerOptions {
+  sql?: SqlClient.SqlClient;
   logsDir: string;
   historyLineLimit?: number;
   historyByteLimit?: number;
@@ -1405,6 +1410,7 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
     }),
   );
   return yield* makeWithOptions({
+    sql: yield* SqlClient.SqlClient,
     logsDir: terminalLogsDir,
     ptyAdapter,
     processTable: nativeTelemetry.processTable.pipe(
@@ -2464,6 +2470,54 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     ),
   );
 
+  if (options.sql) {
+    const removeMoveCheck = registerProjectTerminalCheck(options.sql, (threadIds, root) =>
+      Effect.gen(function* () {
+        const realRoot = yield* fileSystem
+          .realPath(root)
+          .pipe(Effect.orElseSucceed(() => path.resolve(root)));
+        for (const session of (yield* readManagerState).sessions.values()) {
+          if (session.status !== "starting" && session.status !== "running") continue;
+          if (threadIds.has(session.threadId)) return true;
+          const cwd = session.worktreePath ?? session.cwd;
+          const realCwd = yield* fileSystem
+            .realPath(cwd)
+            .pipe(Effect.orElseSucceed(() => path.resolve(cwd)));
+          const relative = path.relative(realRoot, realCwd);
+          if (
+            relative !== ".." &&
+            !relative.startsWith(`..${path.sep}`) &&
+            !path.isAbsolute(relative)
+          )
+            return true;
+        }
+        return false;
+      }),
+    );
+    yield* Effect.addFinalizer(() => Effect.sync(removeMoveCheck));
+  }
+  const guardLaunch = (
+    input: TerminalOpenInput | TerminalRestartInput,
+    operation: Effect.Effect<TerminalSessionSnapshot, TerminalError>,
+  ) =>
+    options.sql
+      ? withWorkspaceWriter(
+          options.sql,
+          input.worktreePath ?? input.cwd,
+          ".",
+          operation,
+          input.threadId,
+        ).pipe(
+          Effect.mapError((error) =>
+            error._tag === "SqlError" ||
+            error._tag === "UnknownError" ||
+            error._tag === "ProjectMoveFenceError"
+              ? new TerminalProjectMoveError({ detail: error.message })
+              : error,
+          ),
+        )
+      : operation;
+
   let subprocessSnapshotFailureCount = 0;
   yield* Effect.forever(
     hasRunningSessions.pipe(
@@ -2645,7 +2699,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const openLocked = (input: TerminalOpenInput) =>
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
-      openWithWorkspaceLease(input),
+      guardLaunch(input, openWithWorkspaceLease(input)),
     );
 
   const open: TerminalManager["Service"]["open"] = (input) =>
@@ -3023,7 +3077,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         Effect.flatMap((resolved) =>
           withWorkspaceLease(
             path.resolve(resolved.worktreePath ?? resolved.cwd),
-            restartResolved(resolved),
+            guardLaunch(resolved, restartResolved(resolved)),
           ),
         ),
       ),

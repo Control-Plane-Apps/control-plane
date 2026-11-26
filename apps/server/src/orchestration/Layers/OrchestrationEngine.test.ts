@@ -30,6 +30,12 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import {
+  acquireProjectMoveFence,
+  releaseProjectMoveFence,
+  withProjectMovePermit,
+} from "../../reach/projectMoveFence.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import * as OrchestrationCommandReceipts from "../../persistence/Services/OrchestrationCommandReceipts.ts";
@@ -90,7 +96,7 @@ function makeOrchestrationLayer(
           )
         : RepositoryIdentityResolver.layer,
     ),
-    Layer.provide(persistence),
+    Layer.provideMerge(persistence),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
   );
@@ -110,7 +116,7 @@ async function createOrchestrationSystem(
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     readThread: (threadId: ThreadId) =>
       runtime.runPromise(snapshotQuery.getThreadDetailById(threadId)),
-    run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
+    run: <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) => runtime.runPromise(effect),
     dispose: () => runtime.dispose(),
   };
 }
@@ -131,6 +137,44 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("keeps a Project fenced across restart and retries the same command after rollback", async () => {
+    const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "coordinator-fence-"));
+    const db = NodePath.join(dir, "state.sqlite");
+    let system = await createOrchestrationSystem(db);
+    const projectId = ProjectId.make("moving");
+    const create = {
+      type: "project.create" as const,
+      commandId: CommandId.make("create"),
+      projectId,
+      title: "Moving Project",
+      workspaceRoot: dir,
+      createdAt: now(),
+    };
+    const update = {
+      type: "project.meta.update" as const,
+      commandId: CommandId.make("update"),
+      projectId,
+      title: "Updated Project",
+      createdAt: now(),
+    };
+    try {
+      await system.run(acquireProjectMoveFence(projectId, "move"));
+      await expect(system.run(system.engine.dispatch(create))).rejects.toThrow(/paused/);
+      await system.run(withProjectMovePermit(projectId, "move", system.engine.dispatch(create)));
+      await system.dispose();
+      system = await createOrchestrationSystem(db);
+      await expect(system.run(system.engine.dispatch(update))).rejects.toThrow(/paused/);
+      await expect(system.run(releaseProjectMoveFence(projectId, "other"))).rejects.toThrow(
+        /Another move/,
+      );
+      await system.run(releaseProjectMoveFence(projectId, "move"));
+      await system.run(system.engine.dispatch(update));
+      expect((await system.readModel()).projects[0]?.title).toBe("Updated Project");
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(dir, { recursive: true, force: true });
+    }
+  });
   it("replaces an abandoned held destination across restart and activates exactly once", async () => {
     const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "handoff-held-"));
     const db = NodePath.join(dir, "state.sqlite");

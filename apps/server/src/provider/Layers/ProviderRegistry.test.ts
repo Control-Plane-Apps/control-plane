@@ -1061,6 +1061,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
 
                 yield* Ref.set(nextProvider, failedProvider);
                 const afterFailure = yield* registry.refreshInstance(instance.instanceId);
+                // A coordinator move must read the failed probe itself, even though settings
+                // deliberately retain the previous model list across a transient failure.
+                assert.isUndefined(yield* registry.probeMoveProvider!(instance.instanceId));
                 assert.deepStrictEqual(afterFailure[0]?.models, retainedModels);
                 assert.deepStrictEqual(
                   (yield* readProviderStatusCache(filePath))?.models,

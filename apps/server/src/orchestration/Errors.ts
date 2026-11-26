@@ -52,6 +52,15 @@ export class OrchestrationThreadSettleBlockedError extends Schema.TaggedError<Or
   }
 }
 
+export class OrchestrationProjectMoveFencedError extends Schema.TaggedError<OrchestrationProjectMoveFencedError>()(
+  "OrchestrationProjectMoveFencedError",
+  { projectId: Schema.String },
+) {
+  override get message(): string {
+    return "This Project is paused on this environment for a coordinator move.";
+  }
+}
+
 export const OrchestrationCommandRejection = Schema.Union([
   OrchestrationCommandInvariantError,
   OrchestrationThreadSettleBlockedError,
@@ -116,6 +125,7 @@ export class OrchestrationListenerCallbackError extends Schema.TaggedError<Orche
 export type OrchestrationDispatchError =
   | ProjectionRepositoryError
   | OrchestrationCommandRejection
+  | OrchestrationProjectMoveFencedError
   | OrchestrationCommandIdConflictError
   | OrchestrationCommandPreviouslyRejectedError
   | OrchestrationProjectorDecodeError

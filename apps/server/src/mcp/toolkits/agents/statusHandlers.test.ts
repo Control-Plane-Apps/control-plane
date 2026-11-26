@@ -45,6 +45,10 @@ import { OrchestrationEventStoreLive } from "../../../persistence/Layers/Orchest
 import { ProjectionProjectRepositoryLive } from "../../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionThreadMessageRepositoryLive } from "../../../persistence/Layers/ProjectionThreadMessages.ts";
 import { ProjectionThreadMessageRepository } from "../../../persistence/Services/ProjectionThreadMessages.ts";
+import {
+  acquireProjectMoveFence,
+  releaseProjectMoveFence,
+} from "../../../reach/projectMoveFence.ts";
 import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../../../project/RepositoryIdentityResolver.ts";
 import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerRegistryMock.ts";
@@ -797,7 +801,14 @@ describe("StatusDeadlineReactor", () => {
         yield* reactor.sweep;
         expect(yield* reminders).toHaveLength(0);
 
+        yield* acquireProjectMoveFence(PROJECT_ID, "deadline-move");
         yield* TestClock.setTime(Date.parse(THURSDAY) + 1);
+        yield* reactor.sweep;
+        expect(yield* reminders).toHaveLength(0);
+        expect(
+          statusOf(yield* readMarker(PROJECT_ID), "payouts").decision?.deadlineHandled,
+        ).toBeUndefined();
+        yield* releaseProjectMoveFence(PROJECT_ID, "deadline-move");
         yield* reactor.sweep;
         yield* reactor.sweep;
         const sent = yield* reminders;

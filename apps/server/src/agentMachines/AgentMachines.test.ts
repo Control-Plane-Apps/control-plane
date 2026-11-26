@@ -1,3 +1,4 @@
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as NodeCrypto from "node:crypto";
 import {
   HostProcessEnvironment,
@@ -202,6 +203,7 @@ interface HarnessInput {
 const harness = (input: HarnessInput = {}) => {
   const peer = input.peer ?? makePeer();
   const layer = AgentMachinesLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
     Layer.provide(Layer.succeed(HostProcessPlatform, "linux")),
     Layer.provide(Layer.succeed(HostProcessEnvironment, {})),
     Layer.provide(Layer.succeed(HostProcessHomeDirectory, "/synthetic-placement/home")),
