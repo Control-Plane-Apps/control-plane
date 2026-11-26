@@ -26,7 +26,7 @@ export function WaitingAgentsSettings({
                 <p className="break-all font-mono text-xs text-muted-foreground">
                   {agent.branch}
                   {agent.branch && agent.commit ? " · " : ""}
-                  {agent.commit && <span title={agent.commit}>{agent.commit.slice(0, 12)}</span>}
+                  {agent.commit?.slice(0, 12)}
                 </p>
               ) : null}
               <p className="break-words text-xs text-muted-foreground">{agent.detail}</p>

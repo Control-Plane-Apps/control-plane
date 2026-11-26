@@ -199,6 +199,7 @@ const make = Effect.gen(function* () {
   const startRequest = (
     record: RemoteAgentRecord,
     input: {
+      readonly origin: "create" | "follow-up" | "queue";
       readonly messageId: string;
       readonly text: string;
       readonly replyTo: string;
@@ -212,7 +213,13 @@ const make = Effect.gen(function* () {
       const current = Option.getOrNull(
         yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
       );
-      if (!current || current.state === "settled" || current.state === "lost")
+      if (input.origin === "queue" && current?.queuedSends[0]?.messageId !== input.messageId)
+        return;
+      if (
+        !current ||
+        current.state === "lost" ||
+        (current.state === "settled" && input.origin !== "follow-up")
+      )
         return yield* new RemoteAgentError({ detail: "This agent is no longer open." });
       if (current.waitId) return yield* onHold(current);
       if (current.resumeCheckpoint) {
@@ -373,6 +380,7 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(storeFailed));
       const preamble = `You are running on ${record.machineLabel} for the Project "${input.home.project.title}", started by ${input.creator.title} on ${input.home.label}. This machine has its own copy of the Project folder: read its AGENTS.md here, and your changes stay on this machine.\n\n`;
       yield* startRequest(record, {
+        origin: "create",
         messageId: input.ids.messageId,
         text: `${preamble}${input.message}`,
         replyTo: input.creator.id,
@@ -559,6 +567,7 @@ const make = Effect.gen(function* () {
         return { queued: true };
       }
       yield* startRequest(record, {
+        origin: "follow-up",
         messageId,
         text: input.text,
         replyTo: input.replyTo ?? input.sender.id,
@@ -577,6 +586,7 @@ const make = Effect.gen(function* () {
         return;
       const createdAt = yield* nowIso;
       yield* startRequest(record, {
+        origin: "queue",
         messageId: next.messageId,
         text: next.text,
         replyTo: next.replyTo,

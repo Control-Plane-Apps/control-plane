@@ -59,6 +59,7 @@ const PLAIN_TARGET = ThreadId.make("plain-other-task");
 
 const isThreadSendResult = Schema.is(ThreadSendResult);
 const isAgentMessageResult = Schema.is(AgentMessageResult);
+const isAgentReadResult = Schema.is(AgentReadResult);
 const isAgentPeersResult = Schema.is(AgentPeersResult);
 
 const testCrypto = Crypto.make({
@@ -640,9 +641,7 @@ describe("cp_agent_message and cp_agent_peers", () => {
       expect(result.peers).toEqual([{ ...coordinator, machine: "Home Mac" }]);
       const sent = yield* harness.message({ to: coordinator.title, message: "Ready" }, PLAIN);
       expect(sent.machine).toBe("Home Mac");
-      expect(Schema.is(AgentReadResult)(yield* harness.readPeer(coordinator.threadId, PLAIN))).toBe(
-        true,
-      );
+      expect(isAgentReadResult(yield* harness.readPeer(coordinator.threadId, PLAIN))).toBe(true);
       expect(yield* Ref.get(harness.commands)).toEqual([]);
     }),
   );
