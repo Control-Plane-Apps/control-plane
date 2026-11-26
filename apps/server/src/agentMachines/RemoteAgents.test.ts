@@ -116,7 +116,7 @@ describe("RemoteAgents.reserve and start", () => {
       }),
   );
 
-  it.effect("drops the record when the create never reached the peer", () =>
+  it.effect("keeps the original placement when create acknowledgement is ambiguous", () =>
     Effect.gen(function* () {
       const { peer, run } = harness({ failOn: ["thread.create"] });
       const outcome = yield* run(
@@ -128,8 +128,8 @@ describe("RemoteAgents.reserve and start", () => {
           return { failure, left: yield* store.list };
         }),
       );
-      expect(outcome.failure.stage).toBe("create");
-      expect(outcome.left).toEqual([]);
+      expect(outcome.failure.stage).toBe("start");
+      expect(outcome.left).toMatchObject([{ machineId: "mini", createAttempted: true }]);
       expect(peer.commands).toEqual([]);
     }),
   );
@@ -379,6 +379,30 @@ describe("RemoteAgents.stop", () => {
       ]);
       expect(outcome.record.inFlight).toBeNull();
       expect(outcome.record.queuedSends).toEqual([]);
+    }),
+  );
+
+  it.effect("retains the queue and baseline until stop is acknowledged", () =>
+    Effect.gen(function* () {
+      const { run } = harness({ failOn: ["thread.session.stop"] });
+      yield* run(
+        Effect.gen(function* () {
+          const store = yield* RemoteAgentStore;
+          const remote = yield* RemoteAgents;
+          const record = makeRecord({
+            inFlight,
+            queuedSends: [
+              { messageId: "q", text: "later", replyTo: "manager", queuedAt: TEST_NOW },
+            ],
+          });
+          yield* store.put(record);
+          yield* Effect.flip(remote.stop(record, { archive: false }));
+          const saved = Option.getOrThrow(yield* store.get(record.threadId));
+          expect(saved.queuedSends).toEqual(record.queuedSends);
+          expect(saved.inFlight).toEqual(inFlight);
+          expect(saved.stoppingAt).toBeTruthy();
+        }),
+      );
     }),
   );
 

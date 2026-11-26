@@ -44,6 +44,7 @@ export const RemoteAgentQueuedSend = Schema.Struct({
   replyTo: Schema.String,
   noResult: Schema.optionalKey(Schema.Literal(true)),
   queuedAt: Schema.String,
+  baselineTurnId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   sender: Schema.optionalKey(Schema.Struct({ id: Schema.String, title: Schema.String })),
 });
 export type RemoteAgentQueuedSend = typeof RemoteAgentQueuedSend.Type;
@@ -69,6 +70,9 @@ export const RemoteAgentRecord = Schema.Struct({
   lastPhase: AgentPhase,
   lastActivityAt: Schema.NullOr(Schema.String),
   workspaceCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
+  createAttempted: Schema.optionalKey(Schema.Boolean),
+  firstMessageAccepted: Schema.optionalKey(Schema.Boolean),
+  stoppingAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
   workspaceObservedFor: Schema.optionalKey(Schema.String),
   waitId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   resumeCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),

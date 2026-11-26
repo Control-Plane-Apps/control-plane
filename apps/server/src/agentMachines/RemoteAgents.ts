@@ -199,7 +199,7 @@ const make = Effect.gen(function* () {
   const startRequest = (
     record: RemoteAgentRecord,
     input: {
-      readonly origin: "create" | "follow-up" | "queue";
+      readonly origin: "create" | "follow-up" | "peer" | "queue";
       readonly messageId: string;
       readonly text: string;
       readonly replyTo: string;
@@ -221,6 +221,8 @@ const make = Effect.gen(function* () {
         (current.state === "settled" && input.origin !== "follow-up")
       )
         return yield* new RemoteAgentError({ detail: "This agent is no longer open." });
+      if (current.stoppingAt)
+        return yield* new RemoteAgentError({ detail: "Stop is pending on this machine." });
       if (current.waitId) return yield* onHold(current);
       if (current.resumeCheckpoint) {
         const probe = yield* machines
@@ -238,6 +240,19 @@ const make = Effect.gen(function* () {
             .pipe(Effect.mapError(storeFailed));
           return yield* new RemoteAgentError({ detail: reason });
         }
+      }
+      const queued = current.queuedSends.find((item) => item.messageId === input.messageId);
+      const baselineTurnId =
+        queued?.baselineTurnId === undefined ? input.baselineTurnId : queued.baselineTurnId;
+      if (queued && queued.baselineTurnId === undefined) {
+        yield* store
+          .update(record.threadId, (latest) => ({
+            ...latest,
+            queuedSends: latest.queuedSends.map((item) =>
+              item.messageId === input.messageId ? { ...item, baselineTurnId } : item,
+            ),
+          }))
+          .pipe(Effect.mapError(storeFailed));
       }
       yield* send(
         {
@@ -266,7 +281,7 @@ const make = Effect.gen(function* () {
         replyTo: input.replyTo,
         ...(input.noResult ? { noResult: true as const } : {}),
         sentAt: input.createdAt,
-        baselineTurnId: input.baselineTurnId,
+        baselineTurnId,
         suppressed: false,
       };
       yield* store
@@ -275,6 +290,7 @@ const make = Effect.gen(function* () {
           state: "open",
           endedAt: null,
           inFlight: request,
+          ...(input.origin === "create" ? { firstMessageAccepted: true } : {}),
           resumeCheckpoint: null,
           queuedSends: current.queuedSends.filter((queued) => queued.messageId !== input.messageId),
           lastPhase: "starting",
@@ -332,13 +348,21 @@ const make = Effect.gen(function* () {
   const start: RemoteAgentsShape["start"] = (input, record) =>
     Effect.gen(function* () {
       // A retry after a start that landed finds the request already in flight.
-      if (record.state === "open" && record.inFlight !== null) return record;
+      if (record.firstMessageAccepted || record.state !== "pending") return record;
 
       if (record.waitId) return yield* onHold(record);
       const peerShell = yield* machines.shell(record.machineId).pipe(
         Effect.mapError((error) => unavailable(record.machineLabel, error)),
-        Effect.tapError(() => store.remove(record.threadId).pipe(Effect.ignore)),
-        Effect.mapError((error) => new RemoteAgentError({ detail: error.detail, stage: "create" })),
+        Effect.tapError(() =>
+          record.createAttempted ? Effect.void : store.remove(record.threadId).pipe(Effect.ignore),
+        ),
+        Effect.mapError(
+          (error) =>
+            new RemoteAgentError({
+              detail: error.detail,
+              stage: record.createAttempted ? "start" : "create",
+            }),
+        ),
       );
       const peerProject = peerShell.projects.find((entry) => entry.id === record.peerProjectId);
       const modelSelection: ModelSelection =
@@ -346,6 +370,9 @@ const make = Effect.gen(function* () {
           ? { instanceId: input.baseModel.instanceId, model: input.requestedModel }
           : (peerProject?.defaultModelSelection ?? input.baseModel);
 
+      yield* store
+        .update(record.threadId, (current) => ({ ...current, createAttempted: true }))
+        .pipe(Effect.mapError(storeFailed));
       yield* send(
         {
           type: "thread.create",
@@ -362,9 +389,8 @@ const make = Effect.gen(function* () {
         },
         record,
       ).pipe(
-        // Nothing reached the peer: drop the record so a retry places afresh.
-        Effect.tapError(() => store.remove(record.threadId).pipe(Effect.ignore)),
-        Effect.mapError((error) => new RemoteAgentError({ detail: error.detail, stage: "create" })),
+        // A lost response can follow a successful create. Keep the original placement.
+        Effect.mapError((error) => new RemoteAgentError({ detail: error.detail, stage: "start" })),
       );
 
       const checkpoint = yield* machines
@@ -454,11 +480,10 @@ const make = Effect.gen(function* () {
       yield* store
         .update(record.threadId, (current) => ({
           ...current,
-          inFlight: current.inFlight === null ? null : { ...current.inFlight, suppressed: true },
-          queuedSends: [],
+          stoppingAt: current.stoppingAt ?? createdAt,
         }))
         .pipe(Effect.mapError(storeFailed));
-      const key = `${record.threadId}:${createdAt}`;
+      const key = `${record.threadId}:${record.stoppingAt ?? createdAt}`;
       if (working) {
         yield* send(
           {
@@ -491,6 +516,8 @@ const make = Effect.gen(function* () {
         yield* store
           .update(record.threadId, (current) => ({
             ...current,
+            stoppingAt: null,
+            queuedSends: [],
             state: "settled",
             endedAt: createdAt,
             inFlight: null,
@@ -498,7 +525,12 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(storeFailed));
       } else {
         yield* store
-          .update(record.threadId, (current) => ({ ...current, inFlight: null }))
+          .update(record.threadId, (current) => ({
+            ...current,
+            stoppingAt: null,
+            inFlight: null,
+            queuedSends: [],
+          }))
           .pipe(Effect.mapError(storeFailed));
       }
       return { stopped: working || dropped > 0, archived: options.archive };
@@ -540,7 +572,12 @@ const make = Effect.gen(function* () {
 
   const sendMessage: RemoteAgentsShape["send"] = (record, input) =>
     Effect.gen(function* () {
-      if (record.waitId) return yield* onHold(record);
+      const latest = Option.getOrNull(
+        yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
+      );
+      if (!latest || latest.stoppingAt || (input.peer && latest.state !== "open"))
+        return yield* new RemoteAgentError({ detail: "This agent cannot receive messages." });
+      if (latest.waitId) return yield* onHold(latest);
       const createdAt = yield* nowIso;
       const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${createdAt}:${record.queuedSends.length}`;
       const detail = yield* readView(record, 1);
@@ -567,7 +604,7 @@ const make = Effect.gen(function* () {
         return { queued: true };
       }
       yield* startRequest(record, {
-        origin: "follow-up",
+        origin: input.peer ? "peer" : "follow-up",
         messageId,
         text: input.text,
         replyTo: input.replyTo ?? input.sender.id,

@@ -277,6 +277,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       const thread: OrchestrationThreadShell | undefined = snapshot.success.threads.find(
         (candidate) => candidate.id === record.threadId && candidate.archivedAt === null,
       );
+      if (record.stoppingAt) continue;
       const age = now - toMs(record.createdAt);
       if (thread === undefined) {
         if (record.state === "pending" && age < PENDING_LIMIT_MS) continue;
