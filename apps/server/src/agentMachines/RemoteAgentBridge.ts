@@ -35,6 +35,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { forkParked } from "../serverActivation.ts";
 import { AgentMachines } from "./AgentMachines.ts";
 import { PeerError } from "./AgentMachineClient.ts";
+import { withRemoteAgentLock } from "./remoteAgentLock.ts";
 import { isRemotePeerRequestId, RemoteAgents } from "./RemoteAgents.ts";
 import {
   judgeRequest,
@@ -315,6 +316,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       );
       if (record.waitId) yield* notifyWait(record, record.waitId);
       if (record.stoppingAt) continue;
+      if (record.createAttempted && record.state === "pending") continue;
       const age = now - toMs(record.createdAt);
       if (thread === undefined) {
         if (record.state === "pending" && age < PENDING_LIMIT_MS) continue;
@@ -366,7 +368,18 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
         thread.updatedAt,
       );
       if (verdict?.kind === "done") {
-        yield* finishRequest(record, thread, verdict);
+        yield* withRemoteAgentLock(
+          record.threadId,
+          Effect.gen(function* () {
+            const current = Option.getOrNull(yield* store.get(record.threadId));
+            if (
+              current &&
+              !current.stoppingAt &&
+              current.inFlight?.messageId === request?.messageId
+            )
+              yield* finishRequest(current, thread, verdict);
+          }),
+        );
         continue;
       }
       if (!record.waitId && request === null && record.queuedSends.length > 0) {
