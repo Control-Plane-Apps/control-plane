@@ -1294,9 +1294,14 @@ const ProjectDeleteCommand = Schema.Struct({
   force: Schema.optional(Schema.Boolean),
 });
 
+export const HANDOFF_TRANSCRIPT_MAX_CHARS = 24_000;
+
 const ThreadCreateCommand = Schema.Struct({
   handoffHold: Schema.optionalKey(
     Schema.Struct({
+      transcript: Schema.optionalKey(
+        Schema.String.check(Schema.isMaxLength(HANDOFF_TRANSCRIPT_MAX_CHARS)),
+      ),
       waitId: TrimmedNonEmptyString,
       releaseHash: TrimmedNonEmptyString,
       machineId: TrimmedNonEmptyString,

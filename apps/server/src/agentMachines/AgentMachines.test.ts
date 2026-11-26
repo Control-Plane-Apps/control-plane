@@ -525,7 +525,13 @@ describe("AgentMachines.manage unlink and check", () => {
       let releaseBlocked = scenario === "changed destination before activation";
       let activated = false;
       let hold:
-        | { waitId: string; releaseHash: string; machineId: string; projectId: string }
+        | {
+            waitId: string;
+            releaseHash: string;
+            machineId: string;
+            projectId: string;
+            transcript: string;
+          }
         | undefined;
       let sourceHash: string | undefined;
       let fenced = false;
@@ -596,7 +602,19 @@ describe("AgentMachines.manage unlink and check", () => {
                 ...shell,
                 archivedAt: (to ? created && !activated : fenced) ? TEST_NOW : null,
                 deletedAt: null,
-                messages: [],
+                messages: to
+                  ? []
+                  : [
+                      {
+                        id: "original-answer",
+                        role: "assistant",
+                        text: "discarded" + "x".repeat(24_000) + "original answer",
+                        turnId: null,
+                        streaming: false,
+                        createdAt: TEST_NOW,
+                        updatedAt: TEST_NOW,
+                      },
+                    ],
                 checkpoints: [],
                 activities:
                   to && hold
@@ -644,6 +662,9 @@ describe("AgentMachines.manage unlink and check", () => {
               hold = cmd.handoffHold;
               expect(hold?.waitId).toBe(waitId);
               expect(hold?.projectId).toBe(project.id);
+              expect(hold?.transcript).toHaveLength(24_000);
+              expect(hold?.transcript.endsWith("original answer")).toBe(true);
+              expect(hold?.transcript).not.toContain("discarded");
               expect(hold?.releaseHash).toMatch(/^[0-9a-f]{64}$/);
               return Effect.fail(new Error("lost acknowledgement") as never);
             }
@@ -748,6 +769,7 @@ describe("AgentMachines.manage unlink and check", () => {
           yield* move;
           expect((yield* get).waitId).toBeNull();
           expect((yield* get).lastResumedWaitId).toBe(waitId);
+          expect((yield* get).handoffContext).toBeNull();
           expect(commandIds).toEqual([
             `cp-handoff-fence:${waitId}:${shell.updatedAt}`,
             `cp-handoff-create:${waitId}`,

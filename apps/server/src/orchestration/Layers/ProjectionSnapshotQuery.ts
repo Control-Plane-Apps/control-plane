@@ -124,7 +124,10 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   }),
 );
 const ProjectionTurnStartMessageDbRowSchema = ProjectionThreadMessageDbRowSchema.mapFields(
-  Struct.assign({ hasOtherUserMessages: Schema.Number }),
+  Struct.assign({
+    hasOtherUserMessages: Schema.Number,
+    handoffTranscript: Schema.NullOr(Schema.String),
+  }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadPullRequestDbRowSchema = ProjectionThreadPullRequest.mapFields(
@@ -1391,7 +1394,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               LOWER(TRIM(other.text, ${MESSAGE_TRIM_WHITESPACE})) != '/compact'
               OR COALESCE(json_array_length(other.attachments_json), 0) > 0
             )
-        ) AS "hasOtherUserMessages"
+        ) AS "hasOtherUserMessages",
+        (
+          SELECT json_extract(held.payload_json, '$.transcript')
+          FROM projection_thread_activities held
+          WHERE held.thread_id = ${threadId} AND held.kind = 'agent.handoff.held'
+            AND NOT EXISTS (
+              SELECT 1 FROM projection_turns turns
+              JOIN projection_thread_messages previous ON previous.message_id = turns.pending_message_id
+              WHERE turns.thread_id = held.thread_id AND turns.turn_id IS NOT NULL
+                AND previous.message_id != ${messageId} AND substr(previous.text, 1, 1) != '/'
+            )
+          LIMIT 1
+        ) AS "handoffTranscript"
       FROM projection_thread_messages
       WHERE thread_id = ${threadId} AND message_id = ${messageId}
       LIMIT 1
@@ -3411,6 +3426,7 @@ pending_approval_requests AS (
         ...(row.source !== null ? { source: row.source } : {}),
       },
       hasOtherUserMessages: row.hasOtherUserMessages === 1,
+      ...(row.handoffTranscript ? { handoffTranscript: row.handoffTranscript } : {}),
     }));
   });
 

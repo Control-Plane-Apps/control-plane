@@ -9,6 +9,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   CommandId,
+  HANDOFF_TRANSCRIPT_MAX_CHARS,
   ProjectId,
   ThreadId,
   LOCAL_AGENT_MACHINE,
@@ -1457,7 +1458,23 @@ const make = Effect.gen(function* () {
             "Workspace contents changed. Execution is held on both machines.",
           );
         const homeMachine = (yield* environment.getDescriptor).environmentId;
+        const previousHold = source.activities.find(
+          (activity) => activity.kind === "agent.handoff.held",
+        );
+        const previous = (previousHold?.payload as { transcript?: unknown } | undefined)
+          ?.transcript;
+        const transcript = source.messages
+          .filter((message) => message.role === "user" || message.role === "assistant")
+          .reduce(
+            (recent, message) =>
+              [recent, `${message.role}: ${message.text.slice(-HANDOFF_TRANSCRIPT_MAX_CHARS)}`]
+                .filter(Boolean)
+                .join("\n")
+                .slice(-HANDOFF_TRANSCRIPT_MAX_CHARS),
+            typeof previous === "string" ? previous.slice(-HANDOFF_TRANSCRIPT_MAX_CHARS) : "",
+          );
         const hold = {
+          transcript,
           waitId,
           machineId: homeMachine,
           projectId: home.id,
@@ -1494,16 +1511,12 @@ const make = Effect.gen(function* () {
           held?.releaseHash !== hold.releaseHash ||
           held?.machineId !== homeMachine ||
           held?.projectId !== home.id ||
+          held?.transcript !== transcript ||
           landed.settledAt ||
           !same(target, landedProof) ||
           landedProof.root !== target.root
         )
           return yield* moveError("Destination verification failed. The original remains fenced.");
-        const context = source.messages
-          .filter((msg) => msg.role === "user" || msg.role === "assistant")
-          .map((msg) => `${msg.role}: ${msg.text}`)
-          .join("\n")
-          .slice(-24000);
         const committed = Option.getOrNull(
           yield* store
             .update(threadId, (latest) =>
@@ -1520,7 +1533,7 @@ const make = Effect.gen(function* () {
                     peerProjectId: targetProject,
                     handoff: { ...latest.handoff, phase: "committed" },
                     handoffHomeMachine: homeMachine,
-                    handoffContext: `Continued from ${record.machineLabel}. The original thread is archived. Recent conversation:\n${context}`,
+                    handoffContext: null,
                     waitId,
                     workspacePosition: target,
                     workspaceCheckpoint: target,
