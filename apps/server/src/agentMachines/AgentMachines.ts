@@ -383,6 +383,7 @@ const make = Effect.gen(function* () {
         globalSettings.mode === "priority" && override !== undefined
           ? { ...globalSettings, machineOrder: override }
           : globalSettings;
+      const requirements = settings.projectRequirements?.[project.id] ?? [];
       const baseInstanceId = project.baseModel?.instanceId ?? "";
       const homeReadiness =
         settings.mode === "priority"
@@ -407,7 +408,7 @@ const make = Effect.gen(function* () {
         return {
           id: LOCAL_AGENT_MACHINE,
           label: descriptor.label,
-          ineligibleReason: homeReadiness && missingReadiness(homeReadiness, homeReadiness),
+          ineligibleReason: homeReadiness && missingReadiness(homeReadiness, requirements),
           load: yield* localLoad,
         } satisfies PlacementCandidate;
       });
@@ -471,7 +472,7 @@ const make = Effect.gen(function* () {
                   );
                   reason =
                     result._tag === "Success"
-                      ? missingReadiness(result.success, homeReadiness)
+                      ? missingReadiness(result.success, requirements)
                       : "check the connection and update Control Plane on the linked machine to verify Project readiness";
                 }
                 return {

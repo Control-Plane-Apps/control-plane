@@ -41,7 +41,22 @@ export type AgentMachineConfig = typeof AgentMachineConfig.Type;
 
 const MachineOrder = Schema.Array(AgentMachineId).check(Schema.isMinLength(1), Schema.isUnique());
 
+export const AgentIntegration = Schema.Literals([
+  "gh",
+  "sentry",
+  "readReplica",
+  "eas",
+  "vercel",
+  "posthog",
+  "mcp",
+]);
+export type AgentIntegration = typeof AgentIntegration.Type;
+const RequiredIntegrations = Schema.Array(AgentIntegration).check(Schema.isUnique());
+
 export const AgentPlacementSettings = Schema.Struct({
+  projectRequirements: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, RequiredIntegrations),
+  ),
   machineOrder: Schema.optionalKey(MachineOrder),
   projectMachineOrders: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, MachineOrder)),
   mode: AgentPlacementMode.pipe(Schema.withDecodingDefault(Effect.succeed("local" as const))),
@@ -63,6 +78,9 @@ export type AgentPlacementSettings = typeof AgentPlacementSettings.Type;
 
 /** Per-entry `machines`, like `usageLimitSources`: `null` removes an entry. */
 export const AgentPlacementSettingsPatch = Schema.Struct({
+  projectRequirements: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, Schema.NullOr(RequiredIntegrations)),
+  ),
   machineOrder: Schema.optionalKey(MachineOrder),
   projectMachineOrders: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(MachineOrder)),

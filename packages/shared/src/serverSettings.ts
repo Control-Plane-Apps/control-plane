@@ -387,10 +387,19 @@ export function applyServerSettingsPatch(
     ...(agentPlacementPatch !== undefined
       ? {
           agentPlacement: (() => {
-            const { machines, projectMachineOrders, ...rest } = agentPlacementPatch;
+            const { machines, projectMachineOrders, projectRequirements, ...rest } =
+              agentPlacementPatch;
             return {
               ...current.agentPlacement,
               ...rest,
+              ...(projectRequirements === undefined
+                ? {}
+                : {
+                    projectRequirements: mergeSettingsEntries(
+                      current.agentPlacement.projectRequirements ?? {},
+                      projectRequirements,
+                    ),
+                  }),
               ...(projectMachineOrders !== undefined
                 ? {
                     projectMachineOrders: mergeSettingsEntries(

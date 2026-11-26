@@ -46,11 +46,11 @@ it.effect("checks checkout, selected provider, executable and fixed configuratio
       "[mcp_servers.fixture]\ncommand = 'test'",
     );
     const ready = yield* projectReadiness(project, provider);
-    expect(missingReadiness(ready, ready)).toBeNull();
-    expect(missingReadiness({ ...ready, sentry: false, mcp: false }, ready)).toBe(
+    expect(missingReadiness({ ...ready, gh: false }, [])).toBeNull();
+    expect(missingReadiness({ ...ready, sentry: false, mcp: false }, ["sentry", "mcp"])).toBe(
       "configure Sentry credentials, restore MCP configuration",
     );
-    expect(missingReadiness(initial, ready)).toContain(
+    expect(missingReadiness(initial, ["gh"])).toContain(
       "install and sign into the selected provider instance",
     );
   }).pipe(Effect.provide(NodeServices.layer)),

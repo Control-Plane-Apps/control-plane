@@ -10,7 +10,7 @@ import {
   HostProcessHomeDirectory,
   HostProcessPlatform,
 } from "@t3tools/shared/hostProcess";
-import type { AgentProjectReadiness, ServerProvider } from "@t3tools/contracts";
+import type { AgentIntegration, AgentProjectReadiness, ServerProvider } from "@t3tools/contracts";
 
 type ReadinessProject = {
   readonly workspaceRoot: string;
@@ -93,9 +93,7 @@ export const makeProjectReadiness = Effect.gen(function* () {
         provider.availability !== "unavailable" &&
         provider.auth.status === "authenticated",
       sentry: present("SENTRY_AUTH_TOKEN") || (yield* file(path.join(home, ".sentryclirc"))),
-      readReplica:
-        present("DATABASE_URL_READONLY") ||
-        (yield* file(path.join(config, "hometrace/read-replica.env"))),
+      readReplica: present("DATABASE_URL_READONLY", "READ_REPLICA_URL"),
       eas: present("EXPO_TOKEN") || (yield* file(path.join(home, ".expo/state.json"))),
       vercel:
         present("VERCEL_TOKEN") ||
@@ -126,10 +124,13 @@ const fixes = {
   mcp: "restore MCP configuration",
 } satisfies Record<keyof AgentProjectReadiness, string>;
 
-export function missingReadiness(candidate: AgentProjectReadiness, home: AgentProjectReadiness) {
+export function missingReadiness(
+  candidate: AgentProjectReadiness,
+  required: readonly AgentIntegration[],
+) {
   const missing = (Object.keys(fixes) as (keyof typeof fixes)[]).filter(
     (key) =>
-      !candidate[key] && (key === "checkout" || key === "gh" || key === "provider" || home[key]),
+      !candidate[key] && (key === "checkout" || key === "provider" || required.includes(key)),
   );
   return missing.length ? missing.map((key) => fixes[key]).join(", ") : null;
 }

@@ -1,4 +1,5 @@
 import {
+  AgentIntegration,
   LOCAL_AGENT_MACHINE,
   type AgentMachinePreference,
   type AgentMachineStatus,
@@ -105,6 +106,7 @@ function MachinePrioritySettings({
   readonly update: (patch: AgentPlacementSettingsPatch) => void;
 }) {
   const [projectId, setProjectId] = useState("");
+  const required = placement.projectRequirements?.[projectId] ?? [];
   const globalOrder = placement.machineOrder ?? [LOCAL_AGENT_MACHINE];
   const override = placement.projectMachineOrders?.[projectId];
   const order = override ?? globalOrder;
@@ -140,6 +142,39 @@ function MachinePrioritySettings({
           ? "Using the global order. Edit the list to override it for this Project."
           : "New agents use the first ready machine in this list."}
       </p>
+      {projectId && (
+        <fieldset className="flex flex-wrap gap-3">
+          <legend>Required integrations</legend>
+          {AgentIntegration.literals.map((key) => (
+            <label key={key} className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={required.includes(key)}
+                onChange={(event) =>
+                  update({
+                    projectRequirements: {
+                      [projectId]: event.target.checked
+                        ? [...required, key]
+                        : required.filter((value) => value !== key),
+                    },
+                  })
+                }
+              />
+              {
+                {
+                  gh: "GitHub CLI",
+                  sentry: "Sentry",
+                  readReplica: "Read replica",
+                  eas: "EAS",
+                  vercel: "Vercel",
+                  posthog: "PostHog",
+                  mcp: "MCP",
+                }[key]
+              }
+            </label>
+          ))}
+        </fieldset>
+      )}
       <ol className="list-inside list-decimal">
         {order.map((id, index) => (
           <li key={id} className="py-1">
