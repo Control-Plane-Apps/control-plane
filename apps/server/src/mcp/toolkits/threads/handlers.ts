@@ -78,6 +78,7 @@ interface PeerScope {
   readonly sender: OrchestrationThreadShell;
   readonly project: OrchestrationProjectShell;
   readonly coordinatorId: ThreadId;
+  readonly homeOnly?: boolean;
 }
 
 interface HomePeer {
@@ -299,11 +300,20 @@ const make = Effect.gen(function* () {
       return yield* new PeerMessagingUnavailableError({});
     const homes = yield* homePeers(sender);
     const scope = peerScopeOf(sender, project);
-    if (scope === null) {
+    const messages = yield* messageRows
+      .listByThreadId({ threadId: sender.id })
+      .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause })));
+    const first = messages.find((message) => message.role === "user");
+    const placed =
+      first?.source?.kind === "agent" &&
+      first.text.startsWith("You are running on ") &&
+      first.text.includes("This machine has its own copy of the Project folder:");
+    if (homes.length > 0 || placed || scope === null) {
       const coordinator = homes.find((item) => item.peer.role === "coordinator");
-      if (!coordinator) return yield* new PeerMessagingUnavailableError({});
+      if (!coordinator || homes.some((item) => item.machine.id !== coordinator.machine.id))
+        return yield* new PeerMessagingUnavailableError({});
       return {
-        scope: { sender, project, coordinatorId: coordinator.peer.threadId },
+        scope: { sender, project, coordinatorId: coordinator.peer.threadId, homeOnly: true },
         homes,
         environmentId: invocation.environmentId,
       };
@@ -343,6 +353,16 @@ const make = Effect.gen(function* () {
     homeTargets: ReadonlyArray<HomePeer>,
   ) {
     const ref = to.trim();
+    if (scope.homeOnly) {
+      const exact = homeTargets.find(({ peer }) => peer.threadId === ref);
+      if (exact) return exact;
+      const matches = homeTargets.filter(
+        ({ peer }) => peer.title.localeCompare(ref, undefined, { sensitivity: "accent" }) === 0,
+      );
+      if (matches.length === 1) return matches[0]!;
+      if (matches.length > 1) return yield* new PeerAmbiguousError({ to: ref });
+      return yield* new PeerNotFoundError({ to: ref });
+    }
     const local = yield* activeLocalThreads(scope);
     const remotes = (yield* remote.find({ projectId: scope.project.id, ref })).filter(
       (record) => record.homeProjectId === scope.project.id && isOpenRemote(record),
@@ -841,6 +861,11 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const { scope, homes, environmentId } = yield* requirePeerScope();
         const now = DateTime.formatIso(yield* DateTime.now);
+        if (scope.homeOnly)
+          return {
+            self: { threadId: scope.sender.id, title: scope.sender.title, role: "agent" as const },
+            peers: homes.map(({ peer }) => peer),
+          };
         const local = (yield* activeLocalThreads(scope))
           .filter((thread) => thread.id !== scope.sender.id)
           .map((thread): AgentPeer => ({
