@@ -501,6 +501,7 @@ describe("AgentMachines.manage unlink and check", () => {
   for (const scenario of [
     "pre-fence cancel",
     "post-fence recover",
+    "changed destination before activation",
     "retry create and activation",
   ] as const)
     it.effect(`recovers a handoff after ${scenario}`, () => {
@@ -520,6 +521,8 @@ describe("AgentMachines.manage unlink and check", () => {
       const shell = makePeerThread(tid);
       let sourceReachable = true;
       let targetReachable = true;
+      let targetChanged = false;
+      let releaseBlocked = scenario === "changed destination before activation";
       let activated = false;
       let hold:
         | { waitId: string; releaseHash: string; machineId: string; projectId: string }
@@ -555,7 +558,7 @@ describe("AgentMachines.manage unlink and check", () => {
               root: to ? "/target" : "/source",
               branch: "feature",
               commit: "a".repeat(40),
-              digest: "f".repeat(64),
+              digest: (to && targetChanged ? "a" : "f").repeat(64),
             });
           if (url.pathname.endsWith("/workspace")) {
             if (scenario === "pre-fence cancel" && sourceReachable && !to) {
@@ -647,6 +650,7 @@ describe("AgentMachines.manage unlink and check", () => {
             if (cmd.type === "thread.unarchive") {
               if (cmd.handoffRelease?.role === "source") fenced = false;
               else if (!activated) {
+                if (releaseBlocked) return Effect.fail(new Error("unavailable") as never);
                 activated = true;
                 return Effect.fail(new Error("lost activation acknowledgement") as never);
               }
@@ -725,6 +729,21 @@ describe("AgentMachines.manage unlink and check", () => {
           expect((yield* get).machineId).toBe("target");
           expect((yield* Effect.result(recover))._tag).toBe("Failure");
           sourceReachable = false;
+          if (scenario === "changed destination before activation") {
+            targetChanged = true;
+            releaseBlocked = false;
+            const beforeRetry = commandIds.length;
+            expect((yield* Effect.result(move))._tag).toBe("Failure");
+            expect(commandIds).toHaveLength(beforeRetry);
+            expect(activated).toBe(false);
+            expect((yield* get).handoff?.phase).toBe("committed");
+            targetChanged = false;
+            // Delivery of the release succeeds; its response is lost.
+            expect((yield* Effect.result(move))._tag).toBe("Failure");
+            yield* move;
+            expect((yield* get).handoff).toBeNull();
+            return;
+          }
           yield* move;
           yield* move;
           expect((yield* get).waitId).toBeNull();
