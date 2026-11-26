@@ -9,7 +9,7 @@ import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { projectReadiness } from "../agentMachines/projectReadiness.ts";
+import { makeProjectReadiness } from "../agentMachines/projectReadiness.ts";
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
@@ -44,6 +44,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     const orchestrationEngine = yield* OrchestrationEngineService;
     const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
 
+    const projectReadiness = yield* makeProjectReadiness;
     const providers = yield* ProviderRegistry;
     return handlers
       .handle(
@@ -62,7 +63,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           const provider = (yield* providers.getProviders).find(
             (entry) => entry.instanceId === args.payload.instanceId,
           );
-          return yield* Effect.promise(() => projectReadiness(project.value, provider));
+          return yield* projectReadiness(project.value, provider);
         }),
       )
       .handle(

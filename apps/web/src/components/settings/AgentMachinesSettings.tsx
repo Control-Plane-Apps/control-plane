@@ -425,6 +425,7 @@ function AgentMachinesBody({
  * The open section's rows, from props only so it can be rendered against a
  * fixture. `AgentMachinesBody` owns the RPC state.
  */
+const noProjects = [] as const;
 const noLinkBack = () => {};
 const noRelink = () => {};
 const noCreateLink = () => {};
@@ -433,7 +434,7 @@ export function AgentMachinesView({
   environmentLabel,
   localKind,
   localSubtitle,
-  projects = [],
+  projects = noProjects,
   machineKind,
   placement,
   check,

@@ -1,8 +1,13 @@
+import {
+  HostProcessEnvironment,
+  HostProcessHomeDirectory,
+  HostProcessPlatform,
+} from "@t3tools/shared/hostProcess";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProjectId, type OrchestrationProjectShell } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
-import { vi } from "vitest";
+
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -29,22 +34,6 @@ import {
   makeRecord,
   peerProject,
 } from "./testFixtures.ts";
-
-// Machine tests use synthetic readiness. Project readiness's own tests probe a temporary home.
-vi.mock(import("./projectReadiness.ts"), async (original) => ({
-  ...(await original()),
-  projectReadiness: async () => ({
-    checkout: true,
-    gh: true,
-    provider: true,
-    sentry: false,
-    readReplica: false,
-    eas: false,
-    vercel: false,
-    posthog: false,
-    mcp: false,
-  }),
-}));
 
 const JsonString = Schema.fromJsonString(Schema.Unknown);
 const encodeJson = Schema.encodeSync(JsonString);
@@ -200,6 +189,9 @@ interface HarnessInput {
 const harness = (input: HarnessInput = {}) => {
   const peer = input.peer ?? makePeer();
   const layer = AgentMachinesLive.pipe(
+    Layer.provide(Layer.succeed(HostProcessPlatform, "linux")),
+    Layer.provide(Layer.succeed(HostProcessEnvironment, {})),
+    Layer.provide(Layer.succeed(HostProcessHomeDirectory, "/synthetic-placement/home")),
     Layer.provide(Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) })),
     Layer.provideMerge(MemoryRemoteAgentStore),
     Layer.provideMerge(peer.layer),

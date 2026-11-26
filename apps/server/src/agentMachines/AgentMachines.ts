@@ -32,7 +32,7 @@ import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
-import { missingReadiness, projectReadiness } from "./projectReadiness.ts";
+import { missingReadiness, makeProjectReadiness } from "./projectReadiness.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -214,6 +214,7 @@ interface Health {
 }
 
 const make = Effect.gen(function* () {
+  const projectReadiness = yield* makeProjectReadiness;
   const providers = yield* ProviderRegistry;
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
@@ -387,7 +388,7 @@ const make = Effect.gen(function* () {
                 model?.kind === "resolved"
                   ? instances.find((entry) => entry.instanceId === model.modelSelection.instanceId)
                   : undefined;
-              return yield* Effect.promise(() => projectReadiness(project, provider));
+              return yield* projectReadiness(project, provider);
             })
           : null;
       const localCandidate = Effect.gen(function* () {

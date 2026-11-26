@@ -70,6 +70,7 @@ import {
   HistoryVerifyInput,
   ConfirmInput,
   ConfirmResult,
+  opFailed,
   REACH_VERIFIED_OPS,
   AssistantBundle,
   HandoffInput,
@@ -102,16 +103,6 @@ export interface ReachAuth {
 export interface ReachHostShape {
   readonly handle: (request: ReachRequest, auth?: ReachAuth) => Effect.Effect<ReachResponse>;
 }
-
-class ReachOpError extends Schema.TaggedError<ReachOpError>()("ReachOpError", {
-  detail: Schema.String,
-}) {
-  override get message(): string {
-    return this.detail;
-  }
-}
-
-const opFailed = (detail: string) => new ReachOpError({ detail });
 
 const ResultActivityRow = Schema.Struct({
   activityId: Schema.String,
