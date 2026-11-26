@@ -398,7 +398,7 @@ const make = Effect.gen(function* () {
               const model =
                 project.baseModel &&
                 resolveAgentModel({
-                  requested: project.requestedModel,
+                  requested: project.requestedModel ?? project.baseModel.model,
                   base: project.baseModel,
                   providers: instances,
                 });
@@ -467,10 +467,7 @@ const make = Effect.gen(function* () {
                 let reason = ineligibleReason(match, project.title);
                 if (homeReadiness && match.kind === "matched") {
                   const peer = snapshot.projects.find((entry) => entry.id === match.projectId);
-                  const instanceId =
-                    (project.requestedModel === undefined &&
-                      peer?.defaultModelSelection?.instanceId) ||
-                    baseInstanceId;
+                  const instanceId = peer?.defaultModelSelection?.instanceId ?? baseInstanceId;
                   const result = yield* Effect.result(
                     withPeer(id, ({ baseUrl, token }) =>
                       fetchPeerReadiness(
@@ -486,7 +483,15 @@ const make = Effect.gen(function* () {
                   );
                   reason =
                     result._tag === "Success"
-                      ? missingReadiness(result.success, requirements)
+                      ? missingReadiness(
+                          {
+                            ...result.success,
+                            provider:
+                              result.success.provider &&
+                              result.success.modelSelection !== undefined,
+                          },
+                          requirements,
+                        )
                       : "check the connection and update Control Plane on the linked machine to verify Project readiness";
                 }
                 return {
