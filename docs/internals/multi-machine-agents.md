@@ -222,9 +222,9 @@ peer's own reactor never mistakes them for deliveries.
 
 **Client allowlist.** The home's peer client can dispatch only `thread.create`,
 `thread.turn.start`, `thread.turn.interrupt`, `thread.session.stop`, `thread.archive` and
-`thread.settle`. Peer dispatch errors are opaque (every failure is a 500), so any non-2xx or
-timeout is treated as unknown and resolved by reading the thread; retries reuse the same command
-ids, which the peer dedupes.
+`thread.settle`. When the destination confirms a peer refusal with a matching command and thread receipt, the home
+records the reason and removes the message from the queue. An opaque server error or timeout keeps
+the message queued under the original command ID for reconciliation.
 
 **RemoteAgentBridge.** One poll per machine with open records (every 3 seconds, jittered), reading
 the shell snapshot, which carries each thread's `latestTurn`, `session`, pending flags and

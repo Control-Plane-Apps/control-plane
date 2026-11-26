@@ -208,7 +208,7 @@ const make = Effect.gen(function* () {
 
   const onHold = (record: RemoteAgentRecord) =>
     new RemoteAgentError({
-      detail: `Waiting for manual resume on ${record.machineLabel}. Open Settings > Connections > Agent machines to verify the original workspace.`,
+      detail: `Waiting for manual resume on ${record.machineLabel}. Open Settings > Connections > Agent machines > Waiting agents to verify the original workspace.`,
     });
 
   const startRequest = (
