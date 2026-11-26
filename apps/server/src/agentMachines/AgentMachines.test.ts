@@ -39,6 +39,10 @@ import {
 const JsonString = Schema.fromJsonString(Schema.Unknown);
 const encodeJson = Schema.encodeSync(JsonString);
 
+const decodeRemoteAgentRecord = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(RemoteAgentRecord),
+);
+
 const MINI_URL = "http://100.101.102.103:4000";
 const HOME_PROJECT_ID = ProjectId.make("home-project");
 
@@ -770,11 +774,8 @@ describe("AgentMachines.manage unlink and check", () => {
                 yield* storeToken();
                 yield* storeToken("target");
                 const freshStore = yield* RemoteAgentStore;
-                yield* freshStore.put(
-                  Schema.decodeUnknownSync(Schema.fromJsonString(RemoteAgentRecord))(
-                    encodeJson(recovered),
-                  ),
-                );
+                const restored = yield* decodeRemoteAgentRecord(encodeJson(recovered));
+                yield* freshStore.put(restored);
                 const fresh = yield* AgentMachines;
                 const retry = fresh.manage({
                   action: "resume",
