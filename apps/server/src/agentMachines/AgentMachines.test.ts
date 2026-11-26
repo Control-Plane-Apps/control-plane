@@ -213,7 +213,7 @@ const harness = (input: HarnessInput = {}) => {
     ),
     Layer.provideMerge(
       Layer.mock(ProjectionSnapshotQuery)({
-        getProjectShellById: () => Effect.succeed(Option.some(input.homeProject ?? homeProject)),
+        getProjectShellById: () => Effect.succeedSome(input.homeProject ?? homeProject),
         getShellSnapshot: () =>
           Effect.succeed({
             snapshotSequence: 1,

@@ -7,9 +7,10 @@ import {
   ProjectId,
   ThreadId,
   type OrchestrationCommand,
-  type OrchestrationEvent,
+  OrchestrationEvent,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -17,6 +18,7 @@ import { expect, it } from "@effect/vitest";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
+const decodeEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const asCommandId = (value: string): CommandId => CommandId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
@@ -357,10 +359,8 @@ it.effect("a source recovery receipt rejects a delayed fence", () =>
       },
     });
     if (!("type" in release)) throw new Error("Active source needs only a cancellation receipt");
-    readModel = yield* projectEvent(readModel, {
-      ...release,
-      sequence: readModel.snapshotSequence + 1,
-    });
+    const event = yield* decodeEvent({ ...release, sequence: readModel.snapshotSequence + 1 });
+    readModel = yield* projectEvent(readModel, event);
     const err = yield* Effect.flip(
       decideOrchestrationCommand({
         readModel,

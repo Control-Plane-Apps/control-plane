@@ -55,7 +55,7 @@ export const readLocalPeer = (
       thread.archivedAt !== null ||
       thread.settledAt !== null
     ) {
-      return yield* Effect.fail(opFailed("The peer is no longer active in this Project."));
+      return yield* opFailed("The peer is no longer active in this Project.");
     }
     return {
       threadId,
@@ -89,8 +89,7 @@ export const makePlacedAgentPeerHost = Effect.gen(function* () {
     Effect.gen(function* () {
       const input = yield* decodePeerInput(request.input);
       const denied = opFailed("No active placement for this caller on this machine.");
-      if (Option.isNone(agents) || input.threadId !== request.caller.threadId)
-        return yield* Effect.fail(denied);
+      if (Option.isNone(agents) || input.threadId !== request.caller.threadId) return yield* denied;
       const remote = agents.value;
       const caller = Option.getOrUndefined(yield* remote.get(input.threadId));
       if (
@@ -99,11 +98,10 @@ export const makePlacedAgentPeerHost = Effect.gen(function* () {
         caller.peerProjectId !== input.projectId ||
         (caller.state !== "open" && caller.state !== "pending")
       )
-        return yield* Effect.fail(denied);
+        return yield* denied;
       const snapshot = yield* query.getShellSnapshot();
       const project = snapshot.projects.find((p) => p.id === caller.homeProjectId);
-      if (!project?.assistant || project.assistant.archivedAt != null)
-        return yield* Effect.fail(denied);
+      if (!project?.assistant || project.assistant.archivedAt != null) return yield* denied;
       const coordinator = project.assistant.coordinatorThreadId;
       const local = snapshot.threads.filter(
         (t) => t.projectId === project.id && t.archivedAt === null && t.settledAt === null,
@@ -141,7 +139,7 @@ export const makePlacedAgentPeerHost = Effect.gen(function* () {
       const thread = local.find((t) => t.id === id);
       const record = linked.find((t) => t.record.threadId === id)?.record;
       if ((!thread && !record) || id === caller.threadId)
-        return yield* Effect.fail(opFailed("No active peer with this id in the Project."));
+        return yield* opFailed("No active peer with this id in the Project.");
       if (input.action === "read") {
         const limit = input.target.turns ?? 1;
         if (record) {
@@ -203,9 +201,7 @@ export const makePlacedAgentPeerHost = Effect.gen(function* () {
             machine,
           };
         if (budget.kind !== "send")
-          return yield* Effect.fail(
-            opFailed("Peer message budget exhausted. Ask the coordinator."),
-          );
+          return yield* opFailed("Peer message budget exhausted. Ask the coordinator.");
         yield* engine.dispatch({
           type: "thread.message.user.append",
           commandId: CommandId.make(messageId),

@@ -942,12 +942,12 @@ const make = Effect.gen(function* () {
       machineId,
       ({ baseUrl, token }) =>
         fetchPeerWorkspace(baseUrl, token, projectId, threadId).pipe(
-          Effect.flatMap((probe) =>
-            fingerprint && probe.idle
-              ? fetchHandoffWorkspace(baseUrl, token, projectId, threadId).pipe(
-                  Effect.map((workspace) => ({ ...probe, workspace })),
-                )
-              : Effect.succeed(probe),
+          Effect.filterOrElse(
+            (probe) => !fingerprint || !probe.idle,
+            (probe) =>
+              fetchHandoffWorkspace(baseUrl, token, projectId, threadId).pipe(
+                Effect.map((workspace) => ({ ...probe, workspace })),
+              ),
           ),
         ),
 

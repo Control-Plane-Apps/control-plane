@@ -1,6 +1,5 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Git NUL-delimited output must remain byte-exact.
 import * as NodeChildProcess from "node:child_process";
-// @effect-diagnostics-next-line nodeBuiltinImport:off - Hash checkout bytes without retaining them.
 import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - O_NOFOLLOW prevents following a replaced file.
 import * as NodeFS from "node:fs";

@@ -285,14 +285,10 @@ const make = Effect.gen(function* () {
 
   const placementHomeOf = (sender: OrchestrationThreadShell) =>
     Effect.gen(function* () {
-      const markers = yield* snapshots
-        .getHandoffActivities(sender.id)
-        .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause })));
+      const markers = yield* snapshots.getHandoffActivities(sender.id);
       const held = markers.find((marker) => marker.kind === "agent.handoff.held");
       if (held) return held.payload as { machineId: string; projectId: ProjectId };
-      const messages = yield* messageRows
-        .listByThreadId({ threadId: sender.id })
-        .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause })));
+      const messages = yield* messageRows.listByThreadId({ threadId: sender.id });
       const first = messages.find((message) => message.role === "user");
       if (first?.source?.kind !== "agent") return null;
       if (first.source.placementHome) return first.source.placementHome;
@@ -301,7 +297,7 @@ const make = Effect.gen(function* () {
         first.text.includes("This machine has its own copy of the Project folder:")
         ? { machineId: null, projectId: null }
         : null;
-    });
+    }).pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause })));
 
   const requirePeerScope = Effect.fn("ThreadsToolkit.requirePeerScope")(function* () {
     const invocation = yield* McpInvocationContext.McpInvocationContext;
