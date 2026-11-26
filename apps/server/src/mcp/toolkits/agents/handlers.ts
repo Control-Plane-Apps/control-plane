@@ -569,6 +569,7 @@ const make = Effect.gen(function* () {
               machineLabel: target.machineLabel,
               peerProjectId: target.peerProjectId,
               home: {
+                machineId: manager.invocation.environmentId,
                 project: {
                   id: project.id,
                   title: project.title,

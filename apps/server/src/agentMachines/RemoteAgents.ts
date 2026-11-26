@@ -86,7 +86,11 @@ export interface CreateRemoteInput {
   readonly machineId: string;
   readonly machineLabel: string;
   readonly peerProjectId: string;
-  readonly home: { readonly project: HomeProject; readonly label: string };
+  readonly home: {
+    readonly machineId?: string;
+    readonly project: HomeProject;
+    readonly label: string;
+  };
   readonly creator: { readonly id: string; readonly title: string };
   readonly ids: ReturnType<typeof agentCreateIds>;
   readonly threadId: string;
@@ -211,6 +215,7 @@ const make = Effect.gen(function* () {
       readonly text: string;
       readonly replyTo: string;
       readonly sender: { readonly id: string; readonly title: string };
+      readonly placementHome?: { machineId: string; projectId: ProjectId };
       readonly noResult?: true;
       readonly baselineTurnId: string | null;
       readonly createdAt: string;
@@ -220,7 +225,10 @@ const make = Effect.gen(function* () {
       const current = Option.getOrNull(
         yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
       );
-      if (input.origin === "queue" && current?.queuedSends[0]?.messageId !== input.messageId)
+      if (
+        input.origin === "queue" &&
+        (current?.inFlight != null || current?.queuedSends[0]?.messageId !== input.messageId)
+      )
         return;
       if (
         !current ||
@@ -273,6 +281,7 @@ const make = Effect.gen(function* () {
             attachments: [],
             source: {
               kind: "agent",
+              ...(input.placementHome ? { placementHome: input.placementHome } : {}),
               threadId: ThreadId.make(input.sender.id),
               threadTitle: input.sender.title,
             },
@@ -439,6 +448,14 @@ const make = Effect.gen(function* () {
       const preamble = `You are running on ${record.machineLabel} for the Project "${input.home.project.title}", started by ${input.creator.title} on ${input.home.label}. This machine has its own copy of the Project folder: read its AGENTS.md here, and your changes stay on this machine.\n\n`;
       yield* startRequest(record, {
         origin: "create",
+        ...(input.home.machineId
+          ? {
+              placementHome: {
+                machineId: input.home.machineId,
+                projectId: ProjectId.make(record.homeProjectId),
+              },
+            }
+          : {}),
         messageId: input.ids.messageId,
         text: `${preamble}${input.message}`,
         replyTo: input.creator.id,

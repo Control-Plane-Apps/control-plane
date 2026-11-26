@@ -638,6 +638,11 @@ describe("cp_agent_message and cp_agent_peers", () => {
       ]);
       const harness = yield* makeHarness({
         threads: projectThreads,
+        messages: [
+          userMessage(PLAIN, "start", "Initial task", {
+            source: { kind: "agent", placementHome: { machineId: "home", projectId: PROJECT_ID } },
+          }),
+        ],
         projects: [projects[0]!, makeProject(WORKSPACE_ID, { coordinatorThreadId: PLAIN_TARGET })],
         reach,
       });
@@ -648,6 +653,11 @@ describe("cp_agent_message and cp_agent_peers", () => {
         (yield* harness.message({ to: PLAIN_TARGET, message: "Blocked" }, PLAIN).pipe(Effect.flip))
           ._tag,
       ).toBe("PeerNotFoundError");
+      expect(
+        (yield* harness
+          .send({ threadId: PLAIN_TARGET, message: "Blocked" }, PLAIN)
+          .pipe(Effect.flip))._tag,
+      ).toBe("ThreadSendFailedError");
       const result = yield* harness.peers(PLAIN);
       expect(result.peers).toEqual([{ ...coordinator, machine: "Home Mac" }]);
       const sent = yield* harness.message({ to: coordinator.title, message: "Ready" }, PLAIN);

@@ -257,10 +257,10 @@ const make = Effect.gen(function* () {
       schema,
     );
 
-  const homePeers = (sender: OrchestrationThreadShell) =>
+  const homePeers = (sender: OrchestrationThreadShell, homeId?: string | null) =>
     Effect.gen(function* () {
       const groups = yield* Effect.forEach(
-        yield* reach.machines,
+        (yield* reach.machines).filter((machine) => !homeId || machine.id === homeId),
         (machine) =>
           homeCall(
             machine,
@@ -282,6 +282,21 @@ const make = Effect.gen(function* () {
       return groups.flat();
     });
 
+  const placementHomeOf = (sender: OrchestrationThreadShell) =>
+    Effect.gen(function* () {
+      const messages = yield* messageRows
+        .listByThreadId({ threadId: sender.id })
+        .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause })));
+      const first = messages.find((message) => message.role === "user");
+      if (first?.source?.kind !== "agent") return null;
+      if (first.source.placementHome) return first.source.placementHome;
+      // Older remote create prompts predate the structured home identity.
+      return first.text.startsWith("You are running on ") &&
+        first.text.includes("This machine has its own copy of the Project folder:")
+        ? { machineId: null, projectId: null }
+        : null;
+    });
+
   const requirePeerScope = Effect.fn("ThreadsToolkit.requirePeerScope")(function* () {
     const invocation = yield* McpInvocationContext.McpInvocationContext;
     const sender = Option.getOrUndefined(
@@ -298,16 +313,9 @@ const make = Effect.gen(function* () {
     );
     if (!project || project.assistant?.archivedAt != null)
       return yield* new PeerMessagingUnavailableError({});
-    const homes = yield* homePeers(sender);
+    const placed = yield* placementHomeOf(sender);
+    const homes = placed ? yield* homePeers(sender, placed.machineId) : [];
     const scope = peerScopeOf(sender, project);
-    const messages = yield* messageRows
-      .listByThreadId({ threadId: sender.id })
-      .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause })));
-    const first = messages.find((message) => message.role === "user");
-    const placed =
-      first?.source?.kind === "agent" &&
-      first.text.startsWith("You are running on ") &&
-      first.text.includes("This machine has its own copy of the Project folder:");
     if (homes.length > 0 || placed || scope === null) {
       const coordinator = homes.find((item) => item.peer.role === "coordinator");
       if (!coordinator || homes.some((item) => item.machine.id !== coordinator.machine.id))
@@ -725,6 +733,22 @@ const make = Effect.gen(function* () {
           return yield* new ThreadSendFailedError({
             cause: new Error("Sender thread was not found."),
           });
+        }
+        if (yield* placementHomeOf(sender.value)) {
+          const ref = input.threadId ?? input.threadTitle;
+          if (!ref) return yield* new ThreadSendTargetMissingError({});
+          return yield* toSendFailure(
+            Effect.gen(function* () {
+              const { scope, homes } = yield* requirePeerScope();
+              const target = yield* resolvePeer(scope, ref, homes);
+              const result = yield* sendPeer(scope, target, input.message, true);
+              return {
+                threadId: result.threadId,
+                threadTitle: result.title,
+                queued: result.queued,
+              };
+            }),
+          );
         }
         const localTitleMatch =
           input.threadId === undefined && input.threadTitle !== undefined

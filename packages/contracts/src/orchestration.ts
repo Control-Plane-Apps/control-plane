@@ -632,6 +632,9 @@ export const OrchestrationAgentMessageSource = Schema.Struct({
   threadTitle: Schema.optional(TrimmedNonEmptyString),
   /** The thread this request's result goes to. Absent: nothing is sent back. */
   replyTo: Schema.optional(ThreadId),
+  placementHome: Schema.optionalKey(
+    Schema.Struct({ machineId: TrimmedNonEmptyString, projectId: ProjectId }),
+  ),
   /** The Project schedule that sent this prompt; `threadTitle` is its name. */
   scheduleId: Schema.optional(TrimmedNonEmptyString),
 });
@@ -1317,6 +1320,9 @@ const ThreadDeleteCommand = Schema.Struct({
 });
 
 const ThreadArchiveCommand = Schema.Struct({
+  handoff: Schema.optional(
+    Schema.Struct({ waitId: TrimmedNonEmptyString, expectedUpdatedAt: IsoDateTime }),
+  ),
   type: Schema.Literal("thread.archive"),
   commandId: CommandId,
   threadId: ThreadId,
