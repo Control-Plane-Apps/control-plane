@@ -10,6 +10,7 @@
  */
 import {
   CommandId,
+  EventId,
   MessageId,
   ThreadId,
   canManageAgent,
@@ -124,6 +125,39 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
           createdByThreadId: ThreadId.make(record.creatorThreadId),
         }));
     return { project, target: usable ? recipient.id : coordinatorId };
+  });
+
+  const notifyWait = Effect.fn("RemoteAgentBridge.notifyWait")(function* (
+    record: RemoteAgentRecord,
+    waitId: string,
+  ) {
+    if (record.notifiedWaitId === waitId) return;
+    const resolved = yield* resolveRecipient(record, record.creatorThreadId);
+    if (!resolved) return;
+    const createdAt = yield* nowIso;
+    const id = `cp-agent-wait:${waitId}`;
+    yield* engine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(id),
+      threadId: resolved.target,
+      activity: {
+        id: EventId.make(id),
+        tone: "info",
+        kind: "agent.machine.waiting",
+        summary: `${record.title} is waiting for ${record.machineLabel}`,
+        payload: {
+          detail:
+            "Wake or reconnect the machine. Open Settings > Connections > Waiting agents to review its workspace and resume.",
+          agentThreadId: record.threadId,
+        },
+        turnId: null,
+        createdAt,
+      },
+      createdAt,
+    });
+    yield* update(record, (current) =>
+      current.waitId === waitId ? { ...current, notifiedWaitId: waitId } : current,
+    );
   });
 
   const deliver = Effect.fn("RemoteAgentBridge.deliver")(function* (
@@ -258,15 +292,17 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       backoffMs.set(machineId, wait);
       nextPollAt.set(machineId, now + wait);
       for (const record of records) {
+        const waitId = record.waitId ?? `${record.threadId}:${now}`;
         if (record.state === "open" && !record.waitId) {
           yield* update(record, (current) =>
             current.state === "open" && !current.waitId
-              ? { ...current, lastPhase: "stale", waitId: `${record.threadId}:${now}` }
+              ? { ...current, lastPhase: "stale", waitId }
               : current,
           );
         } else {
           yield* setPhase(record, "stale", null);
         }
+        if (record.state === "open") yield* notifyWait(record, waitId);
       }
       return;
     }
@@ -277,6 +313,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       const thread: OrchestrationThreadShell | undefined = snapshot.success.threads.find(
         (candidate) => candidate.id === record.threadId && candidate.archivedAt === null,
       );
+      if (record.waitId) yield* notifyWait(record, record.waitId);
       if (record.stoppingAt) continue;
       const age = now - toMs(record.createdAt);
       if (thread === undefined) {

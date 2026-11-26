@@ -536,6 +536,9 @@ describe("RemoteAgentBridge machine health", () => {
       );
       expect(record.state).toBe("open");
       expect(record.inFlight).not.toBeNull();
+      expect(
+        h.appended.filter((command) => command.type === "thread.activity.append"),
+      ).toHaveLength(1);
       expect(record.lastPhase).toBe("stale");
       expect(h.pushes()).toEqual([]);
     }),
