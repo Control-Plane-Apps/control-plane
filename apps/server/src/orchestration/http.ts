@@ -49,7 +49,6 @@ function withHttpAgentMessageSource(command: OrchestrationCommand): Orchestratio
 
 export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
-  ProviderInstanceId,
   "orchestration",
   Effect.fnUntraced(function* (handlers) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
