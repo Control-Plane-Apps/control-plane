@@ -797,6 +797,19 @@ describe("applyServerSettingsPatch agentPlacement", () => {
     expect(next.agentPlacement.projectMachineOrders).toEqual({ b: ["env-mini"] });
   });
 
+  it("changes integration requirements for one Project without changing its neighbors", () => {
+    const current = applyServerSettingsPatch(linked, {
+      agentPlacement: { projectRequirements: { a: ["gh"], b: ["readReplica", "mcp"] } },
+    });
+    const next = applyServerSettingsPatch(current, {
+      agentPlacement: { projectRequirements: { a: null, c: ["sentry"] } },
+    });
+    expect(next.agentPlacement.projectRequirements).toEqual({
+      b: ["readReplica", "mcp"],
+      c: ["sentry"],
+    });
+  });
+
   it("patches scalar fields without dropping linked machines", () => {
     const next = applyServerSettingsPatch(linked, {
       agentPlacement: {

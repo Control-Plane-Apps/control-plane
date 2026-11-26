@@ -157,11 +157,10 @@ after its override is cleared. The first ready listed machine wins, regardless o
 machines and their reasons appear in the create result. If none qualify, creation fails. Standing
 agents and retries of existing requests retain their existing placement.
 
-Priority mode checks the checkout, GitHub CLI configuration and selected provider status. When the
-home has Sentry, read replica, EAS, Vercel, PostHog or MCP configuration, the destination also needs
-a marker for that service. The readiness endpoint looks up the registered Project by ID, requires
-operate scope and returns only booleans. These checks cannot verify that a service accepts the
-credentials, that MCP servers are equivalent, or that uncommitted work exists on both machines.
+Priority mode requires a checkout and an available provider for the selected model. In Connections,
+select a Project to require GitHub CLI, Sentry, read replica, EAS, Vercel, PostHog or MCP.
+The destination checks local configuration presence and returns the results and resolved model
+selection through an authenticated endpoint. External service access needs separate verification.
 
 **Load** is running agents on the whole machine (`isAgentCountedRunning` over every non-archived
 thread in the peer's shell snapshot) plus this home's placements from the last 2 minutes that the
@@ -185,9 +184,9 @@ The agent runs in the peer's folder and reads that machine's `AGENTS.md` and `CL
 can drift; the first message says which machine it is on and that edits stay there. Not built:
 creating the Project on the peer and copying `AGENTS.md`, pushing a branch, a shared filesystem.
 
-The peer thread starts Local with the peer Project's default model, else the home's selection; an
-explicit `model` passes through. The home cannot list a peer's providers over HTTP, so an
-unavailable model surfaces as a failed remote turn (see results). Because the peer's own
+Before creating a thread, the home asks the destination to resolve the requested model, using the
+peer Project's default selection or the home selection as the base. The destination checks its
+provider inventory and login status, then returns the exact provider instance and model. Because the peer's own
 assistant rules apply, the create sends **no `createdByThreadId` and no `replyTo`** (both are
 rejected on the peer for a thread the peer does not know), and the peer Project's coordinator, if
 any, will see the thread as one of its agents and count it toward the peer's cap. Message ids sent
@@ -256,7 +255,7 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
   Project ids, creator, title, state (`pending`, `open`, `settled`, `lost`), request in flight,
   queued sends, last phase. Create order: look up the registry by the derived thread id first
   (before the local thread check and before placement, so a retry cannot land on another machine),
-  place, write `pending`, dispatch, then `open`. A failed peer create removes the `pending` record.
+  place, write `pending`, dispatch, then `open`. Once dispatch begins, the receipt survives an ambiguous outcome and keeps retries on that machine.
   Records are pruned 7 days after settling.
 
 ## Failure modes
@@ -270,7 +269,7 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
 | 401 or 403 (revoked, unlinked there, or expired while offline) | Machine marked needs relink and ineligible; the bridge holds and pushes nothing; resumes after relink. Settings shows Relink. |
 | Create partly applied                                          | Retry with the same `clientRequestId` finishes it via the registry.                                                           |
 | Peer thread deleted or archived                                | Record `lost`; failed result pushed once.                                                                                     |
-| Model unavailable on the peer                                  | Case (b) or (c) delivers a failed result; the coordinator can retry with `machine: "local"`.                                  |
+| Model unavailable on the peer                                  | Creation reports the model or provider problem before dispatch.                                                               |
 | Peer protocol version differs                                  | Link refused; a later mismatch marks the machine ineligible.                                                                  |
 | Unlink with agents running                                     | Allowed; those records become `lost` and are reported.                                                                        |
 
