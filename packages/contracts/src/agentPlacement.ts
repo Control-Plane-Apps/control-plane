@@ -11,7 +11,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
  * `local` starts every agent on this machine (today's behaviour), `single`
  * sends them all to one machine, `balanced` spreads them by load.
  */
-export const AgentPlacementMode = Schema.Literals(["local", "single", "balanced"]);
+export const AgentPlacementMode = Schema.Literals(["local", "single", "balanced", "priority"]);
 export type AgentPlacementMode = typeof AgentPlacementMode.Type;
 export const DEFAULT_AGENT_PLACEMENT_MODE: AgentPlacementMode = "local";
 
@@ -39,7 +39,11 @@ export const AgentMachineConfig = Schema.Struct({
 });
 export type AgentMachineConfig = typeof AgentMachineConfig.Type;
 
+const MachineOrder = Schema.Array(AgentMachineId).check(Schema.isMinLength(1), Schema.isUnique());
+
 export const AgentPlacementSettings = Schema.Struct({
+  machineOrder: Schema.optionalKey(MachineOrder),
+  projectMachineOrders: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, MachineOrder)),
   mode: AgentPlacementMode.pipe(Schema.withDecodingDefault(Effect.succeed("local" as const))),
   /** For `single`: a machine id, or `local`. Null reads as this machine. */
   singleMachineId: Schema.NullOr(TrimmedNonEmptyString).pipe(
@@ -59,6 +63,10 @@ export type AgentPlacementSettings = typeof AgentPlacementSettings.Type;
 
 /** Per-entry `machines`, like `usageLimitSources`: `null` removes an entry. */
 export const AgentPlacementSettingsPatch = Schema.Struct({
+  machineOrder: Schema.optionalKey(MachineOrder),
+  projectMachineOrders: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, Schema.NullOr(MachineOrder)),
+  ),
   mode: Schema.optionalKey(AgentPlacementMode),
   singleMachineId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   localPreference: Schema.optionalKey(AgentMachinePreference),

@@ -8,6 +8,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { projectReadiness } from "../agentMachines/projectReadiness.ts";
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
 import { cleanupFailedUploadedAttachments, normalizeDispatchCommand } from "./Normalizer.ts";
 import {
@@ -42,7 +44,27 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
     const orchestrationEngine = yield* OrchestrationEngineService;
     const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
 
+    const providers = yield* ProviderRegistry;
     return handlers
+      .handle(
+        "projectReadiness",
+        Effect.fn("environment.orchestration.projectReadiness")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          const project = yield* projectionSnapshotQuery
+            .getProjectShellById(args.params.projectId)
+            .pipe(
+              Effect.catch((cause) =>
+                failEnvironmentInternal("orchestration_snapshot_failed", cause),
+              ),
+            );
+          if (Option.isNone(project)) return yield* failEnvironmentNotFound("project_not_found");
+          const provider = (yield* providers.getProviders).find(
+            (entry) => entry.instanceId === args.payload.instanceId,
+          );
+          return yield* Effect.promise(() => projectReadiness(project.value, provider));
+        }),
+      )
       .handle(
         "snapshot",
         Effect.fn("environment.orchestration.snapshot")(function* (args) {

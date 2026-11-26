@@ -15,11 +15,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { AgentCompletionReactor } from "../orchestration/AgentCompletionReactor.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import {
-  RemoteAgentBridge,
-  makeRemoteAgentBridge,
-  REMOTE_LOST_AFTER_MS,
-} from "./RemoteAgentBridge.ts";
+import { RemoteAgentBridge, makeRemoteAgentBridge } from "./RemoteAgentBridge.ts";
 import { RemoteAgentsLive } from "./RemoteAgents.ts";
 import { RemoteAgentStore, type RemoteAgentRecord } from "./RemoteAgentStore.ts";
 import {
@@ -521,31 +517,26 @@ describe("RemoteAgentBridge machine health", () => {
     }),
   );
 
-  it.effect(
-    "loses the agent and pushes one failed result after the machine is gone for 24 hours",
-    () =>
-      Effect.gen(function* () {
-        const h = harness();
-        const record = yield* h.run(
-          Effect.gen(function* () {
-            const bridge = yield* RemoteAgentBridge;
-            const store = yield* RemoteAgentStore;
-            yield* seed(h, {}, {}, finishedMessages);
-            h.peer.state.reachable = false;
-            yield* bridge.pollOnce;
-            yield* TestClock.adjust(Duration.millis(REMOTE_LOST_AFTER_MS + 120_000));
-            yield* bridge.pollOnce;
-            return Option.getOrThrow(yield* store.get("remote-1"));
-          }),
-        );
-        expect(record.state).toBe("lost");
-        const [push] = h.pushes();
-        // Its own id, so a real result that arrives later is still delivered.
-        expect(push?.commandId).toBe("cp-push:remote-1:cp-agent-message:coordinator:r1:lost");
-        expect(push?.type === "thread.message.user.append" && push.message.text).toContain(
-          "unreachable for 24 hours",
-        );
-      }),
+  it.effect("keeps the original request while its workspace is offline for days", () =>
+    Effect.gen(function* () {
+      const h = harness();
+      const record = yield* h.run(
+        Effect.gen(function* () {
+          const bridge = yield* RemoteAgentBridge;
+          const store = yield* RemoteAgentStore;
+          yield* seed(h, {}, {}, finishedMessages);
+          h.peer.state.reachable = false;
+          yield* bridge.pollOnce;
+          yield* TestClock.adjust(Duration.days(3));
+          yield* bridge.pollOnce;
+          return Option.getOrThrow(yield* store.get("remote-1"));
+        }),
+      );
+      expect(record.state).toBe("open");
+      expect(record.inFlight).not.toBeNull();
+      expect(record.lastPhase).toBe("stale");
+      expect(h.pushes()).toEqual([]);
+    }),
   );
 
   it.effect("loses an agent whose thread is gone from the machine", () =>

@@ -53,6 +53,7 @@ import {
   ScheduleUpdateInput,
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
+import { makePlacedAgentPeerHost } from "./placedAgentPeers.ts";
 import { Reach } from "./Reach.ts";
 import { describeTaskState, pokeTaskAuthority } from "./taskAuthority.ts";
 import { acceptOnce, reachInputHash, wasAccepted, wasSent } from "./reachSent.ts";
@@ -129,6 +130,7 @@ export const make = Effect.gen(function* () {
   const home = yield* AssistantHome;
   const reach = yield* Reach;
   const settings = yield* ServerSettingsService;
+  const placedPeers = yield* makePlacedAgentPeerHost;
   const scheduleCore = yield* makeScheduleCore;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -427,6 +429,8 @@ export const make = Effect.gen(function* () {
 
   const run = (request: ReachRequest): Effect.Effect<unknown, Error> => {
     switch (request.op) {
+      case "agent.peers":
+        return placedPeers(request);
       case "describe":
         return describe;
       case "authority.poke":

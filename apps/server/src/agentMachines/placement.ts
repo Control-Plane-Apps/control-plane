@@ -74,7 +74,12 @@ function describe(candidates: ReadonlyArray<PlacementCandidate>): string {
 export function placeAgent(input: {
   readonly settings: Pick<
     AgentPlacementSettings,
-    "mode" | "singleMachineId" | "localPreference" | "allowLocalFallback" | "machines"
+    | "mode"
+    | "singleMachineId"
+    | "localPreference"
+    | "allowLocalFallback"
+    | "machines"
+    | "machineOrder"
   >;
   readonly requested: string | undefined;
   readonly candidates: ReadonlyArray<PlacementCandidate>;
@@ -97,7 +102,17 @@ export function placeAgent(input: {
         detail: `No machine matches '${requested}'. Available: ${describe(candidates)}.`,
       };
     }
-    if (target.id === LOCAL_AGENT_MACHINE) return placed(target);
+    if (
+      settings.mode === "priority" &&
+      !(settings.machineOrder ?? [LOCAL_AGENT_MACHINE]).includes(target.id)
+    ) {
+      return {
+        kind: "rejected",
+        detail: `${target.label} is outside this Project’s machine order. Update Agent machines in Settings > Connections.`,
+      };
+    }
+    if (target.id === LOCAL_AGENT_MACHINE && target.ineligibleReason === null)
+      return placed(target);
     if (settings.mode === "local") {
       return {
         kind: "rejected",
@@ -118,6 +133,27 @@ export function placeAgent(input: {
       };
     }
     return placed(target);
+  }
+
+  if (settings.mode === "priority") {
+    const skipped: string[] = [];
+    for (const id of settings.machineOrder ?? [LOCAL_AGENT_MACHINE]) {
+      const candidate = candidates.find((entry) => entry.id === id);
+      if (candidate?.ineligibleReason === null) {
+        return placed(
+          candidate,
+          skipped.length === 0
+            ? undefined
+            : `Skipped ${skipped.join(", ")}. Selected ${candidate.label}. Check higher-priority machines in Settings > Connections > Agent machines.`,
+        );
+      }
+      const label = candidate?.label ?? settings.machines[id]?.label ?? id;
+      skipped.push(`${label} (${candidate?.ineligibleReason ?? "unlinked or disabled"})`);
+    }
+    return {
+      kind: "rejected",
+      detail: `No ready machine in the Project’s order: ${skipped.join(", ")}. Check Settings > Connections > Agent machines.`,
+    };
   }
 
   if (settings.mode === "local") return placed(local);

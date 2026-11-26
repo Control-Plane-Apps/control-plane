@@ -1,4 +1,5 @@
 import {
+  LOCAL_AGENT_MACHINE,
   type AgentMachinePreference,
   type AgentMachineStatus,
   type AgentPlacementSettings,
@@ -20,6 +21,7 @@ import {
   useEnvironments,
   usePrimaryEnvironment,
 } from "~/state/environments";
+import { useProjects } from "~/state/entities";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
@@ -90,6 +92,111 @@ export function AgentMachinesSettings() {
   );
 }
 
+function MachinePrioritySettings({
+  placement,
+  projects,
+  update,
+}: {
+  readonly placement: AgentPlacementSettings;
+  readonly projects: ReadonlyArray<{ id: string; title: string }>;
+  readonly update: (patch: AgentPlacementSettingsPatch) => void;
+}) {
+  const [projectId, setProjectId] = useState("");
+  const globalOrder = placement.machineOrder ?? [LOCAL_AGENT_MACHINE];
+  const override = placement.projectMachineOrders?.[projectId];
+  const order = override ?? globalOrder;
+  const options = singleAgentMachineOptions(placement);
+  const label = (id: string) => options.find((machine) => machine.value === id)?.label ?? id;
+  const save = (next: readonly string[]) =>
+    update(projectId ? { projectMachineOrders: { [projectId]: next } } : { machineOrder: next });
+  const move = (index: number, delta: number) => {
+    const next = [...order];
+    next.splice(index + delta, 0, ...next.splice(index, 1));
+    save(next);
+  };
+  const available = options.filter(({ value }) => !order.includes(value));
+  return (
+    <div className="space-y-2 px-3 py-2.5 text-xs sm:px-4">
+      <label className="flex items-center justify-between gap-2">
+        Machine priority
+        <select
+          className="rounded border bg-background p-1"
+          value={projectId}
+          onChange={(event) => setProjectId(event.target.value)}
+        >
+          <option value="">All Projects</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="text-muted-foreground">
+        {projectId && override === undefined
+          ? "Using the global order. Edit the list to override it for this Project."
+          : "New agents use the first ready machine in this list."}
+      </p>
+      <ol className="list-inside list-decimal">
+        {order.map((id, index) => (
+          <li key={id} className="py-1">
+            {label(id)}
+            <span className="float-right flex gap-2">
+              <button
+                disabled={index === 0}
+                aria-label={`Move ${label(id)} up`}
+                onClick={() => move(index, -1)}
+              >
+                Up
+              </button>
+              <button
+                disabled={index === order.length - 1}
+                aria-label={`Move ${label(id)} down`}
+                onClick={() => move(index, 1)}
+              >
+                Down
+              </button>
+              <button
+                disabled={order.length === 1}
+                aria-label={`Remove ${label(id)} from order`}
+                onClick={() => save(order.filter((machine) => machine !== id))}
+              >
+                Remove
+              </button>
+            </span>
+          </li>
+        ))}
+      </ol>
+      {available.length > 0 && (
+        <select
+          className="rounded border bg-background p-1"
+          aria-label="Add machine to priority order"
+          value=""
+          onChange={(event) => save([...order, event.target.value])}
+        >
+          <option value="" disabled>
+            Add machine to order
+          </option>
+          {available.map(({ value, label }) => (
+            <option value={value} key={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+      )}
+      {projectId && override !== undefined && (
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          onClick={() => update({ projectMachineOrders: { [projectId]: null } })}
+        >
+          Use global order
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function AgentMachinesSection({
   environment,
   placement,
@@ -135,6 +242,9 @@ function AgentMachinesBody({
   readonly update: (patch: AgentPlacementSettingsPatch | null) => void;
 }) {
   const environmentId = environment.environmentId;
+  const projects = useProjects().filter(
+    (project) => project.environmentId === environmentId && project.assistant?.archivedAt == null,
+  );
   const agentMachines = useAtomCommand(serverEnvironment.agentMachines, { reportFailure: false });
   const { environments } = useEnvironments();
   const [check, setCheck] = useState<AgentMachinesCheckState>({
@@ -270,6 +380,7 @@ function AgentMachinesBody({
           )
         }
         placement={placement}
+        projects={projects}
         check={check}
         unlinking={unlinking}
         update={update}
@@ -322,6 +433,7 @@ export function AgentMachinesView({
   environmentLabel,
   localKind,
   localSubtitle,
+  projects = [],
   machineKind,
   placement,
   check,
@@ -338,6 +450,7 @@ export function AgentMachinesView({
   readonly environmentLabel: string;
   readonly localKind: EnvironmentMachineKind;
   readonly localSubtitle: ReactNode;
+  readonly projects?: ReadonlyArray<{ id: string; title: string }>;
   readonly machineKind: (machineId: string) => EnvironmentMachineKind;
   readonly placement: AgentPlacementSettings;
   readonly check: AgentMachinesCheckState;
@@ -405,6 +518,9 @@ export function AgentMachinesView({
           </SelectPopup>
         </Select>
       </SettingLine>
+      {placement.mode === "priority" ? (
+        <MachinePrioritySettings placement={placement} projects={projects} update={update} />
+      ) : null}
       {placement.mode === "single" ? (
         <SettingLine label="Machine">
           <Select
@@ -427,17 +543,19 @@ export function AgentMachinesView({
           </Select>
         </SettingLine>
       ) : null}
-      <SettingLine
-        label="Use this machine if no other is available"
-        description="An agent sent to a named machine never falls back."
-      >
-        <Switch
-          aria-label="Use this machine if no other is available"
-          checked={placement.allowLocalFallback}
-          disabled={placement.mode === "local"}
-          onCheckedChange={(allowLocalFallback) => update({ allowLocalFallback })}
-        />
-      </SettingLine>
+      {placement.mode !== "priority" && (
+        <SettingLine
+          label="Use this machine if no other is available"
+          description="An agent sent to a named machine never falls back."
+        >
+          <Switch
+            aria-label="Use this machine if no other is available"
+            checked={placement.allowLocalFallback}
+            disabled={placement.mode === "local"}
+            onCheckedChange={(allowLocalFallback) => update({ allowLocalFallback })}
+          />
+        </SettingLine>
+      )}
       <EnvironmentRow kind={localKind} label={environmentLabel} subtitle={localSubtitle}>
         <PreferenceSelect
           label={environmentLabel}

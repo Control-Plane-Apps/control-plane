@@ -47,8 +47,6 @@ import { RemoteAgentStore, type RemoteAgentRecord } from "./RemoteAgentStore.ts"
 export const BRIDGE_ACTIVE_INTERVAL = Duration.seconds(3);
 export const BRIDGE_IDLE_INTERVAL = Duration.seconds(15);
 const BACKOFF_MAX_MS = 60_000;
-/** A machine unreachable this long loses its agents. */
-export const REMOTE_LOST_AFTER_MS = 24 * 60 * 60 * 1000;
 /** A record whose start never landed is dropped after this. */
 const PENDING_LIMIT_MS = 2 * 60 * 1000;
 
@@ -76,10 +74,9 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
   const nowMs = DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
   const toMs = (iso: string) => DateTime.toEpochMillis(DateTime.makeUnsafe(iso));
 
-  // Per machine: when it may be polled again, and since when it has been down.
+  // Per machine: when it may be polled again.
   const nextPollAt = new Map<string, number>();
   const backoffMs = new Map<string, number>();
-  const downSince = new Map<string, number>();
 
   const update = (
     record: RemoteAgentRecord,
@@ -190,7 +187,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
   ) {
     const request = record.inFlight;
     if (request === null) return;
-    if (!request.suppressed) {
+    if (!request.suppressed && !request.noResult) {
       let outcome = verdict.outcome;
       let text: string | null = null;
       const detail = yield* machines
@@ -229,7 +226,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
   ) {
     const createdAt = yield* nowIso;
     const request = record.inFlight;
-    if (request !== null && !request.suppressed) {
+    if (request !== null && !request.suppressed && !request.noResult) {
       // Its own id: a real result that arrives if the machine returns still lands.
       yield* deliver(record, request, { kind: "failed", lastError: reason }, null, ":lost");
     }
@@ -260,18 +257,12 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       const wait = Math.min((backoffMs.get(machineId) ?? 3_000) * 2, BACKOFF_MAX_MS);
       backoffMs.set(machineId, wait);
       nextPollAt.set(machineId, now + wait);
-      const since = downSince.get(machineId) ?? now;
-      downSince.set(machineId, since);
       for (const record of records) {
         yield* setPhase(record, "stale", null);
-        if (now - since >= REMOTE_LOST_AFTER_MS) {
-          yield* markLost(record, `${record.machineLabel} has been unreachable for 24 hours.`);
-        }
       }
       return;
     }
     backoffMs.delete(machineId);
-    downSince.delete(machineId);
     nextPollAt.delete(machineId);
 
     for (const record of records) {

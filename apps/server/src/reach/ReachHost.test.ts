@@ -18,6 +18,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { RemoteAgents } from "../agentMachines/RemoteAgents.ts";
+import { makeRecord } from "../agentMachines/testFixtures.ts";
+import { AgentReadResult } from "../mcp/toolkits/agents/tools.ts";
+import { AgentMessageResult, AgentPeer } from "../mcp/toolkits/threads/tools.ts";
 import { ServerConfig } from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { agentPushId } from "../orchestration/agentProtocol.ts";
@@ -202,6 +206,65 @@ const run = <A, E, R>(effect: Effect.Effect<A, E, R>, withAssistant = false) =>
   }).pipe(Effect.andThen(seed(withAssistant)), Effect.andThen(effect), Effect.provide(TestLayer));
 
 describe("ReachHost", () => {
+  it.effect(
+    "authorizes a placed agent by machine, thread and Project for peer discovery, history and delivery",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const origin = { threadId: "mini-assistant", projectId: "mini-acme" };
+          const list = Schema.Struct({ peers: Schema.Array(AgentPeer) });
+          const peers = yield* call("agent.peers", { ...origin, action: "list" }, list);
+          expect(peers.ok && peers.value.peers.map((p) => p.threadId)).toEqual([ACME_COORD]);
+          for (const altered of [{ projectId: "other-project" }, { threadId: "another-agent" }]) {
+            expect(
+              (yield* call("agent.peers", { ...origin, ...altered, action: "list" }, list)).ok,
+            ).toBe(false);
+          }
+          expect(
+            (yield* call("agent.peers", { ...origin, action: "list" }, list, {
+              environmentId: "env-linked-peer",
+              label: "Other peer",
+            })).ok,
+          ).toBe(false);
+          const send = (thread: string) =>
+            call(
+              "agent.peers",
+              { ...origin, action: "message", thread, notify: true, message: "Ready for review" },
+              AgentMessageResult,
+            );
+          expect((yield* send(ASSISTANT)).ok).toBe(false);
+          expect((yield* send(ACME_COORD)).ok).toBe(true);
+          const read = (agent: string) =>
+            call("agent.peers", { ...origin, action: "read", target: { agent } }, AgentReadResult);
+          expect((yield* read(ASSISTANT)).ok).toBe(false);
+          const readBack = yield* read(ACME_COORD);
+          expect(readBack.ok && readBack.value.turns[0]?.request).toContain("Ready for review");
+          confirms = false;
+          expect((yield* call("agent.peers", { ...origin, action: "list" }, list)).ok).toBe(false);
+        }).pipe(
+          Effect.provide(
+            Layer.mock(RemoteAgents)({
+              get: (id) =>
+                Effect.succeed(
+                  id === "mini-assistant"
+                    ? Option.some(
+                        makeRecord({
+                          threadId: id,
+                          machineId: "env-mini",
+                          peerProjectId: "mini-acme",
+                          homeProjectId: ACME,
+                        }),
+                      )
+                    : Option.none(),
+                ),
+              list: () => Effect.succeed([]),
+            }),
+          ),
+        ),
+        true,
+      ),
+  );
+
   it.effect("refuses a call from its own environment", () =>
     run(
       Effect.gen(function* () {

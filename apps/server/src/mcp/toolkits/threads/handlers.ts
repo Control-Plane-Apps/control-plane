@@ -17,6 +17,10 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import { readLocalPeer } from "../../../reach/placedAgentPeers.ts";
+import { AgentReadResult } from "../agents/tools.ts";
+import { capAgentReadTurns } from "../agents/agentScope.ts";
 import * as Option from "effect/Option";
 
 import type { AgentPhase } from "../../../agentMachines/agentPhase.ts";
@@ -62,8 +66,8 @@ import {
   ThreadSendTargetMissingError,
   ThreadSendTargetNotFoundError,
   ThreadsToolkit,
-  type AgentMessageResult,
-  type AgentPeer,
+  AgentMessageResult,
+  AgentPeer,
   type AgentPeerRole,
   type ThreadSendInput,
   type ThreadSendResult as ThreadSendResultShape,
@@ -77,6 +81,7 @@ interface PeerScope {
 }
 
 type PeerTarget =
+  | { readonly kind: "home"; readonly machine: ReachMachine; readonly peer: AgentPeer }
   | { readonly kind: "local"; readonly thread: OrchestrationThreadShell }
   | { readonly kind: "remote"; readonly record: RemoteAgentRecord };
 
@@ -231,6 +236,45 @@ const make = Effect.gen(function* () {
     return { sender, project, coordinatorId: assistant.coordinatorThreadId };
   }
 
+  const homeCall = <A, I>(
+    machine: ReachMachine,
+    sender: OrchestrationThreadShell,
+    input: Record<string, unknown>,
+    schema: Schema.Codec<A, I>,
+  ) =>
+    reach.call(
+      machine,
+      "agent.peers",
+      { ...input, threadId: sender.id, projectId: sender.projectId },
+      { threadId: sender.id, threadTitle: sender.title },
+      schema,
+    );
+
+  const homePeers = (sender: OrchestrationThreadShell) =>
+    Effect.gen(function* () {
+      const groups = yield* Effect.forEach(
+        yield* reach.machines,
+        (machine) =>
+          homeCall(
+            machine,
+            sender,
+            { action: "list" },
+            Schema.Struct({ peers: Schema.Array(AgentPeer) }),
+          ).pipe(
+            Effect.map(({ peers }) =>
+              peers.map((peer) => ({
+                kind: "home" as const,
+                machine,
+                peer: { ...peer, machine: peer.machine ?? machine.label },
+              })),
+            ),
+            Effect.orElseSucceed(() => []),
+          ),
+        { concurrency: 2 },
+      );
+      return groups.flat();
+    });
+
   const requirePeerScope = Effect.fn("ThreadsToolkit.requirePeerScope")(function* () {
     const invocation = yield* McpInvocationContext.McpInvocationContext;
     const sender = Option.getOrUndefined(
@@ -238,14 +282,26 @@ const make = Effect.gen(function* () {
         .getThreadShellById(invocation.threadId)
         .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause }))),
     );
-    if (sender === undefined) return yield* new PeerMessagingUnavailableError({});
+    if (sender === undefined || sender.archivedAt !== null || sender.settledAt !== null)
+      return yield* new PeerMessagingUnavailableError({});
     const project = Option.getOrUndefined(
       yield* snapshots
         .getProjectShellById(sender.projectId)
         .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause }))),
     );
     const scope = peerScopeOf(sender, project);
-    if (scope === null) return yield* new PeerMessagingUnavailableError({});
+    if (scope === null) {
+      if (!project || project.assistant?.archivedAt != null)
+        return yield* new PeerMessagingUnavailableError({});
+      const coordinator = (yield* homePeers(sender)).find(
+        (item) => item.peer.role === "coordinator",
+      );
+      if (!coordinator) return yield* new PeerMessagingUnavailableError({});
+      return {
+        scope: { sender, project, coordinatorId: coordinator.peer.threadId },
+        environmentId: invocation.environmentId,
+      };
+    }
     return { scope, environmentId: invocation.environmentId };
   });
 
@@ -263,6 +319,7 @@ const make = Effect.gen(function* () {
       Effect.map((snapshot) =>
         snapshot.threads.filter(
           (thread) =>
+            scope.project.assistant != null &&
             thread.projectId === scope.project.id &&
             thread.archivedAt === null &&
             thread.settledAt === null,
@@ -283,6 +340,13 @@ const make = Effect.gen(function* () {
     const remotes = (yield* remote.find({ projectId: scope.project.id, ref })).filter(
       (record) => record.homeProjectId === scope.project.id && isOpenRemote(record),
     );
+    const homes = (yield* homePeers(scope.sender)).filter(
+      ({ peer }) =>
+        !local.some((t) => t.id === peer.threadId) &&
+        !remotes.some((r) => r.threadId === peer.threadId),
+    );
+    const homeId = homes.find((item) => item.peer.threadId === ref);
+    if (homeId) return homeId;
     const byId = local.find((thread) => thread.id === ref);
     const target: PeerTarget | undefined =
       byId !== undefined
@@ -292,6 +356,9 @@ const make = Effect.gen(function* () {
           : undefined;
     if (target !== undefined) return target;
     const titled = [
+      ...homes.filter(
+        ({ peer }) => peer.title.localeCompare(ref, undefined, { sensitivity: "accent" }) === 0,
+      ),
       ...local
         .filter(
           (thread) => thread.title.localeCompare(ref, undefined, { sensitivity: "accent" }) === 0,
@@ -358,6 +425,17 @@ const make = Effect.gen(function* () {
     notify: boolean,
   ) {
     const { sender, coordinatorId } = scope;
+    if (target.kind === "home") {
+      const result = yield* homeCall(
+        target.machine,
+        sender,
+        { action: "message", thread: target.peer.threadId, message, notify },
+        AgentMessageResult,
+      ).pipe(
+        Effect.mapError((cause) => new ThreadSendFailedError({ cause, detail: cause.detail })),
+      );
+      return { ...result, machine: result.machine ?? target.machine.label };
+    }
     const createdAt = DateTime.formatIso(yield* DateTime.now);
     const toId = target.kind === "local" ? target.thread.id : ThreadId.make(target.record.threadId);
     if (toId === sender.id) return yield* new ThreadSendSelfError({});
@@ -726,6 +804,32 @@ const make = Effect.gen(function* () {
         return yield* sendPeer(scope, target, input.message, input.notifyCoordinator !== false);
       }),
 
+    cp_agent_peer_read: (input) =>
+      Effect.gen(function* () {
+        const { scope } = yield* requirePeerScope();
+        const target = yield* resolvePeer(scope, input.agent);
+        const fail = (cause: unknown) => new ThreadSendFailedError({ cause });
+        const limit = input.turns ?? 1;
+        if (target.kind === "home")
+          return yield* homeCall(
+            target.machine,
+            scope.sender,
+            { action: "read", target: { agent: target.peer.threadId, turns: limit } },
+            AgentReadResult,
+          ).pipe(Effect.mapError(fail));
+        if (target.kind === "local")
+          return yield* readLocalPeer(snapshots, scope.project.id, target.thread.id, limit).pipe(
+            Effect.mapError(fail),
+          );
+        const read = yield* remote.read(target.record, limit).pipe(Effect.mapError(fail));
+        return {
+          threadId: ThreadId.make(target.record.threadId),
+          title: target.record.title,
+          phase: read.phase,
+          turns: capAgentReadTurns(read.turns),
+        };
+      }),
+
     cp_agent_peers: () =>
       Effect.gen(function* () {
         const { scope, environmentId } = yield* requirePeerScope();
@@ -754,7 +858,15 @@ const make = Effect.gen(function* () {
             title: scope.sender.title,
             role: roleOf(scope, scope.sender),
           },
-          peers: [...local, ...onMachines],
+          peers: [
+            ...local,
+            ...onMachines,
+            ...(yield* homePeers(scope.sender))
+              .map((item) => item.peer)
+              .filter(
+                (peer) => ![...local, ...onMachines].some((t) => t.threadId === peer.threadId),
+              ),
+          ],
         };
       }),
   });

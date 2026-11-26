@@ -495,6 +495,7 @@ describe("RemoteAgents.send and startQueued", () => {
       );
       expect(outcome.sent).toEqual({ queued: true });
       expect(peer.commands).toEqual([]);
+      expect(outcome.record.queuedSends[0]?.sender).toEqual(sender);
       expect(outcome.record.queuedSends.map((entry) => entry.text)).toEqual(["Then do this."]);
     }),
   );
@@ -509,6 +510,7 @@ describe("RemoteAgents.send and startQueued", () => {
             {
               messageId: "cp-remote-send:remote-1:q1",
               text: "First.",
+              sender: { id: "peer", title: "Research" },
               replyTo: "coordinator",
               queuedAt: TEST_NOW,
             },
@@ -531,6 +533,10 @@ describe("RemoteAgents.send and startQueued", () => {
           }),
         );
         const start = peer.commands[0];
+        expect(start?.type === "thread.turn.start" && start.message.source).toMatchObject({
+          threadId: "peer",
+          threadTitle: "Research",
+        });
         expect(start?.type === "thread.turn.start" && start.message.text).toBe("First.");
         expect(record.queuedSends.map((entry) => entry.text)).toEqual(["Second."]);
         expect(record.inFlight?.messageId).toBe("cp-remote-send:remote-1:q1");

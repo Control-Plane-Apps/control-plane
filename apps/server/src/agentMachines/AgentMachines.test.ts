@@ -1,6 +1,8 @@
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { ProjectId, type OrchestrationProjectShell } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,6 +29,22 @@ import {
   makeRecord,
   peerProject,
 } from "./testFixtures.ts";
+
+// Machine tests use synthetic readiness. Project readiness's own tests probe a temporary home.
+vi.mock(import("./projectReadiness.ts"), async (original) => ({
+  ...(await original()),
+  projectReadiness: async () => ({
+    checkout: true,
+    gh: true,
+    provider: true,
+    sentry: false,
+    readReplica: false,
+    eas: false,
+    vercel: false,
+    posthog: false,
+    mcp: false,
+  }),
+}));
 
 const JsonString = Schema.fromJsonString(Schema.Unknown);
 const encodeJson = Schema.encodeSync(JsonString);
@@ -182,6 +200,7 @@ interface HarnessInput {
 const harness = (input: HarnessInput = {}) => {
   const peer = input.peer ?? makePeer();
   const layer = AgentMachinesLive.pipe(
+    Layer.provide(Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) })),
     Layer.provideMerge(MemoryRemoteAgentStore),
     Layer.provideMerge(peer.layer),
     Layer.provideMerge(ServerSettings.layerTest(input.placement ?? {})),
@@ -546,7 +565,7 @@ describe("AgentMachines.placementInputs", () => {
         yield* storeToken();
         const inputs = yield* machines.placementInputs(project, { requested: undefined });
         expect(inputs.candidates.find((c) => c.id === "env-mini")?.ineligibleReason).toContain(
-          "no Project named Acme",
+          "no matching Project for Acme",
         );
         expect(inputs.peerProjectIds.size).toBe(0);
       }),
@@ -567,6 +586,56 @@ describe("AgentMachines.placementInputs", () => {
         const inputs = yield* machines.placementInputs(project, { requested: undefined });
         expect(inputs.candidates.find((c) => c.id === "env-mini")?.ineligibleReason).not.toBeNull();
         expect(inputs.candidates[0]?.ineligibleReason).toBeNull();
+      }),
+    );
+  });
+
+  it.effect("keeps an older linked machine ineligible when readiness cannot be verified", () => {
+    const h = harness({
+      placement: {
+        agentPlacement: {
+          ...linkedMini.agentPlacement,
+          mode: "priority",
+          machineOrder: ["env-mini"],
+        },
+      },
+    });
+    return h.run(
+      Effect.gen(function* () {
+        yield* storeToken();
+        const machines = yield* AgentMachines;
+        const inputs = yield* machines.placementInputs(
+          { ...project, baseModel: makePeerThread("synthetic").modelSelection },
+          { requested: undefined },
+        );
+        expect(
+          inputs.candidates.find((entry) => entry.id === "env-mini")?.ineligibleReason,
+        ).toContain("verify Project readiness");
+        expect(
+          h.peer.requests.find((entry) => entry.path.endsWith("/readiness"))?.authorization,
+        ).toBe("Bearer peer-token");
+      }),
+    );
+  });
+
+  it.effect("uses the Project order to select which enabled machines to probe", () => {
+    const h = harness({
+      placement: {
+        agentPlacement: {
+          mode: "priority",
+          machineOrder: ["env-mini", "local"],
+          projectMachineOrders: { [HOME_PROJECT_ID]: ["local"] },
+          machines: linkedMini.agentPlacement.machines,
+        },
+      },
+    });
+    return h.run(
+      Effect.gen(function* () {
+        const machines = yield* AgentMachines;
+        const inputs = yield* machines.placementInputs(project, { requested: undefined });
+        expect(inputs.settings.machineOrder).toEqual(["local"]);
+        expect(inputs.candidates.map((candidate) => candidate.id)).toEqual(["local"]);
+        expect(h.peer.requests).toEqual([]);
       }),
     );
   });

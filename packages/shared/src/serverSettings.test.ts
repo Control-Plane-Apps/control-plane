@@ -782,6 +782,21 @@ describe("applyServerSettingsPatch agentPlacement", () => {
     });
   });
 
+  it("changes and clears individual Project orders while preserving the global order", () => {
+    const current = applyServerSettingsPatch(linked, {
+      agentPlacement: {
+        mode: "priority",
+        machineOrder: ["env-mini", "local"],
+        projectMachineOrders: { a: ["local"], b: ["env-mini"] },
+      },
+    });
+    const next = applyServerSettingsPatch(current, {
+      agentPlacement: { projectMachineOrders: { a: null } },
+    });
+    expect(next.agentPlacement.machineOrder).toEqual(["env-mini", "local"]);
+    expect(next.agentPlacement.projectMachineOrders).toEqual({ b: ["env-mini"] });
+  });
+
   it("patches scalar fields without dropping linked machines", () => {
     const next = applyServerSettingsPatch(linked, {
       agentPlacement: {

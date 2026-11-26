@@ -10,6 +10,7 @@ import {
   LOCAL_AGENT_MACHINE,
   AgentMachinesError,
   type AgentMachineConfig,
+  type ModelSelection,
   type AgentPlacementSettings,
   type AgentMachinesInput,
   type AgentMachinesResult,
@@ -30,6 +31,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { missingReadiness, projectReadiness } from "./projectReadiness.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -39,6 +42,7 @@ import {
   exchangePairingCredential,
   fetchPeerDescriptor,
   fetchPeerShell,
+  fetchPeerReadiness,
   fetchPeerThread,
   PeerError,
   postPeerReach,
@@ -60,7 +64,7 @@ import { type PlacementCandidate } from "./placement.ts";
 import { matchPeerProject, type ProjectMatch } from "./projectMatch.ts";
 import { PLACEMENT_GRACE_MS, machineLoad } from "./remoteAgentState.ts";
 import { RemoteAgentStore } from "./RemoteAgentStore.ts";
-import { isAgentCountedRunning } from "../mcp/toolkits/agents/agentScope.ts";
+import { isAgentCountedRunning, resolveAgentModel } from "../mcp/toolkits/agents/agentScope.ts";
 import { forkParked } from "../serverActivation.ts";
 
 const SNAPSHOT_TTL_MS = 5_000;
@@ -94,6 +98,8 @@ export const agentMachineSecretName = (machineId: string): string =>
   `agent-machine-token-${Buffer.from(machineId, "utf8").toString("base64url")}`;
 
 export interface HomeProject {
+  readonly baseModel?: ModelSelection;
+  readonly requestedModel?: string | undefined;
   readonly id: string;
   readonly title: string;
   readonly workspaceRoot: string;
@@ -208,6 +214,7 @@ interface Health {
 }
 
 const make = Effect.gen(function* () {
+  const providers = yield* ProviderRegistry;
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const environment = yield* ServerEnvironment.ServerEnvironment;
@@ -350,7 +357,7 @@ const make = Effect.gen(function* () {
       case "matched":
         return null;
       case "missing":
-        return `no Project named ${projectTitle} on that machine`;
+        return `no matching Project for ${projectTitle} on that machine`;
       case "ambiguous":
         return `${match.count} Projects match ${projectTitle} on that machine`;
     }
@@ -358,13 +365,37 @@ const make = Effect.gen(function* () {
 
   const placementInputs: AgentMachinesShape["placementInputs"] = (project, options) =>
     Effect.gen(function* () {
-      const settings = yield* placementSettings;
+      const globalSettings = yield* placementSettings;
+      const override = globalSettings.projectMachineOrders?.[project.id];
+      const settings =
+        globalSettings.mode === "priority" && override !== undefined
+          ? { ...globalSettings, machineOrder: override }
+          : globalSettings;
+      const baseInstanceId = project.baseModel?.instanceId ?? "";
+      const homeReadiness =
+        settings.mode === "priority"
+          ? yield* Effect.gen(function* () {
+              const instances = yield* providers.getProviders;
+              const model =
+                project.baseModel &&
+                resolveAgentModel({
+                  requested: project.requestedModel,
+                  base: project.baseModel,
+                  providers: instances,
+                });
+              const provider =
+                model?.kind === "resolved"
+                  ? instances.find((entry) => entry.instanceId === model.modelSelection.instanceId)
+                  : undefined;
+              return yield* Effect.promise(() => projectReadiness(project, provider));
+            })
+          : null;
       const localCandidate = Effect.gen(function* () {
         const descriptor = yield* environment.getDescriptor;
         return {
           id: LOCAL_AGENT_MACHINE,
           label: descriptor.label,
-          ineligibleReason: null,
+          ineligibleReason: homeReadiness && missingReadiness(homeReadiness, homeReadiness),
           load: yield* localLoad,
         } satisfies PlacementCandidate;
       });
@@ -382,36 +413,63 @@ const make = Effect.gen(function* () {
       );
       const now = yield* nowMs;
       const wanted = options.requested?.trim().toLowerCase();
-      const enabled = Object.entries(settings.machines).filter(
-        ([id, config]) =>
-          config.enabled &&
-          (settings.mode === "balanced" ||
-            (options.requested !== undefined
-              ? id.toLowerCase() === wanted || config.label.toLowerCase() === wanted
-              : id === settings.singleMachineId)),
-      );
+      const enabled = Object.entries(settings.machines).filter(([id, config]) => {
+        if (!config.enabled) return false;
+        if (settings.mode === "priority") {
+          return (settings.machineOrder ?? [LOCAL_AGENT_MACHINE]).includes(id);
+        }
+        return (
+          settings.mode === "balanced" ||
+          (wanted !== undefined
+            ? id.toLowerCase() === wanted || config.label.toLowerCase() === wanted
+            : id === settings.singleMachineId)
+        );
+      });
       const peerProjectIds = new Map<string, string>();
       const remote = yield* Effect.forEach(
         enabled,
         ([id, config]) =>
           shell(id).pipe(
-            Effect.map((snapshot): PlacementCandidate => {
-              const match = matchPeerProject(project, snapshot.projects);
-              if (match.kind === "matched") peerProjectIds.set(id, match.projectId);
-              const recent = records.filter(
-                (agent) =>
-                  agent.machineId === id &&
-                  agent.state !== "lost" &&
-                  now - DateTime.toEpochMillis(DateTime.makeUnsafe(agent.createdAt)) <
-                    PLACEMENT_GRACE_MS,
-              );
-              return {
-                id,
-                label: config.label,
-                ineligibleReason: ineligibleReason(match, project.title),
-                load: machineLoad({ snapshot, recentPlacements: recent }),
-              };
-            }),
+            Effect.flatMap((snapshot) =>
+              Effect.gen(function* () {
+                const match = matchPeerProject(
+                  project,
+                  snapshot.projects,
+                  settings.mode === "priority",
+                );
+                if (match.kind === "matched") peerProjectIds.set(id, match.projectId);
+                const recent = records.filter(
+                  (agent) =>
+                    agent.machineId === id &&
+                    agent.state !== "lost" &&
+                    now - DateTime.toEpochMillis(DateTime.makeUnsafe(agent.createdAt)) <
+                      PLACEMENT_GRACE_MS,
+                );
+                let reason = ineligibleReason(match, project.title);
+                if (homeReadiness && match.kind === "matched") {
+                  const peer = snapshot.projects.find((entry) => entry.id === match.projectId);
+                  const instanceId =
+                    (project.requestedModel === undefined &&
+                      peer?.defaultModelSelection?.instanceId) ||
+                    baseInstanceId;
+                  const result = yield* Effect.result(
+                    withPeer(id, ({ baseUrl, token }) =>
+                      fetchPeerReadiness(baseUrl, token, match.projectId, instanceId),
+                    ),
+                  );
+                  reason =
+                    result._tag === "Success"
+                      ? missingReadiness(result.success, homeReadiness)
+                      : "check the connection and update Control Plane on the linked machine to verify Project readiness";
+                }
+                return {
+                  id,
+                  label: config.label,
+                  ineligibleReason: reason,
+                  load: machineLoad({ snapshot, recentPlacements: recent }),
+                };
+              }),
+            ),
             Effect.catch((error) =>
               Effect.succeed<PlacementCandidate>({
                 id,

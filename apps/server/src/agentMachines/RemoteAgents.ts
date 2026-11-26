@@ -197,6 +197,7 @@ const make = Effect.gen(function* () {
       readonly text: string;
       readonly replyTo: string;
       readonly sender: { readonly id: string; readonly title: string };
+      readonly noResult?: true;
       readonly baselineTurnId: string | null;
       readonly createdAt: string;
     },
@@ -227,6 +228,7 @@ const make = Effect.gen(function* () {
       const request: RemoteAgentRequest = {
         messageId: input.messageId,
         replyTo: input.replyTo,
+        ...(input.noResult ? { noResult: true as const } : {}),
         sentAt: input.createdAt,
         baselineTurnId: input.baselineTurnId,
         suppressed: false,
@@ -258,7 +260,8 @@ const make = Effect.gen(function* () {
           decision.kind === "placed"
             ? (inputs.peerProjectIds.get(decision.machineId) ?? null)
             : null,
-        allowLocalFallback: inputs.settings.allowLocalFallback,
+        allowLocalFallback:
+          inputs.settings.mode !== "priority" && inputs.settings.allowLocalFallback,
         localOnly: inputs.localOnly,
       } satisfies PlanResult;
     });
@@ -503,6 +506,8 @@ const make = Effect.gen(function* () {
                 text: input.text,
                 replyTo: input.replyTo ?? input.sender.id,
                 queuedAt: createdAt,
+                sender: input.sender,
+                ...(input.peer && input.replyTo === null ? { noResult: true as const } : {}),
               },
             ],
           }))
@@ -514,6 +519,7 @@ const make = Effect.gen(function* () {
         text: input.text,
         replyTo: input.replyTo ?? input.sender.id,
         sender: input.sender,
+        ...(input.peer && input.replyTo === null ? { noResult: true as const } : {}),
         baselineTurnId: view.latestTurn?.turnId ?? null,
         createdAt,
       });
@@ -536,7 +542,8 @@ const make = Effect.gen(function* () {
         messageId: next.messageId,
         text: next.text,
         replyTo: next.replyTo,
-        sender: { id: next.replyTo, title: "Coordinator" },
+        ...(next.noResult ? { noResult: true as const } : {}),
+        sender: next.sender ?? { id: next.replyTo, title: "Project thread" },
         baselineTurnId: view.latestTurn?.turnId ?? null,
         createdAt,
       });

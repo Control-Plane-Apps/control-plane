@@ -29,6 +29,7 @@ export const RemoteAgentRequest = Schema.Struct({
   messageId: Schema.String,
   /** The home thread the result goes to (the manager that asked). */
   replyTo: Schema.String,
+  noResult: Schema.optionalKey(Schema.Literal(true)),
   sentAt: Schema.String,
   /** The peer thread's latest turn before the send, so its own turn can be told apart. */
   baselineTurnId: Schema.NullOr(Schema.String),
@@ -41,7 +42,9 @@ export const RemoteAgentQueuedSend = Schema.Struct({
   messageId: Schema.String,
   text: Schema.String,
   replyTo: Schema.String,
+  noResult: Schema.optionalKey(Schema.Literal(true)),
   queuedAt: Schema.String,
+  sender: Schema.optionalKey(Schema.Struct({ id: Schema.String, title: Schema.String })),
 });
 export type RemoteAgentQueuedSend = typeof RemoteAgentQueuedSend.Type;
 

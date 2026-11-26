@@ -27,6 +27,7 @@ import {
 import {
   DpopFailureReason,
   AuthSessionId,
+  ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
@@ -191,7 +192,10 @@ export class EnvironmentInternalError extends Schema.TaggedError<EnvironmentInte
   }
 }
 
-export const EnvironmentResourceNotFoundReason = Schema.Literals(["thread_not_found"]);
+export const EnvironmentResourceNotFoundReason = Schema.Literals([
+  "thread_not_found",
+  "project_not_found",
+]);
 export type EnvironmentResourceNotFoundReason = typeof EnvironmentResourceNotFoundReason.Type;
 
 export class EnvironmentResourceNotFoundError extends Schema.TaggedError<EnvironmentResourceNotFoundError>()(
@@ -505,7 +509,29 @@ const EnvironmentOrchestrationThreadSnapshotQuery = {
   beforeCursor: Schema.optional(TrimmedNonEmptyString),
 };
 
+export const AgentProjectReadiness = Schema.Struct({
+  checkout: Schema.Boolean,
+  gh: Schema.Boolean,
+  provider: Schema.Boolean,
+  sentry: Schema.Boolean,
+  readReplica: Schema.Boolean,
+  eas: Schema.Boolean,
+  vercel: Schema.Boolean,
+  posthog: Schema.Boolean,
+  mcp: Schema.Boolean,
+});
+export type AgentProjectReadiness = typeof AgentProjectReadiness.Type;
+
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
+  .add(
+    HttpApiEndpoint.get("projectReadiness", "/api/orchestration/projects/:projectId/readiness", {
+      headers: OptionalBearerHeaders,
+      params: { projectId: ProjectId },
+      payload: { instanceId: TrimmedNonEmptyString },
+      success: AgentProjectReadiness,
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.get("snapshot", "/api/orchestration/snapshot", {
       headers: OptionalBearerHeaders,

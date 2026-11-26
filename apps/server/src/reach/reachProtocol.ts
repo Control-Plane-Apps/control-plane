@@ -23,6 +23,7 @@ export type ReachCaller = typeof ReachCaller.Type;
 export const ReachOp = Schema.Literals([
   "describe",
   "confirm",
+  "agent.peers",
   "overview",
   "ask",
   "results",
@@ -243,6 +244,7 @@ export const ConfirmResult = Schema.Struct({ sent: Schema.Boolean });
  * reached over the callee's own pinned link, confirms it sent the request.
  */
 export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
+  "agent.peers",
   "ask",
   "status.set",
   "status.reply",

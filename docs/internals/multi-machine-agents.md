@@ -192,10 +192,13 @@ peer's own reactor never mistakes them for deliveries.
 - `cp_agent_read`, `cp_agent_stop`, `cp_thread_send` resolve a threadId or exact title across
   local and remote agents the caller manages; their parameters do not change.
 - `cp_agent_message` (and `cp_thread_send` from an agent that does not manage the target) reaches
-  any open remote agent in the home Project as a peer message. The remote agent cannot call back
-  into the home, so the send is a request with `replyTo` the sender, and its id carries a `peer:`
-  segment so the bridge returns the result to that sender instead of falling back to the
-  coordinator.
+  any open remote agent in the home Project as a peer message. A send from the home to a
+  placed agent retains its result delivery for compatibility.
+- Placed agents can discover, read and message their home coordinator and its active peers through
+  a reciprocal machine link. The home confirms the request over its pinned return link and binds
+  its caller's machine, thread and execution Project to an open placement record. The home resolves
+  targets in the recorded home Project. The peer route exposes no management operations.
+  `cp_agent_peer_read` returns the same bounded request/result history as the manager's reader.
 - **Ownership** of a remote agent comes from the registry, as a managed-agent shape
   `{ id, projectId: home Project, pinnedAt: null, createdByThreadId: registry creator }` fed to the
   existing `canManageAgent`, because `lineage.creatorOf` reads the local event log.
@@ -248,7 +251,7 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Peer offline at create                                         | Ineligible; fall back or fail per setting. No record left.                                                                    |
 | Peer offline mid-run                                           | Agent keeps running there; phase `stale`; polling backs off; results arrive on return.                                        |
-| Peer gone 24 hours                                             | Record `lost`; one failed result pushed under its own id, so a real result that arrives later is still delivered.             |
+| Peer gone 24 hours                                             | Keep the original request and queued sends. The agent list reports the workspace is waiting for its machine.                  |
 | Home restarts                                                  | Registry and push receipts recompute what is owed.                                                                            |
 | 401 or 403 (revoked, unlinked there, or expired while offline) | Machine marked needs relink and ineligible; the bridge holds and pushes nothing; resumes after relink. Settings shows Relink. |
 | Create partly applied                                          | Retry with the same `clientRequestId` finishes it via the registry.                                                           |

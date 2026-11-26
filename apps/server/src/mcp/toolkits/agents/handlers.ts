@@ -514,12 +514,16 @@ const make = Effect.gen(function* () {
             }
             return { kind: "local", note: undefined } as const;
           }
+          const baseModel =
+            project.defaultModelSelection ?? (yield* resolveCoordinator(manager)).modelSelection;
           const plan = yield* remote
             .plan({
               project: {
                 id: project.id,
                 title: project.title,
                 workspaceRoot: project.workspaceRoot,
+                baseModel,
+                requestedModel: input.model,
                 repositoryIdentity: project.repositoryIdentity,
               },
               requested: named,
@@ -538,6 +542,7 @@ const make = Effect.gen(function* () {
           }
           return {
             kind: "remote",
+            note: plan.decision.note,
             machineId: plan.decision.machineId,
             machineLabel: plan.decision.label,
             peerProjectId: plan.peerProjectId,
@@ -619,6 +624,9 @@ const make = Effect.gen(function* () {
           );
         }
         return yield* createRemote(routed).pipe(
+          Effect.map((result) =>
+            routed.note === undefined ? result : { ...result, placement: routed.note },
+          ),
           Effect.catchTag("RemoteAgentError", (error) =>
             error.stage === "create" && routed.fallbackAllowed
               ? createLocal(
@@ -667,6 +675,11 @@ const make = Effect.gen(function* () {
             settled: record.state === "settled" || record.state === "lost",
             lastActivityAt: record.lastActivityAt ?? record.createdAt,
             machine: record.machineLabel,
+            ...(phase === "stale"
+              ? {
+                  notice: `Waiting for ${record.machineLabel}. Wake or reconnect it to continue in the original workspace. Before starting a replacement manually, verify the original agent has stopped and its workspace changes are available.`,
+                }
+              : {}),
           }));
         return { agents: [...local, ...onMachines] };
       }),

@@ -287,3 +287,32 @@ describe("placeAgent with an explicit machine", () => {
     });
   });
 });
+
+describe("priority order", () => {
+  const ordered = { mode: "priority", machineOrder: ["mini", "studio"] } as const;
+  it("uses the first ready machine regardless of load", () => {
+    expect(place(ordered, [local(), studio(), mini(20)])).toEqual({
+      kind: "placed",
+      machineId: "mini",
+      label: "Mac Mini",
+    });
+  });
+  it("explains the unavailable higher priority machine", () => {
+    expect(place(ordered, [local(), mini(0, "missing checkout"), studio()])).toMatchObject({
+      kind: "placed",
+      machineId: "studio",
+      note: expect.stringContaining("Mac Mini (missing checkout)"),
+    });
+  });
+  it("rejects unavailable or out-of-order machines including local", () => {
+    expect(place(ordered, [local()])).toMatchObject({ kind: "rejected" });
+    expect(place(ordered, [local(), mini()], "local")).toMatchObject({ kind: "rejected" });
+    expect(
+      place(
+        { mode: "priority", machineOrder: ["local"] },
+        [{ ...local(), ineligibleReason: "missing checkout" }],
+        "local",
+      ),
+    ).toMatchObject({ kind: "rejected" });
+  });
+});

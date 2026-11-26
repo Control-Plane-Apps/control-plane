@@ -312,6 +312,7 @@ export const AgentListInput = Schema.Struct({
 export type AgentListInput = typeof AgentListInput.Type;
 
 export const AgentListEntry = Schema.Struct({
+  notice: Schema.optionalKey(Schema.String),
   threadId: ThreadId,
   title: TrimmedNonEmptyString,
   standing: Schema.Boolean,

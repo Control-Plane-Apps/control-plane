@@ -13,6 +13,7 @@ import {
   AuthOrchestrationReadScope,
   AuthTokenExchangeGrantType,
   EnvironmentHttpApi,
+  ProjectId,
   type ClientOrchestrationCommand,
   type ExecutionEnvironmentDescriptor,
   type OrchestrationShellSnapshot,
@@ -221,6 +222,23 @@ export const exchangePairingCredential = (input: {
         token: result.access_token,
         expiresInSeconds: result.expires_in,
       };
+    }),
+  );
+
+export const fetchPeerReadiness = (
+  baseUrl: string,
+  token: string,
+  projectId: string,
+  instanceId: string,
+) =>
+  call(
+    Effect.gen(function* () {
+      const client = yield* makeClient(baseUrl);
+      return yield* client.orchestration.projectReadiness({
+        headers: bearer(token),
+        params: { projectId: ProjectId.make(projectId) },
+        payload: { instanceId },
+      });
     }),
   );
 
