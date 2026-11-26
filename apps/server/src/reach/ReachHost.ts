@@ -53,6 +53,7 @@ import {
   ScheduleUpdateInput,
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
+import { makePlacedAgentPeerHost } from "./placedAgentPeers.ts";
 import { Reach } from "./Reach.ts";
 import { describeTaskState, pokeTaskAuthority } from "./taskAuthority.ts";
 import { acceptOnce, reachInputHash, wasAccepted, wasSent } from "./reachSent.ts";
@@ -69,6 +70,7 @@ import {
   HistoryVerifyInput,
   ConfirmInput,
   ConfirmResult,
+  opFailed,
   REACH_VERIFIED_OPS,
   AssistantBundle,
   HandoffInput,
@@ -102,16 +104,6 @@ export interface ReachHostShape {
   readonly handle: (request: ReachRequest, auth?: ReachAuth) => Effect.Effect<ReachResponse>;
 }
 
-class ReachOpError extends Schema.TaggedError<ReachOpError>()("ReachOpError", {
-  detail: Schema.String,
-}) {
-  override get message(): string {
-    return this.detail;
-  }
-}
-
-const opFailed = (detail: string) => new ReachOpError({ detail });
-
 const ResultActivityRow = Schema.Struct({
   activityId: Schema.String,
   payload: Schema.fromJsonString(Schema.Struct({ text: Schema.String })),
@@ -129,6 +121,7 @@ export const make = Effect.gen(function* () {
   const home = yield* AssistantHome;
   const reach = yield* Reach;
   const settings = yield* ServerSettingsService;
+  const placedPeers = yield* makePlacedAgentPeerHost;
   const scheduleCore = yield* makeScheduleCore;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -427,6 +420,8 @@ export const make = Effect.gen(function* () {
 
   const run = (request: ReachRequest): Effect.Effect<unknown, Error> => {
     switch (request.op) {
+      case "agent.peers":
+        return placedPeers(request);
       case "describe":
         return describe;
       case "authority.poke":

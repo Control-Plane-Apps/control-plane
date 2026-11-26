@@ -52,6 +52,11 @@ describe("matchPeerProject by repository", () => {
     ).toEqual({ kind: "ambiguous", count: 2 });
   });
 
+  it("requires the registered repository identity for priority placement when the home has one", () => {
+    const peers = [project("peer", "Control Plane", "/srv/control-plane", withRepo("different"))];
+    expect(matchPeerProject(home, peers, true)).toEqual({ kind: "missing" });
+  });
+
   it("falls back to title and folder when no peer shares the repository", () => {
     const peers = [project("peer", "Control Plane", "/Volumes/work/control-plane")];
     expect(matchPeerProject(home, peers)).toEqual({ kind: "matched", projectId: "peer" });

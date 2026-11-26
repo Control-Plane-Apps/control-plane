@@ -76,7 +76,15 @@ export interface ProjectionThreadDetailQuery {
 /**
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
+export interface HandoffReadScope {
+  readonly projectId: ProjectId;
+  readonly waitId: string;
+}
+
 export interface ProjectionSnapshotQueryShape {
+  readonly getHandoffActivities: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
   /** Read the latest request or resolution without loading the thread history. */
   readonly getUserInputActivity: (input: {
     readonly threadId: ThreadId;
@@ -233,6 +241,7 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly getThreadShellById: (
     threadId: ThreadId,
+    handoff?: HandoffReadScope,
   ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, ProjectionRepositoryError>;
 
   /** Read the active thread and session facts used to ingest provider events. */
@@ -256,6 +265,7 @@ export interface ProjectionSnapshotQueryShape {
     Option.Option<{
       readonly message: OrchestrationMessage;
       readonly hasOtherUserMessages: boolean;
+      readonly handoffTranscript?: string;
     }>,
     ProjectionRepositoryError
   >;
@@ -287,6 +297,7 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailSnapshot: (
     threadId: ThreadId,
     window?: OrchestrationThreadDetailWindow,
+    handoff?: HandoffReadScope,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, ProjectionRepositoryError>;
 }
 

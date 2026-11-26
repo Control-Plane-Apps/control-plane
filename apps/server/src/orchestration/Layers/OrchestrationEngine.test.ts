@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -130,6 +131,124 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("replaces an abandoned held destination across restart and activates exactly once", async () => {
+    const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "handoff-held-"));
+    const db = NodePath.join(dir, "state.sqlite");
+    let system = await createOrchestrationSystem(db);
+    const projectId = ProjectId.make("project");
+    const threadId = ThreadId.make("held");
+    const dispatch = (command: OrchestrationCommand) => system.run(system.engine.dispatch(command));
+    try {
+      await dispatch({
+        type: "project.create",
+        commandId: CommandId.make("project"),
+        projectId,
+        title: "Project",
+        workspaceRoot: dir,
+        createdAt: now(),
+      });
+      const create = {
+        type: "thread.create" as const,
+        commandId: CommandId.make("held"),
+        threadId,
+        projectId,
+        title: "Held",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        branch: null,
+        worktreePath: null,
+        createdAt: now(),
+        handoffHold: {
+          waitId: "wait",
+          machineId: "home",
+          projectId,
+          replacementHash: NodeCrypto.createHash("sha256").update("replace-key").digest("hex"),
+          releaseHash: NodeCrypto.createHash("sha256").update("release-key").digest("hex"),
+        },
+      };
+      const initial = await dispatch(create);
+      await system.dispose();
+      system = await createOrchestrationSystem(db);
+      expect(await dispatch(create)).toEqual(initial);
+      const start = {
+        type: "thread.turn.start" as const,
+        threadId,
+        commandId: CommandId.make("early"),
+        message: {
+          messageId: MessageId.make("work"),
+          role: "user" as const,
+          text: "Work",
+          attachments: [],
+        },
+        runtimeMode: create.runtimeMode,
+        interactionMode: create.interactionMode,
+        createdAt: now(),
+      };
+      await expect(dispatch(start)).rejects.toThrow(/read-only/);
+      await expect(
+        dispatch({
+          type: "thread.unarchive",
+          commandId: CommandId.make("early-unarchive"),
+          threadId,
+        }),
+      ).rejects.toThrow(/read-only/);
+      const activate = {
+        type: "thread.unarchive" as const,
+        commandId: CommandId.make("activate"),
+        threadId,
+        handoffRelease: { role: "destination" as const, waitId: "wait", key: "release-key" },
+      };
+      const replacement = {
+        ...create,
+        commandId: CommandId.make("second-held"),
+        replaceHolds: [{ waitId: "wait", key: "replace-key" }],
+        handoffHold: {
+          ...create.handoffHold,
+          waitId: "second",
+          releaseHash: NodeCrypto.createHash("sha256").update("second-key").digest("hex"),
+        },
+      };
+      await expect(
+        dispatch({
+          ...replacement,
+          commandId: CommandId.make("bad-proof"),
+          replaceHolds: [{ waitId: "wait", key: "wrong" }],
+        }),
+      ).rejects.toThrow(/read-only/);
+      await expect(
+        dispatch({
+          ...replacement,
+          commandId: CommandId.make("wrong-home"),
+          handoffHold: { ...replacement.handoffHold, machineId: "other" },
+        }),
+      ).rejects.toThrow(/read-only/);
+      const held = await dispatch(replacement);
+      await system.dispose();
+      system = await createOrchestrationSystem(db);
+      expect(await dispatch(create)).toEqual(initial);
+      expect(await dispatch(replacement)).toEqual(held);
+      await expect(dispatch(activate)).rejects.toThrow(/read-only/);
+      await expect(dispatch({ ...start, commandId: CommandId.make("still-held") })).rejects.toThrow(
+        /read-only/,
+      );
+      const release = {
+        ...activate,
+        commandId: CommandId.make("second-activate"),
+        handoffRelease: { ...activate.handoffRelease, waitId: "second", key: "second-key" },
+      };
+      const receipt = await dispatch(release);
+      expect(await dispatch(release)).toEqual(receipt);
+      const work = { ...start, commandId: CommandId.make("after-release") };
+      expect(await dispatch(work)).toEqual(await dispatch(work));
+      expect(
+        Option.getOrThrow(await system.readThread(threadId)).messages.map((m) => m.id),
+      ).toEqual([start.message.messageId]);
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(dir, { recursive: true, force: true });
+    }
+  });
   it.each(["running", "stopped"] as const)(
     "sends async answers with a %s session and rejects old duplicate replies",
     async (status) => {
@@ -419,6 +538,7 @@ describe("OrchestrationEngine", () => {
     const layer = OrchestrationEngineLive.pipe(
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getHandoffActivities: () => Effect.die("unused"),
           getUserInputActivity: () => Effect.die("unused"),
           listActivitiesByKind: () => Effect.die("unused"),
           getCommandReadModel: () => Effect.succeed(commandReadModel),

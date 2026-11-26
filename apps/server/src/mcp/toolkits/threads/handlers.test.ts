@@ -1,4 +1,5 @@
 import {
+  EventId,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -20,6 +21,8 @@ import { TestClock } from "effect/testing";
 
 import { RemoteAgents, type RemoteAgentsShape } from "../../../agentMachines/RemoteAgents.ts";
 import { localOnlyRemoteAgents, makeRecord } from "../../../agentMachines/testFixtures.ts";
+import { makeScriptedReach } from "../../../reach/testReach.ts";
+import { AgentReadResult } from "../agents/tools.ts";
 import { AgentLineage } from "../../../orchestration/agentLineage.ts";
 import {
   OrchestrationEngineService,
@@ -57,6 +60,7 @@ const PLAIN_TARGET = ThreadId.make("plain-other-task");
 
 const isThreadSendResult = Schema.is(ThreadSendResult);
 const isAgentMessageResult = Schema.is(AgentMessageResult);
+const isAgentReadResult = Schema.is(AgentReadResult);
 const isAgentPeersResult = Schema.is(AgentPeersResult);
 
 const testCrypto = Crypto.make({
@@ -159,8 +163,10 @@ const creators = new Map([
 
 const makeHarness = Effect.fn("makeThreadsToolkitHarness")(function* (
   options: {
+    readonly heldThread?: ThreadId;
     readonly threads?: ReadonlyArray<OrchestrationThreadShell>;
     readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
+    readonly reach?: ReturnType<typeof makeScriptedReach>;
     /** requestedAt of a sent message no turn has adopted yet, per thread. */
     readonly pendingStarts?: ReadonlyMap<ThreadId, string>;
     /** Overrides for the linked-machine agents service; by default there are none. */
@@ -201,7 +207,24 @@ const makeHarness = Effect.fn("makeThreadsToolkitHarness")(function* (
       ]),
     );
   const dependencies = Layer.mergeAll(
+    options.reach?.layer ?? Layer.empty,
     Layer.mock(ProjectionSnapshotQuery)({
+      getHandoffActivities: (id) =>
+        Effect.succeed(
+          id === options.heldThread
+            ? [
+                {
+                  id: EventId.make("hold"),
+                  kind: "agent.handoff.held",
+                  tone: "info" as const,
+                  turnId: null,
+                  createdAt: NOW,
+                  summary: "Held",
+                  payload: { machineId: "home", projectId: PROJECT_ID },
+                },
+              ]
+            : [],
+        ),
       getThreadShellById: (threadId) => Effect.succeed(Option.fromNullishOr(byId.get(threadId))),
       getProjectShellById: (projectId) =>
         Effect.succeed(Option.fromNullishOr(projectById.get(projectId))),
@@ -279,6 +302,14 @@ const makeHarness = Effect.fn("makeThreadsToolkitHarness")(function* (
             ? Effect.succeed(result)
             : Effect.fail(result as { readonly _tag: string });
         }),
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocationFor(from)),
+        Effect.provide(dependencies),
+      ),
+    readPeer: (agent: string, from: ThreadId) =>
+      toolkit.handle("cp_agent_peer_read", { agent }).pipe(
+        Stream.unwrap,
+        Stream.runCollect,
+        Effect.map((chunk) => chunk.at(-1)!.result),
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocationFor(from)),
         Effect.provide(dependencies),
       ),
@@ -587,6 +618,83 @@ describe("cp_thread_send to an agent on a linked machine", () => {
 });
 
 describe("cp_agent_message and cp_agent_peers", () => {
+  for (const moved of [false, true])
+    it.effect(`a placed agent uses its home for peer operations (handoff: ${moved})`, () =>
+      Effect.gen(function* () {
+        const coordinator = {
+          threadId: "home-coord",
+          title: "Home coordinator",
+          role: "coordinator",
+          phase: "idle",
+          machine: null,
+        };
+        const reach = makeScriptedReach([
+          {
+            id: "home",
+            label: "Home Mac",
+            online: true,
+            answer: (op, raw) => {
+              expect(op).toBe("agent.peers");
+              const value = raw as {
+                action: string;
+                threadId: string;
+                projectId: string;
+                target?: { agent: string };
+                thread?: string;
+              };
+              expect(value.threadId).toBe(PLAIN);
+              expect(value.projectId).toBe(WORKSPACE_ID);
+              if (value.action === "list") return { peers: [coordinator] };
+              if (value.action === "read") {
+                expect(value.target?.agent).toBe(coordinator.threadId);
+                return { ...coordinator, turns: [] };
+              }
+              expect(value.action).toBe("message");
+              expect(value.thread).toBe(coordinator.threadId);
+              return { ...coordinator, duplicate: false, queued: true, coordinatorNotified: false };
+            },
+          },
+        ]);
+        const harness = yield* makeHarness({
+          threads: projectThreads,
+          ...(moved ? { heldThread: PLAIN } : {}),
+          messages: moved
+            ? [userMessage(PLAIN, "direct", "First direct user message")]
+            : [
+                userMessage(PLAIN, "start", "Initial task", {
+                  source: {
+                    kind: "agent",
+                    placementHome: { machineId: "home", projectId: PROJECT_ID },
+                  },
+                }),
+              ],
+          projects: [
+            projects[0]!,
+            makeProject(WORKSPACE_ID, { coordinatorThreadId: PLAIN_TARGET }),
+          ],
+          reach,
+        });
+        expect((yield* harness.readPeer(PLAIN_TARGET, PLAIN).pipe(Effect.flip))._tag).toBe(
+          "PeerNotFoundError",
+        );
+        expect(
+          (yield* harness
+            .message({ to: PLAIN_TARGET, message: "Blocked" }, PLAIN)
+            .pipe(Effect.flip))._tag,
+        ).toBe("PeerNotFoundError");
+        expect(
+          (yield* harness
+            .send({ threadId: PLAIN_TARGET, message: "Blocked" }, PLAIN)
+            .pipe(Effect.flip))._tag,
+        ).toBe("ThreadSendFailedError");
+        const result = yield* harness.peers(PLAIN);
+        expect(result.peers).toEqual([{ ...coordinator, machine: "Home Mac" }]);
+        const sent = yield* harness.message({ to: coordinator.title, message: "Ready" }, PLAIN);
+        expect(sent.machine).toBe("Home Mac");
+        expect(isAgentReadResult(yield* harness.readPeer(coordinator.threadId, PLAIN))).toBe(true);
+        expect(yield* Ref.get(harness.commands)).toEqual([]);
+      }),
+    );
   const peerIdPrefix = (to: ThreadId, from: ThreadId) => `cp-send:${to}:peer:${from}:`;
 
   const commandsOfType = <T extends OrchestrationCommand["type"]>(

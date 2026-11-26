@@ -11,6 +11,16 @@ import { NonNegativeInt } from "@t3tools/contracts";
 
 export { REACH_ROUTE_PATH } from "../agentMachines/AgentMachineClient.ts";
 
+class ReachOpError extends Schema.TaggedError<ReachOpError>()("ReachOpError", {
+  detail: Schema.String,
+}) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
+export const opFailed = (detail: string) => new ReachOpError({ detail });
+
 /** Who on the calling server makes the call. A claim made by a holder of an operate token. */
 export const ReachCaller = Schema.Struct({
   environmentId: Schema.String,
@@ -23,6 +33,7 @@ export type ReachCaller = typeof ReachCaller.Type;
 export const ReachOp = Schema.Literals([
   "describe",
   "confirm",
+  "agent.peers",
   "overview",
   "ask",
   "results",
@@ -243,6 +254,7 @@ export const ConfirmResult = Schema.Struct({ sent: Schema.Boolean });
  * reached over the callee's own pinned link, confirms it sent the request.
  */
 export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
+  "agent.peers",
   "ask",
   "status.set",
   "status.reply",

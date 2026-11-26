@@ -1,13 +1,16 @@
+import * as NodeCrypto from "node:crypto";
 import {
+  MessageId,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
   ProjectId,
   ThreadId,
   type OrchestrationCommand,
-  type OrchestrationEvent,
+  OrchestrationEvent,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -15,6 +18,7 @@ import { expect, it } from "@effect/vitest";
 import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
+const decodeEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const asCommandId = (value: string): CommandId => CommandId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
@@ -215,3 +219,159 @@ it.layer(NodeServices.layer)("decider deletion flows", (it) => {
     }),
   );
 });
+
+it.effect(
+  "archives a handoff atomically and refuses a later start or unarchive on the original",
+  () =>
+    Effect.gen(function* () {
+      let readModel = yield* seedReadModel;
+      const thread = readModel.threads[0]!;
+      const command = {
+        type: "thread.archive" as const,
+        commandId: asCommandId("fence"),
+        threadId: thread.id,
+        handoff: { waitId: "wait", expectedUpdatedAt: thread.updatedAt },
+      };
+      const result = yield* decideOrchestrationCommand({ readModel, command });
+      if (!Array.isArray(result)) throw new Error("Expected companion fence event.");
+      for (const event of result)
+        readModel = yield* projectEvent(readModel, {
+          ...event,
+          sequence: readModel.snapshotSequence + 1,
+        });
+      for (const type of ["thread.delete", "thread.unarchive"] as const) {
+        const error = yield* decideOrchestrationCommand({
+          readModel,
+          command: { type, threadId: thread.id, commandId: asCommandId(type) },
+        }).pipe(Effect.flip);
+        expect(error.message).toContain("read-only");
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "creates the destination held and enforces its release after compact snapshot recovery",
+  () =>
+    Effect.gen(function* () {
+      let readModel = yield* seedReadModel;
+      const thread = readModel.threads[0]!;
+      const id = asThreadId("destination");
+      const key = "test-activation-key";
+      const hold = {
+        waitId: "wait",
+        machineId: "home",
+        projectId: thread.projectId,
+        releaseHash: NodeCrypto.createHash("sha256").update(key).digest("hex"),
+      };
+      const events = yield* decideOrchestrationCommand({
+        readModel,
+        command: {
+          type: "thread.create",
+          commandId: asCommandId("create-held"),
+          threadId: id,
+          projectId: thread.projectId,
+          title: "Moved",
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          branch: null,
+          worktreePath: null,
+          createdAt: thread.createdAt,
+          handoffHold: hold,
+        },
+      });
+      if (!Array.isArray(events))
+        throw new Error("Expected one atomic create with companion events");
+      for (const event of events)
+        readModel = yield* projectEvent(readModel, {
+          ...event,
+          sequence: readModel.snapshotSequence + 1,
+        });
+      const destination = readModel.threads.find((t) => t.id === id)!;
+      expect(destination.archivedAt).toBeTruthy();
+      const handoffActivities = destination.activities;
+      expect(handoffActivities[0]?.payload).toEqual(hold);
+      readModel = {
+        ...readModel,
+        threads: readModel.threads.map((t) => ({ ...t, activities: [] })),
+      };
+      const start = {
+        type: "thread.turn.start" as const,
+        commandId: asCommandId("direct"),
+        threadId: id,
+        message: {
+          messageId: MessageId.make("direct"),
+          role: "user" as const,
+          text: "Run",
+          attachments: [],
+        },
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+        createdAt: thread.createdAt,
+      };
+      const unarchive = {
+        type: "thread.unarchive" as const,
+        commandId: asCommandId("activate"),
+        threadId: id,
+      };
+      for (const command of [
+        start,
+        unarchive,
+        { ...unarchive, handoffRelease: { role: "source" as const, waitId: "wait", key } },
+        {
+          ...unarchive,
+          handoffRelease: { role: "destination" as const, waitId: "wait", key: "wrong" },
+        },
+      ]) {
+        expect(
+          (yield* Effect.flip(
+            decideOrchestrationCommand({ readModel, command, handoffActivities }),
+          )).message,
+        ).toContain("read-only");
+      }
+      const activated = yield* decideOrchestrationCommand({
+        readModel,
+        handoffActivities,
+        command: { ...unarchive, handoffRelease: { role: "destination", waitId: "wait", key } },
+      });
+      if (!Array.isArray(activated)) throw new Error("Expected release receipt");
+      for (const event of activated)
+        readModel = yield* projectEvent(readModel, {
+          ...event,
+          sequence: readModel.snapshotSequence + 1,
+        });
+      expect(readModel.threads.find((t) => t.id === id)?.archivedAt).toBeNull();
+      yield* decideOrchestrationCommand({ readModel, command: start });
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("a source recovery receipt rejects a delayed fence", () =>
+  Effect.gen(function* () {
+    let readModel = yield* seedReadModel;
+    const thread = readModel.threads[0]!;
+    const release = yield* decideOrchestrationCommand({
+      readModel,
+      command: {
+        type: "thread.unarchive",
+        commandId: asCommandId("recover"),
+        threadId: thread.id,
+        handoffRelease: { role: "source", waitId: "cancelled", key: "recover" },
+      },
+    });
+    if (!("type" in release)) throw new Error("Active source needs only a cancellation receipt");
+    const event = yield* decodeEvent({ ...release, sequence: readModel.snapshotSequence + 1 });
+    readModel = yield* projectEvent(readModel, event);
+    const err = yield* Effect.flip(
+      decideOrchestrationCommand({
+        readModel,
+        command: {
+          type: "thread.archive",
+          commandId: asCommandId("delayed"),
+          threadId: thread.id,
+          handoff: { waitId: "cancelled", expectedUpdatedAt: thread.updatedAt },
+        },
+      }),
+    );
+    expect(err.message).toContain("cancelled");
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

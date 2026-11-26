@@ -824,7 +824,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Agent machines",
     to: "/settings/connections",
     searchTerms: [
-      "coordinator agents other machine remote link pair mac mini balance placement fallback where new agents run",
+      "coordinator agents other machine remote link pair pairing address balance placement fallback where new agents run",
     ],
   },
   {

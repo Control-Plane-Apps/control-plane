@@ -10,7 +10,9 @@
  */
 import {
   CommandId,
+  EventId,
   MessageId,
+  ProjectId,
   ThreadId,
   canManageAgent,
   type OrchestrationProjectShell,
@@ -34,6 +36,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { forkParked } from "../serverActivation.ts";
 import { AgentMachines } from "./AgentMachines.ts";
 import { PeerError } from "./AgentMachineClient.ts";
+import { withRemoteAgentLock } from "./remoteAgentLock.ts";
 import { isRemotePeerRequestId, RemoteAgents } from "./RemoteAgents.ts";
 import {
   judgeRequest,
@@ -47,8 +50,6 @@ import { RemoteAgentStore, type RemoteAgentRecord } from "./RemoteAgentStore.ts"
 export const BRIDGE_ACTIVE_INTERVAL = Duration.seconds(3);
 export const BRIDGE_IDLE_INTERVAL = Duration.seconds(15);
 const BACKOFF_MAX_MS = 60_000;
-/** A machine unreachable this long loses its agents. */
-export const REMOTE_LOST_AFTER_MS = 24 * 60 * 60 * 1000;
 /** A record whose start never landed is dropped after this. */
 const PENDING_LIMIT_MS = 2 * 60 * 1000;
 
@@ -76,15 +77,19 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
   const nowMs = DateTime.now.pipe(Effect.map(DateTime.toEpochMillis));
   const toMs = (iso: string) => DateTime.toEpochMillis(DateTime.makeUnsafe(iso));
 
-  // Per machine: when it may be polled again, and since when it has been down.
+  // Per machine: when it may be polled again.
   const nextPollAt = new Map<string, number>();
   const backoffMs = new Map<string, number>();
-  const downSince = new Map<string, number>();
 
   const update = (
     record: RemoteAgentRecord,
     change: (current: RemoteAgentRecord) => RemoteAgentRecord,
-  ) => store.update(record.threadId, change).pipe(Effect.ignore);
+  ) =>
+    store
+      .update(record.threadId, (current) =>
+        current.machineId === record.machineId && !current.handoff ? change(current) : current,
+      )
+      .pipe(Effect.ignore);
 
   const setPhase = (
     record: RemoteAgentRecord,
@@ -127,6 +132,53 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
           createdByThreadId: ThreadId.make(record.creatorThreadId),
         }));
     return { project, target: usable ? recipient.id : coordinatorId };
+  });
+
+  const notifyWait = Effect.fn("RemoteAgentBridge.notifyWait")(function* (
+    record: RemoteAgentRecord,
+    waitId: string,
+  ) {
+    const project = Option.getOrNull(
+      yield* snapshots.getProjectShellById(ProjectId.make(record.homeProjectId)),
+    );
+    if (!project?.assistant || project.assistant.archivedAt != null) return;
+    const coordinatorId = project.assistant.coordinatorThreadId;
+    // Older records store only the wait ID. A coordinator-created agent already sent
+    // this receipt to the right thread. Standing creators previously received it themselves.
+    if (
+      record.notifiedWaitId === waitId &&
+      (record.notifiedCoordinatorId ?? record.creatorThreadId) === coordinatorId
+    )
+      return;
+    const createdAt = yield* nowIso;
+    const id =
+      record.creatorThreadId === coordinatorId
+        ? `cp-agent-wait:${waitId}`
+        : `cp-agent-wait-coordinator:${encodeURIComponent(coordinatorId)}:${waitId}`;
+    yield* engine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(id),
+      threadId: coordinatorId,
+      activity: {
+        id: EventId.make(id),
+        tone: "info",
+        kind: "agent.machine.waiting",
+        summary: `${record.title} is waiting for ${record.machineLabel}`,
+        payload: {
+          detail:
+            "Wake or reconnect the machine. Open Settings > Connections > Agent machines > Waiting agents to review its workspace and resume.",
+          agentThreadId: record.threadId,
+        },
+        turnId: null,
+        createdAt,
+      },
+      createdAt,
+    });
+    yield* update(record, (current) =>
+      current.waitId === waitId
+        ? { ...current, notifiedWaitId: waitId, notifiedCoordinatorId: coordinatorId }
+        : current,
+    );
   });
 
   const deliver = Effect.fn("RemoteAgentBridge.deliver")(function* (
@@ -190,7 +242,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
   ) {
     const request = record.inFlight;
     if (request === null) return;
-    if (!request.suppressed) {
+    if (!request.suppressed && !request.noResult) {
       let outcome = verdict.outcome;
       let text: string | null = null;
       const detail = yield* machines
@@ -229,7 +281,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
   ) {
     const createdAt = yield* nowIso;
     const request = record.inFlight;
-    if (request !== null && !request.suppressed) {
+    if (request !== null && !request.suppressed && !request.noResult) {
       // Its own id: a real result that arrives if the machine returns still lands.
       yield* deliver(record, request, { kind: "failed", lastError: reason }, null, ":lost");
     }
@@ -260,24 +312,31 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       const wait = Math.min((backoffMs.get(machineId) ?? 3_000) * 2, BACKOFF_MAX_MS);
       backoffMs.set(machineId, wait);
       nextPollAt.set(machineId, now + wait);
-      const since = downSince.get(machineId) ?? now;
-      downSince.set(machineId, since);
       for (const record of records) {
-        yield* setPhase(record, "stale", null);
-        if (now - since >= REMOTE_LOST_AFTER_MS) {
-          yield* markLost(record, `${record.machineLabel} has been unreachable for 24 hours.`);
+        const waitId = record.waitId ?? `${record.threadId}:${now}`;
+        if (record.state === "open" && !record.waitId) {
+          yield* update(record, (current) =>
+            current.state === "open" && !current.waitId
+              ? { ...current, lastPhase: "stale", waitId }
+              : current,
+          );
+        } else {
+          yield* setPhase(record, "stale", null);
         }
+        if (record.state === "open") yield* notifyWait(record, waitId);
       }
       return;
     }
     backoffMs.delete(machineId);
-    downSince.delete(machineId);
     nextPollAt.delete(machineId);
 
     for (const record of records) {
       const thread: OrchestrationThreadShell | undefined = snapshot.success.threads.find(
         (candidate) => candidate.id === record.threadId && candidate.archivedAt === null,
       );
+      if (record.waitId) yield* notifyWait(record, record.waitId);
+      if (record.stoppingAt || record.handoff) continue;
+      if (record.createAttempted !== false && record.state === "pending") continue;
       const age = now - toMs(record.createdAt);
       if (thread === undefined) {
         if (record.state === "pending" && age < PENDING_LIMIT_MS) continue;
@@ -288,6 +347,25 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
         // The start never landed and no retry finished it.
         if (age >= PENDING_LIMIT_MS) yield* markLost(record, "The agent never started.");
         continue;
+      }
+      if (
+        record.state === "open" &&
+        !record.waitId &&
+        record.workspaceObservedFor !== thread.updatedAt
+      ) {
+        const checkpoint = yield* machines
+          .workspace(record.machineId, record.peerProjectId, record.threadId)
+          .pipe(Effect.orElseSucceed(() => null));
+        yield* update(record, (current) =>
+          current.waitId
+            ? current
+            : {
+                ...current,
+                workspacePosition: checkpoint?.position ?? checkpoint?.workspace ?? null,
+                workspaceCheckpoint: checkpoint?.workspace ?? null,
+                workspaceObservedFor: thread.updatedAt,
+              },
+        );
       }
       const request = record.inFlight;
       const verdict =
@@ -308,10 +386,21 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
         thread.updatedAt,
       );
       if (verdict?.kind === "done") {
-        yield* finishRequest(record, thread, verdict);
+        yield* withRemoteAgentLock(
+          record.threadId,
+          Effect.gen(function* () {
+            const current = Option.getOrNull(yield* store.get(record.threadId));
+            if (
+              current &&
+              !current.stoppingAt &&
+              current.inFlight?.messageId === request?.messageId
+            )
+              yield* finishRequest(current, thread, verdict);
+          }),
+        );
         continue;
       }
-      if (request === null && record.queuedSends.length > 0) {
+      if (!record.waitId && request === null && record.queuedSends.length > 0) {
         yield* remote.startQueued(record, thread).pipe(
           Effect.catch((error) =>
             Effect.logWarning("queued send to a remote agent was not started", {

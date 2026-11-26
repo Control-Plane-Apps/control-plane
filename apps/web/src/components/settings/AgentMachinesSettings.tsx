@@ -1,6 +1,10 @@
 import {
+  AgentIntegration,
+  LOCAL_AGENT_MACHINE,
   type AgentMachinePreference,
   type AgentMachineStatus,
+  type AgentMachinesResult,
+  type WaitingAgent,
   type AgentPlacementSettings,
   type AgentPlacementSettingsPatch,
   type EnvironmentId,
@@ -12,7 +16,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { MoreVertical, PlusIcon } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { useUpdateEnvironmentSettings } from "~/hooks/useSettings";
 import {
@@ -20,6 +24,7 @@ import {
   useEnvironments,
   usePrimaryEnvironment,
 } from "~/state/environments";
+import { useProjects } from "~/state/entities";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
@@ -63,6 +68,7 @@ import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { loadPreferences } from "./LoadBalancingSettings";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
 import { searchableSetting } from "./settingsSearch";
+import { WaitingAgentsSettings } from "./WaitingAgentsSettings";
 
 /**
  * Folded section under Load balancing: where coordinators on the environment
@@ -87,6 +93,145 @@ export function AgentMachinesSettings() {
       environment={environment}
       placement={environment.serverConfig.settings.agentPlacement}
     />
+  );
+}
+
+function MachinePrioritySettings({
+  placement,
+  projects,
+  update,
+}: {
+  readonly placement: AgentPlacementSettings;
+  readonly projects: ReadonlyArray<{ id: string; title: string }>;
+  readonly update: (patch: AgentPlacementSettingsPatch) => void;
+}) {
+  const [projectId, setProjectId] = useState("");
+  const required = placement.projectRequirements?.[projectId] ?? [];
+  const globalOrder = placement.machineOrder ?? [LOCAL_AGENT_MACHINE];
+  const override = placement.projectMachineOrders?.[projectId];
+  const order = override ?? globalOrder;
+  const options = singleAgentMachineOptions(placement);
+  const label = (id: string) => options.find((machine) => machine.value === id)?.label ?? id;
+  const save = (next: readonly string[]) =>
+    update(projectId ? { projectMachineOrders: { [projectId]: next } } : { machineOrder: next });
+  const move = (index: number, delta: number) => {
+    const next = [...order];
+    next.splice(index + delta, 0, ...next.splice(index, 1));
+    save(next);
+  };
+  const available = options.filter(({ value }) => !order.includes(value));
+  return (
+    <div className="space-y-2 px-3 py-2.5 text-xs sm:px-4">
+      <label className="flex items-center justify-between gap-2">
+        Machine priority
+        <select
+          className="rounded border bg-background p-1"
+          value={projectId}
+          onChange={(event) => setProjectId(event.target.value)}
+        >
+          <option value="">All Projects</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>
+              {project.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="text-muted-foreground">
+        {projectId && override === undefined
+          ? "Using the global order. Edit the list to override it for this Project."
+          : "New agents use the first ready machine in this list."}
+      </p>
+      {projectId && (
+        <fieldset className="flex flex-wrap gap-3">
+          <legend>Required integrations</legend>
+          {AgentIntegration.literals.map((key) => (
+            <label key={key} className="flex items-center gap-1">
+              <input
+                type="checkbox"
+                checked={required.includes(key)}
+                onChange={(event) =>
+                  update({
+                    projectRequirements: {
+                      [projectId]: event.target.checked
+                        ? [...required, key]
+                        : required.filter((value) => value !== key),
+                    },
+                  })
+                }
+              />
+              {
+                {
+                  gh: "GitHub CLI",
+                  sentry: "Sentry",
+                  readReplica: "Read replica",
+                  eas: "EAS",
+                  vercel: "Vercel",
+                  posthog: "PostHog",
+                  mcp: "MCP",
+                }[key]
+              }
+            </label>
+          ))}
+        </fieldset>
+      )}
+      <ol className="list-inside list-decimal">
+        {order.map((id, index) => (
+          <li key={id} className="py-1">
+            {label(id)}
+            <span className="float-right flex gap-2">
+              <button
+                disabled={index === 0}
+                aria-label={`Move ${label(id)} up`}
+                onClick={() => move(index, -1)}
+              >
+                Up
+              </button>
+              <button
+                disabled={index === order.length - 1}
+                aria-label={`Move ${label(id)} down`}
+                onClick={() => move(index, 1)}
+              >
+                Down
+              </button>
+              <button
+                disabled={order.length === 1}
+                aria-label={`Remove ${label(id)} from order`}
+                onClick={() => save(order.filter((machine) => machine !== id))}
+              >
+                Remove
+              </button>
+            </span>
+          </li>
+        ))}
+      </ol>
+      {available.length > 0 && (
+        <select
+          className="rounded border bg-background p-1"
+          aria-label="Add machine to priority order"
+          value=""
+          onChange={(event) => save([...order, event.target.value])}
+        >
+          <option value="" disabled>
+            Add machine to order
+          </option>
+          {available.map(({ value, label }) => (
+            <option value={value} key={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+      )}
+      {projectId && override !== undefined && (
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          onClick={() => update({ projectMachineOrders: { [projectId]: null } })}
+        >
+          Use global order
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -117,11 +262,17 @@ export interface AgentMachinesCheckState {
   readonly statuses: ReadonlyMap<string, AgentMachineStatus>;
   /** When `statuses` arrived; token expiry is measured from here, not from render. */
   readonly checkedAt: number;
+  readonly waitingAgents?: AgentMachinesResult["waitingAgents"];
   readonly error?: string;
 }
 
-function checkedState(statuses: ReadonlyArray<AgentMachineStatus>): AgentMachinesCheckState {
-  return { phase: "done", statuses: agentMachineStatusesById(statuses), checkedAt: Date.now() };
+function checkedState(result: AgentMachinesResult): AgentMachinesCheckState {
+  return {
+    phase: "done",
+    statuses: agentMachineStatusesById(result.machines),
+    waitingAgents: result.waitingAgents,
+    checkedAt: Date.now(),
+  };
 }
 
 /** Mounts when the fold opens, so each opening checks the machines once. */
@@ -135,6 +286,9 @@ function AgentMachinesBody({
   readonly update: (patch: AgentPlacementSettingsPatch | null) => void;
 }) {
   const environmentId = environment.environmentId;
+  const projects = useProjects().filter(
+    (project) => project.environmentId === environmentId && project.assistant?.archivedAt == null,
+  );
   const agentMachines = useAtomCommand(serverEnvironment.agentMachines, { reportFailure: false });
   const { environments } = useEnvironments();
   const [check, setCheck] = useState<AgentMachinesCheckState>({
@@ -142,6 +296,8 @@ function AgentMachinesBody({
     statuses: new Map(),
     checkedAt: 0,
   });
+  const latestCheck = useRef(0);
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [unlinking, setUnlinking] = useState<string | null>(null);
   const [linkBackTarget, setLinkBackTarget] = useState<{ id: string; label: string } | null>(null);
@@ -155,9 +311,11 @@ function AgentMachinesBody({
 
   // Starts in "checking"; the caller sets that phase for a manual refresh.
   const requestCheck = useCallback(async () => {
+    const generation = ++latestCheck.current;
     const result = await agentMachines({ environmentId, input: { action: "check" } });
+    if (generation !== latestCheck.current) return;
     if (result._tag === "Success") {
-      setCheck(checkedState(result.value.machines));
+      setCheck(checkedState(result.value));
     } else if (!isAtomCommandInterrupted(result)) {
       setCheck((previous) => ({
         ...previous,
@@ -175,6 +333,64 @@ function AgentMachinesBody({
   const refresh = () => {
     setCheck((previous) => ({ ...previous, phase: "checking" }));
     void requestCheck();
+  };
+
+  const afterLinkChange = (result: AgentMachinesResult) => {
+    if (result.waitingAgents !== undefined) {
+      latestCheck.current++;
+      setCheck(checkedState(result));
+      return;
+    }
+    // Link operations return machine statuses. Refresh eligibility against the changed links.
+    setCheck((previous) => ({
+      ...checkedState(result),
+      phase: "checking",
+      waitingAgents: previous.waitingAgents,
+    }));
+    void requestCheck();
+  };
+
+  const resume = async (agent: WaitingAgent, destinationId?: string) => {
+    if (
+      resumingId !== null ||
+      check.phase !== "done" ||
+      !(destinationId
+        ? agent.destinations?.some((item) => item.id === destinationId)
+        : agent.canResume)
+    )
+      return;
+    setResumingId(agent.threadId);
+    try {
+      const result = await agentMachines({
+        environmentId,
+        input: {
+          action: agent.recoveryLabel && !destinationId ? "recoverHandoff" : "resume",
+          threadId: agent.threadId,
+          waitId: agent.waitId,
+          ...(destinationId ? { destinationId } : {}),
+        },
+      });
+      if (result._tag === "Success") {
+        latestCheck.current++;
+        setCheck(checkedState(result.value));
+        toastManager.add({
+          type: "success",
+          title:
+            agent.recoveryLabel && !destinationId
+              ? `Handoff cancelled. Review ${agent.title} before resuming.`
+              : `Resumed ${agent.title} on ${agent.destinations?.find((item) => item.id === destinationId)?.label ?? agent.machineLabel}`,
+        });
+      } else if (!isAtomCommandInterrupted(result)) {
+        toastManager.add({
+          type: "error",
+          title: `Could not resume ${agent.title}`,
+          description: agentMachinesErrorMessage(squashAtomCommandFailure(result)),
+        });
+        await requestCheck();
+      }
+    } finally {
+      setResumingId(null);
+    }
   };
 
   /**
@@ -213,7 +429,7 @@ function AgentMachinesBody({
       }
       return;
     }
-    setCheck(checkedState(linked.value.machines));
+    afterLinkChange(linked.value);
     const back =
       selfAddress === null
         ? null
@@ -222,7 +438,7 @@ function AgentMachinesBody({
             input: { action: "linkBack", id: machine.id, baseUrl: selfAddress },
           });
     setRelinking(null);
-    if (back !== null && back._tag === "Success") setCheck(checkedState(back.value.machines));
+    if (back !== null && back._tag === "Success") afterLinkChange(back.value);
     toastManager.add(
       back !== null && back._tag === "Success"
         ? { type: "success", title: `Relinked ${machine.label} both ways` }
@@ -242,7 +458,7 @@ function AgentMachinesBody({
     });
     setUnlinking(null);
     if (result._tag === "Success") {
-      setCheck(checkedState(result.value.machines));
+      afterLinkChange(result.value);
       toastManager.add({
         type: "success",
         title: `Unlinked ${label}`,
@@ -270,7 +486,10 @@ function AgentMachinesBody({
           )
         }
         placement={placement}
+        projects={projects}
         check={check}
+        resumingId={resumingId}
+        onResume={(agent, id) => void resume(agent, id)}
         unlinking={unlinking}
         update={update}
         onRefresh={refresh}
@@ -293,7 +512,7 @@ function AgentMachinesBody({
         onClose={() => setLinkBackTarget(null)}
         environmentId={environmentId}
         environmentLabel={environment.label}
-        onLinked={(statuses) => setCheck(checkedState(statuses))}
+        onLinked={afterLinkChange}
       />
       <AddAgentMachineDialog
         open={addOpen || relinkTarget !== null}
@@ -304,7 +523,7 @@ function AgentMachinesBody({
         }}
         environmentId={environmentId}
         environmentLabel={environment.label}
-        onLinked={(statuses) => setCheck(checkedState(statuses))}
+        onLinked={afterLinkChange}
       />
     </>
   );
@@ -314,6 +533,7 @@ function AgentMachinesBody({
  * The open section's rows, from props only so it can be rendered against a
  * fixture. `AgentMachinesBody` owns the RPC state.
  */
+const noProjects = [] as const;
 const noLinkBack = () => {};
 const noRelink = () => {};
 const noCreateLink = () => {};
@@ -322,9 +542,12 @@ export function AgentMachinesView({
   environmentLabel,
   localKind,
   localSubtitle,
+  projects = noProjects,
   machineKind,
   placement,
   check,
+  resumingId = null,
+  onResume,
   unlinking,
   update,
   onRefresh,
@@ -338,9 +561,12 @@ export function AgentMachinesView({
   readonly environmentLabel: string;
   readonly localKind: EnvironmentMachineKind;
   readonly localSubtitle: ReactNode;
+  readonly projects?: ReadonlyArray<{ id: string; title: string }>;
   readonly machineKind: (machineId: string) => EnvironmentMachineKind;
   readonly placement: AgentPlacementSettings;
   readonly check: AgentMachinesCheckState;
+  readonly resumingId?: string | null;
+  readonly onResume?: (agent: WaitingAgent, destinationId?: string) => void;
   readonly unlinking: string | null;
   readonly update: (patch: AgentPlacementSettingsPatch | null) => void;
   readonly onRefresh: () => void;
@@ -365,7 +591,7 @@ export function AgentMachinesView({
         <Button
           size="xs"
           variant="ghost-muted"
-          disabled={checking}
+          disabled={checking || resumingId !== null}
           onClick={onRefresh}
           aria-label="Refresh machine status"
         >
@@ -384,6 +610,14 @@ export function AgentMachinesView({
         <p role="status" className="px-3 py-2.5 text-xs text-destructive sm:px-4">
           Could not check machines: {check.error}
         </p>
+      ) : null}
+      {check.waitingAgents?.length ? (
+        <WaitingAgentsSettings
+          agents={check.waitingAgents}
+          fresh={check.phase === "done"}
+          resumingId={resumingId}
+          onResume={onResume}
+        />
       ) : null}
       <SettingLine label="Where new agents run">
         <Select
@@ -405,6 +639,9 @@ export function AgentMachinesView({
           </SelectPopup>
         </Select>
       </SettingLine>
+      {placement.mode === "priority" ? (
+        <MachinePrioritySettings placement={placement} projects={projects} update={update} />
+      ) : null}
       {placement.mode === "single" ? (
         <SettingLine label="Machine">
           <Select
@@ -427,17 +664,19 @@ export function AgentMachinesView({
           </Select>
         </SettingLine>
       ) : null}
-      <SettingLine
-        label="Use this machine if no other is available"
-        description="An agent sent to a named machine never falls back."
-      >
-        <Switch
-          aria-label="Use this machine if no other is available"
-          checked={placement.allowLocalFallback}
-          disabled={placement.mode === "local"}
-          onCheckedChange={(allowLocalFallback) => update({ allowLocalFallback })}
-        />
-      </SettingLine>
+      {placement.mode !== "priority" && (
+        <SettingLine
+          label="Use this machine if no other is available"
+          description="An agent sent to a named machine never falls back."
+        >
+          <Switch
+            aria-label="Use this machine if no other is available"
+            checked={placement.allowLocalFallback}
+            disabled={placement.mode === "local"}
+            onCheckedChange={(allowLocalFallback) => update({ allowLocalFallback })}
+          />
+        </SettingLine>
+      )}
       <EnvironmentRow kind={localKind} label={environmentLabel} subtitle={localSubtitle}>
         <PreferenceSelect
           label={environmentLabel}
@@ -618,7 +857,7 @@ function AddAgentMachineDialog({
   readonly onOpenChange: (open: boolean) => void;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
-  readonly onLinked: (statuses: ReadonlyArray<AgentMachineStatus>) => void;
+  readonly onLinked: (result: AgentMachinesResult) => void;
 }) {
   const agentMachines = useAtomCommand(serverEnvironment.agentMachines, { reportFailure: false });
   const [pairingUrl, setPairingUrl] = useState("");
@@ -649,7 +888,7 @@ function AddAgentMachineDialog({
       ),
     });
     if (result._tag === "Success") {
-      onLinked(result.value.machines);
+      onLinked(result.value);
       const linked = result.value.linked;
       if (linkBack && linked !== undefined) {
         const back = await agentMachines({
@@ -658,7 +897,7 @@ function AddAgentMachineDialog({
         });
         setBusy(false);
         if (back._tag === "Success") {
-          onLinked(back.value.machines);
+          onLinked(back.value);
           toastManager.add({
             type: "success",
             title: `Linked ${linked.label} both ways`,
@@ -706,9 +945,9 @@ function AddAgentMachineDialog({
           </DialogTitle>
           <DialogDescription>
             {relink === null ? "On the other machine" : `On ${relink.label}`}, open Settings →
-            Connections → Agent machines → Create link, or run{" "}
-            <code>t3 pair --machine-link --tailscale</code>, and paste the link here. A general
-            pairing link also links, but does not renew.
+            Connections → Agent machines → Create link, or run <code>t3 pair --machine-link</code>.
+            Add <code>--tailscale</code> if you want to use a Tailscale address. Paste the link
+            here. A general pairing link also works and requires manual renewal.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -723,7 +962,7 @@ function AddAgentMachineDialog({
               <Label htmlFor="agent-machine-pairing-url">Pairing link</Label>
               <Input
                 id="agent-machine-pairing-url"
-                placeholder="https://mini.tailnet.ts.net/pair#token=…"
+                placeholder="Paste the pairing link from the other machine"
                 autoComplete="off"
                 value={pairingUrl}
                 onChange={(event) => setPairingUrl(event.target.value)}
@@ -746,7 +985,7 @@ function AddAgentMachineDialog({
             </div>
             <label className="flex items-start gap-2 text-sm">
               <Switch
-                aria-label="Let that machine reach this one too"
+                aria-label={`Let that machine reach ${environmentLabel} too`}
                 checked={linkBack}
                 onCheckedChange={setLinkBack}
               />
@@ -764,7 +1003,7 @@ function AddAgentMachineDialog({
                 </Label>
                 <Input
                   id="agent-machine-self-url"
-                  placeholder="http://100.x.y.z:3773"
+                  placeholder="URL the other machine can use to reach this one"
                   autoComplete="off"
                   value={selfAddress ?? suggested ?? ""}
                   onChange={(event) => setSelfAddress(event.target.value)}
@@ -824,7 +1063,7 @@ function LinkBackDialog({
   readonly onClose: () => void;
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
-  readonly onLinked: (statuses: ReadonlyArray<AgentMachineStatus>) => void;
+  readonly onLinked: (result: AgentMachinesResult) => void;
 }) {
   const agentMachines = useAtomCommand(serverEnvironment.agentMachines, { reportFailure: false });
   const suggested = useSelfAddress(environmentId, target !== null);
@@ -846,7 +1085,7 @@ function LinkBackDialog({
     });
     setBusy(false);
     if (result._tag === "Success") {
-      onLinked(result.value.machines);
+      onLinked(result.value);
       toastManager.add({
         type: "success",
         title: `${target.label} can reach ${environmentLabel}`,
@@ -881,7 +1120,7 @@ function LinkBackDialog({
             </Label>
             <Input
               id="agent-machine-link-back-url"
-              placeholder="http://100.x.y.z:3773"
+              placeholder="URL the other machine can use to reach this one"
               autoComplete="off"
               value={edited ?? suggested ?? ""}
               onChange={(event) => setEdited(event.target.value)}
@@ -970,7 +1209,7 @@ function CreateMachineLinkDialog({
               </Label>
               <Input
                 id="agent-machine-create-link-address"
-                placeholder="http://100.x.y.z:3773"
+                placeholder="URL the other machine can use to reach this one"
                 autoComplete="off"
                 value={edited ?? selfAddress ?? ""}
                 onChange={(event) => {

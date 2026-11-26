@@ -6,7 +6,7 @@
  *
  * @module RemoteAgentStore
  */
-import { RuntimeMode } from "@t3tools/contracts";
+import { AgentHandoffPhase, AgentWorkspaceCheckpoint, RuntimeMode } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -29,6 +29,7 @@ export const RemoteAgentRequest = Schema.Struct({
   messageId: Schema.String,
   /** The home thread the result goes to (the manager that asked). */
   replyTo: Schema.String,
+  noResult: Schema.optionalKey(Schema.Literal(true)),
   sentAt: Schema.String,
   /** The peer thread's latest turn before the send, so its own turn can be told apart. */
   baselineTurnId: Schema.NullOr(Schema.String),
@@ -41,7 +42,10 @@ export const RemoteAgentQueuedSend = Schema.Struct({
   messageId: Schema.String,
   text: Schema.String,
   replyTo: Schema.String,
+  noResult: Schema.optionalKey(Schema.Literal(true)),
   queuedAt: Schema.String,
+  baselineTurnId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  sender: Schema.optionalKey(Schema.Struct({ id: Schema.String, title: Schema.String })),
 });
 export type RemoteAgentQueuedSend = typeof RemoteAgentQueuedSend.Type;
 
@@ -65,6 +69,60 @@ export const RemoteAgentRecord = Schema.Struct({
   queuedSends: Schema.Array(RemoteAgentQueuedSend),
   lastPhase: AgentPhase,
   lastActivityAt: Schema.NullOr(Schema.String),
+  workspacePosition: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
+  workspaceCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
+  createAttempted: Schema.optionalKey(Schema.Boolean),
+  firstMessageAccepted: Schema.optionalKey(Schema.Boolean),
+  peerReceipts: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        messageId: Schema.String,
+        senderThreadId: Schema.String,
+        text: Schema.String,
+        refusal: Schema.optionalKey(Schema.String),
+        refusalWindowClosed: Schema.optionalKey(Schema.Literal(true)),
+      }),
+    ),
+  ),
+  stoppingAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  workspaceObservedFor: Schema.optionalKey(Schema.String),
+  handoffContext: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  handoffHomeMachine: Schema.optionalKey(Schema.String),
+  handoff: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        waitId: Schema.String,
+        phase: Schema.optionalKey(AgentHandoffPhase),
+        sourceKey: Schema.optionalKey(Schema.String),
+        destinationKey: Schema.optionalKey(Schema.String),
+        replacementKey: Schema.optionalKey(Schema.String),
+        destinationId: Schema.String,
+        projectId: Schema.String,
+        sourceRoot: Schema.String,
+        targetRoot: Schema.String,
+        branch: Schema.String,
+        commit: Schema.String,
+        digest: Schema.String,
+        createdAt: Schema.String,
+      }),
+    ),
+  ),
+  notifiedCoordinatorId: Schema.optionalKey(Schema.String),
+  notifiedWaitId: Schema.optionalKey(Schema.String),
+  waitId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  resumeCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
+  abandonedHolds: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        destinationId: Schema.String,
+        projectId: Schema.String,
+        waitId: Schema.String,
+        key: Schema.String,
+      }),
+    ),
+  ),
+  lastRecoveredWaitId: Schema.optionalKey(Schema.String),
+  lastResumedWaitId: Schema.optionalKey(Schema.String),
 });
 export type RemoteAgentRecord = typeof RemoteAgentRecord.Type;
 

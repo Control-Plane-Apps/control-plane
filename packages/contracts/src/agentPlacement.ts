@@ -11,7 +11,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
  * `local` starts every agent on this machine (today's behaviour), `single`
  * sends them all to one machine, `balanced` spreads them by load.
  */
-export const AgentPlacementMode = Schema.Literals(["local", "single", "balanced"]);
+export const AgentPlacementMode = Schema.Literals(["local", "single", "balanced", "priority"]);
 export type AgentPlacementMode = typeof AgentPlacementMode.Type;
 export const DEFAULT_AGENT_PLACEMENT_MODE: AgentPlacementMode = "local";
 
@@ -39,7 +39,26 @@ export const AgentMachineConfig = Schema.Struct({
 });
 export type AgentMachineConfig = typeof AgentMachineConfig.Type;
 
+const MachineOrder = Schema.Array(AgentMachineId).check(Schema.isMinLength(1), Schema.isUnique());
+
+export const AgentIntegration = Schema.Literals([
+  "gh",
+  "sentry",
+  "readReplica",
+  "eas",
+  "vercel",
+  "posthog",
+  "mcp",
+]);
+export type AgentIntegration = typeof AgentIntegration.Type;
+const RequiredIntegrations = Schema.Array(AgentIntegration).check(Schema.isUnique());
+
 export const AgentPlacementSettings = Schema.Struct({
+  projectRequirements: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, RequiredIntegrations),
+  ),
+  machineOrder: Schema.optionalKey(MachineOrder),
+  projectMachineOrders: Schema.optionalKey(Schema.Record(TrimmedNonEmptyString, MachineOrder)),
   mode: AgentPlacementMode.pipe(Schema.withDecodingDefault(Effect.succeed("local" as const))),
   /** For `single`: a machine id, or `local`. Null reads as this machine. */
   singleMachineId: Schema.NullOr(TrimmedNonEmptyString).pipe(
@@ -59,6 +78,13 @@ export type AgentPlacementSettings = typeof AgentPlacementSettings.Type;
 
 /** Per-entry `machines`, like `usageLimitSources`: `null` removes an entry. */
 export const AgentPlacementSettingsPatch = Schema.Struct({
+  projectRequirements: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, Schema.NullOr(RequiredIntegrations)),
+  ),
+  machineOrder: Schema.optionalKey(MachineOrder),
+  projectMachineOrders: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, Schema.NullOr(MachineOrder)),
+  ),
   mode: Schema.optionalKey(AgentPlacementMode),
   singleMachineId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   localPreference: Schema.optionalKey(AgentMachinePreference),
@@ -91,6 +117,17 @@ export const AgentMachinesInput = Schema.Union([
     baseUrl: TrimmedNonEmptyString,
   }),
   Schema.Struct({ action: Schema.Literal("check") }),
+  Schema.Struct({
+    action: Schema.Literal("recoverHandoff"),
+    threadId: TrimmedNonEmptyString,
+    waitId: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    action: Schema.Literal("resume"),
+    destinationId: Schema.optional(AgentMachineId),
+    threadId: TrimmedNonEmptyString,
+    waitId: TrimmedNonEmptyString,
+  }),
 ]);
 export type AgentMachinesInput = typeof AgentMachinesInput.Type;
 
@@ -154,7 +191,59 @@ export const AgentMachineStatus = Schema.Struct({
 });
 export type AgentMachineStatus = typeof AgentMachineStatus.Type;
 
+export const AgentWorkspaceCheckpoint = Schema.Struct({
+  digest: Schema.optionalKey(TrimmedNonEmptyString),
+  root: TrimmedNonEmptyString,
+  branch: TrimmedNonEmptyString,
+  commit: TrimmedNonEmptyString,
+});
+export type AgentWorkspaceCheckpoint = typeof AgentWorkspaceCheckpoint.Type;
+
+export const HandoffFingerprint = Schema.Struct({
+  ...AgentWorkspaceCheckpoint.fields,
+  reusableHandoff: Schema.optionalKey(Schema.Literal(true)),
+  heldHandoff: Schema.optionalKey(Schema.Literal(true)),
+  digest: TrimmedNonEmptyString,
+});
+export type HandoffFingerprint = typeof HandoffFingerprint.Type;
+
+export const AgentWorkspaceProbe = Schema.Struct({
+  position: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
+  workspace: Schema.NullOr(AgentWorkspaceCheckpoint),
+  idle: Schema.Boolean,
+});
+export type AgentWorkspaceProbe = typeof AgentWorkspaceProbe.Type;
+
+export const AgentHandoffPhase = Schema.Literals([
+  "prepared",
+  "fencing",
+  "fenced",
+  "recovering",
+  "committed",
+]);
+export type AgentHandoffPhase = typeof AgentHandoffPhase.Type;
+
+export const WaitingAgent = Schema.Struct({
+  handoffPhase: Schema.optionalKey(AgentHandoffPhase),
+  threadId: Schema.String,
+  title: Schema.String,
+  machineId: Schema.String,
+  machineLabel: Schema.String,
+  branch: Schema.NullOr(Schema.String),
+  commit: Schema.NullOr(Schema.String),
+  canResume: Schema.Boolean,
+  recoveryLabel: Schema.optionalKey(Schema.String),
+  activationDestination: Schema.optionalKey(AgentMachineId),
+  destinations: Schema.optional(
+    Schema.Array(Schema.Struct({ id: AgentMachineId, label: TrimmedNonEmptyString })),
+  ),
+  detail: Schema.String,
+  waitId: Schema.String,
+});
+export type WaitingAgent = typeof WaitingAgent.Type;
+
 export const AgentMachinesResult = Schema.Struct({
+  waitingAgents: Schema.optionalKey(Schema.Array(WaitingAgent)),
   /** The entry `link` added. */
   linked: Schema.optionalKey(Schema.Struct({ id: AgentMachineId, label: Schema.String })),
   machines: Schema.Array(AgentMachineStatus),

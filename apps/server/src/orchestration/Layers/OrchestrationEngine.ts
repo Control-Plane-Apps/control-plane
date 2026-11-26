@@ -271,6 +271,31 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
         }
 
+        // Compact snapshots omit activities. Consult the durable markers for every
+        // archived-thread mutation and for a fence that could race with cancellation.
+        const handoffActivities =
+          aggregateRef.aggregateKind === "thread" &&
+          ((envelope.command.type === "thread.session.stop" && envelope.command.handoffWaitId) ||
+            (envelope.command.type === "thread.archive" && envelope.command.handoff) ||
+            (envelope.command.type === "thread.unarchive" && envelope.command.handoffRelease) ||
+            commandReadModel.threads.some(
+              (t) => t.id === aggregateRef.aggregateId && t.archivedAt != null,
+            ))
+            ? yield* projectionSnapshotQuery.getHandoffActivities(
+                aggregateRef.aggregateId as ThreadId,
+              )
+            : undefined;
+        if (
+          envelope.command.type === "thread.archive" &&
+          envelope.command.handoff &&
+          threadBackgroundLiveness.getThreadBackgroundLiveness(envelope.command.threadId) !== null
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "The original agent still has live background work.",
+          });
+        }
+
         // Command snapshots omit activities at startup and cap them while running.
         // Read this request's durable state before deciding how to send the answer.
         const userInputActivity =
@@ -281,6 +306,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
+          ...(handoffActivities ? { handoffActivities } : {}),
           ...(Option.isSome(userInputActivity)
             ? { userInputActivity: userInputActivity.value }
             : {}),

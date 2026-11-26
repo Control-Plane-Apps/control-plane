@@ -42,6 +42,7 @@ const resolve = (matches: ReadonlyArray<MatchableProject>): ProjectMatch | null 
 export function matchPeerProject(
   home: MatchableProject,
   peers: ReadonlyArray<MatchableProject>,
+  requireRepositoryIdentity = false,
 ): ProjectMatch {
   const live = peers.filter((peer) => peer.assistant?.archivedAt == null);
   const key = home.repositoryIdentity?.canonicalKey;
@@ -53,6 +54,7 @@ export function matchPeerProject(
           ({ kind: "ambiguous", count: sameRepo.length } as const))
         : resolve(sameRepo);
     if (byRepo !== null) return byRepo;
+    if (requireRepositoryIdentity) return { kind: "missing" };
   }
   const folder = basename(home.workspaceRoot);
   return (

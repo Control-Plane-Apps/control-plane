@@ -27,13 +27,17 @@ import {
 import {
   DpopFailureReason,
   AuthSessionId,
+  CommandId,
+  ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { AgentWorkspaceProbe, HandoffFingerprint } from "./agentPlacement.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   ClientOrchestrationCommand,
   DispatchResult,
+  ModelSelection,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
@@ -191,7 +195,10 @@ export class EnvironmentInternalError extends Schema.TaggedError<EnvironmentInte
   }
 }
 
-export const EnvironmentResourceNotFoundReason = Schema.Literals(["thread_not_found"]);
+export const EnvironmentResourceNotFoundReason = Schema.Literals([
+  "thread_not_found",
+  "project_not_found",
+]);
 export type EnvironmentResourceNotFoundReason = typeof EnvironmentResourceNotFoundReason.Type;
 
 export class EnvironmentResourceNotFoundError extends Schema.TaggedError<EnvironmentResourceNotFoundError>()(
@@ -275,6 +282,17 @@ export class EnvironmentHttpInternalServerError extends Schema.TaggedError<Envir
   }
 }
 
+/** The server persisted a rejection for this exact turn command and thread. */
+export class EnvironmentTurnRefusedError extends Schema.TaggedError<EnvironmentTurnRefusedError>()(
+  "EnvironmentTurnRefusedError",
+  { commandId: CommandId, threadId: ThreadId, detail: Schema.String },
+  { httpApiStatus: 409 },
+) {
+  [HttpServerRespondable.symbol]() {
+    return HttpServerResponse.schemaJson(EnvironmentTurnRefusedError)(this, { status: 409 });
+  }
+}
+
 export class EnvironmentHttpConflictError extends Schema.TaggedError<EnvironmentHttpConflictError>()(
   "EnvironmentHttpConflictError",
   {
@@ -333,6 +351,7 @@ const EnvironmentOrchestrationThreadSnapshotErrors = [
   EnvironmentInternalError,
 ] as const;
 const EnvironmentOrchestrationDispatchErrors = [
+  EnvironmentTurnRefusedError,
   EnvironmentRequestInvalidError,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
@@ -505,7 +524,73 @@ const EnvironmentOrchestrationThreadSnapshotQuery = {
   beforeCursor: Schema.optional(TrimmedNonEmptyString),
 };
 
+export const AgentProjectReadiness = Schema.Struct({
+  checkout: Schema.Boolean,
+  gh: Schema.Boolean,
+  provider: Schema.Boolean,
+  sentry: Schema.Boolean,
+  readReplica: Schema.Boolean,
+  eas: Schema.Boolean,
+  vercel: Schema.Boolean,
+  posthog: Schema.Boolean,
+  mcp: Schema.Boolean,
+});
+export type AgentProjectReadiness = typeof AgentProjectReadiness.Type;
+
 export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestration")
+  .add(
+    HttpApiEndpoint.get(
+      "agentWorkspace",
+      "/api/orchestration/projects/:projectId/agents/:threadId/workspace",
+      {
+        headers: OptionalBearerHeaders,
+        params: { projectId: ProjectId, threadId: ThreadId },
+        success: AgentWorkspaceProbe,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "handoffWorkspace",
+      "/api/orchestration/projects/:projectId/handoff-workspace",
+      {
+        headers: OptionalBearerHeaders,
+        params: { projectId: ProjectId },
+        payload: {
+          threadId: Schema.optional(ThreadId),
+          waitId: Schema.optional(TrimmedNonEmptyString),
+        },
+        success: HandoffFingerprint,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "handoffThread",
+      "/api/orchestration/projects/:projectId/agents/:threadId/handoff",
+      {
+        headers: OptionalBearerHeaders,
+        params: { projectId: ProjectId, threadId: ThreadId },
+        payload: { waitId: TrimmedNonEmptyString },
+        success: OrchestrationThreadDetailSnapshot,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("projectReadiness", "/api/orchestration/projects/:projectId/readiness", {
+      headers: OptionalBearerHeaders,
+      params: { projectId: ProjectId },
+      payload: { instanceId: TrimmedNonEmptyString, model: Schema.optional(TrimmedNonEmptyString) },
+      success: Schema.Struct({
+        ...AgentProjectReadiness.fields,
+        modelSelection: Schema.optionalKey(ModelSelection),
+      }),
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.get("snapshot", "/api/orchestration/snapshot", {
       headers: OptionalBearerHeaders,
@@ -527,6 +612,14 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       payload: EnvironmentOrchestrationThreadSnapshotQuery,
       success: OrchestrationThreadDetailSnapshot,
       error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("handoffDispatch", "/api/orchestration/handoff-dispatch", {
+      headers: OptionalBearerHeaders,
+      payload: ClientOrchestrationCommand,
+      success: DispatchResult,
+      error: EnvironmentOrchestrationDispatchErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(

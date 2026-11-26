@@ -1467,7 +1467,7 @@ const make = Effect.gen(function* () {
       });
       return;
     }
-    const { message, hasOtherUserMessages } = turnStart.value;
+    const { message, hasOtherUserMessages, handoffTranscript } = turnStart.value;
     const appendTurnStartFailure = (summary: string, detail: string) =>
       appendProviderFailureActivity({
         threadId: event.payload.threadId,
@@ -1732,7 +1732,15 @@ const make = Effect.gen(function* () {
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
       messageId: event.payload.messageId,
-      messageText: peerDigest === undefined ? providerText : `${peerDigest}\n\n${providerText}`,
+      messageText: [
+        handoffTranscript && !providerText.startsWith("/")
+          ? `Recent conversation on the original machine:\n${handoffTranscript}`
+          : undefined,
+        peerDigest,
+        providerText,
+      ]
+        .filter((part) => part !== undefined)
+        .join("\n\n"),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }

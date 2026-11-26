@@ -26,7 +26,7 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationProject,
   type OrchestrationSession,
-  type OrchestrationThreadActivity,
+  OrchestrationThreadActivity,
   type OrchestrationThreadShell,
   ModelSelection,
   ProjectId,
@@ -79,6 +79,7 @@ import {
   type ProjectionFullThreadDiffContext,
   type ProjectionSnapshotCounts,
   type ProjectionThreadCheckpointContext,
+  type HandoffReadScope,
   type ProjectionThreadDetailQuery,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
@@ -123,7 +124,10 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   }),
 );
 const ProjectionTurnStartMessageDbRowSchema = ProjectionThreadMessageDbRowSchema.mapFields(
-  Struct.assign({ hasOtherUserMessages: Schema.Number }),
+  Struct.assign({
+    hasOtherUserMessages: Schema.Number,
+    handoffTranscript: Schema.NullOr(Schema.String),
+  }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadPullRequestDbRowSchema = ProjectionThreadPullRequest.mapFields(
@@ -1270,9 +1274,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   });
 
   const getActiveThreadRowById = SqlSchema.findOneOption({
-    Request: ThreadIdLookupInput,
+    Request: Schema.Struct({
+      ...ThreadIdLookupInput.fields,
+      handoff: Schema.optional(Schema.Struct({ projectId: ProjectId, waitId: Schema.String })),
+    }),
     Result: ProjectionThreadDbRowSchema,
-    execute: ({ threadId }) =>
+    execute: ({ threadId, handoff }) =>
       sql`
         SELECT
           thread_id AS "threadId",
@@ -1308,7 +1315,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL
-          AND archived_at IS NULL
+          AND ${
+            handoff
+              ? sql`project_id = ${handoff.projectId} AND (archived_at IS NULL OR EXISTS (
+            SELECT 1 FROM projection_thread_activities AS fences WHERE fences.thread_id = ${threadId}
+            AND ((fences.kind = 'agent.handoff.fenced' AND fences.activity_id = ${"cp-handoff-fence:" + handoff.waitId})
+              OR (fences.kind = 'agent.handoff.held' AND fences.activity_id = ${"cp-handoff-hold:" + handoff.waitId}))
+            AND NOT EXISTS (SELECT 1 FROM projection_thread_activities AS released WHERE released.thread_id = fences.thread_id
+              AND released.kind = 'agent.handoff.released' AND released.activity_id = ${"cp-handoff-release:" + handoff.waitId})
+          ))`
+              : sql`archived_at IS NULL`
+          }
         LIMIT 1
       `,
   });
@@ -1377,7 +1394,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               LOWER(TRIM(other.text, ${MESSAGE_TRIM_WHITESPACE})) != '/compact'
               OR COALESCE(json_array_length(other.attachments_json), 0) > 0
             )
-        ) AS "hasOtherUserMessages"
+        ) AS "hasOtherUserMessages",
+        (
+          SELECT json_extract(held.payload_json, '$.transcript')
+          FROM projection_thread_activities held
+          WHERE held.thread_id = ${threadId} AND held.kind = 'agent.handoff.held'
+            AND NOT EXISTS (
+              SELECT 1 FROM projection_turns turns
+              JOIN projection_thread_messages previous ON previous.message_id = turns.pending_message_id
+              WHERE turns.thread_id = held.thread_id AND turns.turn_id IS NOT NULL
+                AND previous.message_id != ${messageId} AND substr(previous.text, 1, 1) != '/'
+            )
+          LIMIT 1
+        ) AS "handoffTranscript"
       FROM projection_thread_messages
       WHERE thread_id = ${threadId} AND message_id = ${messageId}
       LIMIT 1
@@ -1488,6 +1517,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           activity_id ASC
       `,
   });
+
+  const handoffActivityRows = SqlSchema.findAll({
+    Request: ThreadId,
+    Result: Schema.Struct({ activity: Schema.fromJsonString(OrchestrationThreadActivity) }),
+    // The creation boundary matters when a deleted thread ID is reused. The
+    // event stream preserves the binding even after conversation history is trimmed.
+    execute: (threadId) => sql`SELECT json_extract(payload_json,'$.activity') AS activity
+      FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+      AND sequence > COALESCE((SELECT MAX(sequence) FROM orchestration_events WHERE aggregate_kind = 'thread'
+        AND stream_id = ${threadId} AND event_type = 'thread.created'), 0)
+      AND event_type = 'thread.activity-appended' AND json_extract(payload_json,'$.activity.kind')
+        IN ('agent.handoff.fenced','agent.handoff.held','agent.handoff.released') ORDER BY sequence`,
+  });
+  const getHandoffActivities: ProjectionSnapshotQueryShape["getHandoffActivities"] = (id) =>
+    handoffActivityRows(id).pipe(
+      Effect.map((rows) => rows.map((row) => row.activity)),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.handoff:query",
+          "ProjectionSnapshotQuery.handoff:decode",
+        ),
+      ),
+    );
 
   const getUserInputActivityRow = SqlSchema.findOneOption({
     Request: Schema.Struct({ threadId: ThreadId, requestId: ApprovalRequestId }),
@@ -3242,10 +3294,13 @@ pending_approval_requests AS (
       });
     });
 
-  const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
+  const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (
+    threadId,
+    handoff,
+  ) =>
     Effect.gen(function* () {
       const [threadRow, latestTurnRow, sessionRow, pullRequestRows] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
+        getActiveThreadRowById({ threadId, handoff }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
@@ -3371,6 +3426,7 @@ pending_approval_requests AS (
         ...(row.source !== null ? { source: row.source } : {}),
       },
       hasOtherUserMessages: row.hasOtherUserMessages === 1,
+      ...(row.handoffTranscript ? { handoffTranscript: row.handoffTranscript } : {}),
     }));
   });
 
@@ -3456,6 +3512,7 @@ pending_approval_requests AS (
     threadId: ThreadId,
     bounds: ThreadDetailBounds | undefined,
     activityRead: ThreadDetailActivityRead = { mode: "raw" },
+    handoff?: HandoffReadScope,
   ) =>
     Effect.gen(function* () {
       const activitiesEffect =
@@ -3519,7 +3576,7 @@ pending_approval_requests AS (
         latestTurnRow,
         sessionRow,
       ] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
+        getActiveThreadRowById({ threadId, handoff }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",
@@ -3682,6 +3739,7 @@ pending_approval_requests AS (
   const getThreadDetailSnapshot: ProjectionSnapshotQueryShape["getThreadDetailSnapshot"] = (
     threadId,
     window,
+    handoff,
   ) =>
     // Read the thread detail and the snapshot sequence within a single
     // transaction so the sequence is consistent with the returned state; a
@@ -3693,9 +3751,14 @@ pending_approval_requests AS (
       .withTransaction(
         Effect.gen(function* () {
           if (window?.turnLimit === undefined) {
-            const thread = yield* getThreadDetailByIdBounded(threadId, undefined, {
-              mode: "client",
-            });
+            const thread = yield* getThreadDetailByIdBounded(
+              threadId,
+              undefined,
+              {
+                mode: "client",
+              },
+              handoff,
+            );
             if (Option.isNone(thread)) {
               return Option.none<OrchestrationThreadDetailSnapshot>();
             }
@@ -3766,9 +3829,14 @@ pending_approval_requests AS (
               ? { minAnchorAt: "", minTurnKey: "", beforeAnchorAt: "", beforeTurnKey: "" }
               : undefined;
 
-          const thread = yield* getThreadDetailByIdBounded(threadId, emptyBounds ?? bounds, {
-            mode: "client",
-          });
+          const thread = yield* getThreadDetailByIdBounded(
+            threadId,
+            emptyBounds ?? bounds,
+            {
+              mode: "client",
+            },
+            handoff,
+          );
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
           }
@@ -3820,6 +3888,7 @@ pending_approval_requests AS (
 
   return {
     getCommandReadModel,
+    getHandoffActivities,
     getUserInputActivity,
     listActivitiesByKind,
     getSnapshot,

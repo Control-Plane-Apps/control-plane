@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import {
   EventId,
   MAX_SCRIPT_ID_LENGTH,
@@ -57,6 +58,8 @@ import {
   requireSettleable,
   resolveCoordinatorMetaUpdate,
 } from "./assistantDecider.ts";
+import { agentDeliveryStartId } from "./agentProtocol.ts";
+import { decidePeerBudget, isPeerDelivery, peerWindow } from "./agentPeers.ts";
 import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 import { projectEvent } from "./projector.ts";
 import { decideAgentScheduleChange, decideScheduleRecord } from "./scheduleDecider.ts";
@@ -85,6 +88,63 @@ import {
   decideTaskUpdate,
 } from "./taskDecider.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
+
+function rejectUnavailablePeerDelivery(
+  command: Extract<
+    OrchestrationCommand,
+    { type: "thread.turn.start" | "thread.message.user.append" }
+  >,
+  thread: OrchestrationThread,
+) {
+  if (!isPeerDelivery(command.message.messageId)) return Effect.void;
+  const source = command.message.source;
+  const senderThreadId = source?.kind === "agent" ? source.threadId : undefined;
+  // The reactor starts an already admitted queue item using its stable command receipt.
+  // Its append consumed the budget. The later start must still require an active recipient.
+  if (
+    command.type === "thread.turn.start" &&
+    thread.settledAt === null &&
+    thread.archivedAt === null &&
+    senderThreadId &&
+    command.commandId === agentDeliveryStartId(command.message.messageId) &&
+    thread.messages.some(
+      (row) =>
+        row.id === command.message.messageId &&
+        row.role === "user" &&
+        row.turnId === null &&
+        row.text === command.message.text &&
+        row.source?.kind === "agent" &&
+        row.source.threadId === senderThreadId,
+    )
+  )
+    return Effect.void;
+  const available =
+    senderThreadId &&
+    thread.settledAt === null &&
+    thread.archivedAt === null &&
+    decidePeerBudget({
+      senderThreadId,
+      text: command.message.text,
+      window: peerWindow(
+        thread.messages.map((message) => ({
+          messageId: message.id,
+          role: message.role,
+          text: message.text,
+          senderThreadId:
+            message.source?.kind === "agent" ? (message.source.threadId ?? null) : null,
+        })),
+      ),
+    }).kind === "send";
+  return available
+    ? Effect.void
+    : Effect.fail(
+        new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "Peer delivery requires an active recipient and an available peer message budget.",
+        }),
+      );
+}
 
 const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -235,15 +295,84 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   command,
   readModel,
   userInputActivity,
+  handoffActivities,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  readonly handoffActivities?: ReadonlyArray<OrchestrationThreadActivity>;
   readonly userInputActivity?: OrchestrationThreadActivity;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
   OrchestrationCommandRejection | PlatformError.PlatformError,
   Crypto.Crypto
 > {
+  let replacesHeldDestination = false;
+  if ("threadId" in command) {
+    const thread = readModel.threads.find((entry) => entry.id === command.threadId);
+    const markers = handoffActivities ?? thread?.activities ?? [];
+    const release = command.type === "thread.unarchive" ? command.handoffRelease : undefined;
+    const released = (waitId: string) =>
+      markers.some(
+        (m) => m.kind === "agent.handoff.released" && m.id === `cp-handoff-release:${waitId}`,
+      );
+    const fence = markers.find((m) => {
+      if (m.kind !== "agent.handoff.fenced" && m.kind !== "agent.handoff.held") return false;
+      return !released((m.payload as { waitId: string }).waitId);
+    });
+    const pendingFence =
+      command.type === "thread.archive"
+        ? command.handoff?.waitId
+        : command.type === "thread.session.stop"
+          ? command.handoffWaitId
+          : undefined;
+    if (pendingFence && released(pendingFence))
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: "This handoff was cancelled.",
+      });
+    if ((thread?.archivedAt && fence) || release) {
+      const payload = fence?.payload as { releaseHash?: string; waitId: string } | undefined;
+      if (
+        command.type === "thread.create" &&
+        command.handoffHold &&
+        thread?.archivedAt &&
+        thread.projectId === command.projectId &&
+        fence?.kind === "agent.handoff.held"
+      ) {
+        const old = fence.payload as {
+          waitId: string;
+          replacementHash?: string;
+          machineId: string;
+          projectId: string;
+        };
+        const next = command.handoffHold;
+        replacesHeldDestination =
+          next.waitId !== old.waitId &&
+          old.machineId === next.machineId &&
+          old.projectId === next.projectId &&
+          !!command.replaceHolds?.some(
+            (proof) =>
+              proof.waitId === old.waitId &&
+              old.replacementHash ===
+                NodeCrypto.createHash("sha256").update(proof.key).digest("hex"),
+          );
+      }
+      const allowed =
+        release &&
+        (fence
+          ? payload?.waitId === release.waitId &&
+            payload.releaseHash ===
+              NodeCrypto.createHash("sha256").update(release.key).digest("hex") &&
+            fence.kind ===
+              (release.role === "source" ? "agent.handoff.fenced" : "agent.handoff.held")
+          : release.role === "source" && !!thread && thread.archivedAt === null);
+      if (!allowed && !replacesHeldDestination)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This agent was moved to another machine. Its original thread is read-only.",
+        });
+    }
+  }
   switch (command.type) {
     case "project.create": {
       yield* requireProjectAbsent({
@@ -549,13 +678,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         projectId: command.projectId,
       });
-      yield* requireThreadAbsent({
-        readModel,
-        command,
-        threadId: command.threadId,
-      });
+      if (!replacesHeldDestination)
+        yield* requireThreadAbsent({
+          readModel,
+          command,
+          threadId: command.threadId,
+        });
       yield* requireAgentCreator(readModel, command);
-      return {
+      const created = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -563,7 +693,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
           ...(command.historyImport === true ? { metadata: { historyImport: true } } : {}),
         })),
-        type: "thread.created",
+        type: "thread.created" as const,
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
@@ -580,6 +710,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             : {}),
         },
       };
+      if (!command.handoffHold) return created;
+      const { threadId, commandId, createdAt: occurredAt, handoffHold } = command;
+      const base = () =>
+        withEventBase({ aggregateKind: "thread", aggregateId: threadId, commandId, occurredAt });
+      return [
+        created,
+        {
+          ...(yield* base()),
+          type: "thread.archived" as const,
+          payload: { threadId, archivedAt: occurredAt, updatedAt: occurredAt },
+        },
+        {
+          ...(yield* base()),
+          type: "thread.activity-appended" as const,
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`cp-handoff-hold:${handoffHold.waitId}`),
+              tone: "info" as const,
+              kind: "agent.handoff.held",
+              summary: "Waiting for home ownership confirmation",
+              turnId: null,
+              createdAt: occurredAt,
+              payload: handoffHold,
+            },
+          },
+        },
+      ];
     }
 
     case "thread.delete": {
@@ -606,49 +764,120 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.archive": {
-      yield* requireThreadNotArchived({
+      const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
       yield* requireNotCoordinator(readModel, command.threadId, command.type);
       const occurredAt = yield* nowIso;
-      return {
+      const archived = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "thread.archived",
+        type: "thread.archived" as const,
         payload: {
           threadId: command.threadId,
           archivedAt: occurredAt,
           updatedAt: occurredAt,
         },
       };
+      if (!command.handoff) return archived;
+      if (
+        thread.updatedAt !== command.handoff.expectedUpdatedAt ||
+        (thread.session && thread.session.status !== "stopped") ||
+        thread.latestTurn?.state === "running" ||
+        openRequests(thread).size > 0 ||
+        hasQueuedTurnStartForThread(thread, occurredAt)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The original agent must be stopped and idle before handoff.",
+        });
+      }
+      return [
+        archived,
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.activity-appended" as const,
+          payload: {
+            threadId: thread.id,
+            activity: {
+              id: EventId.make(`cp-handoff-fence:${command.handoff.waitId}`),
+              tone: "info" as const,
+              kind: "agent.handoff.fenced",
+              summary: "Moved to another machine",
+              turnId: null,
+              payload: {
+                waitId: command.handoff.waitId,
+                ...(command.handoff.releaseHash
+                  ? { releaseHash: command.handoff.releaseHash }
+                  : {}),
+              },
+              createdAt: occurredAt,
+            },
+          },
+        },
+      ];
     }
 
     case "thread.unarchive": {
-      yield* requireThreadArchived({
+      const release = command.handoffRelease;
+      const thread = yield* (release ? requireThread : requireThreadArchived)({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = yield* nowIso;
-      return {
+      const marker = release
+        ? {
+            ...(yield* withEventBase({
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              occurredAt,
+              commandId: command.commandId,
+            })),
+            type: "thread.activity-appended" as const,
+            payload: {
+              threadId: command.threadId,
+              activity: {
+                id: EventId.make(`cp-handoff-release:${release.waitId}`),
+                kind: "agent.handoff.released",
+                tone: "info" as const,
+                summary:
+                  release.role === "source"
+                    ? "Handoff cancelled on original machine"
+                    : "Home confirmed ownership",
+                createdAt: occurredAt,
+                turnId: null,
+                payload: { waitId: release.waitId },
+              },
+            },
+          }
+        : null;
+      if (marker && !thread.archivedAt) return marker;
+      const unarchived = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "thread.unarchived",
+        type: "thread.unarchived" as const,
         payload: {
           threadId: command.threadId,
           updatedAt: occurredAt,
         },
       };
+      return marker ? [unarchived, marker] : unarchived;
     }
 
     case "thread.settle":
@@ -1556,6 +1785,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      yield* rejectUnavailablePeerDelivery(command, targetThread);
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
@@ -1714,6 +1944,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      yield* rejectUnavailablePeerDelivery(command, thread);
       yield* requireReplyTo(readModel, command.threadId, command.message, command.type);
       if (thread.messages.some((message) => message.id === command.message.messageId)) {
         return yield* new OrchestrationCommandInvariantError({
@@ -2395,6 +2626,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.activity.append": {
+      if (
+        command.activity.kind.startsWith("agent.handoff.") ||
+        command.activity.id.startsWith("cp-handoff-")
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only a verified handoff archive can write the execution fence.",
+        });
       const thread = yield* requireThread({
         readModel,
         command,

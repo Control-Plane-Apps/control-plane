@@ -632,6 +632,9 @@ export const OrchestrationAgentMessageSource = Schema.Struct({
   threadTitle: Schema.optional(TrimmedNonEmptyString),
   /** The thread this request's result goes to. Absent: nothing is sent back. */
   replyTo: Schema.optional(ThreadId),
+  placementHome: Schema.optionalKey(
+    Schema.Struct({ machineId: TrimmedNonEmptyString, projectId: ProjectId }),
+  ),
   /** The Project schedule that sent this prompt; `threadTitle` is its name. */
   scheduleId: Schema.optional(TrimmedNonEmptyString),
 });
@@ -1291,7 +1294,29 @@ const ProjectDeleteCommand = Schema.Struct({
   force: Schema.optional(Schema.Boolean),
 });
 
+export const HANDOFF_TRANSCRIPT_MAX_CHARS = 24_000;
+
 const ThreadCreateCommand = Schema.Struct({
+  replaceHolds: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        waitId: TrimmedNonEmptyString,
+        key: TrimmedNonEmptyString,
+      }),
+    ),
+  ),
+  handoffHold: Schema.optionalKey(
+    Schema.Struct({
+      transcript: Schema.optionalKey(
+        Schema.String.check(Schema.isMaxLength(HANDOFF_TRANSCRIPT_MAX_CHARS)),
+      ),
+      waitId: TrimmedNonEmptyString,
+      releaseHash: TrimmedNonEmptyString,
+      replacementHash: Schema.optionalKey(TrimmedNonEmptyString),
+      machineId: TrimmedNonEmptyString,
+      projectId: ProjectId,
+    }),
+  ),
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1317,12 +1342,26 @@ const ThreadDeleteCommand = Schema.Struct({
 });
 
 const ThreadArchiveCommand = Schema.Struct({
+  handoff: Schema.optional(
+    Schema.Struct({
+      waitId: TrimmedNonEmptyString,
+      expectedUpdatedAt: IsoDateTime,
+      releaseHash: Schema.optionalKey(TrimmedNonEmptyString),
+    }),
+  ),
   type: Schema.Literal("thread.archive"),
   commandId: CommandId,
   threadId: ThreadId,
 });
 
 const ThreadUnarchiveCommand = Schema.Struct({
+  handoffRelease: Schema.optionalKey(
+    Schema.Struct({
+      waitId: TrimmedNonEmptyString,
+      key: TrimmedNonEmptyString,
+      role: Schema.Literals(["source", "destination"]),
+    }),
+  ),
   type: Schema.Literal("thread.unarchive"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1584,6 +1623,7 @@ const ThreadConversationRevertCommand = Schema.Struct({
 });
 
 const ThreadSessionStopCommand = Schema.Struct({
+  handoffWaitId: Schema.optionalKey(TrimmedNonEmptyString),
   type: Schema.Literal("thread.session.stop"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1793,6 +1833,16 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadSessionStopCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
+
+/** Commands whose handoff guards must survive the wire even when a peer is downgraded. */
+export function isGuardedHandoffCommand(command: ClientOrchestrationCommand): boolean {
+  return !!(
+    (command.type === "thread.create" && command.handoffHold) ||
+    (command.type === "thread.archive" && command.handoff?.releaseHash) ||
+    (command.type === "thread.session.stop" && command.handoffWaitId) ||
+    (command.type === "thread.unarchive" && command.handoffRelease)
+  );
+}
 
 const ThreadSessionSetCommand = Schema.Struct({
   type: Schema.Literal("thread.session.set"),

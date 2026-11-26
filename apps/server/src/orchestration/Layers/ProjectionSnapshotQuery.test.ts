@@ -2629,6 +2629,49 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
   const activityIds = (snapshot: { thread: { activities: ReadonlyArray<{ id: string }> } }) =>
     snapshot.thread.activities.map((activity) => activity.id).toSorted();
 
+  it.effect(
+    "reads an archived handoff only for its Project, thread and persisted wait receipt",
+    () =>
+      Effect.gen(function* () {
+        yield* seedFanOutThread();
+        const query = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+        const scope = { projectId: ProjectId.make("project-w"), waitId: "first" };
+        yield* sql`UPDATE projection_threads SET archived_at = '2026-11-25T10:00:00Z' WHERE thread_id = ${threadW}`;
+        assert.equal(
+          (yield* query.getThreadDetailSnapshot(threadW, { turnLimit: 8 }, scope))._tag,
+          "None",
+        );
+        yield* sql`INSERT INTO projection_thread_activities (activity_id,thread_id,turn_id,tone,kind,summary,payload_json,created_at)
+        VALUES ('cp-handoff-fence:first',${threadW},NULL,'info','agent.handoff.fenced','Moved','{}','2026-11-25T10:00:00Z')`;
+        assert.equal(
+          (yield* query.getThreadDetailSnapshot(threadW, { turnLimit: 8 }))._tag,
+          "None",
+        );
+        assert.equal((yield* query.getThreadShellById(threadW))._tag, "None");
+        assert.equal(
+          (yield* query.getThreadDetailSnapshot(
+            threadW,
+            { turnLimit: 8 },
+            { ...scope, waitId: "stale" },
+          ))._tag,
+          "None",
+        );
+        assert.equal(
+          (yield* query.getThreadShellById(threadW, {
+            ...scope,
+            projectId: ProjectId.make("other"),
+          }))._tag,
+          "None",
+        );
+        assert.equal(
+          (yield* query.getThreadDetailSnapshot(threadW, { turnLimit: 8 }, scope))._tag,
+          "Some",
+        );
+        assert.equal((yield* query.getThreadShellById(threadW, scope))._tag, "Some");
+      }),
+  );
+
   it.effect("returns the full thread with no page metadata when no window is requested", () =>
     Effect.gen(function* () {
       yield* seedFanOutThread();

@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -962,6 +963,114 @@ describe("ProviderCommandReactor", () => {
       ].join("\n"),
     });
   });
+
+  for (const bridged of [false, true]) {
+    effectIt.effect(
+      `bootstraps the first ${bridged ? "bridged" : "direct"} destination prompt from its held transcript`,
+      () =>
+        Effect.gen(function* () {
+          const harness = yield* Effect.promise(() => createHarness());
+          const threadId = ThreadId.make("moved");
+          const projectId = ProjectId.make("project-1");
+          const createdAt = "2026-01-01T00:00:05.000Z";
+          const waitId = "context-wait";
+          const key = "context-release-key";
+          const transcript = "user: inspect checkout\nassistant: verified the dirty file";
+          yield* harness.engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("move-create"),
+            threadId,
+            projectId,
+            title: "Moved agent",
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            handoffHold: {
+              waitId,
+              projectId,
+              machineId: "home",
+              releaseHash: NodeCrypto.createHash("sha256").update(key).digest("hex"),
+              transcript,
+            },
+          });
+          expect(
+            (yield* harness.snapshotQuery.getHandoffActivities(threadId))[0]?.payload,
+          ).toMatchObject({ transcript });
+          expect(harness.sendTurn).not.toHaveBeenCalled();
+          yield* harness.engine.dispatch({
+            type: "thread.unarchive",
+            commandId: CommandId.make("move-activate"),
+            threadId,
+            handoffRelease: { waitId, key, role: "destination" },
+          });
+          const send = (id: string, text: string) =>
+            harness.engine.dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make(id),
+              threadId,
+              message: {
+                messageId: MessageId.make(id),
+                role: "user",
+                text,
+                attachments: [],
+                ...(bridged
+                  ? {
+                      source: {
+                        kind: "agent" as const,
+                        threadId: ThreadId.make("manager"),
+                        threadTitle: "Manager",
+                        placementHome: { machineId: "home", projectId },
+                      },
+                    }
+                  : {}),
+              },
+              runtimeMode: "approval-required",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              createdAt,
+            });
+          yield* send("first-after-move", "continue");
+          yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+          expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+            input: `Recent conversation on the original machine:\n${transcript}\n\ncontinue`,
+          });
+          const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+            (t) => t.id === threadId,
+          );
+          expect(thread?.messages.find((m) => m.id === "first-after-move")?.text).toBe("continue");
+          if (!thread?.session) throw new Error("missing destination session");
+          yield* harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("running-first"),
+            threadId,
+            createdAt,
+            session: {
+              ...thread.session,
+              status: "running",
+              activeTurnId: asTurnId("first-provider-turn"),
+              updatedAt: createdAt,
+            },
+          });
+          yield* harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("finished-first"),
+            threadId,
+            createdAt,
+            session: {
+              ...thread.session,
+              status: "ready",
+              activeTurnId: null,
+              updatedAt: createdAt,
+            },
+          });
+          yield* send("second-after-move", "next");
+          yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 2));
+          expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({ input: "next" });
+        }),
+    );
+  }
 
   effectIt.effect("projects inline context before sending the provider turn", () =>
     Effect.gen(function* () {

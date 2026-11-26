@@ -20,6 +20,7 @@ export const agentPlacementModeOptions: ReadonlyArray<{
 }> = [
   { value: "local", label: "This machine" },
   { value: "single", label: "One machine" },
+  { value: "priority", label: "Use priority order" },
   { value: "balanced", label: "Balance across machines" },
 ];
 
@@ -79,6 +80,8 @@ export function summarizeAgentPlacement(placement: AgentPlacementSettings): stri
         ? "This machine"
         : `One machine: ${placement.machines[id]!.label}`;
     }
+    case "priority":
+      return "Priority order";
     case "balanced": {
       const count = balancedAgentMachineCount(placement);
       return `Balanced across ${count} ${count === 1 ? "machine" : "machines"}`;

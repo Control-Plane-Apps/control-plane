@@ -6,10 +6,18 @@
  *
  * @module AgentMachines
  */
+import * as NodeCrypto from "node:crypto";
 import {
+  CommandId,
+  HANDOFF_TRANSCRIPT_MAX_CHARS,
+  ProjectId,
+  ThreadId,
   LOCAL_AGENT_MACHINE,
   AgentMachinesError,
   type AgentMachineConfig,
+  type AgentWorkspaceProbe,
+  type WaitingAgent,
+  type ModelSelection,
   type AgentPlacementSettings,
   type AgentMachinesInput,
   type AgentMachinesResult,
@@ -30,6 +38,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
+import { missingReadiness, makeProjectReadiness } from "./projectReadiness.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -39,6 +49,10 @@ import {
   exchangePairingCredential,
   fetchPeerDescriptor,
   fetchPeerShell,
+  fetchPeerReadiness,
+  fetchHandoffWorkspace,
+  fetchHandoffThread,
+  fetchPeerWorkspace,
   fetchPeerThread,
   PeerError,
   postPeerReach,
@@ -58,9 +72,11 @@ import {
 } from "./linkToken.ts";
 import { type PlacementCandidate } from "./placement.ts";
 import { matchPeerProject, type ProjectMatch } from "./projectMatch.ts";
-import { PLACEMENT_GRACE_MS, machineLoad } from "./remoteAgentState.ts";
-import { RemoteAgentStore } from "./RemoteAgentStore.ts";
-import { isAgentCountedRunning } from "../mcp/toolkits/agents/agentScope.ts";
+import { PLACEMENT_GRACE_MS, machineLoad, isThreadBusy } from "./remoteAgentState.ts";
+import { withRemoteAgentLock } from "./remoteAgentLock.ts";
+import { resumeBlocker } from "./workspaceResume.ts";
+import { RemoteAgentStore, type RemoteAgentRecord } from "./RemoteAgentStore.ts";
+import { isAgentCountedRunning, resolveAgentModel } from "../mcp/toolkits/agents/agentScope.ts";
 import { forkParked } from "../serverActivation.ts";
 
 const SNAPSHOT_TTL_MS = 5_000;
@@ -94,6 +110,8 @@ export const agentMachineSecretName = (machineId: string): string =>
   `agent-machine-token-${Buffer.from(machineId, "utf8").toString("base64url")}`;
 
 export interface HomeProject {
+  readonly baseModel?: ModelSelection;
+  readonly requestedModel?: string | undefined;
   readonly id: string;
   readonly title: string;
   readonly workspaceRoot: string;
@@ -128,6 +146,19 @@ export interface AgentMachinesShape {
     threadId: string,
     turnLimit: number,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, PeerError>;
+  readonly resolveModel: (
+    machineId: string,
+    projectId: string,
+    base: ModelSelection,
+    requested: string | undefined,
+  ) => Effect.Effect<ModelSelection, PeerError>;
+  readonly workspace: (
+    machineId: string,
+    projectId: string,
+    threadId: string,
+    freshIdentity?: boolean,
+    fingerprint?: boolean,
+  ) => Effect.Effect<AgentWorkspaceProbe, PeerError>;
   readonly dispatch: (machineId: string, command: PeerCommand) => Effect.Effect<void, PeerError>;
   /** Marks a machine as needing a fresh link after the peer refused its token. */
   readonly markNeedsRelink: (machineId: string) => Effect.Effect<void>;
@@ -208,6 +239,8 @@ interface Health {
 }
 
 const make = Effect.gen(function* () {
+  const projectReadiness = yield* makeProjectReadiness;
+  const providers = yield* ProviderRegistry;
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const environment = yield* ServerEnvironment.ServerEnvironment;
@@ -272,6 +305,7 @@ const make = Effect.gen(function* () {
       token: string;
       config: AgentMachineConfig;
     }) => Effect.Effect<A, PeerError, HttpClient.HttpClient>,
+    freshIdentity = false,
   ): Effect.Effect<A, PeerError> =>
     Effect.gen(function* () {
       const config = yield* machineConfig(machineId);
@@ -285,7 +319,7 @@ const make = Effect.gen(function* () {
       }
       const verifiedAt = identities.get(machineId);
       const now = yield* nowMs;
-      if (verifiedAt === undefined || now - verifiedAt > IDENTITY_TTL_MS) {
+      if (freshIdentity || verifiedAt === undefined || now - verifiedAt > IDENTITY_TTL_MS) {
         yield* requirePeerIdentity(config.baseUrl, machineId);
         identities.set(machineId, now);
       }
@@ -350,7 +384,7 @@ const make = Effect.gen(function* () {
       case "matched":
         return null;
       case "missing":
-        return `no Project named ${projectTitle} on that machine`;
+        return `no matching Project for ${projectTitle} on that machine`;
       case "ambiguous":
         return `${match.count} Projects match ${projectTitle} on that machine`;
     }
@@ -358,13 +392,38 @@ const make = Effect.gen(function* () {
 
   const placementInputs: AgentMachinesShape["placementInputs"] = (project, options) =>
     Effect.gen(function* () {
-      const settings = yield* placementSettings;
+      const globalSettings = yield* placementSettings;
+      const override = globalSettings.projectMachineOrders?.[project.id];
+      const settings =
+        globalSettings.mode === "priority" && override !== undefined
+          ? { ...globalSettings, machineOrder: override }
+          : globalSettings;
+      const requirements = settings.projectRequirements?.[project.id] ?? [];
+      const baseInstanceId = project.baseModel?.instanceId ?? "";
+      const homeReadiness =
+        settings.mode === "priority"
+          ? yield* Effect.gen(function* () {
+              const instances = yield* providers.getProviders;
+              const model =
+                project.baseModel &&
+                resolveAgentModel({
+                  requested: project.requestedModel ?? project.baseModel.model,
+                  base: project.baseModel,
+                  providers: instances,
+                });
+              const provider =
+                model?.kind === "resolved"
+                  ? instances.find((entry) => entry.instanceId === model.modelSelection.instanceId)
+                  : undefined;
+              return yield* projectReadiness(project, provider);
+            })
+          : null;
       const localCandidate = Effect.gen(function* () {
         const descriptor = yield* environment.getDescriptor;
         return {
           id: LOCAL_AGENT_MACHINE,
           label: descriptor.label,
-          ineligibleReason: null,
+          ineligibleReason: homeReadiness && missingReadiness(homeReadiness, requirements),
           load: yield* localLoad,
         } satisfies PlacementCandidate;
       });
@@ -382,36 +441,76 @@ const make = Effect.gen(function* () {
       );
       const now = yield* nowMs;
       const wanted = options.requested?.trim().toLowerCase();
-      const enabled = Object.entries(settings.machines).filter(
-        ([id, config]) =>
-          config.enabled &&
-          (settings.mode === "balanced" ||
-            (options.requested !== undefined
-              ? id.toLowerCase() === wanted || config.label.toLowerCase() === wanted
-              : id === settings.singleMachineId)),
-      );
+      const enabled = Object.entries(settings.machines).filter(([id, config]) => {
+        if (!config.enabled) return false;
+        if (settings.mode === "priority") {
+          return (settings.machineOrder ?? [LOCAL_AGENT_MACHINE]).includes(id);
+        }
+        return (
+          settings.mode === "balanced" ||
+          (wanted !== undefined
+            ? id.toLowerCase() === wanted || config.label.toLowerCase() === wanted
+            : id === settings.singleMachineId)
+        );
+      });
       const peerProjectIds = new Map<string, string>();
       const remote = yield* Effect.forEach(
         enabled,
         ([id, config]) =>
           shell(id).pipe(
-            Effect.map((snapshot): PlacementCandidate => {
-              const match = matchPeerProject(project, snapshot.projects);
-              if (match.kind === "matched") peerProjectIds.set(id, match.projectId);
-              const recent = records.filter(
-                (agent) =>
-                  agent.machineId === id &&
-                  agent.state !== "lost" &&
-                  now - DateTime.toEpochMillis(DateTime.makeUnsafe(agent.createdAt)) <
-                    PLACEMENT_GRACE_MS,
-              );
-              return {
-                id,
-                label: config.label,
-                ineligibleReason: ineligibleReason(match, project.title),
-                load: machineLoad({ snapshot, recentPlacements: recent }),
-              };
-            }),
+            Effect.flatMap((snapshot) =>
+              Effect.gen(function* () {
+                const match = matchPeerProject(
+                  project,
+                  snapshot.projects,
+                  settings.mode === "priority",
+                );
+                if (match.kind === "matched") peerProjectIds.set(id, match.projectId);
+                const recent = records.filter(
+                  (agent) =>
+                    agent.machineId === id &&
+                    agent.state !== "lost" &&
+                    now - DateTime.toEpochMillis(DateTime.makeUnsafe(agent.createdAt)) <
+                      PLACEMENT_GRACE_MS,
+                );
+                let reason = ineligibleReason(match, project.title);
+                if (homeReadiness && match.kind === "matched") {
+                  const peer = snapshot.projects.find((entry) => entry.id === match.projectId);
+                  const instanceId = peer?.defaultModelSelection?.instanceId ?? baseInstanceId;
+                  const result = yield* Effect.result(
+                    withPeer(id, ({ baseUrl, token }) =>
+                      fetchPeerReadiness(
+                        baseUrl,
+                        token,
+                        match.projectId,
+                        instanceId,
+                        project.requestedModel ??
+                          peer?.defaultModelSelection?.model ??
+                          project.baseModel?.model,
+                      ),
+                    ),
+                  );
+                  reason =
+                    result._tag === "Success"
+                      ? missingReadiness(
+                          {
+                            ...result.success,
+                            provider:
+                              result.success.provider &&
+                              result.success.modelSelection !== undefined,
+                          },
+                          requirements,
+                        )
+                      : "check the connection and update Control Plane on the linked machine to verify Project readiness";
+                }
+                return {
+                  id,
+                  label: config.label,
+                  ineligibleReason: reason,
+                  load: machineLoad({ snapshot, recentPlacements: recent }),
+                };
+              }),
+            ),
             Effect.catch((error) =>
               Effect.succeed<PlacementCandidate>({
                 id,
@@ -832,6 +931,665 @@ const make = Effect.gen(function* () {
     return Math.max(250, nextLookMs);
   });
 
+  const workspace: AgentMachinesShape["workspace"] = (
+    machineId,
+    projectId,
+    threadId,
+    freshIdentity,
+    fingerprint,
+  ) =>
+    withPeer(
+      machineId,
+      ({ baseUrl, token }) =>
+        fetchPeerWorkspace(baseUrl, token, projectId, threadId).pipe(
+          Effect.filterOrElse(
+            (probe) => !fingerprint || !probe.idle,
+            (probe) =>
+              fetchHandoffWorkspace(baseUrl, token, projectId, threadId).pipe(
+                Effect.map((workspace) => ({ ...probe, workspace })),
+              ),
+          ),
+        ),
+
+      freshIdentity,
+    );
+
+  const storeFailure = () =>
+    new AgentMachinesError({ detail: "Could not access the remote agent registry." });
+  const waitingStatus = (agent: RemoteAgentRecord, waitId: string) =>
+    Effect.gen(function* () {
+      if (agent.handoff) {
+        const phase = agent.handoff.phase;
+        const labels = (yield* placementSettings).machines;
+        const destination = agent.handoff.destinationId;
+        const activating = phase === "committed";
+        return {
+          threadId: agent.threadId,
+          title: agent.title,
+          machineId: agent.machineId,
+          machineLabel: agent.machineLabel,
+          waitId,
+          branch: agent.handoff.branch,
+          commit: agent.handoff.commit,
+          ...(phase ? { handoffPhase: phase } : {}),
+          canResume: !!phase && !activating,
+          ...(phase && !activating
+            ? {
+                recoveryLabel: phase === "prepared" ? "Cancel handoff" : "Recover original machine",
+              }
+            : {}),
+          ...(activating ? { activationDestination: destination } : {}),
+          destinations:
+            phase && phase !== "recovering"
+              ? [{ id: destination, label: labels[destination]?.label ?? destination }]
+              : [],
+          detail: activating
+            ? "Ownership is committed. Retry activation on the destination."
+            : phase === "recovering"
+              ? "Original-machine recovery is in progress. Retry recovery to finish."
+              : phase
+                ? "Retry the handoff or recover the original machine. Recovery needs only the original machine online."
+                : "This older handoff has no ownership receipts. Inspect both machines before recovery.",
+        } satisfies WaitingAgent;
+      }
+      const probe = yield* workspace(
+        agent.machineId,
+        agent.peerProjectId,
+        agent.threadId,
+        true,
+        agent.workspaceCheckpoint?.digest !== undefined,
+      ).pipe(Effect.orElseSucceed(() => null));
+      const reason =
+        resumeBlocker(agent.workspaceCheckpoint, probe) ??
+        (agent.inFlight !== null ? "Wait for the outstanding result to be collected." : null);
+      const enabled = (yield* placementSettings).machines;
+      const destinations =
+        (agent.workspacePosition || agent.workspaceCheckpoint) &&
+        probe?.idle &&
+        agent.inFlight === null &&
+        !agent.stoppingAt
+          ? Object.entries(enabled)
+              .filter(([id, config]) => config.enabled && id !== agent.machineId)
+              .map(([id, config]) => ({ id, label: config.label }))
+          : [];
+      return {
+        destinations,
+        threadId: agent.threadId,
+        title: agent.title,
+        machineId: agent.machineId,
+        machineLabel: agent.machineLabel,
+        branch: (agent.workspacePosition ?? agent.workspaceCheckpoint)?.branch ?? null,
+        commit: (agent.workspacePosition ?? agent.workspaceCheckpoint)?.commit ?? null,
+        canResume: reason === null,
+        detail: reason ?? "The original agent is idle in its verified workspace.",
+        waitId,
+      } satisfies WaitingAgent;
+    });
+  const checkedMachines = Effect.gen(function* () {
+    const machines = yield* check;
+    const records = yield* store.list.pipe(Effect.mapError(storeFailure));
+    const waitingAgents = yield* Effect.forEach(
+      records.flatMap((agent) =>
+        agent.state === "open" && agent.waitId ? [{ agent, waitId: agent.waitId }] : [],
+      ),
+      ({ agent, waitId }) => waitingStatus(agent, waitId),
+      { concurrency: 2 },
+    );
+    return { machines, waitingAgents };
+  });
+  const resume = (threadId: string, waitId: string) =>
+    Effect.gen(function* () {
+      const agent = Option.getOrNull(
+        yield* store.get(threadId).pipe(Effect.mapError(storeFailure)),
+      );
+      const stale = () =>
+        new AgentMachinesError({
+          detail: "This agent's waiting state changed. Refresh Agent machines.",
+        });
+      if (!agent || agent.state !== "open") return yield* stale();
+      if (agent.waitId == null && agent.lastResumedWaitId === waitId) return;
+      if (agent.waitId !== waitId || agent.handoff) return yield* stale();
+      const status = yield* waitingStatus(agent, waitId);
+      if (!status.canResume) return yield* new AgentMachinesError({ detail: status.detail });
+      const updated = Option.getOrNull(
+        yield* store
+          .update(threadId, (current) =>
+            !current.handoff &&
+            current.waitId === waitId &&
+            current.state === "open" &&
+            current.inFlight === null
+              ? {
+                  ...current,
+                  waitId: null,
+                  lastResumedWaitId: waitId,
+                  resumeCheckpoint: agent.workspaceCheckpoint ?? null,
+                }
+              : current,
+          )
+          .pipe(Effect.mapError(storeFailure)),
+      );
+      if (!updated || updated.waitId != null || updated.lastResumedWaitId !== waitId)
+        return yield* stale();
+    });
+
+  const moveError = (detail: string) => new AgentMachinesError({ detail });
+  const dispatchHandoff = (id: string, command: PeerCommand) =>
+    withPeer(id, ({ baseUrl, token }) => dispatchPeerCommand(baseUrl, token, command), true);
+  const releaseThread = (
+    id: string,
+    threadId: string,
+    waitId: string,
+    role: "source" | "destination",
+    key: string,
+  ) =>
+    dispatchHandoff(id, {
+      type: "thread.unarchive",
+      threadId: ThreadId.make(threadId),
+      commandId: CommandId.make(`cp-handoff-release:${role}:${waitId}`),
+      handoffRelease: { waitId, role, key },
+    });
+  const handoffUpdate = (
+    threadId: string,
+    waitId: string,
+    change: (
+      record: RemoteAgentRecord,
+      intent: NonNullable<RemoteAgentRecord["handoff"]>,
+    ) => RemoteAgentRecord,
+  ) =>
+    Effect.gen(function* () {
+      let applied = false;
+      const saved = Option.getOrNull(
+        yield* store
+          .update(threadId, (latest) => {
+            if (
+              latest.waitId !== waitId ||
+              latest.handoff?.waitId !== waitId ||
+              latest.state !== "open" ||
+              latest.stoppingAt ||
+              latest.inFlight
+            )
+              return latest;
+            applied = true;
+            return change(latest, latest.handoff);
+          })
+          .pipe(Effect.mapError(storeFailure)),
+      );
+      if (!applied || !saved)
+        return yield* moveError("The waiting agent changed. Refresh Waiting agents.");
+      return saved;
+    });
+  const activate = (record: RemoteAgentRecord, waitId: string) =>
+    Effect.gen(function* () {
+      const intent = record.handoff;
+      if (
+        intent?.phase !== "committed" ||
+        !intent.destinationKey ||
+        intent.destinationId !== record.machineId
+      )
+        return yield* moveError("Destination ownership is unconfirmed.");
+      const destinationThread = () =>
+        withPeer(
+          record.machineId,
+          ({ baseUrl, token }) =>
+            fetchHandoffThread(baseUrl, token, record.peerProjectId, record.threadId, waitId),
+          true,
+        );
+      if ((yield* destinationThread()).thread.archivedAt) {
+        const workspace = yield* withPeer(
+          record.machineId,
+          ({ baseUrl, token }) =>
+            fetchHandoffWorkspace(baseUrl, token, record.peerProjectId, record.threadId, waitId),
+          true,
+        );
+        if (
+          workspace.root !== intent.targetRoot ||
+          workspace.branch !== intent.branch ||
+          workspace.commit !== intent.commit ||
+          workspace.digest !== intent.digest
+        ) {
+          return yield* moveError(
+            "Restore the verified destination checkout before retrying activation.",
+          );
+        }
+      }
+      yield* releaseThread(
+        record.machineId,
+        record.threadId,
+        waitId,
+        "destination",
+        intent.destinationKey,
+      );
+      const active = (yield* destinationThread()).thread;
+      if (active.archivedAt || active.projectId !== record.peerProjectId)
+        return yield* moveError("Destination activation is unconfirmed. Retry activation.");
+      yield* handoffUpdate(record.threadId, waitId, (latest) => ({
+        ...latest,
+        handoff: null,
+        waitId: null,
+        lastResumedWaitId: waitId,
+      }));
+    });
+
+  const releaseHash = (key: string) => NodeCrypto.createHash("sha256").update(key).digest("hex");
+
+  const recoverHandoff = (threadId: string, waitId: string) =>
+    withRemoteAgentLock(
+      threadId,
+      Effect.gen(function* () {
+        const record = Option.getOrNull(
+          yield* store.get(threadId).pipe(Effect.mapError(storeFailure)),
+        );
+        if (record?.lastRecoveredWaitId === waitId) return;
+        if (!record?.handoff) return yield* moveError("This handoff is no longer pending.");
+        const intent = record.handoff;
+        if (
+          record.waitId !== waitId ||
+          !intent.phase ||
+          intent.phase === "committed" ||
+          !intent.sourceKey
+        )
+          return yield* moveError(
+            "The original machine cannot be recovered from this ownership state.",
+          );
+        const source = () =>
+          withPeer(
+            record.machineId,
+            ({ baseUrl, token }) =>
+              fetchHandoffThread(baseUrl, token, record.peerProjectId, threadId, waitId),
+            true,
+          );
+        const original = (yield* source()).thread;
+        if (original.projectId !== record.peerProjectId || original.settledAt != null)
+          return yield* moveError("Verify the original thread before recovery.");
+        if (intent.phase === "prepared") {
+          if (original.archivedAt)
+            return yield* moveError(
+              "The original thread is archived. Recovery requires its fence receipt.",
+            );
+        } else {
+          // Commit to rollback before revealing the source release key. From here the
+          // destination activation key can never be sent, even after a lost response.
+          yield* handoffUpdate(threadId, waitId, (latest, move) => ({
+            ...latest,
+            handoff: { ...move, phase: "recovering" },
+          }));
+          yield* releaseThread(record.machineId, threadId, waitId, "source", intent.sourceKey);
+          if ((yield* source()).thread.archivedAt)
+            return yield* moveError("The original machine has not confirmed recovery.");
+        }
+        // Rotate the wait ID so delayed clicks or receipts cannot restart this move.
+        yield* handoffUpdate(threadId, waitId, (latest) => ({
+          ...latest,
+          handoff: null,
+          waitId: NodeCrypto.randomUUID(),
+          lastRecoveredWaitId: waitId,
+          ...(intent.phase !== "prepared" && intent.replacementKey
+            ? {
+                abandonedHolds: [
+                  ...(latest.abandonedHolds ?? []),
+                  {
+                    destinationId: intent.destinationId,
+                    projectId: intent.projectId,
+                    waitId,
+                    key: intent.replacementKey,
+                  },
+                ],
+              }
+            : {}),
+          workspaceCheckpoint: {
+            root: intent.sourceRoot,
+            branch: intent.branch,
+            commit: intent.commit,
+            digest: intent.digest,
+          },
+        }));
+      }).pipe(Effect.mapError((e) => moveError(e.detail))),
+    );
+
+  const moveWaiting = (threadId: string, waitId: string, destinationId: string) =>
+    withRemoteAgentLock(
+      threadId,
+      Effect.gen(function* () {
+        const record = Option.getOrNull(
+          yield* store.get(threadId).pipe(Effect.mapError(storeFailure)),
+        );
+        if (
+          record?.lastResumedWaitId === waitId &&
+          record.machineId === destinationId &&
+          !record.waitId
+        )
+          return;
+        if (
+          record?.waitId === waitId &&
+          record.handoff?.phase === "committed" &&
+          record.machineId === destinationId
+        )
+          return yield* activate(record, waitId);
+        if (record?.handoff && (!record.handoff.phase || record.handoff.phase === "recovering"))
+          return yield* moveError("Complete original-machine recovery before another move.");
+        if (
+          !record ||
+          record.state !== "open" ||
+          record.waitId !== waitId ||
+          record.inFlight ||
+          record.stoppingAt ||
+          record.machineId === destinationId ||
+          (record.handoff && record.handoff.destinationId !== destinationId)
+        )
+          return yield* moveError(
+            "This handoff is stale or the agent still has outstanding work. Refresh Waiting agents.",
+          );
+        const settings = yield* placementSettings;
+        const destination = settings.machines[destinationId];
+        if (!destination?.enabled) return yield* moveError("Select an enabled linked destination.");
+        const sourceId = record.machineId;
+        const home = Option.getOrNull(
+          yield* snapshots
+            .getProjectShellById(ProjectId.make(record.homeProjectId))
+            .pipe(Effect.mapError(storeFailure)),
+        );
+        if (!home?.repositoryIdentity?.canonicalKey || home.assistant?.archivedAt != null)
+          return yield* moveError("The home Project needs a verified repository identity.");
+        const sourceShell = yield* shell(sourceId, { fresh: true });
+        const sourceProject = sourceShell.projects.find(
+          (project) => project.id === record.peerProjectId,
+        );
+        if (
+          sourceProject?.repositoryIdentity?.canonicalKey !== home.repositoryIdentity.canonicalKey
+        )
+          return yield* moveError("The original Project repository identity changed.");
+        const targetShell = yield* shell(destinationId, { fresh: true });
+        const match = matchPeerProject(home, targetShell.projects, true);
+        if (
+          match.kind !== "matched" ||
+          (record.handoff && match.projectId !== record.handoff.projectId)
+        )
+          return yield* moveError("Register an unambiguous destination checkout of this Project.");
+        const targetProject = match.projectId;
+        const priorHolds = (record.abandonedHolds ?? []).filter(
+          (h) => h.destinationId === destinationId && h.projectId === targetProject,
+        );
+        const existing = targetShell.threads.find((thread) => thread.id === threadId);
+        if (
+          !record.handoff &&
+          existing &&
+          !(priorHolds.length && existing.archivedAt && existing.projectId === targetProject)
+        )
+          return yield* moveError("A thread with this identity already exists on the destination.");
+        const destinationBusy = targetShell.threads.some(
+          (thread) =>
+            thread.id !== threadId &&
+            thread.projectId === targetProject &&
+            thread.archivedAt === null &&
+            (isThreadBusy(thread) ||
+              thread.backgroundLiveness != null ||
+              thread.hasPendingApprovals ||
+              thread.hasPendingUserInput),
+        );
+        if (destinationBusy)
+          return yield* moveError("Wait for other agents in the destination Project to finish.");
+
+        const sourceDetail = () =>
+          withPeer(
+            sourceId,
+            ({ baseUrl, token }) =>
+              fetchHandoffThread(baseUrl, token, record.peerProjectId, threadId, waitId),
+            true,
+          );
+        const source = (yield* sourceDetail()).thread;
+        if (!source || source.projectId !== record.peerProjectId || source.settledAt != null)
+          return yield* moveError("The original agent is missing or settled.");
+        // The scoped source endpoint returns an archived row only with this wait's durable fence.
+        const fence = source.archivedAt !== null;
+        if (source.archivedAt && !record.handoff)
+          return yield* moveError("The original agent was archived independently.");
+        const proof = (id: string, projectId: string, agent?: string) =>
+          withPeer(
+            id,
+            ({ baseUrl, token }) =>
+              fetchHandoffWorkspace(baseUrl, token, projectId, agent, agent ? waitId : undefined),
+            true,
+          );
+        const prior = record.workspacePosition ?? record.workspaceCheckpoint;
+        if (!prior)
+          return yield* moveError(
+            "No original branch and commit were recorded before this agent went offline.",
+          );
+        const before = yield* proof(sourceId, record.peerProjectId, threadId);
+        const target = yield* proof(destinationId, targetProject);
+        if (
+          !before.heldHandoff ||
+          !target.heldHandoff ||
+          ((!record.handoff || record.handoff.replacementKey) && !target.reusableHandoff)
+        )
+          return yield* moveError(
+            "Update both machines to a version that supports held agent handoffs.",
+          );
+        const same = (a: Pick<typeof before, "branch" | "commit" | "digest">, b: typeof before) =>
+          a.branch === b.branch && a.commit === b.commit && a.digest === b.digest;
+        if (
+          !same(before, target) ||
+          (source.branch && source.branch !== before.branch) ||
+          before.root !== prior.root ||
+          before.branch !== prior.branch ||
+          before.commit !== prior.commit ||
+          (record.handoff &&
+            (!same(record.handoff, before) ||
+              before.root !== record.handoff.sourceRoot ||
+              target.root !== record.handoff.targetRoot))
+        )
+          return yield* moveError(
+            "Prepare a matching destination checkout, including its branch, commit, index and untracked files.",
+          );
+        const ready = yield* withPeer(
+          destinationId,
+          ({ baseUrl, token }) =>
+            fetchPeerReadiness(
+              baseUrl,
+              token,
+              targetProject,
+              source.modelSelection.instanceId,
+              source.modelSelection.model,
+            ),
+          true,
+        );
+        const missing = missingReadiness(ready, settings.projectRequirements?.[home.id] ?? []);
+        if (!ready.modelSelection || missing)
+          return yield* moveError(
+            missing ?? "The original model is unavailable on this destination.",
+          );
+        const timestamp = record.handoff?.createdAt ?? DateTime.formatIso(yield* DateTime.now);
+        const intent = record.handoff ?? {
+          phase: "prepared" as const,
+          sourceKey: NodeCrypto.randomUUID(),
+          destinationKey: NodeCrypto.randomUUID(),
+          replacementKey: NodeCrypto.randomUUID(),
+          waitId,
+          destinationId,
+          projectId: targetProject,
+          sourceRoot: before.root,
+          targetRoot: target.root,
+          branch: before.branch,
+          commit: before.commit,
+          digest: before.digest,
+          createdAt: timestamp,
+        };
+        const current = Option.getOrNull(
+          yield* store
+            .update(threadId, (latest) =>
+              latest.machineId === sourceId &&
+              latest.waitId === waitId &&
+              latest.state === "open" &&
+              !latest.inFlight &&
+              !latest.stoppingAt
+                ? { ...latest, handoff: latest.handoff ?? intent }
+                : latest,
+            )
+            .pipe(Effect.mapError(storeFailure)),
+        );
+        if (current?.handoff?.destinationId !== destinationId)
+          return yield* moveError("The agent changed before handoff.");
+        if (!intent.sourceKey || !intent.destinationKey)
+          return yield* moveError("Missing handoff ownership receipt.");
+        const tid = ThreadId.make(threadId);
+        if (!fence) {
+          const original = yield* workspace(sourceId, record.peerProjectId, threadId, true);
+          if (!original.idle)
+            return yield* moveError("Wait for the original agent to finish before moving it.");
+          yield* handoffUpdate(threadId, waitId, (latest, move) => ({
+            ...latest,
+            handoff: { ...move, phase: "fencing" },
+          }));
+          if (source.session && source.session.status !== "stopped") {
+            yield* dispatchHandoff(sourceId, {
+              type: "thread.session.stop",
+              handoffWaitId: waitId,
+              commandId: CommandId.make(`cp-handoff-stop:${waitId}:${source.updatedAt}`),
+              threadId: tid,
+              createdAt: timestamp,
+            });
+          }
+          const stopped = (yield* sourceDetail()).thread;
+          if (!stopped || (stopped.session && stopped.session.status !== "stopped"))
+            return yield* moveError(
+              "Waiting for the original session to stop. Retry this handoff.",
+            );
+          yield* dispatchHandoff(sourceId, {
+            type: "thread.archive",
+            commandId: CommandId.make(`cp-handoff-fence:${waitId}:${stopped.updatedAt}`),
+            threadId: tid,
+            handoff: {
+              waitId,
+              expectedUpdatedAt: stopped.updatedAt,
+              releaseHash: releaseHash(intent.sourceKey),
+            },
+          });
+        }
+        const sealed = (yield* sourceDetail()).thread;
+        const sourceReceipt = sealed.activities.find(
+          (activity) =>
+            activity.kind === "agent.handoff.fenced" &&
+            activity.id === `cp-handoff-fence:${waitId}`,
+        )?.payload as { releaseHash?: string } | undefined;
+        if (!sealed.archivedAt || sourceReceipt?.releaseHash !== releaseHash(intent.sourceKey))
+          return yield* moveError("The original machine has not confirmed its execution fence.");
+        yield* handoffUpdate(threadId, waitId, (latest, move) => ({
+          ...latest,
+          handoff: { ...move, phase: "fenced" },
+        }));
+        if (
+          !same(before, yield* proof(sourceId, record.peerProjectId, threadId)) ||
+          !same(target, yield* proof(destinationId, targetProject))
+        )
+          return yield* moveError(
+            "Workspace contents changed. Execution is held on both machines.",
+          );
+        const homeMachine = (yield* environment.getDescriptor).environmentId;
+        const previousHold = source.activities.find(
+          (activity) => activity.kind === "agent.handoff.held",
+        );
+        const previous = (previousHold?.payload as { transcript?: unknown } | undefined)
+          ?.transcript;
+        const transcript = source.messages
+          .filter((message) => message.role === "user" || message.role === "assistant")
+          .reduce(
+            (recent, message) =>
+              [recent, `${message.role}: ${message.text.slice(-HANDOFF_TRANSCRIPT_MAX_CHARS)}`]
+                .filter(Boolean)
+                .join("\n")
+                .slice(-HANDOFF_TRANSCRIPT_MAX_CHARS),
+            typeof previous === "string" ? previous.slice(-HANDOFF_TRANSCRIPT_MAX_CHARS) : "",
+          );
+        const hold = {
+          transcript,
+          waitId,
+          machineId: homeMachine,
+          projectId: home.id,
+          releaseHash: releaseHash(intent.destinationKey),
+          ...(intent.replacementKey ? { replacementHash: releaseHash(intent.replacementKey) } : {}),
+        };
+        yield* dispatchHandoff(destinationId, {
+          handoffHold: hold,
+          ...(priorHolds.length
+            ? { replaceHolds: priorHolds.map(({ waitId, key }) => ({ waitId, key })) }
+            : {}),
+          type: "thread.create",
+          commandId: CommandId.make(`cp-handoff-create:${waitId}`),
+          threadId: tid,
+          projectId: ProjectId.make(targetProject),
+          title: record.title,
+          modelSelection: ready.modelSelection,
+          runtimeMode: record.runtimeMode,
+          interactionMode: source.interactionMode,
+          branch: target.branch,
+          worktreePath: null,
+          createdAt: timestamp,
+        });
+        const landed = (yield* withPeer(
+          destinationId,
+          ({ baseUrl, token }) =>
+            fetchHandoffThread(baseUrl, token, targetProject, threadId, waitId),
+          true,
+        )).thread;
+        const held = landed.activities.find(
+          (a) => a.kind === "agent.handoff.held" && a.id === `cp-handoff-hold:${waitId}`,
+        )?.payload as Partial<typeof hold> | undefined;
+        const landedProof = yield* proof(destinationId, targetProject, threadId);
+        if (
+          !landed ||
+          landed.projectId !== targetProject ||
+          !landed.archivedAt ||
+          held?.releaseHash !== hold.releaseHash ||
+          (hold.replacementHash && held.replacementHash !== hold.replacementHash) ||
+          held?.machineId !== homeMachine ||
+          held?.projectId !== home.id ||
+          held?.transcript !== transcript ||
+          landed.settledAt ||
+          !same(target, landedProof) ||
+          landedProof.root !== target.root
+        )
+          return yield* moveError("Destination verification failed. The original remains fenced.");
+        const committed = Option.getOrNull(
+          yield* store
+            .update(threadId, (latest) =>
+              latest.machineId === sourceId &&
+              latest.handoff?.waitId === waitId &&
+              latest.handoff.phase === "fenced" &&
+              latest.state === "open" &&
+              !latest.stoppingAt &&
+              latest.inFlight === null
+                ? {
+                    ...latest,
+                    machineId: destinationId,
+                    machineLabel: destination.label,
+                    peerProjectId: targetProject,
+                    handoff: { ...latest.handoff, phase: "committed" },
+                    abandonedHolds:
+                      latest.abandonedHolds?.filter(
+                        (h) => h.destinationId !== destinationId || h.projectId !== targetProject,
+                      ) ?? [],
+                    handoffHomeMachine: homeMachine,
+                    handoffContext: null,
+                    waitId,
+                    workspacePosition: target,
+                    workspaceCheckpoint: target,
+                    resumeCheckpoint: target,
+                    workspaceObservedFor: landed.updatedAt,
+                    lastPhase: "idle",
+                    queuedSends: latest.queuedSends.map(
+                      ({ baselineTurnId: _baseline, ...item }) => item,
+                    ),
+                  }
+                : latest,
+            )
+            .pipe(Effect.mapError(storeFailure)),
+        );
+        if (committed?.machineId !== destinationId)
+          return yield* moveError("Ownership changed during handoff. Inspect both threads.");
+        yield* activate(committed, waitId);
+      }).pipe(Effect.mapError((e) => moveError(e.detail))),
+    );
+
   const manage: AgentMachinesShape["manage"] = (input) =>
     Effect.gen(function* () {
       switch (input.action) {
@@ -846,13 +1604,49 @@ const make = Effect.gen(function* () {
           yield* unlink(input.id);
           return { machines: yield* check };
         }
+        case "recoverHandoff":
+          yield* recoverHandoff(input.threadId, input.waitId);
+          return yield* checkedMachines;
+        case "resume":
+          if (input.destinationId)
+            yield* moveWaiting(input.threadId, input.waitId, input.destinationId);
+          else yield* withRemoteAgentLock(input.threadId, resume(input.threadId, input.waitId));
+          return yield* checkedMachines;
         case "check":
-          return { machines: yield* check };
+          return yield* checkedMachines;
       }
     });
 
   return {
     manage,
+    resolveModel: (id, projectId, base, requested) =>
+      withPeer(id, ({ baseUrl, token }) =>
+        fetchPeerReadiness(
+          baseUrl,
+          token,
+          projectId,
+          base.instanceId,
+          requested ?? base.model,
+        ).pipe(
+          Effect.flatMap(({ modelSelection }) =>
+            modelSelection
+              ? Effect.succeed(
+                  modelSelection.instanceId === base.instanceId &&
+                    modelSelection.model === base.model
+                    ? base
+                    : modelSelection,
+                )
+              : Effect.fail(
+                  new PeerError({
+                    kind: "rejected",
+                    detail:
+                      "The destination could not verify the requested model and provider login.",
+                  }),
+                ),
+          ),
+        ),
+      ),
+    workspace,
     placementInputs,
     shell,
     thread: (machineId, threadId, turnLimit) =>

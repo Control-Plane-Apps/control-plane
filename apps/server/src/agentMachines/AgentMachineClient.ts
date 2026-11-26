@@ -13,6 +13,9 @@ import {
   AuthOrchestrationReadScope,
   AuthTokenExchangeGrantType,
   EnvironmentHttpApi,
+  ProjectId,
+  ThreadId,
+  isGuardedHandoffCommand,
   type ClientOrchestrationCommand,
   type ExecutionEnvironmentDescriptor,
   type OrchestrationShellSnapshot,
@@ -45,6 +48,7 @@ export class PeerError extends Schema.TaggedError<PeerError>()("PeerError", {
     "incompatible",
     "wrong-environment",
     "rejected",
+    "turn-refused",
   ]),
   detail: Schema.String,
   /** A machine-readable reason the peer gave, such as a link renewal refusal. */
@@ -91,6 +95,7 @@ export const PEER_COMMAND_ALLOWLIST = [
   "thread.turn.interrupt",
   "thread.session.stop",
   "thread.archive",
+  "thread.unarchive",
   "thread.settle",
 ] as const satisfies ReadonlyArray<ClientOrchestrationCommand["type"]>;
 
@@ -100,6 +105,7 @@ export type PeerCommand = Extract<
 >;
 
 export const isPeerCommand = (command: ClientOrchestrationCommand): command is PeerCommand =>
+  (command.type !== "thread.unarchive" || !!command.handoffRelease) &&
   (PEER_COMMAND_ALLOWLIST as ReadonlyArray<string>).includes(command.type);
 
 const noRedirects = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -148,12 +154,8 @@ export function classifyPeerFailure(error: unknown): PeerError {
   return new PeerError({ kind: "unreachable", detail: "Could not reach the linked machine." });
 }
 
-const call = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(
-    Effect.timeout(PEER_REQUEST_TIMEOUT),
-    noRedirects,
-    Effect.mapError(classifyPeerFailure),
-  );
+const call = <A, E, R>(effect: Effect.Effect<A, E, R>, timeout = PEER_REQUEST_TIMEOUT) =>
+  effect.pipe(Effect.timeout(timeout), noRedirects, Effect.mapError(classifyPeerFailure));
 
 const makeClient = (baseUrl: string) => HttpApiClient.make(EnvironmentHttpApi, { baseUrl });
 
@@ -224,6 +226,79 @@ export const exchangePairingCredential = (input: {
     }),
   );
 
+export const fetchHandoffWorkspace = (
+  baseUrl: string,
+  token: string,
+  projectId: string,
+  threadId?: string,
+  waitId?: string,
+) =>
+  call(
+    Effect.gen(function* () {
+      const client = yield* makeClient(baseUrl);
+      return yield* client.orchestration.handoffWorkspace({
+        headers: bearer(token),
+        params: { projectId: ProjectId.make(projectId) },
+        payload: threadId
+          ? { threadId: ThreadId.make(threadId), ...(waitId ? { waitId } : {}) }
+          : {},
+      });
+    }),
+    Duration.minutes(2),
+  );
+
+export const fetchHandoffThread = (
+  baseUrl: string,
+  token: string,
+  projectId: string,
+  threadId: string,
+  waitId: string,
+) =>
+  call(
+    Effect.gen(function* () {
+      const client = yield* makeClient(baseUrl);
+      return yield* client.orchestration.handoffThread({
+        headers: bearer(token),
+        params: { projectId: ProjectId.make(projectId), threadId: ThreadId.make(threadId) },
+        payload: { waitId },
+      });
+    }),
+  );
+
+export const fetchPeerWorkspace = (
+  baseUrl: string,
+  token: string,
+  projectId: string,
+  threadId: string,
+) =>
+  call(
+    Effect.gen(function* () {
+      const client = yield* makeClient(baseUrl);
+      return yield* client.orchestration.agentWorkspace({
+        headers: bearer(token),
+        params: { projectId: ProjectId.make(projectId), threadId: ThreadId.make(threadId) },
+      });
+    }),
+  );
+
+export const fetchPeerReadiness = (
+  baseUrl: string,
+  token: string,
+  projectId: string,
+  instanceId: string,
+  model?: string,
+) =>
+  call(
+    Effect.gen(function* () {
+      const client = yield* makeClient(baseUrl);
+      return yield* client.orchestration.projectReadiness({
+        headers: bearer(token),
+        params: { projectId: ProjectId.make(projectId) },
+        payload: { instanceId, ...(model ? { model } : {}) },
+      });
+    }),
+  );
+
 export const fetchPeerShell = (
   baseUrl: string,
   token: string,
@@ -280,10 +355,28 @@ export const dispatchPeerCommand = (baseUrl: string, token: string, command: Pee
     ? call(
         Effect.gen(function* () {
           const client = yield* makeClient(baseUrl);
-          yield* client.orchestration.dispatch({
+          // Older servers strip unknown optional fields. A distinct route makes a
+          // downgrade fail closed instead of creating a runnable destination.
+          const dispatch = isGuardedHandoffCommand(command)
+            ? client.orchestration.handoffDispatch
+            : client.orchestration.dispatch;
+          yield* dispatch({
             headers: bearer(token),
             payload: command,
-          } as Parameters<typeof client.orchestration.dispatch>[0]);
+          } as Parameters<typeof client.orchestration.dispatch>[0]).pipe(
+            Effect.catchTag("EnvironmentTurnRefusedError", (refusal) =>
+              Effect.fail(
+                command.type === "thread.turn.start" &&
+                  refusal.commandId === command.commandId &&
+                  refusal.threadId === command.threadId
+                  ? new PeerError({ kind: "turn-refused", detail: refusal.detail })
+                  : new PeerError({
+                      kind: "unreachable",
+                      detail: "Received a refusal for a different command.",
+                    }),
+              ),
+            ),
+          );
         }),
       )
     : Effect.fail(

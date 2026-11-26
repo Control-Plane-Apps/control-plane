@@ -14,6 +14,8 @@ import {
   type ModelSelection,
   type RuntimeMode,
 } from "@t3tools/contracts";
+import * as NodeCrypto from "node:crypto";
+import { decidePeerBudget, type PeerBudgetDecision } from "../orchestration/agentPeers.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -23,6 +25,8 @@ import * as Schema from "effect/Schema";
 
 import { AgentMachines, type HomeProject } from "./AgentMachines.ts";
 import { PeerError, type PeerCommand } from "./AgentMachineClient.ts";
+import { withRemoteAgentLock } from "./remoteAgentLock.ts";
+import { resumeBlocker } from "./workspaceResume.ts";
 import { placeAgent, type PlacementDecision } from "./placement.ts";
 import {
   isThreadBusy,
@@ -46,6 +50,7 @@ export class RemoteAgentError extends Schema.TaggedError<RemoteAgentError>()("Re
    * place the agent elsewhere. `start`: the peer thread may exist; only a retry
    * with the same ids is safe.
    */
+  turnRefused: Schema.optionalKey(Schema.Literal(true)),
   stage: Schema.optional(Schema.Literals(["create", "start"])),
 }) {
   override get message(): string {
@@ -64,10 +69,13 @@ export function isRemotePeerRequestId(messageId: string): boolean {
 
 const unavailable = (label: string, error: PeerError) =>
   new RemoteAgentError({
+    ...(error.kind === "turn-refused" ? { turnRefused: true as const } : {}),
     detail:
-      error.kind === "unauthorized"
-        ? `${label} refused this machine's token. Link it again in Settings > Connections > Agent machines.`
-        : `Could not reach ${label}: ${error.detail}`,
+      error.kind === "turn-refused"
+        ? error.detail
+        : error.kind === "unauthorized"
+          ? `${label} refused this machine's token. Link it again in Settings > Connections > Agent machines.`
+          : `Could not reach ${label}: ${error.detail}`,
   });
 
 export interface PlanResult {
@@ -82,7 +90,11 @@ export interface CreateRemoteInput {
   readonly machineId: string;
   readonly machineLabel: string;
   readonly peerProjectId: string;
-  readonly home: { readonly project: HomeProject; readonly label: string };
+  readonly home: {
+    readonly machineId?: string;
+    readonly project: HomeProject;
+    readonly label: string;
+  };
   readonly creator: { readonly id: string; readonly title: string };
   readonly ids: ReturnType<typeof agentCreateIds>;
   readonly threadId: string;
@@ -158,8 +170,12 @@ export interface RemoteAgentsShape {
       readonly runtimeMode: RuntimeMode;
       /** From an agent that does not manage this one (`cp_agent_message`); its result still goes back to it. */
       readonly peer?: boolean;
+      readonly receiptId?: string;
     },
-  ) => Effect.Effect<{ readonly queued: boolean }, RemoteAgentError>;
+  ) => Effect.Effect<
+    { readonly queued: boolean; readonly duplicate?: boolean; readonly messageId?: string },
+    RemoteAgentError
+  >;
   /** Starts the oldest queued send if the peer thread is idle. Used by the bridge. */
   readonly startQueued: (
     record: RemoteAgentRecord,
@@ -190,18 +206,81 @@ const make = Effect.gen(function* () {
       Effect.mapError((error) => unavailable(record.machineLabel, error)),
     );
 
+  const onHold = (record: RemoteAgentRecord) =>
+    new RemoteAgentError({
+      detail: `Waiting for manual resume on ${record.machineLabel}. Open Settings > Connections > Agent machines > Waiting agents to verify the original workspace.`,
+    });
+
   const startRequest = (
     record: RemoteAgentRecord,
     input: {
+      readonly origin: "create" | "follow-up" | "peer" | "queue";
       readonly messageId: string;
       readonly text: string;
       readonly replyTo: string;
       readonly sender: { readonly id: string; readonly title: string };
+      readonly placementHome?: { machineId: string; projectId: ProjectId };
+      readonly noResult?: true;
       readonly baselineTurnId: string | null;
       readonly createdAt: string;
     },
   ) =>
     Effect.gen(function* () {
+      const current = Option.getOrNull(
+        yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
+      );
+      if (
+        input.origin === "queue" &&
+        (current?.inFlight != null || current?.queuedSends[0]?.messageId !== input.messageId)
+      )
+        return;
+      if (
+        !current ||
+        current.machineId !== record.machineId ||
+        current.handoff ||
+        current.state === "lost" ||
+        (current.state === "settled" && input.origin !== "follow-up")
+      )
+        return yield* new RemoteAgentError({ detail: "This agent is no longer open." });
+      if (current.stoppingAt)
+        return yield* new RemoteAgentError({ detail: "Stop is pending on this machine." });
+      if (current.waitId) return yield* onHold(current);
+      if (current.resumeCheckpoint) {
+        const probe = yield* machines
+          .workspace(
+            current.machineId,
+            current.peerProjectId,
+            current.threadId,
+            true,
+            current.resumeCheckpoint.digest !== undefined,
+          )
+          .pipe(Effect.orElseSucceed(() => null));
+        const reason = resumeBlocker(current.resumeCheckpoint, probe);
+        if (reason) {
+          const waitId = `${current.threadId}:${yield* nowIso}`;
+          yield* store
+            .update(current.threadId, (latest) =>
+              latest.state === "open" && !latest.waitId && latest.resumeCheckpoint
+                ? { ...latest, waitId, workspaceCheckpoint: current.resumeCheckpoint ?? null }
+                : latest,
+            )
+            .pipe(Effect.mapError(storeFailed));
+          return yield* new RemoteAgentError({ detail: reason });
+        }
+      }
+      const queued = current.queuedSends.find((item) => item.messageId === input.messageId);
+      const baselineTurnId =
+        queued?.baselineTurnId === undefined ? input.baselineTurnId : queued.baselineTurnId;
+      if (queued && queued.baselineTurnId === undefined) {
+        yield* store
+          .update(record.threadId, (latest) => ({
+            ...latest,
+            queuedSends: latest.queuedSends.map((item) =>
+              item.messageId === input.messageId ? { ...item, baselineTurnId } : item,
+            ),
+          }))
+          .pipe(Effect.mapError(storeFailed));
+      }
       yield* send(
         {
           type: "thread.turn.start",
@@ -210,10 +289,21 @@ const make = Effect.gen(function* () {
           message: {
             messageId: MessageId.make(input.messageId),
             role: "user",
-            text: input.text,
+            text: current.handoffContext
+              ? current.handoffContext + "\n\n" + input.text
+              : input.text,
             attachments: [],
             source: {
               kind: "agent",
+              ...(current.handoffHomeMachine
+                ? {
+                    placementHome: {
+                      machineId: current.handoffHomeMachine,
+                      projectId: ProjectId.make(current.homeProjectId),
+                    },
+                  }
+                : {}),
+              ...(input.placementHome ? { placementHome: input.placementHome } : {}),
               threadId: ThreadId.make(input.sender.id),
               threadTitle: input.sender.title,
             },
@@ -223,12 +313,39 @@ const make = Effect.gen(function* () {
           createdAt: input.createdAt,
         },
         record,
+      ).pipe(
+        Effect.tapError((error) => {
+          if (!error.turnRefused || !queued || !isRemotePeerRequestId(input.messageId))
+            return Effect.void;
+          return store
+            .update(record.threadId, (latest) => {
+              const receipts = latest.peerReceipts ?? [];
+              const refusal = {
+                messageId: input.messageId,
+                senderThreadId: input.sender.id,
+                text: queued.text,
+                refusal: error.detail,
+              };
+              return {
+                ...latest,
+                peerReceipts: [
+                  ...receipts.filter((item) => item.messageId !== input.messageId),
+                  refusal,
+                ],
+                queuedSends: latest.queuedSends.filter(
+                  (item) => item.messageId !== input.messageId,
+                ),
+              };
+            })
+            .pipe(Effect.mapError(storeFailed));
+        }),
       );
       const request: RemoteAgentRequest = {
         messageId: input.messageId,
         replyTo: input.replyTo,
+        ...(input.noResult ? { noResult: true as const } : {}),
         sentAt: input.createdAt,
-        baselineTurnId: input.baselineTurnId,
+        baselineTurnId,
         suppressed: false,
       };
       yield* store
@@ -237,6 +354,24 @@ const make = Effect.gen(function* () {
           state: "open",
           endedAt: null,
           inFlight: request,
+          ...(!isRemotePeerRequestId(input.messageId)
+            ? {
+                peerReceipts:
+                  current.peerReceipts?.flatMap((receipt) => {
+                    if (current.queuedSends.some((q) => q.messageId === receipt.messageId))
+                      return [receipt];
+                    // The next budget window can retry the text with a new command id.
+                    // Preserve the negative receipt for replays of the original command id.
+                    return receipt.refusal !== undefined
+                      ? [{ ...receipt, text: "", refusalWindowClosed: true as const }]
+                      : [];
+                  }) ?? [],
+              }
+            : {}),
+          ...(input.origin === "create" ? { firstMessageAccepted: true } : {}),
+          resumeCheckpoint: null,
+          handoffContext: null,
+          queuedSends: current.queuedSends.filter((queued) => queued.messageId !== input.messageId),
           lastPhase: "starting",
         }))
         .pipe(Effect.mapError(storeFailed));
@@ -258,7 +393,8 @@ const make = Effect.gen(function* () {
           decision.kind === "placed"
             ? (inputs.peerProjectIds.get(decision.machineId) ?? null)
             : null,
-        allowLocalFallback: inputs.settings.allowLocalFallback,
+        allowLocalFallback:
+          inputs.settings.mode !== "priority" && inputs.settings.allowLocalFallback,
         localOnly: inputs.localOnly,
       } satisfies PlanResult;
     });
@@ -278,6 +414,7 @@ const make = Effect.gen(function* () {
         runtimeMode: input.runtimeMode,
         createdAt: input.createdAt,
         state: "pending",
+        createAttempted: false,
         endedAt: null,
         inFlight: null,
         queuedSends: [],
@@ -291,19 +428,48 @@ const make = Effect.gen(function* () {
   const start: RemoteAgentsShape["start"] = (input, record) =>
     Effect.gen(function* () {
       // A retry after a start that landed finds the request already in flight.
-      if (record.state === "open" && record.inFlight !== null) return record;
+      if (record.firstMessageAccepted || record.state !== "pending") return record;
 
+      if (record.waitId) return yield* onHold(record);
+      // Historical pending records predate the dispatch marker. Keep their placement pinned.
+      const possiblyDispatched = record.createAttempted !== false;
       const peerShell = yield* machines.shell(record.machineId).pipe(
         Effect.mapError((error) => unavailable(record.machineLabel, error)),
-        Effect.tapError(() => store.remove(record.threadId).pipe(Effect.ignore)),
-        Effect.mapError((error) => new RemoteAgentError({ detail: error.detail, stage: "create" })),
+        Effect.tapError(() =>
+          possiblyDispatched ? Effect.void : store.remove(record.threadId).pipe(Effect.ignore),
+        ),
+        Effect.mapError(
+          (error) =>
+            new RemoteAgentError({
+              detail: error.detail,
+              stage: possiblyDispatched ? "start" : "create",
+            }),
+        ),
       );
       const peerProject = peerShell.projects.find((entry) => entry.id === record.peerProjectId);
-      const modelSelection: ModelSelection =
-        input.requestedModel !== undefined
-          ? { instanceId: input.baseModel.instanceId, model: input.requestedModel }
-          : (peerProject?.defaultModelSelection ?? input.baseModel);
+      const modelSelection = yield* machines
+        .resolveModel(
+          record.machineId,
+          record.peerProjectId,
+          peerProject?.defaultModelSelection ?? input.baseModel,
+          input.requestedModel,
+        )
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new RemoteAgentError({
+                detail: error.detail,
+                stage: possiblyDispatched ? "start" : "create",
+              }),
+          ),
+          Effect.tapError(() =>
+            possiblyDispatched ? Effect.void : store.remove(record.threadId).pipe(Effect.ignore),
+          ),
+        );
 
+      yield* store
+        .update(record.threadId, (current) => ({ ...current, createAttempted: true }))
+        .pipe(Effect.mapError(storeFailed));
       yield* send(
         {
           type: "thread.create",
@@ -320,13 +486,35 @@ const make = Effect.gen(function* () {
         },
         record,
       ).pipe(
-        // Nothing reached the peer: drop the record so a retry places afresh.
-        Effect.tapError(() => store.remove(record.threadId).pipe(Effect.ignore)),
-        Effect.mapError((error) => new RemoteAgentError({ detail: error.detail, stage: "create" })),
+        // A lost response can follow a successful create. Keep the original placement.
+        Effect.mapError((error) => new RemoteAgentError({ detail: error.detail, stage: "start" })),
       );
 
+      const checkpoint = yield* machines
+        .workspace(record.machineId, record.peerProjectId, record.threadId)
+        .pipe(Effect.orElseSucceed(() => null));
+      yield* store
+        .update(record.threadId, (current) =>
+          current.waitId
+            ? current
+            : {
+                ...current,
+                workspacePosition: checkpoint?.position ?? checkpoint?.workspace ?? null,
+                workspaceCheckpoint: checkpoint?.workspace ?? null,
+              },
+        )
+        .pipe(Effect.mapError(storeFailed));
       const preamble = `You are running on ${record.machineLabel} for the Project "${input.home.project.title}", started by ${input.creator.title} on ${input.home.label}. This machine has its own copy of the Project folder: read its AGENTS.md here, and your changes stay on this machine.\n\n`;
       yield* startRequest(record, {
+        origin: "create",
+        ...(input.home.machineId
+          ? {
+              placementHome: {
+                machineId: input.home.machineId,
+                projectId: ProjectId.make(record.homeProjectId),
+              },
+            }
+          : {}),
         messageId: input.ids.messageId,
         text: `${preamble}${input.message}`,
         replyTo: input.creator.id,
@@ -400,11 +588,10 @@ const make = Effect.gen(function* () {
       yield* store
         .update(record.threadId, (current) => ({
           ...current,
-          inFlight: current.inFlight === null ? null : { ...current.inFlight, suppressed: true },
-          queuedSends: [],
+          stoppingAt: current.stoppingAt ?? createdAt,
         }))
         .pipe(Effect.mapError(storeFailed));
-      const key = `${record.threadId}:${createdAt}`;
+      const key = `${record.threadId}:${record.stoppingAt ?? createdAt}`;
       if (working) {
         yield* send(
           {
@@ -437,6 +624,8 @@ const make = Effect.gen(function* () {
         yield* store
           .update(record.threadId, (current) => ({
             ...current,
+            stoppingAt: null,
+            queuedSends: [],
             state: "settled",
             endedAt: createdAt,
             inFlight: null,
@@ -444,7 +633,12 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(storeFailed));
       } else {
         yield* store
-          .update(record.threadId, (current) => ({ ...current, inFlight: null }))
+          .update(record.threadId, (current) => ({
+            ...current,
+            stoppingAt: null,
+            inFlight: null,
+            queuedSends: [],
+          }))
           .pipe(Effect.mapError(storeFailed));
       }
       return { stopped: working || dropped > 0, archived: options.archive };
@@ -486,12 +680,88 @@ const make = Effect.gen(function* () {
 
   const sendMessage: RemoteAgentsShape["send"] = (record, input) =>
     Effect.gen(function* () {
+      const latest = Option.getOrNull(
+        yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
+      );
+      const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${input.receiptId ?? NodeCrypto.randomUUID()}`;
+      if (input.peer && latest?.machineId === record.machineId) {
+        const refused = latest.peerReceipts?.find(
+          (item) =>
+            item.refusal !== undefined &&
+            item.senderThreadId === input.sender.id &&
+            (item.messageId === messageId ||
+              (!item.refusalWindowClosed && item.text === input.text)),
+        );
+        if (refused?.refusal !== undefined)
+          return yield* new RemoteAgentError({ detail: refused.refusal, turnRefused: true });
+      }
+      if (
+        !latest ||
+        latest.handoff ||
+        latest.machineId !== record.machineId ||
+        latest.stoppingAt ||
+        (input.peer && latest.state !== "open")
+      )
+        return yield* new RemoteAgentError({ detail: "This agent cannot receive messages." });
+      if (latest.waitId) return yield* onHold(latest);
       const createdAt = yield* nowIso;
-      const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${createdAt}:${record.queuedSends.length}`;
       const detail = yield* readView(record, 1);
       if (Option.isNone(detail)) return yield* lostError(record);
       const view = viewOf(detail.value.thread);
-      const busy = record.inFlight !== null || isThreadBusy(view);
+      const busy = latest.inFlight !== null || isThreadBusy(view);
+      if (input.peer) {
+        if (detail.value.thread.settledAt != null || detail.value.thread.archivedAt != null)
+          return yield* new RemoteAgentError({ detail: "The peer is no longer active." });
+        const receipt = { messageId, senderThreadId: input.sender.id, text: input.text };
+        let decision: PeerBudgetDecision | undefined;
+        const saved = yield* store
+          .update(record.threadId, (current) => {
+            if (current.state !== "open" || current.stoppingAt || current.waitId) return current;
+            const previous = current.peerReceipts ?? [];
+            decision = decidePeerBudget({
+              window: previous
+                .filter((entry) => entry.refusal === undefined)
+                .map((entry) => ({ ...entry, role: "user" })),
+              senderThreadId: receipt.senderThreadId,
+              text: receipt.text,
+            });
+            if (decision.kind !== "send") return current;
+            return {
+              ...current,
+              peerReceipts: [...previous, receipt],
+              queuedSends: [
+                ...current.queuedSends,
+                {
+                  messageId,
+                  text: input.text,
+                  replyTo: input.replyTo ?? input.sender.id,
+                  sender: input.sender,
+                  queuedAt: createdAt,
+                  ...(input.replyTo === null ? { noResult: true as const } : {}),
+                },
+              ],
+            };
+          })
+          .pipe(Effect.mapError(storeFailed));
+        if (!decision || Option.isNone(saved))
+          return yield* new RemoteAgentError({ detail: "The peer cannot receive messages." });
+        if (decision.kind === "duplicate") {
+          const duplicateId = decision.messageId;
+          return {
+            queued: saved.value.queuedSends.some((entry) => entry.messageId === duplicateId),
+            duplicate: true,
+            messageId: duplicateId,
+          };
+        }
+        if (decision.kind !== "send")
+          return yield* new RemoteAgentError({
+            detail: "Peer message budget exhausted. Ask the coordinator.",
+          });
+        if (busy || saved.value.queuedSends[0]?.messageId !== messageId)
+          return { queued: true, messageId };
+        yield* startQueued(saved.value, view);
+        return { queued: false, messageId };
+      }
       if (busy) {
         yield* store
           .update(record.threadId, (current) => ({
@@ -503,6 +773,8 @@ const make = Effect.gen(function* () {
                 text: input.text,
                 replyTo: input.replyTo ?? input.sender.id,
                 queuedAt: createdAt,
+                sender: input.sender,
+                ...(input.peer && input.replyTo === null ? { noResult: true as const } : {}),
               },
             ],
           }))
@@ -510,10 +782,12 @@ const make = Effect.gen(function* () {
         return { queued: true };
       }
       yield* startRequest(record, {
+        origin: input.peer ? "peer" : "follow-up",
         messageId,
         text: input.text,
         replyTo: input.replyTo ?? input.sender.id,
         sender: input.sender,
+        ...(input.peer && input.replyTo === null ? { noResult: true as const } : {}),
         baselineTurnId: view.latestTurn?.turnId ?? null,
         createdAt,
       });
@@ -523,20 +797,16 @@ const make = Effect.gen(function* () {
   const startQueued: RemoteAgentsShape["startQueued"] = (record, view) =>
     Effect.gen(function* () {
       const next = record.queuedSends[0];
-      if (next === undefined || record.inFlight !== null || isThreadBusy(view)) return;
+      if (record.waitId || next === undefined || record.inFlight !== null || isThreadBusy(view))
+        return;
       const createdAt = yield* nowIso;
-      // Off the queue first: a failed start is retried by the sender, never doubled.
-      yield* store
-        .update(record.threadId, (current) => ({
-          ...current,
-          queuedSends: current.queuedSends.filter((entry) => entry.messageId !== next.messageId),
-        }))
-        .pipe(Effect.mapError(storeFailed));
       yield* startRequest(record, {
+        origin: "queue",
         messageId: next.messageId,
         text: next.text,
         replyTo: next.replyTo,
-        sender: { id: next.replyTo, title: "Coordinator" },
+        ...(next.noResult ? { noResult: true as const } : {}),
+        sender: next.sender ?? { id: next.replyTo, title: "Project thread" },
         baselineTurnId: view.latestTurn?.turnId ?? null,
         createdAt,
       });
@@ -546,9 +816,18 @@ const make = Effect.gen(function* () {
     plan,
     homeLabel: machines.homeLabel,
     reserve,
-    start,
-    get: (threadId) =>
-      store.get(threadId).pipe(Effect.orElseSucceed(() => Option.none<RemoteAgentRecord>())),
+    start: (input, record) =>
+      withRemoteAgentLock(
+        record.threadId,
+        Effect.gen(function* () {
+          const current = yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed));
+          return yield* start(
+            input,
+            Option.getOrElse(current, () => record),
+          );
+        }),
+      ),
+    get: (threadId) => store.get(threadId).pipe(Effect.orDie),
     find: ({ projectId, ref }) =>
       list.pipe(
         Effect.map((records) => {
@@ -583,10 +862,34 @@ const make = Effect.gen(function* () {
         ),
       ),
     read,
-    stop,
-    settle,
-    send: sendMessage,
-    startQueued,
+    stop: (record, options) =>
+      withRemoteAgentLock(
+        record.threadId,
+        Effect.gen(function* () {
+          const current = yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed));
+          if (
+            Option.isNone(current) ||
+            current.value.handoff ||
+            current.value.machineId !== record.machineId
+          )
+            return yield* lostError(record);
+          return yield* stop(current.value, options);
+        }),
+      ),
+    settle: (record, options) =>
+      withRemoteAgentLock(
+        record.threadId,
+        Effect.gen(function* () {
+          const current = Option.getOrNull(
+            yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
+          );
+          if (!current || current.handoff || current.machineId !== record.machineId)
+            return yield* lostError(record);
+          return yield* settle(current, options);
+        }),
+      ),
+    send: (record, input) => withRemoteAgentLock(record.threadId, sendMessage(record, input)),
+    startQueued: (record, view) => withRemoteAgentLock(record.threadId, startQueued(record, view)),
   } satisfies RemoteAgentsShape;
 });
 

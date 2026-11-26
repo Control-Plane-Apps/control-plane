@@ -1,7 +1,7 @@
 # Multi-machine agents
 
 A coordinator (or a standing agent) can start one-off agents on another machine linked to its own
-server, such as a Mac Mini on the same tailnet. Where a new agent runs follows a server-owned
+server. Where a new agent runs follows a server-owned
 setting. Code: `apps/server/src/agentMachines/` and `apps/server/src/mcp/toolkits/agents/`.
 
 ## What exists today
@@ -39,7 +39,9 @@ upstream settings file gains one line). Defaults keep today's behaviour.
 
 ```ts
 agentPlacement: {
-  mode: "local" | "single" | "balanced"; // default "local"
+  mode: "local" | "single" | "balanced" | "priority"; // default "local"
+  machineOrder?: readonly string[]; // default ["local"]
+  projectMachineOrders?: Record<string, readonly string[]>; // keyed by the home Project id
   singleMachineId: string | null; // "single": a machine id, or "local"
   localPreference: 0 | 25 | 50 | 100; // this machine's weight in "balanced"
   allowLocalFallback: boolean; // default true
@@ -81,7 +83,7 @@ agentPlacement: {
   `t3 pair --machine-link`). Migration 59 tags 0.0.91 link sessions as untagged:
   `one-time-token`, bearer, exact read and operate scopes, not revoked, and either the labels this
   fork gave them (`Agent placement from`/`Link back from`) or user agent `node` (the server's own
-  HTTP client; a pairing link's label replaces the fork's, as on the real MacBook and mini link).
+  HTTP client; a pairing link's label replaces the fork's).
   A script with the same scopes (`Python-urllib`) is left alone. A general
   pairing link narrowed to read and operate still links, but its token never renews (Settings says
   so).
@@ -149,6 +151,17 @@ per-candidate `{ reachable, load, projectMatch }`.
    `machine` was given (the result carries a `placement` note); otherwise fail with each machine's
    reason. An explicit `machine` never falls back.
 
+**Priority order.** Settings > Connections > Agent machines lets the operator order candidates for
+all Projects and override the list for an individual Project. A Project inherits the global order
+after its override is cleared. The first ready listed machine wins, regardless of load. Skipped
+machines and their reasons appear in the create result. If none qualify, creation fails. Standing
+agents and retries of existing requests retain their existing placement.
+
+Priority mode requires a checkout and an available provider for the selected model. In Connections,
+select a Project to require GitHub CLI, Sentry, read replica, EAS, Vercel, PostHog or MCP.
+The destination checks local configuration presence and returns the results and resolved model
+selection through an authenticated endpoint. External service access needs separate verification.
+
 **Load** is running agents on the whole machine (`isAgentCountedRunning` over every non-archived
 thread in the peer's shell snapshot) plus this home's placements from the last 2 minutes that the
 snapshot does not yet show running, which spreads a burst of creates. Peer timestamps are
@@ -171,9 +184,9 @@ The agent runs in the peer's folder and reads that machine's `AGENTS.md` and `CL
 can drift; the first message says which machine it is on and that edits stay there. Not built:
 creating the Project on the peer and copying `AGENTS.md`, pushing a branch, a shared filesystem.
 
-The peer thread starts Local with the peer Project's default model, else the home's selection; an
-explicit `model` passes through. The home cannot list a peer's providers over HTTP, so an
-unavailable model surfaces as a failed remote turn (see results). Because the peer's own
+Before creating a thread, the home asks the destination to resolve the requested model, using the
+peer Project's default selection or the home selection as the base. The destination checks its
+provider inventory and login status, then returns the exact provider instance and model. Because the peer's own
 assistant rules apply, the create sends **no `createdByThreadId` and no `replyTo`** (both are
 rejected on the peer for a thread the peer does not know), and the peer Project's coordinator, if
 any, will see the thread as one of its agents and count it toward the peer's cap. Message ids sent
@@ -192,10 +205,13 @@ peer's own reactor never mistakes them for deliveries.
 - `cp_agent_read`, `cp_agent_stop`, `cp_thread_send` resolve a threadId or exact title across
   local and remote agents the caller manages; their parameters do not change.
 - `cp_agent_message` (and `cp_thread_send` from an agent that does not manage the target) reaches
-  any open remote agent in the home Project as a peer message. The remote agent cannot call back
-  into the home, so the send is a request with `replyTo` the sender, and its id carries a `peer:`
-  segment so the bridge returns the result to that sender instead of falling back to the
-  coordinator.
+  any open remote agent in the home Project as a peer message. A send from the home to a
+  placed agent retains its result delivery for compatibility.
+- Placed agents can discover, read and message their home coordinator and its active peers through
+  a reciprocal machine link. The home confirms the request over its pinned return link and binds
+  its caller's machine, thread and execution Project to an open placement record. The home resolves
+  targets in the recorded home Project. The peer route exposes no management operations.
+  `cp_agent_peer_read` returns the same bounded request/result history as the manager's reader.
 - **Ownership** of a remote agent comes from the registry, as a managed-agent shape
   `{ id, projectId: home Project, pinnedAt: null, createdByThreadId: registry creator }` fed to the
   existing `canManageAgent`, because `lineage.creatorOf` reads the local event log.
@@ -206,9 +222,9 @@ peer's own reactor never mistakes them for deliveries.
 
 **Client allowlist.** The home's peer client can dispatch only `thread.create`,
 `thread.turn.start`, `thread.turn.interrupt`, `thread.session.stop`, `thread.archive` and
-`thread.settle`. Peer dispatch errors are opaque (every failure is a 500), so any non-2xx or
-timeout is treated as unknown and resolved by reading the thread; retries reuse the same command
-ids, which the peer dedupes.
+`thread.settle`. When the destination confirms a peer refusal with a matching command and thread receipt, the home
+records the reason and removes the message from the queue. An opaque server error or timeout keeps
+the message queued under the original command ID for reconciliation.
 
 **RemoteAgentBridge.** One poll per machine with open records (every 3 seconds, jittered), reading
 the shell snapshot, which carries each thread's `latestTurn`, `session`, pending flags and
@@ -239,7 +255,7 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
   Project ids, creator, title, state (`pending`, `open`, `settled`, `lost`), request in flight,
   queued sends, last phase. Create order: look up the registry by the derived thread id first
   (before the local thread check and before placement, so a retry cannot land on another machine),
-  place, write `pending`, dispatch, then `open`. A failed peer create removes the `pending` record.
+  place, write `pending`, dispatch, then `open`. Once dispatch begins, the receipt survives an ambiguous outcome and keeps retries on that machine.
   Records are pruned 7 days after settling.
 
 ## Failure modes
@@ -248,21 +264,43 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Peer offline at create                                         | Ineligible; fall back or fail per setting. No record left.                                                                    |
 | Peer offline mid-run                                           | Agent keeps running there; phase `stale`; polling backs off; results arrive on return.                                        |
-| Peer gone 24 hours                                             | Record `lost`; one failed result pushed under its own id, so a real result that arrives later is still delivered.             |
+| Peer gone 24 hours                                             | Keep the original request and queued sends. Settings > Connections > Agent machines shows the waiting agent and its machine.  |
 | Home restarts                                                  | Registry and push receipts recompute what is owed.                                                                            |
 | 401 or 403 (revoked, unlinked there, or expired while offline) | Machine marked needs relink and ineligible; the bridge holds and pushes nothing; resumes after relink. Settings shows Relink. |
 | Create partly applied                                          | Retry with the same `clientRequestId` finishes it via the registry.                                                           |
 | Peer thread deleted or archived                                | Record `lost`; failed result pushed once.                                                                                     |
-| Model unavailable on the peer                                  | Case (b) or (c) delivers a failed result; the coordinator can retry with `machine: "local"`.                                  |
+| Model unavailable on the peer                                  | Creation reports the model or provider problem before dispatch.                                                               |
 | Peer protocol version differs                                  | Link refused; a later mismatch marks the machine ineligible.                                                                  |
 | Unlink with agents running                                     | Allowed; those records become `lost` and are reported.                                                                        |
+
+### Resume a waiting agent
+
+Open **Settings > Connections > Agent machines** on the coordinator's machine. **Waiting agents**
+shows the original machine, known branch and commit, and the current eligibility reason. After
+waking or reconnecting the machine, select **Refresh**. **Resume** becomes available when the
+server verifies the original checkout and thread are ready to continue. Resuming releases held
+work on that machine. If the queue is empty, the agent waits for its next request.
+
+The home Project coordinator receives a waiting notice when the bridge loses contact with an agent. For
+an alternate machine, prepare a separate destination Project checkout with the same repository, branch,
+commit, staged changes, working tree changes and non-ignored untracked files. Ignored local
+configuration stays on each machine. Select the destination in **Waiting agents** and choose
+**Verify and move**. Both machines must be reachable. Each hashes its checkout locally. The home
+checks matching fingerprints and destination requirements, stops the original session, and
+archives the original thread with a durable execution fence before creating the destination agent.
+The destination begins archived and bound to its home Project. Before ownership commits, **Cancel
+handoff** verifies the original is unfenced. **Recover original machine** can restore a fenced
+original even when the destination is offline. Both actions leave the queue waiting for workspace
+verification. Once the home commits ownership, **Retry activation** completes the move on the
+destination using the same receipt. The home releases queued work after confirming activation. The original thread
+holds its full history. The agent's first destination request includes recent conversation text.
 
 ## Security
 
 - **Linking is trust.** `orchestration:operate` lets the home run any client command on the peer,
   including code execution in `full-access`. Link only machines you would let the coordinator's
   machine act on. The runtime-mode rule constrains the MCP path only.
-- **Allowlist.** The peer client refuses any command outside the six above, so a bug or a
+- **Allowlist.** The peer client refuses commands outside the agent allowlist, which includes a scoped handoff release, so a bug or a
   prompt-injected tool call cannot reach `project.delete` or `thread.delete`.
 - **Least privilege token.** Read and operate only; never `access:write` or relay scopes. Unlink
   retires the local token at the peer and deletes it; a token is also listed in the peer's client
@@ -285,7 +323,7 @@ the shell snapshot, which carries each thread's `latestTurn`, `session`, pending
   standing stays local, runtime mode never looser, list, read, stop and send on remote agents.
 - Settings schema and patch tests; web logic tests for the section; visual check of the UI.
 
-## Decisions for Nick
+## Placement and linking decisions
 
 1. **This machine is a candidate in Balance** with its own preference. Manual only makes it
    coordination-only.

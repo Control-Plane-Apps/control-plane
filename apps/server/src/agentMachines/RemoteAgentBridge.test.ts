@@ -15,11 +15,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { AgentCompletionReactor } from "../orchestration/AgentCompletionReactor.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import {
-  RemoteAgentBridge,
-  makeRemoteAgentBridge,
-  REMOTE_LOST_AFTER_MS,
-} from "./RemoteAgentBridge.ts";
+import { RemoteAgentBridge, makeRemoteAgentBridge } from "./RemoteAgentBridge.ts";
 import { RemoteAgentsLive } from "./RemoteAgents.ts";
 import { RemoteAgentStore, type RemoteAgentRecord } from "./RemoteAgentStore.ts";
 import {
@@ -494,6 +490,8 @@ describe("RemoteAgentBridge machine health", () => {
       );
       expect(results.down.lastPhase).toBe("stale");
       expect(results.down.inFlight).not.toBeNull();
+      expect(results.down.waitId).toBeTruthy();
+      expect(results.up.waitId).toBe(results.down.waitId);
       expect(h.pushes()).toHaveLength(1);
       expect(results.up.state).toBe("open");
       expect(results.up.inFlight).toBeNull();
@@ -522,7 +520,7 @@ describe("RemoteAgentBridge machine health", () => {
   );
 
   it.effect(
-    "loses the agent and pushes one failed result after the machine is gone for 24 hours",
+    "holds the original request and notifies the home coordinator once when a standing agent created the sleeper",
     () =>
       Effect.gen(function* () {
         const h = harness();
@@ -530,21 +528,103 @@ describe("RemoteAgentBridge machine health", () => {
           Effect.gen(function* () {
             const bridge = yield* RemoteAgentBridge;
             const store = yield* RemoteAgentStore;
-            yield* seed(h, {}, {}, finishedMessages);
+            yield* seed(h, { creatorThreadId: STANDING }, {}, finishedMessages);
             h.peer.state.reachable = false;
             yield* bridge.pollOnce;
-            yield* TestClock.adjust(Duration.millis(REMOTE_LOST_AFTER_MS + 120_000));
+            yield* TestClock.adjust(Duration.days(3));
             yield* bridge.pollOnce;
             return Option.getOrThrow(yield* store.get("remote-1"));
           }),
         );
-        expect(record.state).toBe("lost");
-        const [push] = h.pushes();
-        // Its own id, so a real result that arrives later is still delivered.
-        expect(push?.commandId).toBe("cp-push:remote-1:cp-agent-message:coordinator:r1:lost");
-        expect(push?.type === "thread.message.user.append" && push.message.text).toContain(
-          "unreachable for 24 hours",
+        expect(record.state).toBe("open");
+        expect(record.inFlight).not.toBeNull();
+        const notices = h.appended.filter((command) => command.type === "thread.activity.append");
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toMatchObject({
+          threadId: COORDINATOR,
+          commandId: `cp-agent-wait-coordinator:${COORDINATOR}:${record.waitId}`,
+          activity: {
+            id: `cp-agent-wait-coordinator:${COORDINATOR}:${record.waitId}`,
+            kind: "agent.machine.waiting",
+            payload: {
+              agentThreadId: record.threadId,
+              detail: expect.stringContaining(
+                "Settings > Connections > Agent machines > Waiting agents",
+              ),
+            },
+          },
+        });
+        expect(record.notifiedWaitId).toBe(record.waitId);
+        expect(record.lastPhase).toBe("stale");
+        expect(h.pushes()).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "reuses the coordinator activity receipt if the registry lost its notification acknowledgement",
+    () =>
+      Effect.gen(function* () {
+        const h = harness();
+        yield* h.run(
+          Effect.gen(function* () {
+            const bridge = yield* RemoteAgentBridge;
+            const store = yield* RemoteAgentStore;
+            yield* seed(h, { creatorThreadId: STANDING });
+            h.peer.state.reachable = false;
+            yield* bridge.pollOnce;
+            const { notifiedWaitId, ...beforeAck } = Option.getOrThrow(
+              yield* store.get("remote-1"),
+            );
+            expect(notifiedWaitId).toBe(beforeAck.waitId);
+            yield* store.put(beforeAck);
+            yield* TestClock.adjust(Duration.minutes(2));
+            yield* bridge.pollOnce;
+            const attempts = h.appended.filter(
+              (command) => command.type === "thread.activity.append",
+            );
+            expect(attempts.map((command) => [command.threadId, command.commandId])).toEqual([
+              [COORDINATOR, `cp-agent-wait-coordinator:${COORDINATOR}:${beforeAck.waitId}`],
+              [COORDINATOR, `cp-agent-wait-coordinator:${COORDINATOR}:${beforeAck.waitId}`],
+            ]);
+          }),
         );
+      }),
+  );
+
+  it.effect(
+    "repairs a legacy notice sent to a standing creator and preserves a coordinator's existing receipt",
+    () =>
+      Effect.gen(function* () {
+        for (const creator of [STANDING, COORDINATOR]) {
+          const h = harness();
+          yield* h.run(
+            Effect.gen(function* () {
+              const bridge = yield* RemoteAgentBridge;
+              const store = yield* RemoteAgentStore;
+              yield* seed(h, {
+                creatorThreadId: creator,
+                waitId: "historic",
+                notifiedWaitId: "historic",
+              });
+              h.peer.state.reachable = false;
+              yield* bridge.pollOnce;
+              yield* TestClock.adjust(Duration.minutes(2));
+              yield* bridge.pollOnce;
+              const attempts = h.appended.filter(
+                (command) => command.type === "thread.activity.append",
+              );
+              expect(attempts.map((command) => [command.threadId, command.commandId])).toEqual(
+                creator === STANDING
+                  ? [[COORDINATOR, `cp-agent-wait-coordinator:${COORDINATOR}:historic`]]
+                  : [],
+              );
+              if (creator === STANDING)
+                expect(Option.getOrThrow(yield* store.get("remote-1")).notifiedCoordinatorId).toBe(
+                  COORDINATOR,
+                );
+            }),
+          );
+        }
       }),
   );
 
@@ -566,6 +646,25 @@ describe("RemoteAgentBridge machine health", () => {
     }),
   );
 
+  it.effect(
+    "retains a pre-marker pending placement through expiry when the thread cannot be found",
+    () =>
+      Effect.gen(function* () {
+        const h = harness();
+        yield* h.run(
+          Effect.gen(function* () {
+            const bridge = yield* RemoteAgentBridge;
+            const store = yield* RemoteAgentStore;
+            yield* store.put(makeRecord({ state: "pending", inFlight: null }));
+            yield* TestClock.adjust(Duration.minutes(5));
+            yield* bridge.pollOnce;
+            expect(Option.getOrThrow(yield* store.get("remote-1")).state).toBe("pending");
+          }),
+        );
+        expect(h.pushes()).toEqual([]);
+      }),
+  );
+
   it.effect("drops a pending record whose start never landed", () =>
     Effect.gen(function* () {
       const h = harness();
@@ -573,7 +672,9 @@ describe("RemoteAgentBridge machine health", () => {
         Effect.gen(function* () {
           const bridge = yield* RemoteAgentBridge;
           const store = yield* RemoteAgentStore;
-          yield* store.put(makeRecord({ state: "pending", inFlight: null }));
+          yield* store.put(
+            makeRecord({ state: "pending", createAttempted: false, inFlight: null }),
+          );
           h.peer.threads.set("remote-1", makePeerThread("remote-1"));
           yield* TestClock.adjust(Duration.minutes(5));
           yield* bridge.pollOnce;

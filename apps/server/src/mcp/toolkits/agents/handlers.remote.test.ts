@@ -345,12 +345,12 @@ describe("cp_agent_create placement", () => {
     Effect.gen(function* () {
       const h = yield* makeHarness({
         caller: COORDINATOR_ID,
-        failPeerOn: ["thread.create"],
         placement: placement({ mode: "single", singleMachineId: "mini", machines: { mini } }, [
           localCandidate(),
           miniCandidate(),
         ]),
       });
+      h.peer.state.reachable = false;
       const result = yield* h.create({ title: "Pricing", message: "go" });
       expect(result.machineLabel).toBeNull();
       expect(result.placement).toContain("Started on this machine instead");

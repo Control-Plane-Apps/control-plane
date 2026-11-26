@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
 
+import { AgentReadInput, AgentReadResult } from "../agents/tools.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { AgentPhase } from "../../../agentMachines/agentPhase.ts";
 import * as RemoteAgents from "../../../agentMachines/RemoteAgents.ts";
@@ -253,4 +254,21 @@ const AgentPeersTool = Tool.make("cp_agent_peers", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
-export const ThreadsToolkit = Toolkit.make(SendThreadMessageTool, AgentMessageTool, AgentPeersTool);
+const PeerReadTool = Tool.make("cp_agent_peer_read", {
+  description: "Read one to five recent requests and results of an active peer in this Project.",
+  parameters: AgentReadInput,
+  success: AgentReadResult,
+  failure: AgentMessageToolError,
+  dependencies,
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const ThreadsToolkit = Toolkit.make(
+  SendThreadMessageTool,
+  AgentMessageTool,
+  AgentPeersTool,
+  PeerReadTool,
+);
