@@ -131,6 +131,7 @@ export const peerProject: OrchestrationProjectShell = {
 
 export interface FakePeerOptions {
   /** Fails these command types with an unreachable error. */
+  readonly resolveModel?: AgentMachinesShape["resolveModel"];
   readonly failOn?: ReadonlyArray<PeerCommand["type"]>;
   readonly machineId?: string;
 }
@@ -211,6 +212,10 @@ export function makeFakePeer(options: FakePeerOptions = {}) {
     manage: () => Effect.die("not stubbed"),
     placementInputs: () => Effect.die("not stubbed"),
     shell: shellApi,
+    resolveModel:
+      options.resolveModel ??
+      ((_id, _project, base, requested) =>
+        guard(Effect.succeed({ ...base, model: requested ?? base.model }))),
     workspace: () =>
       guard(
         Effect.succeed({

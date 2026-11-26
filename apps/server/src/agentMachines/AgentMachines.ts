@@ -138,6 +138,12 @@ export interface AgentMachinesShape {
     threadId: string,
     turnLimit: number,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, PeerError>;
+  readonly resolveModel: (
+    machineId: string,
+    projectId: string,
+    base: ModelSelection,
+    requested: string | undefined,
+  ) => Effect.Effect<ModelSelection, PeerError>;
   readonly workspace: (
     machineId: string,
     projectId: string,
@@ -467,7 +473,15 @@ const make = Effect.gen(function* () {
                     baseInstanceId;
                   const result = yield* Effect.result(
                     withPeer(id, ({ baseUrl, token }) =>
-                      fetchPeerReadiness(baseUrl, token, match.projectId, instanceId),
+                      fetchPeerReadiness(
+                        baseUrl,
+                        token,
+                        match.projectId,
+                        instanceId,
+                        project.requestedModel ??
+                          peer?.defaultModelSelection?.model ??
+                          project.baseModel?.model,
+                      ),
                     ),
                   );
                   reason =
@@ -1008,6 +1022,33 @@ const make = Effect.gen(function* () {
 
   return {
     manage,
+    resolveModel: (id, projectId, base, requested) =>
+      withPeer(id, ({ baseUrl, token }) =>
+        fetchPeerReadiness(
+          baseUrl,
+          token,
+          projectId,
+          base.instanceId,
+          requested ?? base.model,
+        ).pipe(
+          Effect.flatMap(({ modelSelection }) =>
+            modelSelection
+              ? Effect.succeed(
+                  modelSelection.instanceId === base.instanceId &&
+                    modelSelection.model === base.model
+                    ? base
+                    : modelSelection,
+                )
+              : Effect.fail(
+                  new PeerError({
+                    kind: "rejected",
+                    detail:
+                      "The destination could not verify the requested model and provider login.",
+                  }),
+                ),
+          ),
+        ),
+      ),
     workspace,
     placementInputs,
     shell,

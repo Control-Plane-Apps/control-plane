@@ -98,22 +98,23 @@ describe("RemoteAgents.reserve and start", () => {
     }),
   );
 
-  it.effect(
-    "uses the peer Project's default model, else the base; an explicit model keeps the base instance",
-    () =>
-      Effect.gen(function* () {
-        const { peer, run } = harness();
-        yield* run(
-          Effect.gen(function* () {
-            const remote = yield* RemoteAgents;
-            const reserved = yield* remote.reserve(createInput({ requestedModel: "gpt-5.4-mini" }));
-            yield* remote.start(createInput({ requestedModel: "gpt-5.4-mini" }), reserved.record);
-          }),
-        );
-        expect(peer.commands[0]).toMatchObject({
-          modelSelection: { instanceId: "codex", model: "gpt-5.4-mini" },
-        });
-      }),
+  it.effect("creates with the provider instance and model resolved by the destination", () =>
+    Effect.gen(function* () {
+      const { peer, run } = harness({
+        resolveModel: () =>
+          Effect.succeed({ instanceId: "destination-provider" as never, model: "canonical-slug" }),
+      });
+      yield* run(
+        Effect.gen(function* () {
+          const remote = yield* RemoteAgents;
+          const reserved = yield* remote.reserve(createInput({ requestedModel: "gpt-5.4-mini" }));
+          yield* remote.start(createInput({ requestedModel: "gpt-5.4-mini" }), reserved.record);
+        }),
+      );
+      expect(peer.commands[0]).toMatchObject({
+        modelSelection: { instanceId: "destination-provider", model: "canonical-slug" },
+      });
+    }),
   );
 
   it.effect("keeps the original placement when create acknowledgement is ambiguous", () =>
@@ -514,6 +515,49 @@ describe("RemoteAgents.send and startQueued", () => {
           for (const text of ["two", "three", "four"]) yield* send(text);
           expect((yield* Effect.flip(send("five"))).detail).toContain("budget exhausted");
           expect(peer.commands).toHaveLength(1);
+        }),
+      );
+    }),
+  );
+
+  it.effect("recovers the pre-dispatch baseline when an acknowledgement was lost", () =>
+    Effect.gen(function* () {
+      const queued = makeRecord({
+        queuedSends: [{ messageId: "q", text: "next", replyTo: "coordinator", queuedAt: TEST_NOW }],
+      });
+      const failed = harness({ failOn: ["thread.turn.start"] });
+      const pending = yield* failed.run(
+        Effect.gen(function* () {
+          const remote = yield* RemoteAgents;
+          const store = yield* RemoteAgentStore;
+          yield* store.put(queued);
+          yield* Effect.flip(remote.startQueued(queued, makePeerThread("remote-1")));
+          return Option.getOrThrow(yield* store.get(queued.threadId));
+        }),
+      );
+      expect(pending.queuedSends[0]?.baselineTurnId).toBeNull();
+      const retry = harness();
+      yield* retry.run(
+        Effect.gen(function* () {
+          const remote = yield* RemoteAgents;
+          const store = yield* RemoteAgentStore;
+          yield* store.put(pending);
+          yield* remote.startQueued(
+            pending,
+            makePeerThread("remote-1", {
+              latestTurn: {
+                turnId: "already-landed" as never,
+                state: "completed",
+                requestedAt: TEST_NOW,
+                startedAt: TEST_NOW,
+                completedAt: TEST_NOW,
+                assistantMessageId: null,
+              },
+            }),
+          );
+          expect(
+            Option.getOrThrow(yield* store.get(queued.threadId)).inFlight?.baselineTurnId,
+          ).toBeNull();
         }),
       );
     }),

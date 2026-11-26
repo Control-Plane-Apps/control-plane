@@ -2,6 +2,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
+  ProviderInstanceId,
   type OrchestrationCommand,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -13,6 +14,7 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { cleanWorkspace } from "../agentMachines/workspaceResume.ts";
+import { resolveAgentModel } from "../mcp/toolkits/agents/agentScope.ts";
 import { isThreadBusy } from "../agentMachines/remoteAgentState.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
@@ -47,6 +49,7 @@ function withHttpAgentMessageSource(command: OrchestrationCommand): Orchestratio
 
 export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
+  ProviderInstanceId,
   "orchestration",
   Effect.fnUntraced(function* (handlers) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -144,10 +147,25 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
               ),
             );
           if (Option.isNone(project)) return yield* failEnvironmentNotFound("project_not_found");
-          const provider = (yield* providers.getProviders).find(
-            (entry) => entry.instanceId === args.payload.instanceId,
+          const instances = yield* providers.getProviders;
+          const { instanceId, model } = args.payload;
+          const resolved =
+            model &&
+            resolveAgentModel({
+              requested: model,
+              base: { instanceId: ProviderInstanceId.make(instanceId), model },
+              providers: instances,
+            });
+          const selection =
+            resolved && resolved.kind === "resolved" ? resolved.modelSelection : undefined;
+          const provider = instances.find(
+            (entry) => entry.instanceId === (model ? selection?.instanceId : instanceId),
           );
-          return yield* projectReadiness(project.value, provider);
+          const readiness = yield* projectReadiness(project.value, provider);
+          return {
+            ...readiness,
+            ...(selection && readiness.provider ? { modelSelection: selection } : {}),
+          };
         }),
       )
       .handle(

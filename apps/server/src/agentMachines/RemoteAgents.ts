@@ -25,6 +25,7 @@ import * as Schema from "effect/Schema";
 
 import { AgentMachines, type HomeProject } from "./AgentMachines.ts";
 import { PeerError, type PeerCommand } from "./AgentMachineClient.ts";
+import { withRemoteAgentLock } from "./remoteAgentLock.ts";
 import { resumeBlocker } from "./workspaceResume.ts";
 import { placeAgent, type PlacementDecision } from "./placement.ts";
 import {
@@ -379,10 +380,27 @@ const make = Effect.gen(function* () {
         ),
       );
       const peerProject = peerShell.projects.find((entry) => entry.id === record.peerProjectId);
-      const modelSelection: ModelSelection =
-        input.requestedModel !== undefined
-          ? { instanceId: input.baseModel.instanceId, model: input.requestedModel }
-          : (peerProject?.defaultModelSelection ?? input.baseModel);
+      const modelSelection = yield* machines
+        .resolveModel(
+          record.machineId,
+          record.peerProjectId,
+          peerProject?.defaultModelSelection ?? input.baseModel,
+          input.requestedModel,
+        )
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new RemoteAgentError({
+                detail: error.detail,
+                stage: record.createAttempted ? "start" : "create",
+              }),
+          ),
+          Effect.tapError(() =>
+            record.createAttempted
+              ? Effect.void
+              : store.remove(record.threadId).pipe(Effect.ignore),
+          ),
+        );
 
       yield* store
         .update(record.threadId, (current) => ({ ...current, createAttempted: true }))
@@ -703,9 +721,18 @@ const make = Effect.gen(function* () {
     plan,
     homeLabel: machines.homeLabel,
     reserve,
-    start,
-    get: (threadId) =>
-      store.get(threadId).pipe(Effect.orElseSucceed(() => Option.none<RemoteAgentRecord>())),
+    start: (input, record) =>
+      withRemoteAgentLock(
+        record.threadId,
+        Effect.gen(function* () {
+          const current = yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed));
+          return yield* start(
+            input,
+            Option.getOrElse(current, () => record),
+          );
+        }),
+      ),
+    get: (threadId) => store.get(threadId).pipe(Effect.orDie),
     find: ({ projectId, ref }) =>
       list.pipe(
         Effect.map((records) => {
@@ -740,10 +767,18 @@ const make = Effect.gen(function* () {
         ),
       ),
     read,
-    stop,
-    settle,
-    send: sendMessage,
-    startQueued,
+    stop: (record, options) =>
+      withRemoteAgentLock(
+        record.threadId,
+        Effect.gen(function* () {
+          const current = yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed));
+          if (Option.isNone(current)) return yield* lostError(record);
+          return yield* stop(current.value, options);
+        }),
+      ),
+    settle: (record, options) => withRemoteAgentLock(record.threadId, settle(record, options)),
+    send: (record, input) => withRemoteAgentLock(record.threadId, sendMessage(record, input)),
+    startQueued: (record, view) => withRemoteAgentLock(record.threadId, startQueued(record, view)),
   } satisfies RemoteAgentsShape;
 });
 

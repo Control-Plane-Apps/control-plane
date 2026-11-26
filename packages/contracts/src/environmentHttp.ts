@@ -36,6 +36,7 @@ import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   ClientOrchestrationCommand,
   DispatchResult,
+  ModelSelection,
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
@@ -540,8 +541,11 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
     HttpApiEndpoint.get("projectReadiness", "/api/orchestration/projects/:projectId/readiness", {
       headers: OptionalBearerHeaders,
       params: { projectId: ProjectId },
-      payload: { instanceId: TrimmedNonEmptyString },
-      success: AgentProjectReadiness,
+      payload: { instanceId: TrimmedNonEmptyString, model: Schema.optional(TrimmedNonEmptyString) },
+      success: Schema.Struct({
+        ...AgentProjectReadiness.fields,
+        modelSelection: Schema.optionalKey(ModelSelection),
+      }),
       error: EnvironmentOrchestrationThreadSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )

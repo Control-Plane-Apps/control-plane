@@ -247,6 +247,7 @@ export const fetchPeerReadiness = (
   token: string,
   projectId: string,
   instanceId: string,
+  model?: string,
 ) =>
   call(
     Effect.gen(function* () {
@@ -254,7 +255,7 @@ export const fetchPeerReadiness = (
       return yield* client.orchestration.projectReadiness({
         headers: bearer(token),
         params: { projectId: ProjectId.make(projectId) },
-        payload: { instanceId },
+        payload: { instanceId, ...(model ? { model } : {}) },
       });
     }),
   );
