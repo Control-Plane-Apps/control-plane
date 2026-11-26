@@ -1170,6 +1170,8 @@ const make = Effect.gen(function* () {
       }));
     });
 
+  const releaseHash = (key: string) => NodeCrypto.createHash("sha256").update(key).digest("hex");
+
   const recoverHandoff = (threadId: string, waitId: string) =>
     withRemoteAgentLock(
       threadId,
@@ -1221,6 +1223,19 @@ const make = Effect.gen(function* () {
           handoff: null,
           waitId: NodeCrypto.randomUUID(),
           lastRecoveredWaitId: waitId,
+          ...(intent.phase !== "prepared" && intent.replacementKey
+            ? {
+                abandonedHolds: [
+                  ...(latest.abandonedHolds ?? []),
+                  {
+                    destinationId: intent.destinationId,
+                    projectId: intent.projectId,
+                    waitId,
+                    key: intent.replacementKey,
+                  },
+                ],
+              }
+            : {}),
           workspaceCheckpoint: {
             root: intent.sourceRoot,
             branch: intent.branch,
@@ -1291,7 +1306,15 @@ const make = Effect.gen(function* () {
         )
           return yield* moveError("Register an unambiguous destination checkout of this Project.");
         const targetProject = match.projectId;
-        if (!record.handoff && targetShell.threads.some((thread) => thread.id === threadId))
+        const priorHolds = (record.abandonedHolds ?? []).filter(
+          (h) => h.destinationId === destinationId && h.projectId === targetProject,
+        );
+        const existing = targetShell.threads.find((thread) => thread.id === threadId);
+        if (
+          !record.handoff &&
+          existing &&
+          !(priorHolds.length && existing.archivedAt && existing.projectId === targetProject)
+        )
           return yield* moveError("A thread with this identity already exists on the destination.");
         const destinationBusy = targetShell.threads.some(
           (thread) =>
@@ -1334,7 +1357,11 @@ const make = Effect.gen(function* () {
           );
         const before = yield* proof(sourceId, record.peerProjectId, threadId);
         const target = yield* proof(destinationId, targetProject);
-        if (!before.heldHandoff || !target.heldHandoff)
+        if (
+          !before.heldHandoff ||
+          !target.heldHandoff ||
+          ((!record.handoff || record.handoff.replacementKey) && !target.reusableHandoff)
+        )
           return yield* moveError(
             "Update both machines to a version that supports held agent handoffs.",
           );
@@ -1376,6 +1403,7 @@ const make = Effect.gen(function* () {
           phase: "prepared" as const,
           sourceKey: NodeCrypto.randomUUID(),
           destinationKey: NodeCrypto.randomUUID(),
+          replacementKey: NodeCrypto.randomUUID(),
           waitId,
           destinationId,
           projectId: targetProject,
@@ -1403,8 +1431,6 @@ const make = Effect.gen(function* () {
           return yield* moveError("The agent changed before handoff.");
         if (!intent.sourceKey || !intent.destinationKey)
           return yield* moveError("Missing handoff ownership receipt.");
-        const releaseHash = (key: string) =>
-          NodeCrypto.createHash("sha256").update(key).digest("hex");
         const tid = ThreadId.make(threadId);
         if (!fence) {
           const original = yield* workspace(sourceId, record.peerProjectId, threadId, true);
@@ -1480,9 +1506,13 @@ const make = Effect.gen(function* () {
           machineId: homeMachine,
           projectId: home.id,
           releaseHash: releaseHash(intent.destinationKey),
+          ...(intent.replacementKey ? { replacementHash: releaseHash(intent.replacementKey) } : {}),
         };
         yield* dispatchHandoff(destinationId, {
           handoffHold: hold,
+          ...(priorHolds.length
+            ? { replaceHolds: priorHolds.map(({ waitId, key }) => ({ waitId, key })) }
+            : {}),
           type: "thread.create",
           commandId: CommandId.make(`cp-handoff-create:${waitId}`),
           threadId: tid,
@@ -1510,6 +1540,7 @@ const make = Effect.gen(function* () {
           landed.projectId !== targetProject ||
           !landed.archivedAt ||
           held?.releaseHash !== hold.releaseHash ||
+          (hold.replacementHash && held.replacementHash !== hold.replacementHash) ||
           held?.machineId !== homeMachine ||
           held?.projectId !== home.id ||
           held?.transcript !== transcript ||
@@ -1533,6 +1564,10 @@ const make = Effect.gen(function* () {
                     machineLabel: destination.label,
                     peerProjectId: targetProject,
                     handoff: { ...latest.handoff, phase: "committed" },
+                    abandonedHolds:
+                      latest.abandonedHolds?.filter(
+                        (h) => h.destinationId !== destinationId || h.projectId !== targetProject,
+                      ) ?? [],
                     handoffHomeMachine: homeMachine,
                     handoffContext: null,
                     waitId,

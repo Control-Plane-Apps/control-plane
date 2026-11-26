@@ -201,6 +201,7 @@ export type AgentWorkspaceCheckpoint = typeof AgentWorkspaceCheckpoint.Type;
 
 export const HandoffFingerprint = Schema.Struct({
   ...AgentWorkspaceCheckpoint.fields,
+  reusableHandoff: Schema.optionalKey(Schema.Literal(true)),
   heldHandoff: Schema.optionalKey(Schema.Literal(true)),
   digest: TrimmedNonEmptyString,
 });

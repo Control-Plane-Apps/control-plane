@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import {
   HostProcessEnvironment,
   HostProcessHomeDirectory,
@@ -26,7 +27,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import * as ServerSettings from "../serverSettings.ts";
 import { AGENT_MACHINE_PROTOCOL_VERSION } from "./AgentMachineClient.ts";
 import { AgentMachines, AgentMachinesLive, agentMachineSecretName } from "./AgentMachines.ts";
-import { RemoteAgentStore } from "./RemoteAgentStore.ts";
+import { RemoteAgentRecord, RemoteAgentStore } from "./RemoteAgentStore.ts";
 import {
   MemoryRemoteAgentStore,
   TEST_NOW,
@@ -531,9 +532,11 @@ describe("AgentMachines.manage unlink and check", () => {
             machineId: string;
             projectId: string;
             transcript: string;
+            replacementHash: string;
           }
         | undefined;
       let sourceHash: string | undefined;
+      let fenceWait = waitId;
       let fenced = false;
       let created = false;
       const http = Layer.succeed(
@@ -555,12 +558,16 @@ describe("AgentMachines.manage unlink and check", () => {
             return respond({
               snapshotSequence: 1,
               projects: [otherProject],
-              threads: to && !created ? [] : [shell],
+              threads:
+                to && !created
+                  ? []
+                  : [{ ...shell, archivedAt: to && !activated ? TEST_NOW : null }],
               updatedAt: TEST_NOW,
             });
           if (url.pathname.endsWith("/handoff-workspace"))
             return respond({
               heldHandoff: true,
+              reusableHandoff: true,
               root: to ? "/target" : "/source",
               branch: "feature",
               commit: "a".repeat(40),
@@ -590,7 +597,7 @@ describe("AgentMachines.manage unlink and check", () => {
             !to &&
             fenced &&
             req.method === "GET" &&
-            (url.pathname.includes("/threads/") || url.searchParams.get("waitId") !== waitId)
+            (url.pathname.includes("/threads/") || url.searchParams.get("waitId") !== fenceWait)
           )
             return Effect.succeed(
               HttpClientResponse.fromWeb(req, new Response(null, { status: 404 })),
@@ -620,7 +627,7 @@ describe("AgentMachines.manage unlink and check", () => {
                   to && hold
                     ? [
                         {
-                          id: `cp-handoff-hold:${waitId}`,
+                          id: `cp-handoff-hold:${hold.waitId}`,
                           tone: "info",
                           kind: "agent.handoff.held",
                           summary: "Held",
@@ -632,13 +639,13 @@ describe("AgentMachines.manage unlink and check", () => {
                     : !to && fenced
                       ? [
                           {
-                            id: `cp-handoff-fence:${waitId}`,
+                            id: `cp-handoff-fence:${fenceWait}`,
                             tone: "info",
                             kind: "agent.handoff.fenced",
                             summary: "Moved",
                             createdAt: TEST_NOW,
                             turnId: null,
-                            payload: { waitId, releaseHash: sourceHash },
+                            payload: { waitId: fenceWait, releaseHash: sourceHash },
                           },
                         ]
                       : [],
@@ -648,13 +655,15 @@ describe("AgentMachines.manage unlink and check", () => {
             const cmd = JSON.parse(new TextDecoder().decode(req.body.body)) as {
               type: string;
               commandId: string;
-              handoff?: { releaseHash: string };
+              replaceHolds?: { waitId: string; key: string }[];
+              handoff?: { releaseHash: string; waitId: string };
               handoffHold?: typeof hold;
               handoffRelease?: { role: string; key: string };
             };
             commandIds.push(cmd.commandId);
             if (cmd.type === "thread.archive") {
               fenced = true;
+              fenceWait = cmd.handoff!.waitId;
               sourceHash = cmd.handoff?.releaseHash;
             }
             if (cmd.type === "thread.create" && !created) {
@@ -667,6 +676,15 @@ describe("AgentMachines.manage unlink and check", () => {
               expect(hold?.transcript).not.toContain("discarded");
               expect(hold?.releaseHash).toMatch(/^[0-9a-f]{64}$/);
               return Effect.fail(new Error("lost acknowledgement") as never);
+            }
+            if (cmd.type === "thread.create" && hold && hold.waitId !== cmd.handoffHold?.waitId) {
+              expect(fenced).toBe(true);
+              const proof = cmd.replaceHolds?.find((p) => p.waitId === hold?.waitId);
+              expect(NodeCrypto.createHash("sha256").update(proof!.key).digest("hex")).toBe(
+                hold.replacementHash,
+              );
+              expect(hold.replacementHash).not.toBe(hold.releaseHash);
+              hold = cmd.handoffHold;
             }
             if (cmd.type === "thread.unarchive") {
               if (cmd.handoffRelease?.role === "source") fenced = false;
@@ -743,6 +761,42 @@ describe("AgentMachines.manage unlink and check", () => {
             expect((yield* get).machineId).toBe("env-mini");
             expect((yield* get).handoff).toBeNull();
             expect((yield* Effect.result(move))._tag).toBe("Failure");
+            const recovered = yield* get;
+            expect(recovered.abandonedHolds).toHaveLength(1);
+            targetReachable = true;
+            // Rebuild the home service with only the serialized recovery record.
+            yield* h.run(
+              Effect.gen(function* () {
+                yield* storeToken();
+                yield* storeToken("target");
+                const freshStore = yield* RemoteAgentStore;
+                yield* freshStore.put(
+                  Schema.decodeUnknownSync(Schema.fromJsonString(RemoteAgentRecord))(
+                    encodeJson(recovered),
+                  ),
+                );
+                const fresh = yield* AgentMachines;
+                const retry = fresh.manage({
+                  action: "resume",
+                  threadId: tid,
+                  waitId: recovered.waitId!,
+                  destinationId: "target",
+                });
+                expect((yield* Effect.result(retry))._tag).toBe("Failure");
+                expect(Option.getOrThrow(yield* freshStore.get(tid)).handoff?.phase).toBe(
+                  "committed",
+                );
+                yield* retry;
+                yield* retry;
+                expect(Option.getOrThrow(yield* freshStore.get(tid))).toMatchObject({
+                  machineId: "target",
+                  lastResumedWaitId: recovered.waitId,
+                  abandonedHolds: [],
+                });
+                expect(fenced).toBe(true);
+                expect(activated).toBe(true);
+              }),
+            );
             return;
           }
           expect((yield* Effect.result(move))._tag).toBe("Failure");

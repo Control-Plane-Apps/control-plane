@@ -131,7 +131,7 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
-  it("keeps a newly created handoff destination held across restart until authorized activation", async () => {
+  it("replaces an abandoned held destination across restart and activates exactly once", async () => {
     const dir = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "handoff-held-"));
     const db = NodePath.join(dir, "state.sqlite");
     let system = await createOrchestrationSystem(db);
@@ -163,6 +163,7 @@ describe("OrchestrationEngine", () => {
           waitId: "wait",
           machineId: "home",
           projectId,
+          replacementHash: NodeCrypto.createHash("sha256").update("replace-key").digest("hex"),
           releaseHash: NodeCrypto.createHash("sha256").update("release-key").digest("hex"),
         },
       };
@@ -198,9 +199,51 @@ describe("OrchestrationEngine", () => {
         threadId,
         handoffRelease: { role: "destination" as const, waitId: "wait", key: "release-key" },
       };
-      const receipt = await dispatch(activate);
-      expect(await dispatch(activate)).toEqual(receipt);
-      await dispatch({ ...start, commandId: CommandId.make("after-release") });
+      const replacement = {
+        ...create,
+        commandId: CommandId.make("second-held"),
+        replaceHolds: [{ waitId: "wait", key: "replace-key" }],
+        handoffHold: {
+          ...create.handoffHold,
+          waitId: "second",
+          releaseHash: NodeCrypto.createHash("sha256").update("second-key").digest("hex"),
+        },
+      };
+      await expect(
+        dispatch({
+          ...replacement,
+          commandId: CommandId.make("bad-proof"),
+          replaceHolds: [{ waitId: "wait", key: "wrong" }],
+        }),
+      ).rejects.toThrow(/read-only/);
+      await expect(
+        dispatch({
+          ...replacement,
+          commandId: CommandId.make("wrong-home"),
+          handoffHold: { ...replacement.handoffHold, machineId: "other" },
+        }),
+      ).rejects.toThrow(/read-only/);
+      const held = await dispatch(replacement);
+      await system.dispose();
+      system = await createOrchestrationSystem(db);
+      expect(await dispatch(create)).toEqual(initial);
+      expect(await dispatch(replacement)).toEqual(held);
+      await expect(dispatch(activate)).rejects.toThrow(/read-only/);
+      await expect(dispatch({ ...start, commandId: CommandId.make("still-held") })).rejects.toThrow(
+        /read-only/,
+      );
+      const release = {
+        ...activate,
+        commandId: CommandId.make("second-activate"),
+        handoffRelease: { ...activate.handoffRelease, waitId: "second", key: "second-key" },
+      };
+      const receipt = await dispatch(release);
+      expect(await dispatch(release)).toEqual(receipt);
+      const work = { ...start, commandId: CommandId.make("after-release") };
+      expect(await dispatch(work)).toEqual(await dispatch(work));
+      expect(
+        Option.getOrThrow(await system.readThread(threadId)).messages.map((m) => m.id),
+      ).toEqual([start.message.messageId]);
     } finally {
       await system.dispose();
       await NodeFSP.rm(dir, { recursive: true, force: true });

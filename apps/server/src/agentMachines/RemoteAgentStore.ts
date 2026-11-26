@@ -95,6 +95,7 @@ export const RemoteAgentRecord = Schema.Struct({
         phase: Schema.optionalKey(AgentHandoffPhase),
         sourceKey: Schema.optionalKey(Schema.String),
         destinationKey: Schema.optionalKey(Schema.String),
+        replacementKey: Schema.optionalKey(Schema.String),
         destinationId: Schema.String,
         projectId: Schema.String,
         sourceRoot: Schema.String,
@@ -110,6 +111,16 @@ export const RemoteAgentRecord = Schema.Struct({
   notifiedWaitId: Schema.optionalKey(Schema.String),
   waitId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   resumeCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
+  abandonedHolds: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        destinationId: Schema.String,
+        projectId: Schema.String,
+        waitId: Schema.String,
+        key: Schema.String,
+      }),
+    ),
+  ),
   lastRecoveredWaitId: Schema.optionalKey(Schema.String),
   lastResumedWaitId: Schema.optionalKey(Schema.String),
 });

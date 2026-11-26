@@ -306,6 +306,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   OrchestrationCommandRejection | PlatformError.PlatformError,
   Crypto.Crypto
 > {
+  let replacesHeldDestination = false;
   if ("threadId" in command) {
     const thread = readModel.threads.find((entry) => entry.id === command.threadId);
     const markers = handoffActivities ?? thread?.activities ?? [];
@@ -331,6 +332,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
     if ((thread?.archivedAt && fence) || release) {
       const payload = fence?.payload as { releaseHash?: string; waitId: string } | undefined;
+      if (
+        command.type === "thread.create" &&
+        command.handoffHold &&
+        thread?.archivedAt &&
+        thread.projectId === command.projectId &&
+        fence?.kind === "agent.handoff.held"
+      ) {
+        const old = fence.payload as {
+          waitId: string;
+          replacementHash?: string;
+          machineId: string;
+          projectId: string;
+        };
+        const next = command.handoffHold;
+        replacesHeldDestination =
+          next.waitId !== old.waitId &&
+          old.machineId === next.machineId &&
+          old.projectId === next.projectId &&
+          !!command.replaceHolds?.some(
+            (proof) =>
+              proof.waitId === old.waitId &&
+              old.replacementHash ===
+                NodeCrypto.createHash("sha256").update(proof.key).digest("hex"),
+          );
+      }
       const allowed =
         release &&
         (fence
@@ -340,7 +366,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             fence.kind ===
               (release.role === "source" ? "agent.handoff.fenced" : "agent.handoff.held")
           : release.role === "source" && !!thread && thread.archivedAt === null);
-      if (!allowed)
+      if (!allowed && !replacesHeldDestination)
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "This agent was moved to another machine. Its original thread is read-only.",
@@ -652,11 +678,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         projectId: command.projectId,
       });
-      yield* requireThreadAbsent({
-        readModel,
-        command,
-        threadId: command.threadId,
-      });
+      if (!replacesHeldDestination)
+        yield* requireThreadAbsent({
+          readModel,
+          command,
+          threadId: command.threadId,
+        });
       yield* requireAgentCreator(readModel, command);
       const created = {
         ...(yield* withEventBase({

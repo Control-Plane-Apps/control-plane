@@ -1297,6 +1297,14 @@ const ProjectDeleteCommand = Schema.Struct({
 export const HANDOFF_TRANSCRIPT_MAX_CHARS = 24_000;
 
 const ThreadCreateCommand = Schema.Struct({
+  replaceHolds: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        waitId: TrimmedNonEmptyString,
+        key: TrimmedNonEmptyString,
+      }),
+    ),
+  ),
   handoffHold: Schema.optionalKey(
     Schema.Struct({
       transcript: Schema.optionalKey(
@@ -1304,6 +1312,7 @@ const ThreadCreateCommand = Schema.Struct({
       ),
       waitId: TrimmedNonEmptyString,
       releaseHash: TrimmedNonEmptyString,
+      replacementHash: Schema.optionalKey(TrimmedNonEmptyString),
       machineId: TrimmedNonEmptyString,
       projectId: ProjectId,
     }),

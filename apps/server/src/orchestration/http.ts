@@ -239,7 +239,11 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           return yield* Effect.tryPromise(() =>
             workspaceFingerprint(directory, project.repositoryIdentity ?? undefined),
           ).pipe(
-            Effect.map((proof) => ({ ...proof, heldHandoff: true as const })),
+            Effect.map((proof) => ({
+              ...proof,
+              heldHandoff: true as const,
+              reusableHandoff: true as const,
+            })),
             Effect.catch((cause) =>
               failEnvironmentInternal("orchestration_snapshot_failed", cause),
             ),
