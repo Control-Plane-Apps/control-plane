@@ -145,6 +145,9 @@ it.effect(
         yield* Effect.provide(acquireProjectMoveFence(destination, "aborted-staging"), target);
         const bundle = yield* src.data.capture(original);
         expect(bundle.project.assistant?.scheduleRuns?.daily?.slot).toBe(stamp);
+        expect(src.config.attachmentsDir).not.toBe(dst.config.attachmentsDir);
+        const targetFile = dst.config.attachmentsDir + "/" + attachment.id + ".txt";
+        expect(yield* dst.fs.exists(targetFile)).toBe(false);
         // Simulate refusal after the attachment lands but before projections commit.
         const refused = yield* Effect.result(
           dst.data.install(destination, "aborted-staging", {
@@ -153,14 +156,20 @@ it.effect(
           }),
         );
         expect(refused._tag).toBe("Failure");
-        const targetFile = dst.config.attachmentsDir + "/" + attachment.id + ".txt";
+        const staging = (yield* dst.fs.readDirectory(dst.config.attachmentsDir)).filter((name) =>
+          name.startsWith(".cp-project-move-"),
+        );
+        expect(staging).toHaveLength(1);
+        expect(yield* dst.fs.readDirectory(dst.config.attachmentsDir + "/" + staging[0])).toEqual([
+          attachment.id + ".txt",
+        ]);
         expect(yield* dst.fs.readFileString(targetFile)).toBe("proof");
         yield* dst.data.install(destination, "aborted-staging", backup, dst.data.digest(backup));
         expect(yield* dst.fs.exists(targetFile)).toBe(false);
         yield* Effect.provide(releaseProjectMoveFence(destination, "aborted-staging"), target);
         yield* Effect.provide(acquireProjectMoveFence(destination, moveId), target);
-        yield* dst.data.install(destination, moveId, bundle);
-        yield* dst.data.install(destination, moveId, bundle);
+        yield* dst.data.install(destination, moveId, bundle, undefined, true);
+        yield* dst.data.install(destination, moveId, bundle, undefined, true);
         expect(dst.data.digest(yield* dst.data.capture(destination))).toBe(src.data.digest(bundle));
         expect(yield* dst.lineage.creatorOf(agent)).toBe(coordinator);
         expect(
@@ -201,6 +210,7 @@ it.effect(
         expect(src.data.digest(yield* src.data.capture(original))).toBe(dst.data.digest(back));
         expect(yield* src.fs.readFileString(src.root + "/MEMORY.md")).toBe("Destination memory\n");
         yield* dst.data.install(destination, moveId, backup, dst.data.digest(back));
+        expect(yield* dst.fs.exists(targetFile)).toBe(false);
         expect(dst.data.digest(yield* dst.data.capture(destination))).toBe(dst.data.digest(backup));
         yield* Effect.provide(releaseProjectMoveFence(destination, moveId), target);
         yield* Effect.provide(acquireProjectMoveFence(destination, "second-move"), target);

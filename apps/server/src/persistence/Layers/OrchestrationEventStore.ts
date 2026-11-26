@@ -241,7 +241,7 @@ const makeEventStore = Effect.gen(function* () {
           COALESCE(SUM(octet_length(payload_json)), 0) AS "payloadBytes",
           COALESCE(MAX(event_type IN (
             'thread.created', 'project.created'
-          ) OR (event_type='thread.history-restored' AND json_extract(payload_json,'$.event.type')='thread.created')), 0) AS "hasCreateEvent"
+          ) OR (CASE WHEN event_type='thread.history-restored' AND json_valid(payload_json) THEN json_extract(payload_json,'$.event.type') END='thread.created')), 0) AS "hasCreateEvent"
         FROM (
           SELECT payload_json, event_type
           FROM orchestration_events
@@ -342,7 +342,7 @@ const makeEventStore = Effect.gen(function* () {
               ...(request.type === undefined
                 ? []
                 : [
-                    sql`(event_type = ${request.type} OR (event_type='thread.history-restored' AND json_extract(payload_json,'$.event.type')=${request.type}))`,
+                    sql`(event_type = ${request.type} OR (CASE WHEN event_type='thread.history-restored' AND json_valid(payload_json) THEN json_extract(payload_json,'$.event.type') END=${request.type}))`,
                   ]),
             ])}
           LIMIT 1

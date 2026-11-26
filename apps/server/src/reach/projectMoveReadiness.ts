@@ -1,14 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off - Bounded CLI probes use native timeout and no-follow file flags.
-import { execFile } from "node:child_process";
-import { constants } from "node:fs";
-import * as fs from "node:fs/promises";
-import * as os from "node:os";
-import * as path from "node:path";
-import { promisify } from "node:util";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 import { AgentMachinesError, type AgentIntegration } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-const run = promisify(execFile);
+const run = NodeUtil.promisify(NodeChildProcess.execFile);
 const unavailable = (integration: AgentIntegration) =>
   new AgentMachinesError({
     detail: `Could not verify read-only ${integration} access for this Project on the destination.`,
@@ -21,12 +21,13 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 async function readConfig(root: string, relative: string) {
-  const file = path.join(root, relative);
+  const file = NodePath.join(root, relative);
   // Configuration can come from a checkout. Inspect a bounded regular file without sourcing it.
-  if ((await fs.realpath(path.dirname(file))) !== path.dirname(file)) throw new Error();
-  const handle = await fs.open(
+  if ((await NodeFSP.realpath(NodePath.dirname(file))) !== NodePath.dirname(file))
+    throw new Error();
+  const handle = await NodeFSP.open(
     file,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
   );
   try {
     const stat = await handle.stat();
@@ -61,9 +62,11 @@ async function probe(
   workspace: string,
   repository: string,
 ) {
-  const directory = await fs.realpath(workspace);
+  const directory = await NodeFSP.realpath(workspace);
   // Running a provider CLI inside the checkout can load executable Project configuration.
-  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "cplane-integration-readiness-"));
+  const scratch = await NodeFSP.mkdtemp(
+    NodePath.join(NodeOS.tmpdir(), "cplane-integration-readiness-"),
+  );
   try {
     const env = { ...process.env, CI: "1", GH_PROMPT_DISABLED: "1", NO_COLOR: "1" };
     const options = { cwd: scratch, timeout: 10_000, maxBuffer: 256 * 1024, env };
@@ -103,9 +106,9 @@ async function probe(
         )
           throw new Error();
         // Supply only the linked identifiers to the CLI. No Project code or config is copied.
-        await fs.mkdir(path.join(scratch, ".vercel"));
-        await fs.writeFile(
-          path.join(scratch, ".vercel/project.json"),
+        await NodeFSP.mkdir(NodePath.join(scratch, ".vercel"));
+        await NodeFSP.writeFile(
+          NodePath.join(scratch, ".vercel/project.json"),
           JSON.stringify({ orgId, projectId }),
         );
         await run("vercel", ["project", "inspect"], options);
@@ -129,7 +132,7 @@ async function probe(
         if (process.env.EXPO_TOKEN) {
           headers.Authorization = "Bearer " + process.env.EXPO_TOKEN;
         } else {
-          const auth = object((await projectJson(os.homedir(), ".expo/state.json")).auth);
+          const auth = object((await projectJson(NodeOS.homedir(), ".expo/state.json")).auth);
           if (typeof auth.sessionSecret !== "string" || !auth.sessionSecret) throw new Error();
           headers["expo-session"] = auth.sessionSecret;
         }
@@ -170,7 +173,7 @@ async function probe(
       }
     }
   } finally {
-    await fs.rm(scratch, { recursive: true, force: true });
+    await NodeFSP.rm(scratch, { recursive: true, force: true });
   }
 }
 

@@ -514,7 +514,8 @@ describe("ProviderCommandReactor", () => {
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     const sessionDirectory = await runtime.runPromise(Effect.service(ProviderSessionDirectory));
-    const runEffect = <A, E>(effect: Effect.Effect<A, E>) => runtime!.runPromise(effect);
+    const runEffect = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+      runtime!.runPromise(effect);
 
     await Effect.runPromise(
       engine.dispatch({
@@ -3784,7 +3785,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession).toHaveBeenCalledTimes(1);
     expect(harness.startSession).toHaveBeenCalledTimes(2);
     expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
-    const body = (harness.sendTurn.mock.calls[1]?.[0] as { input?: string }).input;
+    const body = (harness.sendTurn.mock.calls[1]?.[0] as { input?: string } | undefined)?.input;
     expect(body).toContain("USER:\nOriginal coordinator history");
     expect(body).toContain("Continue on this machine");
     await waitFor(

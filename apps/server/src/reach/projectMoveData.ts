@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - portable file snapshots require no-follow file descriptors and atomic renames.
-import { constants } from "node:fs";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
-import { randomUUID } from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
 import {
   CommandId,
   ProjectId,
@@ -31,6 +31,10 @@ import {
 import { projectMoveFenceOwner, withProjectMovePermit } from "./projectMoveFence.ts";
 import { sha256Hex } from "./assistantHistory.ts";
 
+const encodeBundleJson = Schema.encodeEffect(Schema.fromJsonString(ProjectMoveBundle));
+const decodeBundle = Schema.decodeEffect(ProjectMoveBundle);
+const encodeHistoricalEvent = Schema.encodeSync(HistoricalOrchestrationEvent);
+
 const LIMIT = 60 * 1024 * 1024;
 const MAX_EVENTS = 100_000;
 class ProjectMoveDataError extends Data.TaggedError("ProjectMoveDataError")<{
@@ -51,12 +55,13 @@ const canonicalJson = (value: unknown) =>
 const hash = (value: unknown) => sha256Hex(Buffer.from(canonicalJson(value)));
 
 async function readFile(file: string): Promise<Buffer | null> {
-  const handle = await fs
-    .open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-    .catch((cause: NodeJS.ErrnoException) => {
-      if (cause.code === "ENOENT") return null;
-      throw cause;
-    });
+  const handle = await NodeFSP.open(
+    file,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  ).catch((cause: NodeJS.ErrnoException) => {
+    if (cause.code === "ENOENT") return null;
+    throw cause;
+  });
   if (!handle) return null;
   try {
     const stat = await handle.stat();
@@ -74,20 +79,21 @@ async function replaceFile(file: string, bytes: Buffer | null) {
   const before = await readFile(file);
   if (before === null ? bytes === null : bytes !== null && bytes.equals(before)) return;
   if (bytes === null) {
-    await fs.unlink(file);
+    await NodeFSP.unlink(file);
     return;
   }
-  const temp = path.join(path.dirname(file), `.cp-move-${randomUUID()}`);
+  const temp = NodePath.join(NodePath.dirname(file), `.cp-move-${NodeCrypto.randomUUID()}`);
   try {
-    await fs.writeFile(temp, bytes, { flag: "wx", mode: 0o600 });
-    await fs.rename(temp, file);
+    await NodeFSP.writeFile(temp, bytes, { flag: "wx", mode: 0o600 });
+    await NodeFSP.rename(temp, file);
   } finally {
-    await fs.rm(temp, { force: true });
+    await NodeFSP.rm(temp, { force: true });
   }
 }
 
 /**
- * Keep a private hard link until projection readback succeeds. A crash before
+ * Keep a private hard link until readback on the returning source, or until
+ * rollback on the destination. A crash before
  * the SQL import commits leaves proof of exactly which attachment we created.
  * Existing matching files never acquire a proof link.
  */
@@ -97,12 +103,13 @@ async function stageAttachment(directory: string, target: string, bytes: Buffer)
     if (!existing.equals(bytes)) throw fail("An attachment identity collides on the destination.");
     return;
   }
-  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  if (!(await fs.lstat(directory)).isDirectory()) throw fail("Invalid move staging directory.");
-  const staged = path.join(directory, path.basename(target));
+  await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+  if (!(await NodeFSP.lstat(directory)).isDirectory())
+    throw fail("Invalid move staging directory.");
+  const staged = NodePath.join(directory, NodePath.basename(target));
   await replaceFile(staged, bytes);
   try {
-    await fs.link(staged, target);
+    await NodeFSP.link(staged, target);
   } catch (cause) {
     if (
       (cause as NodeJS.ErrnoException).code !== "EEXIST" ||
@@ -119,28 +126,29 @@ async function finishAttachments(
 ) {
   let entries;
   try {
-    if (!(await fs.lstat(directory)).isDirectory()) throw fail("Invalid move staging directory.");
-    entries = await fs.readdir(directory, { withFileTypes: true });
+    if (!(await NodeFSP.lstat(directory)).isDirectory())
+      throw fail("Invalid move staging directory.");
+    entries = await NodeFSP.readdir(directory, { withFileTypes: true });
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
     throw cause;
   }
   for (const entry of entries) {
     if (!entry.isFile()) throw fail("Unrecognized file in the move staging directory.");
-    const staged = path.join(directory, entry.name);
+    const staged = NodePath.join(directory, entry.name);
     if (cleanup && !retained.has(entry.name) && !entry.name.startsWith(".cp-move-")) {
-      const target = path.join(path.dirname(directory), entry.name);
-      const current = await fs.lstat(target).catch((cause: NodeJS.ErrnoException) => {
+      const target = NodePath.join(NodePath.dirname(directory), entry.name);
+      const current = await NodeFSP.lstat(target).catch((cause: NodeJS.ErrnoException) => {
         if (cause.code !== "ENOENT") throw cause;
         return null;
       });
-      const proof = await fs.lstat(staged);
+      const proof = await NodeFSP.lstat(staged);
       if (current?.isFile() && current.ino === proof.ino && current.dev === proof.dev)
-        await fs.unlink(target);
+        await NodeFSP.unlink(target);
     }
-    await fs.unlink(staged);
+    await NodeFSP.unlink(staged);
   }
-  await fs.rmdir(directory);
+  await NodeFSP.rmdir(directory);
 }
 
 const normalize = (
@@ -185,13 +193,13 @@ function eventAttachments(event: HistoricalOrchestrationEvent) {
 function rolePath(root: string, key: string) {
   if (key !== "AGENTS.md" && !/^[a-z0-9-]+\/AGENTS\.md$/.test(key))
     throw fail("Invalid Project role file.");
-  return path.join(root, key);
+  return NodePath.join(root, key);
 }
 
 async function readRoles(root: string) {
   const roles: Record<string, string> = {};
   const keys = ["AGENTS.md"];
-  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+  for (const entry of await NodeFSP.readdir(root, { withFileTypes: true })) {
     if (/^[a-z0-9-]+$/.test(entry.name) && entry.isDirectory())
       keys.push(`${entry.name}/AGENTS.md`);
   }
@@ -354,7 +362,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
       scripts,
       updatedAt,
     } = project;
-    const memory = yield* io(() => readFile(path.join(project.workspaceRoot, "MEMORY.md")));
+    const memory = yield* io(() => readFile(NodePath.join(project.workspaceRoot, "MEMORY.md")));
     const bundle: ProjectMoveBundle = {
       version: 1,
       coordinator: project.assistant?.coordinatorThreadId ?? null,
@@ -380,11 +388,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
       roles: yield* io(() => readRoles(project.workspaceRoot)),
       zone: timeZone().zone,
     };
-    if (
-      Buffer.byteLength(
-        yield* Schema.encodeEffect(Schema.fromJsonString(ProjectMoveBundle))(bundle),
-      ) > LIMIT
-    )
+    if (Buffer.byteLength(yield* encodeBundleJson(bundle)) > LIMIT)
       return yield* Effect.fail(fail("Project snapshot exceeds the transfer limit."));
     return bundle;
   });
@@ -394,11 +398,12 @@ export const makeProjectMoveData = Effect.gen(function* () {
     moveId: string,
     input: ProjectMoveBundle,
     cleanupDigest?: string,
+    retainAttachmentProof = false,
   ) {
     if ((yield* projectMoveFenceOwner(sql, id)) !== moveId)
       return yield* Effect.fail(fail("The Project move fence is missing."));
-    const bundle = yield* Schema.decodeUnknownEffect(ProjectMoveBundle)(input);
-    const stagingDirectory = path.join(
+    const bundle = yield* decodeBundle(input);
+    const stagingDirectory = NodePath.join(
       config.attachmentsDir,
       ".cp-project-move-" + hash([id, moveId]),
     );
@@ -487,7 +492,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
         return yield* Effect.fail(fail("Attachment verification failed."));
       yield* io(async () => {
         const target = attachmentPath(config.attachmentsDir, threadId, file);
-        retainedAttachments.add(path.basename(target));
+        retainedAttachments.add(NodePath.basename(target));
         await stageAttachment(stagingDirectory, target, data);
       });
     }
@@ -516,7 +521,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
         commandId: CommandId.make(key),
         projectId,
         removeThreads,
-        events: pending.map((e) => Schema.encodeSync(HistoricalOrchestrationEvent)(e)),
+        events: pending.map((e) => encodeHistoricalEvent(e)),
         meta: { ...bundle.project, projectId },
       }),
     );
@@ -561,9 +566,9 @@ export const makeProjectMoveData = Effect.gen(function* () {
       for (const key of new Set([...Object.keys(before.roles), ...Object.keys(bundle.roles)])) {
         const target = rolePath(project.workspaceRoot, key);
         if (key.includes("/")) {
-          const dir = path.dirname(target);
-          await fs.mkdir(dir, { recursive: true });
-          if (!(await fs.lstat(dir)).isDirectory())
+          const dir = NodePath.dirname(target);
+          await NodeFSP.mkdir(dir, { recursive: true });
+          if (!(await NodeFSP.lstat(dir)).isDirectory())
             throw fail("The Project role directory is not a directory.");
         }
         await replaceFile(
@@ -572,16 +577,18 @@ export const makeProjectMoveData = Effect.gen(function* () {
         );
       }
       await replaceFile(
-        path.join(project.workspaceRoot, "MEMORY.md"),
+        NodePath.join(project.workspaceRoot, "MEMORY.md"),
         bundle.memory === null ? null : Buffer.from(bundle.memory, "base64"),
       );
     });
     const actual = yield* capture(id);
     if (projectMoveDigest(actual) !== projectMoveDigest(bundle))
       return yield* Effect.fail(fail("The restored Project failed readback verification."));
-    yield* io(() =>
-      finishAttachments(stagingDirectory, retainedAttachments, cleanupDigest !== undefined),
-    );
+    if (!retainAttachmentProof) {
+      yield* io(() =>
+        finishAttachments(stagingDirectory, retainedAttachments, cleanupDigest !== undefined),
+      );
+    }
   });
   return { capture, install, digest: projectMoveDigest };
 });

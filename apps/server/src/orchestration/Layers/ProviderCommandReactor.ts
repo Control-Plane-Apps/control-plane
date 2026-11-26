@@ -1016,6 +1016,7 @@ const make = Effect.gen(function* () {
   const withPendingProviderHandoff = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
+    readonly turnSequence: number;
     readonly providerInput: string | undefined;
   }) {
     const binding = Option.getOrUndefined(yield* sessionDirectory.getBinding(input.threadId));
@@ -1029,9 +1030,33 @@ const make = Effect.gen(function* () {
       return { providerInput: input.providerInput, handoffDelivered: false };
     }
     const messages = (yield* resolveThreadDetail(input.threadId))?.messages ?? [];
-    const index = messages.findIndex((message) => message.id === input.messageId);
+    // Host clocks and client-provided message IDs cannot order a conversation
+    // across machines. Use the local append sequence and the triggering turn
+    // as its upper bound, including messages replayed by a coordinator move.
+    const ordered = yield* sql<{ messageId: MessageId }>`
+      WITH history AS (
+        SELECT sequence,
+          CASE WHEN event_type='thread.history-restored'
+            THEN json_extract(payload_json, '$.event.type') ELSE event_type END AS kind,
+          CASE WHEN event_type='thread.message-sent' THEN json_extract(payload_json, '$.messageId')
+            WHEN event_type='thread.history-restored' THEN json_extract(payload_json, '$.event.payload.messageId') END AS id
+        FROM orchestration_events
+        WHERE aggregate_kind='thread' AND stream_id=${input.threadId}
+          AND sequence < ${input.turnSequence}
+          AND event_type IN ('thread.created', 'thread.message-sent', 'thread.history-restored')
+      )
+      SELECT id AS messageId FROM history
+      WHERE kind='thread.message-sent' AND id != ${input.messageId}
+        AND sequence > (SELECT COALESCE(MAX(sequence),0) FROM history WHERE kind='thread.created')
+      GROUP BY id ORDER BY MIN(sequence)
+    `;
+    const byId = new Map(messages.map((message) => [message.id, message]));
+    const previous = ordered.flatMap(({ messageId }) => {
+      const message = byId.get(messageId);
+      return message ? [message] : [];
+    });
     const handoff = formatProviderHandoff({
-      messages: index >= 0 ? messages.slice(0, index) : messages,
+      messages: previous,
       fromLabel: pending.fromLabel,
       maxChars: budget,
     });
@@ -1049,6 +1074,7 @@ const make = Effect.gen(function* () {
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
+    readonly turnSequence: number;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
@@ -1072,6 +1098,7 @@ const make = Effect.gen(function* () {
     const { providerInput: normalizedInput, handoffDelivered } = yield* withPendingProviderHandoff({
       threadId: input.threadId,
       messageId: input.messageId,
+      turnSequence: input.turnSequence,
       providerInput: toNonEmptyProviderInput(input.messageText),
     });
     const normalizedAttachments = input.attachments ?? [];
@@ -1767,6 +1794,7 @@ const make = Effect.gen(function* () {
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
       messageId: event.payload.messageId,
+      turnSequence: event.sequence,
       messageText: [
         handoffTranscript && !providerText.startsWith("/")
           ? `Recent conversation on the original machine:\n${handoffTranscript}`

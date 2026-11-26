@@ -1,5 +1,5 @@
-import { DatabaseSync } from "node:sqlite";
-import { createHash } from "node:crypto";
+import * as NodeSqlite from "node:sqlite";
+import * as NodeCrypto from "node:crypto";
 import {
   AgentMachinesError,
   ProjectId,
@@ -93,7 +93,9 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
     Effect.acquireUseRelease(
       Effect.try({
         try: () => {
-          const db = new DatabaseSync(config.stateDir + "/project-coordinator-move-lock.sqlite");
+          const db = new NodeSqlite.DatabaseSync(
+            config.stateDir + "/project-coordinator-move-lock.sqlite",
+          );
           try {
             db.exec("PRAGMA busy_timeout=0");
             db.exec("BEGIN IMMEDIATE");
@@ -283,7 +285,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
           }
           if (input.digest !== r.digest || input.digest !== data.digest(input.bundle))
             return yield* refusal("The transfer checksum changed.");
-          yield* data.install(projectId, moveId, input.bundle);
+          yield* data.install(projectId, moveId, input.bundle, undefined, true);
           if (data.digest(yield* data.capture(projectId)) !== input.digest)
             return yield* refusal("Destination verification failed.");
           return { phase: "staging", digest: input.digest };
@@ -446,7 +448,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
               if (preflight.phase !== "ready" || !preflight.digest)
                 return yield* refusal("Destination readiness was not verified.");
               const targetDigest = preflight.digest;
-              const approvalDigest = createHash("sha256")
+              const approvalDigest = NodeCrypto.createHash("sha256")
                 .update(
                   yield* encodeApproval([
                     id,

@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - compare the canonical roots owned by registered Projects.
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import { ProjectId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -62,7 +62,9 @@ export function registerProjectTerminalCheck(sql: SqlClient.SqlClient, check: Te
 }
 
 const canonicalRoot = (root: string) =>
-  Effect.tryPromise(() => fs.realpath(root)).pipe(Effect.orElseSucceed(() => path.resolve(root)));
+  Effect.tryPromise(() => NodeFSP.realpath(root)).pipe(
+    Effect.orElseSucceed(() => NodePath.resolve(root)),
+  );
 
 export const assertProjectWorkspaceAvailable = (
   sql: SqlClient.SqlClient,

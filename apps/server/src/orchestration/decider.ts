@@ -150,6 +150,8 @@ function rejectUnavailablePeerDelivery(
 
 const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
+const decodeProjectMeta = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
+const decodeHistoryEvent = Schema.decodeUnknownEffect(HistoricalOrchestrationEvent);
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -421,9 +423,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandType: command.type,
           detail: "Invalid Project recovery snapshot.",
         });
-      const meta = yield* Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload)(command.meta).pipe(
-        Effect.mapError(invalid),
-      );
+      const meta = yield* decodeProjectMeta(command.meta).pipe(Effect.mapError(invalid));
       if (
         meta.projectId !== command.projectId ||
         meta.workspaceRoot !== undefined ||
@@ -448,9 +448,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       for (const encoded of command.events) {
-        const event = yield* Schema.decodeUnknownEffect(HistoricalOrchestrationEvent)(encoded).pipe(
-          Effect.mapError(invalid),
-        );
+        const event = yield* decodeHistoryEvent(encoded).pipe(Effect.mapError(invalid));
         if (
           event.aggregateKind !== "thread" ||
           !("threadId" in event.payload) ||

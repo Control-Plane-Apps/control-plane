@@ -1,4 +1,4 @@
-import { isDeepStrictEqual } from "node:util";
+import * as NodeUtil from "node:util";
 import * as Effect from "effect/Effect";
 import { withCodexAppServerClient } from "./CodexProvider.ts";
 
@@ -14,7 +14,8 @@ export function matchingWorkspaceMcpServers(machine: unknown, workspace: unknown
     ([, definition]) => !(record(definition) && definition.enabled === false),
   );
   return enabled.every(
-    ([name, definition]) => record(definition) && isDeepStrictEqual(definition, machine[name]),
+    ([name, definition]) =>
+      record(definition) && NodeUtil.isDeepStrictEqual(definition, machine[name]),
   )
     ? enabled.map(([name]) => name)
     : [];

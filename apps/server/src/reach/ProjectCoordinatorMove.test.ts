@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - two disposable Git repositories and SQLite databases.
-import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -39,13 +39,16 @@ import { ProjectCoordinatorMove, ProjectCoordinatorMoveLive } from "./ProjectCoo
 import { Reach, ReachError, unlinkedReach } from "./Reach.ts";
 import { ProjectMoveStep } from "./projectMoveProtocol.ts";
 
+const decodeProvider = Schema.decodeUnknownSync(ServerProvider);
+const decodeStep = Schema.decodeUnknownEffect(ProjectMoveStep);
+
 it("recovers each lost ownership acknowledgement across restarts and returns destination writes", async () => {
-  const root = await mkdtemp(join(tmpdir(), "project-move-pair-"));
-  const sourceRoot = join(root, "source-checkout"),
-    targetRoot = join(root, "target-checkout");
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "project-move-pair-"));
+  const sourceRoot = NodePath.join(root, "source-checkout"),
+    targetRoot = NodePath.join(root, "target-checkout");
   const at = "2026-01-01T00:00:00Z";
   const model = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
-  const provider = Schema.decodeUnknownSync(ServerProvider)({
+  const provider = decodeProvider({
     instanceId: "codex",
     driver: "codex",
     enabled: true,
@@ -73,9 +76,10 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provideMerge(layerConfig),
-      Layer.provideMerge(ServerConfig.layerTest(cwd, join(root, id))),
+      Layer.provideMerge(ServerConfig.layerTest(cwd, NodePath.join(root, id))),
       Layer.provideMerge(NodeServices.layer),
     );
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Each machine must dispose and reopen independent services over its persistent database.
     return ManagedRuntime.make(
       ProjectCoordinatorMoveLive.pipe(
         Layer.provideMerge(engine),
@@ -88,26 +92,28 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
             self: Effect.succeed({ environmentId: id, label: id }),
             machines: Effect.succeed([peer]),
             call: (machine, _op, input, _caller, result) =>
-              Effect.tryPromise({
-                try: async () => {
-                  const step = await Effect.runPromise(
-                    Schema.decodeUnknownEffect(ProjectMoveStep)(input),
-                  );
-                  const reply = await send(step);
-                  if (step.action === drop) {
-                    drop = null;
-                    throw new Error("Lost acknowledgement.");
-                  }
-                  return await Effect.runPromise(Schema.decodeUnknownEffect(result)(reply));
-                },
-                catch: (e) =>
-                  new ReachError({
-                    kind: "timeout",
-                    machineId: machine.id,
-                    machineLabel: machine.label,
-                    detail: String(e),
-                  }),
-              }),
+              decodeStep(input).pipe(
+                Effect.flatMap((step) =>
+                  Effect.tryPromise(() => send(step)).pipe(
+                    Effect.flatMap((reply) => {
+                      if (step.action === drop) {
+                        drop = null;
+                        return Effect.fail("Lost acknowledgement.");
+                      }
+                      return Schema.decodeUnknownEffect(result)(reply);
+                    }),
+                  ),
+                ),
+                Effect.mapError(
+                  (e) =>
+                    new ReachError({
+                      kind: "timeout",
+                      machineId: machine.id,
+                      machineLabel: machine.label,
+                      detail: String(e),
+                    }),
+                ),
+              ),
           }),
         ),
         Layer.provide(
@@ -162,11 +168,11 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     dest = boot("destination", targetRoot);
   };
   try {
-    await mkdir(sourceRoot);
+    await NodeFSP.mkdir(sourceRoot);
     const git = (cwd: string, ...args: string[]) =>
-      execFileSync("git", args, { cwd, stdio: "pipe" });
+      NodeChildProcess.execFileSync("git", args, { cwd, stdio: "pipe" });
     git(sourceRoot, "init", "-b", "main");
-    await writeFile(join(sourceRoot, "MEMORY.md"), "Synthetic memory");
+    await NodeFSP.writeFile(NodePath.join(sourceRoot, "MEMORY.md"), "Synthetic memory");
     git(sourceRoot, "add", ".");
     git(
       sourceRoot,
@@ -253,7 +259,7 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
       });
     await expect(source.runPromise(write(sourceId))).rejects.toThrow();
     await dest.runPromise(write(targetId));
-    await writeFile(join(targetRoot, "MEMORY.md"), "Destination memory");
+    await NodeFSP.writeFile(NodePath.join(targetRoot, "MEMORY.md"), "Destination memory");
     drop = "reverse";
     await expect(request("rollback")).rejects.toThrow("Lost acknowledgement");
     await restart();
@@ -261,7 +267,9 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     await expect(request("retry")).rejects.toThrow("Lost acknowledgement");
     await restart();
     expect((await request("retry")).coordinatorMove?.phase).toBe("rolled-back");
-    expect(await readFile(join(sourceRoot, "MEMORY.md"), "utf8")).toBe("Destination memory");
+    expect(await NodeFSP.readFile(NodePath.join(sourceRoot, "MEMORY.md"), "utf8")).toBe(
+      "Destination memory",
+    );
     const restored = await source.runPromise(
       Effect.flatMap(ProjectionSnapshotQuery, (s) => s.getShellSnapshot()),
     );
@@ -272,6 +280,6 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
   } finally {
     await source.dispose();
     await dest.dispose();
-    await rm(root, { recursive: true, force: true });
+    await NodeFSP.rm(root, { recursive: true, force: true });
   }
 }, 60000);
