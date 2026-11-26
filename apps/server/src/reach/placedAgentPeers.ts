@@ -173,13 +173,17 @@ export const makePlacedAgentPeerHost = Effect.gen(function* () {
       const createdAt = DateTime.formatIso(yield* DateTime.now);
       let queued = false;
       if (record) {
-        ({ queued } = yield* remote.send(record, {
+        const receipt = yield* remote.send(record, {
           text,
           sender: { id: caller.threadId, title: caller.title },
           replyTo: null,
           runtimeMode: record.runtimeMode,
           peer: true,
-        }));
+          receiptId: messageId,
+        });
+        queued = receipt.queued;
+        if (receipt.duplicate)
+          return { threadId, title, queued, duplicate: true, coordinatorNotified: false, machine };
       } else {
         const history = yield* rows.listByThreadId({ threadId });
         const budget = decidePeerBudget({

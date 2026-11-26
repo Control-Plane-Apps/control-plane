@@ -20,6 +20,10 @@ export const AGENT_PEER_FYI_PREVIEW_CHARS = 200;
 /** Heads-ups one coordinator turn carries; older ones are counted, not quoted. */
 export const AGENT_PEER_FYI_DIGEST_CAP = 20;
 
+export function isPeerDelivery(id: string): boolean {
+  return isAgentPeerMessageId(id) || (id.startsWith("cp-remote-send:") && id.includes(":peer:"));
+}
+
 export interface PeerWindowMessage {
   readonly messageId: string;
   readonly role: string;
@@ -40,7 +44,7 @@ export function peerWindow(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
     if (message.role !== "user") continue;
-    if (isAgentPeerMessageId(message.messageId)) {
+    if (isPeerDelivery(message.messageId)) {
       window.unshift(message);
       continue;
     }

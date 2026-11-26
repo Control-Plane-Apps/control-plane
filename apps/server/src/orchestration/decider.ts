@@ -57,6 +57,7 @@ import {
   requireSettleable,
   resolveCoordinatorMetaUpdate,
 } from "./assistantDecider.ts";
+import { decidePeerBudget, isPeerDelivery, peerWindow } from "./agentPeers.ts";
 import { withEventBase, type PlannedOrchestrationEvent } from "./eventBase.ts";
 import { projectEvent } from "./projector.ts";
 import { decideAgentScheduleChange, decideScheduleRecord } from "./scheduleDecider.ts";
@@ -85,6 +86,44 @@ import {
   decideTaskUpdate,
 } from "./taskDecider.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
+
+function rejectUnavailablePeerDelivery(
+  command: Extract<
+    OrchestrationCommand,
+    { type: "thread.turn.start" | "thread.message.user.append" }
+  >,
+  thread: OrchestrationThread,
+) {
+  if (!isPeerDelivery(command.message.messageId)) return Effect.void;
+  const source = command.message.source;
+  const senderThreadId = source?.kind === "agent" ? source.threadId : undefined;
+  const available =
+    senderThreadId &&
+    thread.settledAt === null &&
+    thread.archivedAt === null &&
+    decidePeerBudget({
+      senderThreadId,
+      text: command.message.text,
+      window: peerWindow(
+        thread.messages.map((message) => ({
+          messageId: message.id,
+          role: message.role,
+          text: message.text,
+          senderThreadId:
+            message.source?.kind === "agent" ? (message.source.threadId ?? null) : null,
+        })),
+      ),
+    }).kind === "send";
+  return available
+    ? Effect.void
+    : Effect.fail(
+        new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            "Peer delivery requires an active recipient and an available peer message budget.",
+        }),
+      );
+}
 
 const monogramSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -1556,6 +1595,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      yield* rejectUnavailablePeerDelivery(command, targetThread);
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
@@ -1714,6 +1754,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      yield* rejectUnavailablePeerDelivery(command, thread);
       yield* requireReplyTo(readModel, command.threadId, command.message, command.type);
       if (thread.messages.some((message) => message.id === command.message.messageId)) {
         return yield* new OrchestrationCommandInvariantError({

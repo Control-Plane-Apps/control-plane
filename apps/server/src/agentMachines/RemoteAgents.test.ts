@@ -490,6 +490,35 @@ describe("RemoteAgents.send and startQueued", () => {
       }),
   );
 
+  it.effect("deduplicates linked deliveries across a retry and enforces the sender budget", () =>
+    Effect.gen(function* () {
+      const { peer, run } = harness();
+      peer.threads.set("remote-1", makePeerThread("remote-1"));
+      yield* run(
+        Effect.gen(function* () {
+          const store = yield* RemoteAgentStore;
+          const remote = yield* RemoteAgents;
+          const record = makeRecord();
+          yield* store.put(record);
+          const send = (text: string) =>
+            remote.send(record, {
+              text,
+              sender,
+              peer: true,
+              replyTo: null,
+              runtimeMode: "approval-required",
+            });
+          const original = yield* send("one");
+          const duplicate = yield* send("one");
+          expect(duplicate).toMatchObject({ duplicate: true, messageId: original.messageId });
+          for (const text of ["two", "three", "four"]) yield* send(text);
+          expect((yield* Effect.flip(send("five"))).detail).toContain("budget exhausted");
+          expect(peer.commands).toHaveLength(1);
+        }),
+      );
+    }),
+  );
+
   it.effect("queues a send while a request is in flight, and sends nothing", () =>
     Effect.gen(function* () {
       const { peer, run } = harness();

@@ -632,6 +632,30 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
     }),
   );
 
+  it.effect("rejects a linked peer delivery after its recipient settles", () =>
+    Effect.gen(function* () {
+      const error = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.make("linked-attempt"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: MessageId.make("cp-remote-send:thread-1:peer:delivery"),
+            role: "user",
+            text: "Follow up",
+            attachments: [],
+            source: { kind: "agent", threadId: ThreadId.make("peer") },
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          createdAt: NOW,
+        },
+        readModel: makeReadModel("settled"),
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationCommandInvariantError");
+    }),
+  );
+
   it.effect("prepends activity unsets for turn starts and live session updates", () =>
     Effect.gen(function* () {
       const turnResult = yield* decideOrchestrationCommand({

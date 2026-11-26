@@ -478,32 +478,35 @@ const make = Effect.gen(function* () {
       const { record } = target;
       // A linked machine cannot call back into this one, so its reply comes back as a result.
       const text = formatPeerMessage({ ...header, resultReturns: true });
-      const { queued } = yield* remote
+      const receiptId = yield* randomUuid;
+      const { queued, duplicate, messageId } = yield* remote
         .send(record, {
           text,
           sender: { id: sender.id, title: sender.title },
           replyTo: sender.id,
           runtimeMode: record.runtimeMode,
           peer: true,
+          receiptId,
         })
         .pipe(Effect.mapError((cause) => new ThreadSendFailedError({ cause })));
-      const coordinatorNotified = shouldNotify
-        ? yield* notifyCoordinator(
-            scope,
-            {
-              id: `remote:${record.threadId}:${yield* randomUuid}`,
-              toId: record.threadId,
-              toTitle: `${record.title} (on ${record.machineLabel})`,
-              message,
-            },
-            createdAt,
-          )
-        : false;
+      const coordinatorNotified =
+        shouldNotify && !duplicate
+          ? yield* notifyCoordinator(
+              scope,
+              {
+                id: messageId ?? receiptId,
+                toId: record.threadId,
+                toTitle: `${record.title} (on ${record.machineLabel})`,
+                message,
+              },
+              createdAt,
+            )
+          : false;
       return {
         threadId: toId,
         title: record.title,
         queued,
-        duplicate: false,
+        duplicate: duplicate ?? false,
         coordinatorNotified,
         machine: record.machineLabel,
       } satisfies AgentMessageResult;

@@ -72,8 +72,18 @@ export const RemoteAgentRecord = Schema.Struct({
   workspaceCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
   createAttempted: Schema.optionalKey(Schema.Boolean),
   firstMessageAccepted: Schema.optionalKey(Schema.Boolean),
+  peerReceipts: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        messageId: Schema.String,
+        senderThreadId: Schema.String,
+        text: Schema.String,
+      }),
+    ),
+  ),
   stoppingAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
   workspaceObservedFor: Schema.optionalKey(Schema.String),
+  notifiedWaitId: Schema.optionalKey(Schema.String),
   waitId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   resumeCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
   lastResumedWaitId: Schema.optionalKey(Schema.String),

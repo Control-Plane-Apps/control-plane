@@ -14,6 +14,8 @@ import {
   type ModelSelection,
   type RuntimeMode,
 } from "@t3tools/contracts";
+import { randomUUID } from "node:crypto";
+import { decidePeerBudget, type PeerBudgetDecision } from "../orchestration/agentPeers.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -159,8 +161,12 @@ export interface RemoteAgentsShape {
       readonly runtimeMode: RuntimeMode;
       /** From an agent that does not manage this one (`cp_agent_message`); its result still goes back to it. */
       readonly peer?: boolean;
+      readonly receiptId?: string;
     },
-  ) => Effect.Effect<{ readonly queued: boolean }, RemoteAgentError>;
+  ) => Effect.Effect<
+    { readonly queued: boolean; readonly duplicate?: boolean; readonly messageId?: string },
+    RemoteAgentError
+  >;
   /** Starts the oldest queued send if the peer thread is idle. Used by the bridge. */
   readonly startQueued: (
     record: RemoteAgentRecord,
@@ -290,6 +296,14 @@ const make = Effect.gen(function* () {
           state: "open",
           endedAt: null,
           inFlight: request,
+          ...(!isRemotePeerRequestId(input.messageId)
+            ? {
+                peerReceipts:
+                  current.peerReceipts?.filter((r) =>
+                    current.queuedSends.some((q) => q.messageId === r.messageId),
+                  ) ?? [],
+              }
+            : {}),
           ...(input.origin === "create" ? { firstMessageAccepted: true } : {}),
           resumeCheckpoint: null,
           queuedSends: current.queuedSends.filter((queued) => queued.messageId !== input.messageId),
@@ -579,11 +593,62 @@ const make = Effect.gen(function* () {
         return yield* new RemoteAgentError({ detail: "This agent cannot receive messages." });
       if (latest.waitId) return yield* onHold(latest);
       const createdAt = yield* nowIso;
-      const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${createdAt}:${record.queuedSends.length}`;
+      const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${input.receiptId ?? randomUUID()}`;
       const detail = yield* readView(record, 1);
       if (Option.isNone(detail)) return yield* lostError(record);
       const view = viewOf(detail.value.thread);
-      const busy = record.inFlight !== null || isThreadBusy(view);
+      const busy = latest.inFlight !== null || isThreadBusy(view);
+      if (input.peer) {
+        if (detail.value.thread.settledAt != null || detail.value.thread.archivedAt != null)
+          return yield* new RemoteAgentError({ detail: "The peer is no longer active." });
+        const receipt = { messageId, senderThreadId: input.sender.id, text: input.text };
+        let decision: PeerBudgetDecision | undefined;
+        const saved = yield* store
+          .update(record.threadId, (current) => {
+            if (current.state !== "open" || current.stoppingAt || current.waitId) return current;
+            const previous = current.peerReceipts ?? [];
+            decision = decidePeerBudget({
+              window: previous.map((entry) => ({ ...entry, role: "user" })),
+              senderThreadId: receipt.senderThreadId,
+              text: receipt.text,
+            });
+            if (decision.kind !== "send") return current;
+            return {
+              ...current,
+              peerReceipts: [...previous, receipt],
+              queuedSends: [
+                ...current.queuedSends,
+                {
+                  messageId,
+                  text: input.text,
+                  replyTo: input.replyTo ?? input.sender.id,
+                  sender: input.sender,
+                  queuedAt: createdAt,
+                  ...(input.replyTo === null ? { noResult: true as const } : {}),
+                },
+              ],
+            };
+          })
+          .pipe(Effect.mapError(storeFailed));
+        if (!decision || Option.isNone(saved))
+          return yield* new RemoteAgentError({ detail: "The peer cannot receive messages." });
+        if (decision.kind === "duplicate") {
+          const duplicateId = decision.messageId;
+          return {
+            queued: saved.value.queuedSends.some((entry) => entry.messageId === duplicateId),
+            duplicate: true,
+            messageId: duplicateId,
+          };
+        }
+        if (decision.kind !== "send")
+          return yield* new RemoteAgentError({
+            detail: "Peer message budget exhausted. Ask the coordinator.",
+          });
+        if (busy || saved.value.queuedSends[0]?.messageId !== messageId)
+          return { queued: true, messageId };
+        yield* startQueued(saved.value, view);
+        return { queued: false, messageId };
+      }
       if (busy) {
         yield* store
           .update(record.threadId, (current) => ({
