@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import {
   MessageId,
   CommandId,
@@ -259,7 +259,7 @@ it.effect(
         waitId: "wait",
         machineId: "home",
         projectId: thread.projectId,
-        releaseHash: createHash("sha256").update(key).digest("hex"),
+        releaseHash: NodeCrypto.createHash("sha256").update(key).digest("hex"),
       };
       const events = yield* decideOrchestrationCommand({
         readModel,

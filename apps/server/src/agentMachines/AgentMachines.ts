@@ -6,7 +6,7 @@
  *
  * @module AgentMachines
  */
-import { createHash, randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import {
   CommandId,
   HANDOFF_TRANSCRIPT_MAX_CHARS,
@@ -1219,7 +1219,7 @@ const make = Effect.gen(function* () {
         yield* handoffUpdate(threadId, waitId, (latest) => ({
           ...latest,
           handoff: null,
-          waitId: randomUUID(),
+          waitId: NodeCrypto.randomUUID(),
           lastRecoveredWaitId: waitId,
           workspaceCheckpoint: {
             root: intent.sourceRoot,
@@ -1374,8 +1374,8 @@ const make = Effect.gen(function* () {
         const timestamp = record.handoff?.createdAt ?? DateTime.formatIso(yield* DateTime.now);
         const intent = record.handoff ?? {
           phase: "prepared" as const,
-          sourceKey: randomUUID(),
-          destinationKey: randomUUID(),
+          sourceKey: NodeCrypto.randomUUID(),
+          destinationKey: NodeCrypto.randomUUID(),
           waitId,
           destinationId,
           projectId: targetProject,
@@ -1403,7 +1403,8 @@ const make = Effect.gen(function* () {
           return yield* moveError("The agent changed before handoff.");
         if (!intent.sourceKey || !intent.destinationKey)
           return yield* moveError("Missing handoff ownership receipt.");
-        const releaseHash = (key: string) => createHash("sha256").update(key).digest("hex");
+        const releaseHash = (key: string) =>
+          NodeCrypto.createHash("sha256").update(key).digest("hex");
         const tid = ThreadId.make(threadId);
         if (!fence) {
           const original = yield* workspace(sourceId, record.peerProjectId, threadId, true);

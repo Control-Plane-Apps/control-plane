@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -163,7 +163,7 @@ describe("OrchestrationEngine", () => {
           waitId: "wait",
           machineId: "home",
           projectId,
-          releaseHash: createHash("sha256").update("release-key").digest("hex"),
+          releaseHash: NodeCrypto.createHash("sha256").update("release-key").digest("hex"),
         },
       };
       const initial = await dispatch(create);

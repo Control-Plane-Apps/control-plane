@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import {
   EventId,
   MAX_SCRIPT_ID_LENGTH,
@@ -335,7 +335,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         release &&
         (fence
           ? payload?.waitId === release.waitId &&
-            payload.releaseHash === createHash("sha256").update(release.key).digest("hex") &&
+            payload.releaseHash ===
+              NodeCrypto.createHash("sha256").update(release.key).digest("hex") &&
             fence.kind ===
               (release.role === "source" ? "agent.handoff.fenced" : "agent.handoff.held")
           : release.role === "source" && !!thread && thread.archivedAt === null);
