@@ -283,6 +283,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   OrchestrationCommandRejection | PlatformError.PlatformError,
   Crypto.Crypto
 > {
+  if ("threadId" in command) {
+    const thread = readModel.threads.find((entry) => entry.id === command.threadId);
+    if (
+      thread?.archivedAt &&
+      thread.activities.some((entry) => entry.kind === "agent.handoff.fenced")
+    ) {
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: "This agent was moved to another machine. Its original thread is read-only.",
+      });
+    }
+  }
   switch (command.type) {
     case "project.create": {
       yield* requireProjectAbsent({
@@ -645,27 +657,64 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.archive": {
-      yield* requireThreadNotArchived({
+      const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
       yield* requireNotCoordinator(readModel, command.threadId, command.type);
       const occurredAt = yield* nowIso;
-      return {
+      const archived = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
           occurredAt,
           commandId: command.commandId,
         })),
-        type: "thread.archived",
+        type: "thread.archived" as const,
         payload: {
           threadId: command.threadId,
           archivedAt: occurredAt,
           updatedAt: occurredAt,
         },
       };
+      if (!command.handoff) return archived;
+      if (
+        thread.updatedAt !== command.handoff.expectedUpdatedAt ||
+        (thread.session && thread.session.status !== "stopped") ||
+        thread.latestTurn?.state === "running" ||
+        openRequests(thread).size > 0 ||
+        hasQueuedTurnStartForThread(thread, occurredAt)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The original agent must be stopped and idle before handoff.",
+        });
+      }
+      return [
+        archived,
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.activity-appended" as const,
+          payload: {
+            threadId: thread.id,
+            activity: {
+              id: EventId.make(`cp-handoff-fence:${command.handoff.waitId}`),
+              tone: "info" as const,
+              kind: "agent.handoff.fenced",
+              summary: "Moved to another machine",
+              turnId: null,
+              payload: { waitId: command.handoff.waitId },
+              createdAt: occurredAt,
+            },
+          },
+        },
+      ];
     }
 
     case "thread.unarchive": {
@@ -2436,6 +2485,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.activity.append": {
+      if (command.activity.kind === "agent.handoff.fenced")
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only a verified handoff archive can write the execution fence.",
+        });
       const thread = yield* requireThread({
         readModel,
         command,

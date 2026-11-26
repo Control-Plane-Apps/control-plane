@@ -350,20 +350,32 @@ function AgentMachinesBody({
     void requestCheck();
   };
 
-  const resume = async (agent: WaitingAgent) => {
-    if (resumingId !== null || check.phase !== "done" || !agent.canResume) return;
+  const resume = async (agent: WaitingAgent, destinationId?: string) => {
+    if (
+      resumingId !== null ||
+      check.phase !== "done" ||
+      !(destinationId
+        ? agent.destinations?.some((item) => item.id === destinationId)
+        : agent.canResume)
+    )
+      return;
     setResumingId(agent.threadId);
     try {
       const result = await agentMachines({
         environmentId,
-        input: { action: "resume", threadId: agent.threadId, waitId: agent.waitId },
+        input: {
+          action: "resume",
+          threadId: agent.threadId,
+          waitId: agent.waitId,
+          ...(destinationId ? { destinationId } : {}),
+        },
       });
       if (result._tag === "Success") {
         latestCheck.current++;
         setCheck(checkedState(result.value));
         toastManager.add({
           type: "success",
-          title: `Resumed ${agent.title} on ${agent.machineLabel}`,
+          title: `Resumed ${agent.title} on ${agent.destinations?.find((item) => item.id === destinationId)?.label ?? agent.machineLabel}`,
         });
       } else if (!isAtomCommandInterrupted(result)) {
         toastManager.add({
@@ -474,7 +486,7 @@ function AgentMachinesBody({
         projects={projects}
         check={check}
         resumingId={resumingId}
-        onResume={(agent) => void resume(agent)}
+        onResume={(agent, id) => void resume(agent, id)}
         unlinking={unlinking}
         update={update}
         onRefresh={refresh}
@@ -551,7 +563,7 @@ export function AgentMachinesView({
   readonly placement: AgentPlacementSettings;
   readonly check: AgentMachinesCheckState;
   readonly resumingId?: string | null;
-  readonly onResume?: (agent: WaitingAgent) => void;
+  readonly onResume?: (agent: WaitingAgent, destinationId?: string) => void;
   readonly unlinking: string | null;
   readonly update: (patch: AgentPlacementSettingsPatch | null) => void;
   readonly onRefresh: () => void;

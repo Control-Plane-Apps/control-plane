@@ -190,6 +190,7 @@ const makePeer = (overrides: Partial<PeerState> = {}) => {
 interface HarnessInput {
   readonly placement?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly peer?: ReturnType<typeof makePeer>;
+  readonly homeProject?: OrchestrationProjectShell;
   readonly homeThreads?: ReadonlyArray<ReturnType<typeof makePeerThread>>;
 }
 
@@ -212,6 +213,7 @@ const harness = (input: HarnessInput = {}) => {
     ),
     Layer.provideMerge(
       Layer.mock(ProjectionSnapshotQuery)({
+        getProjectShellById: () => Effect.succeed(Option.some(input.homeProject ?? homeProject)),
         getShellSnapshot: () =>
           Effect.succeed({
             snapshotSequence: 1,
@@ -491,6 +493,168 @@ describe("AgentMachines.manage unlink and check", () => {
           yield* store.put({ ...record, waitId: "second" });
           expect((yield* Effect.result(release))._tag).toBe("Failure");
           expect(Option.getOrThrow(yield* store.get(record.threadId)).waitId).toBe("second");
+        }),
+      );
+    },
+  );
+
+  it.effect(
+    "keeps the source fenced after a lost create acknowledgement and finishes the same handoff on retry",
+    () => {
+      const identity = {
+        canonicalKey: "fixture/acme",
+        locator: {
+          source: "git-remote" as const,
+          remoteName: "origin",
+          remoteUrl: "https://example.test/fixture/acme",
+        },
+      };
+      const project = { ...homeProject, repositoryIdentity: identity };
+      const otherProject = { ...peerProject, repositoryIdentity: identity };
+      const commandIds: string[] = [];
+      const tid = "remote-1";
+      const waitId = "handoff-1";
+      const shell = makePeerThread(tid);
+      let fenced = false;
+      let created = false;
+      const http = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((req, url) => {
+          const to = url.port === "4001";
+          const respond = (body: unknown) =>
+            Effect.succeed(
+              HttpClientResponse.fromWeb(
+                req,
+                new Response(encodeJson(body), { headers: { "content-type": "application/json" } }),
+              ),
+            );
+          if (url.pathname.includes(".well-known"))
+            return respond(descriptorBody(to ? "target" : "env-mini"));
+          if (url.pathname.endsWith("/shell"))
+            return respond({
+              snapshotSequence: 1,
+              projects: [otherProject],
+              threads: to && !created ? [] : [shell],
+              updatedAt: TEST_NOW,
+            });
+          if (url.pathname.endsWith("/handoff-workspace"))
+            return respond({
+              root: to ? "/target" : "/source",
+              branch: "feature",
+              commit: "a".repeat(40),
+              digest: "f".repeat(64),
+            });
+          if (url.pathname.endsWith("/workspace")) return respond({ workspace: null, idle: true });
+          if (url.pathname.endsWith("/readiness"))
+            return respond({
+              checkout: true,
+              provider: true,
+              gh: false,
+              sentry: false,
+              readReplica: false,
+              eas: false,
+              vercel: false,
+              posthog: false,
+              mcp: false,
+              modelSelection: shell.modelSelection,
+            });
+          if (url.pathname.includes("/threads/"))
+            return respond({
+              snapshotSequence: 1,
+              thread: {
+                ...shell,
+                archivedAt: !to && fenced ? TEST_NOW : null,
+                deletedAt: null,
+                messages: [],
+                checkpoints: [],
+                activities:
+                  !to && fenced
+                    ? [
+                        {
+                          id: `cp-handoff-fence:${waitId}`,
+                          tone: "info",
+                          kind: "agent.handoff.fenced",
+                          summary: "Moved",
+                          createdAt: TEST_NOW,
+                          turnId: null,
+                          payload: { waitId },
+                        },
+                      ]
+                    : [],
+              },
+            });
+          if (url.pathname.endsWith("/dispatch") && req.body._tag === "Uint8Array") {
+            const cmd = JSON.parse(new TextDecoder().decode(req.body.body)) as {
+              type: string;
+              commandId: string;
+            };
+            commandIds.push(cmd.commandId);
+            if (cmd.type === "thread.archive") fenced = true;
+            if (cmd.type === "thread.create" && !created) {
+              created = true;
+              return Effect.fail(new Error("lost acknowledgement") as never);
+            }
+            return respond({ sequence: 3 });
+          }
+          return respond({});
+        }),
+      );
+      const peer = { ...makePeer(), layer: http };
+      const h = harness({
+        peer,
+        homeProject: project,
+        placement: {
+          agentPlacement: {
+            machines: {
+              ...linkedMini.agentPlacement.machines,
+              target: {
+                ...linkedMini.agentPlacement.machines["env-mini"],
+                baseUrl: "http://100.101.102.103:4001",
+              },
+            },
+          },
+        },
+      });
+      return h.run(
+        Effect.gen(function* () {
+          yield* storeToken();
+          yield* storeToken("target");
+          const machines = yield* AgentMachines;
+          const store = yield* RemoteAgentStore;
+          yield* store.put(
+            makeRecord({
+              machineId: "env-mini",
+              homeProjectId: project.id,
+              waitId,
+              workspacePosition: { root: "/source", branch: "feature", commit: "a".repeat(40) },
+            }),
+          );
+          const move = machines.manage({
+            action: "resume",
+            threadId: tid,
+            waitId,
+            destinationId: "target",
+          });
+          expect((yield* Effect.result(move))._tag).toBe("Failure");
+          expect(fenced).toBe(true);
+          expect(Option.getOrThrow(yield* store.get(tid))).toMatchObject({
+            machineId: "env-mini",
+            waitId,
+            handoff: { destinationId: "target" },
+          });
+          yield* move;
+          yield* move;
+          expect(Option.getOrThrow(yield* store.get(tid))).toMatchObject({
+            machineId: "target",
+            waitId: null,
+            lastResumedWaitId: waitId,
+            resumeCheckpoint: { root: "/target", digest: "f".repeat(64) },
+          });
+          expect(commandIds).toEqual([
+            `cp-handoff-fence:${waitId}:${shell.updatedAt}`,
+            `cp-handoff-create:${waitId}`,
+            `cp-handoff-create:${waitId}`,
+          ]);
         }),
       );
     },

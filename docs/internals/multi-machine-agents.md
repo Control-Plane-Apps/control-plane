@@ -281,6 +281,17 @@ waking or reconnecting the machine, select **Refresh**. **Resume** becomes avail
 server verifies the original checkout and thread are ready to continue. Resuming releases held
 work on that machine. If the queue is empty, the agent waits for its next request.
 
+The home manager receives a waiting notice when the bridge loses contact with an agent. For
+an alternate machine, prepare a separate destination Project checkout with the same repository, branch,
+commit, staged changes, working tree changes and non-ignored untracked files. Ignored local
+configuration stays on each machine. Select the destination in **Waiting agents** and choose
+**Verify and move**. Both machines must be reachable. Each hashes its checkout locally. The home
+checks matching fingerprints and destination requirements, stops the original session, and
+archives the original thread with a durable execution fence before creating the destination agent.
+After destination verification the home releases the held queue. A failed acknowledgement keeps
+the move bound to that destination so the same action can safely retry it. The original thread
+holds its full history. The agent's first destination request includes recent conversation text.
+
 ## Security
 
 - **Linking is trust.** `orchestration:operate` lets the home run any client command on the peer,

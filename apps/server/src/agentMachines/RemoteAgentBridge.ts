@@ -83,7 +83,12 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
   const update = (
     record: RemoteAgentRecord,
     change: (current: RemoteAgentRecord) => RemoteAgentRecord,
-  ) => store.update(record.threadId, change).pipe(Effect.ignore);
+  ) =>
+    store
+      .update(record.threadId, (current) =>
+        current.machineId === record.machineId && !current.handoff ? change(current) : current,
+      )
+      .pipe(Effect.ignore);
 
   const setPhase = (
     record: RemoteAgentRecord,
@@ -315,7 +320,7 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
         (candidate) => candidate.id === record.threadId && candidate.archivedAt === null,
       );
       if (record.waitId) yield* notifyWait(record, record.waitId);
-      if (record.stoppingAt) continue;
+      if (record.stoppingAt || record.handoff) continue;
       if (record.createAttempted && record.state === "pending") continue;
       const age = now - toMs(record.createdAt);
       if (thread === undefined) {
@@ -335,16 +340,14 @@ export const makeRemoteAgentBridge = Effect.gen(function* () {
       ) {
         const checkpoint = yield* machines
           .workspace(record.machineId, record.peerProjectId, record.threadId)
-          .pipe(
-            Effect.map((probe) => probe.workspace),
-            Effect.orElseSucceed(() => null),
-          );
+          .pipe(Effect.orElseSucceed(() => null));
         yield* update(record, (current) =>
           current.waitId
             ? current
             : {
                 ...current,
-                workspaceCheckpoint: checkpoint,
+                workspacePosition: checkpoint?.position ?? checkpoint?.workspace ?? null,
+                workspaceCheckpoint: checkpoint?.workspace ?? null,
                 workspaceObservedFor: thread.updatedAt,
               },
         );

@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { workspaceFingerprint } from "../agentMachines/workspaceFingerprint.ts";
 import { cleanWorkspace } from "../agentMachines/workspaceResume.ts";
 import { resolveAgentModel } from "../mcp/toolkits/agents/agentScope.ts";
 import { isThreadBusy } from "../agentMachines/remoteAgentState.ts";
@@ -125,12 +126,55 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
               timeoutMs: 2000,
               maxOutputBytes: 4096,
             });
-            const checkpoint = result.stdoutTruncated ? null : cleanWorkspace(root, result.stdout);
-            return checkpoint && (!thread.branch || thread.branch === checkpoint.branch)
-              ? checkpoint
-              : null;
-          }).pipe(Effect.orElseSucceed(() => null));
-          return { workspace, idle };
+            const position = cleanWorkspace(root, result.stdout, true);
+            if (!position || (thread.branch && thread.branch !== position.branch))
+              return { workspace: null, position: null };
+            return {
+              workspace: result.stdoutTruncated ? null : cleanWorkspace(root, result.stdout),
+              position,
+            };
+          }).pipe(Effect.orElseSucceed(() => ({ workspace: null, position: null })));
+          return { ...workspace, idle };
+        }),
+      )
+      .handle(
+        "handoffWorkspace",
+        Effect.fn("environment.orchestration.handoffWorkspace")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          const project = Option.getOrNull(
+            yield* projectionSnapshotQuery
+              .getProjectShellById(args.params.projectId)
+              .pipe(
+                Effect.catch((cause) =>
+                  failEnvironmentInternal("orchestration_snapshot_failed", cause),
+                ),
+              ),
+          );
+          if (!project?.repositoryIdentity || project.assistant?.archivedAt != null)
+            return yield* failEnvironmentNotFound("project_not_found");
+          let directory = project.workspaceRoot;
+          if (args.payload.threadId) {
+            const thread = Option.getOrNull(
+              yield* projectionSnapshotQuery
+                .getThreadShellById(args.payload.threadId)
+                .pipe(
+                  Effect.catch((cause) =>
+                    failEnvironmentInternal("orchestration_snapshot_failed", cause),
+                  ),
+                ),
+            );
+            if (!thread || thread.projectId !== project.id)
+              return yield* failEnvironmentNotFound("thread_not_found");
+            directory = thread.worktreePath ?? directory;
+          }
+          return yield* Effect.tryPromise(() =>
+            workspaceFingerprint(directory, project.repositoryIdentity ?? undefined),
+          ).pipe(
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_snapshot_failed", cause),
+            ),
+          );
         }),
       )
       .handle(

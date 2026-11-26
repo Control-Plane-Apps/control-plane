@@ -150,12 +150,8 @@ export function classifyPeerFailure(error: unknown): PeerError {
   return new PeerError({ kind: "unreachable", detail: "Could not reach the linked machine." });
 }
 
-const call = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(
-    Effect.timeout(PEER_REQUEST_TIMEOUT),
-    noRedirects,
-    Effect.mapError(classifyPeerFailure),
-  );
+const call = <A, E, R>(effect: Effect.Effect<A, E, R>, timeout = PEER_REQUEST_TIMEOUT) =>
+  effect.pipe(Effect.timeout(timeout), noRedirects, Effect.mapError(classifyPeerFailure));
 
 const makeClient = (baseUrl: string) => HttpApiClient.make(EnvironmentHttpApi, { baseUrl });
 
@@ -224,6 +220,24 @@ export const exchangePairingCredential = (input: {
         expiresInSeconds: result.expires_in,
       };
     }),
+  );
+
+export const fetchHandoffWorkspace = (
+  baseUrl: string,
+  token: string,
+  projectId: string,
+  threadId?: string,
+) =>
+  call(
+    Effect.gen(function* () {
+      const client = yield* makeClient(baseUrl);
+      return yield* client.orchestration.handoffWorkspace({
+        headers: bearer(token),
+        params: { projectId: ProjectId.make(projectId) },
+        payload: threadId ? { threadId: ThreadId.make(threadId) } : {},
+      });
+    }),
+    Duration.minutes(2),
   );
 
 export const fetchPeerWorkspace = (

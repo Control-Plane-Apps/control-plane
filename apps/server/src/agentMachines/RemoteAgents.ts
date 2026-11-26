@@ -14,7 +14,7 @@ import {
   type ModelSelection,
   type RuntimeMode,
 } from "@t3tools/contracts";
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import { decidePeerBudget, type PeerBudgetDecision } from "../orchestration/agentPeers.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -232,6 +232,8 @@ const make = Effect.gen(function* () {
         return;
       if (
         !current ||
+        current.machineId !== record.machineId ||
+        current.handoff ||
         current.state === "lost" ||
         (current.state === "settled" && input.origin !== "follow-up")
       )
@@ -241,7 +243,13 @@ const make = Effect.gen(function* () {
       if (current.waitId) return yield* onHold(current);
       if (current.resumeCheckpoint) {
         const probe = yield* machines
-          .workspace(current.machineId, current.peerProjectId, current.threadId, true)
+          .workspace(
+            current.machineId,
+            current.peerProjectId,
+            current.threadId,
+            true,
+            current.resumeCheckpoint.digest !== undefined,
+          )
           .pipe(Effect.orElseSucceed(() => null));
         const reason = resumeBlocker(current.resumeCheckpoint, probe);
         if (reason) {
@@ -277,10 +285,20 @@ const make = Effect.gen(function* () {
           message: {
             messageId: MessageId.make(input.messageId),
             role: "user",
-            text: input.text,
+            text: current.handoffContext
+              ? current.handoffContext + "\n\n" + input.text
+              : input.text,
             attachments: [],
             source: {
               kind: "agent",
+              ...(current.handoffHomeMachine
+                ? {
+                    placementHome: {
+                      machineId: current.handoffHomeMachine,
+                      projectId: ProjectId.make(current.homeProjectId),
+                    },
+                  }
+                : {}),
               ...(input.placementHome ? { placementHome: input.placementHome } : {}),
               threadId: ThreadId.make(input.sender.id),
               threadTitle: input.sender.title,
@@ -316,6 +334,7 @@ const make = Effect.gen(function* () {
             : {}),
           ...(input.origin === "create" ? { firstMessageAccepted: true } : {}),
           resumeCheckpoint: null,
+          handoffContext: null,
           queuedSends: current.queuedSends.filter((queued) => queued.messageId !== input.messageId),
           lastPhase: "starting",
         }))
@@ -436,13 +455,16 @@ const make = Effect.gen(function* () {
 
       const checkpoint = yield* machines
         .workspace(record.machineId, record.peerProjectId, record.threadId)
-        .pipe(
-          Effect.map((probe) => probe.workspace),
-          Effect.orElseSucceed(() => null),
-        );
+        .pipe(Effect.orElseSucceed(() => null));
       yield* store
         .update(record.threadId, (current) =>
-          current.waitId ? current : { ...current, workspaceCheckpoint: checkpoint },
+          current.waitId
+            ? current
+            : {
+                ...current,
+                workspacePosition: checkpoint?.position ?? checkpoint?.workspace ?? null,
+                workspaceCheckpoint: checkpoint?.workspace ?? null,
+              },
         )
         .pipe(Effect.mapError(storeFailed));
       const preamble = `You are running on ${record.machineLabel} for the Project "${input.home.project.title}", started by ${input.creator.title} on ${input.home.label}. This machine has its own copy of the Project folder: read its AGENTS.md here, and your changes stay on this machine.\n\n`;
@@ -624,11 +646,17 @@ const make = Effect.gen(function* () {
       const latest = Option.getOrNull(
         yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
       );
-      if (!latest || latest.stoppingAt || (input.peer && latest.state !== "open"))
+      if (
+        !latest ||
+        latest.handoff ||
+        latest.machineId !== record.machineId ||
+        latest.stoppingAt ||
+        (input.peer && latest.state !== "open")
+      )
         return yield* new RemoteAgentError({ detail: "This agent cannot receive messages." });
       if (latest.waitId) return yield* onHold(latest);
       const createdAt = yield* nowIso;
-      const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${input.receiptId ?? randomUUID()}`;
+      const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${input.receiptId ?? NodeCrypto.randomUUID()}`;
       const detail = yield* readView(record, 1);
       if (Option.isNone(detail)) return yield* lostError(record);
       const view = viewOf(detail.value.thread);
@@ -789,11 +817,27 @@ const make = Effect.gen(function* () {
         record.threadId,
         Effect.gen(function* () {
           const current = yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed));
-          if (Option.isNone(current)) return yield* lostError(record);
+          if (
+            Option.isNone(current) ||
+            current.value.handoff ||
+            current.value.machineId !== record.machineId
+          )
+            return yield* lostError(record);
           return yield* stop(current.value, options);
         }),
       ),
-    settle: (record, options) => withRemoteAgentLock(record.threadId, settle(record, options)),
+    settle: (record, options) =>
+      withRemoteAgentLock(
+        record.threadId,
+        Effect.gen(function* () {
+          const current = Option.getOrNull(
+            yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
+          );
+          if (!current || current.handoff || current.machineId !== record.machineId)
+            return yield* lostError(record);
+          return yield* settle(current, options);
+        }),
+      ),
     send: (record, input) => withRemoteAgentLock(record.threadId, sendMessage(record, input)),
     startQueued: (record, view) => withRemoteAgentLock(record.threadId, startQueued(record, view)),
   } satisfies RemoteAgentsShape;

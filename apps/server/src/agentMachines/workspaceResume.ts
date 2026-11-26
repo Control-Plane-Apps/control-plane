@@ -1,13 +1,17 @@
 import type { AgentWorkspaceCheckpoint, AgentWorkspaceProbe } from "@t3tools/contracts";
 
 /** Only a named, clean checkout at a full commit is a resumable checkpoint. */
-export function cleanWorkspace(root: string, status: string): AgentWorkspaceCheckpoint | null {
+export function cleanWorkspace(
+  root: string,
+  status: string,
+  allowChanges = false,
+): AgentWorkspaceCheckpoint | null {
   let branch: string | undefined;
   let commit: string | undefined;
   for (const line of status.split("\n")) {
     if (line.startsWith("# branch.head ")) branch = line.slice("# branch.head ".length);
     else if (line.startsWith("# branch.oid ")) commit = line.slice("# branch.oid ".length);
-    else if (line !== "" && !line.startsWith("# ")) return null;
+    else if (!allowChanges && line !== "" && !line.startsWith("# ")) return null;
   }
   if (
     !branch ||
@@ -29,6 +33,7 @@ export function resumeBlocker(
     return "No clean named branch was verified before the machine went offline. Inspect the original thread and workspace.";
   if (!probe.workspace) return "The original checkout must be clean and on its named branch.";
   if (
+    (saved.digest !== undefined && saved.digest !== probe.workspace.digest) ||
     saved.root !== probe.workspace.root ||
     saved.branch !== probe.workspace.branch ||
     saved.commit !== probe.workspace.commit

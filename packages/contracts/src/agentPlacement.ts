@@ -119,6 +119,7 @@ export const AgentMachinesInput = Schema.Union([
   Schema.Struct({ action: Schema.Literal("check") }),
   Schema.Struct({
     action: Schema.Literal("resume"),
+    destinationId: Schema.optional(AgentMachineId),
     threadId: TrimmedNonEmptyString,
     waitId: TrimmedNonEmptyString,
   }),
@@ -186,13 +187,21 @@ export const AgentMachineStatus = Schema.Struct({
 export type AgentMachineStatus = typeof AgentMachineStatus.Type;
 
 export const AgentWorkspaceCheckpoint = Schema.Struct({
+  digest: Schema.optionalKey(TrimmedNonEmptyString),
   root: TrimmedNonEmptyString,
   branch: TrimmedNonEmptyString,
   commit: TrimmedNonEmptyString,
 });
 export type AgentWorkspaceCheckpoint = typeof AgentWorkspaceCheckpoint.Type;
 
+export const HandoffFingerprint = Schema.Struct({
+  ...AgentWorkspaceCheckpoint.fields,
+  digest: TrimmedNonEmptyString,
+});
+export type HandoffFingerprint = typeof HandoffFingerprint.Type;
+
 export const AgentWorkspaceProbe = Schema.Struct({
+  position: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
   workspace: Schema.NullOr(AgentWorkspaceCheckpoint),
   idle: Schema.Boolean,
 });
@@ -206,6 +215,9 @@ export const WaitingAgent = Schema.Struct({
   branch: Schema.NullOr(Schema.String),
   commit: Schema.NullOr(Schema.String),
   canResume: Schema.Boolean,
+  destinations: Schema.optional(
+    Schema.Array(Schema.Struct({ id: AgentMachineId, label: TrimmedNonEmptyString })),
+  ),
   detail: Schema.String,
   waitId: Schema.String,
 });

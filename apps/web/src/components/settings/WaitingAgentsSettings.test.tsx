@@ -27,6 +27,22 @@ describe("waiting agent controls", () => {
     expect(html).not.toContain("<button");
   });
 
+  it("explains the prepared copy and original stop before enabling a destination", () => {
+    const html = renderToStaticMarkup(
+      <WaitingAgentsSettings
+        agents={[{ ...agent, destinations: [{ id: "other", label: "Other machine" }] }]}
+        fresh
+        resumingId={null}
+        onResume={vi.fn()}
+      />,
+    );
+    expect(html).toContain("Other machine");
+    expect(html).toContain("untracked files");
+    expect(html).toContain("stops and archives");
+    expect(html).toContain("Verify and move");
+    expect(/<button[^>]*\bdisabled(?:=|\s|>)/.test(html)).toBe(true);
+  });
+
   it.each([
     { fresh: true, resumingId: null, disabled: false },
     { fresh: false, resumingId: null, disabled: true },

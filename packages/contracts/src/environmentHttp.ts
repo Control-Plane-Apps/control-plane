@@ -31,7 +31,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { AgentWorkspaceProbe } from "./agentPlacement.ts";
+import { AgentWorkspaceProbe, HandoffFingerprint } from "./agentPlacement.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   ClientOrchestrationCommand,
@@ -533,6 +533,19 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
         headers: OptionalBearerHeaders,
         params: { projectId: ProjectId, threadId: ThreadId },
         success: AgentWorkspaceProbe,
+        error: EnvironmentOrchestrationThreadSnapshotErrors,
+      },
+    ).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "handoffWorkspace",
+      "/api/orchestration/projects/:projectId/handoff-workspace",
+      {
+        headers: OptionalBearerHeaders,
+        params: { projectId: ProjectId },
+        payload: { threadId: Schema.optional(ThreadId) },
+        success: HandoffFingerprint,
         error: EnvironmentOrchestrationThreadSnapshotErrors,
       },
     ).middleware(EnvironmentAuthenticatedAuth),

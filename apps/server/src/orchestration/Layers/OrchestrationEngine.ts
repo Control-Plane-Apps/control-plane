@@ -271,6 +271,37 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
         }
 
+        if (
+          aggregateRef.aggregateKind === "thread" &&
+          commandReadModel.threads.some(
+            (thread) => thread.id === aggregateRef.aggregateId && thread.archivedAt != null,
+          )
+        ) {
+          // Compact command snapshots omit activities. A handoff fence survives restart
+          // in the activity projection, committed atomically with the archive event.
+          const fences = yield* sql<{
+            activity_id: string;
+          }>`SELECT activity_id FROM projection_thread_activities
+            WHERE thread_id = ${aggregateRef.aggregateId} AND kind = 'agent.handoff.fenced' LIMIT 1`.pipe(
+            Effect.mapError(toPersistenceSqlError("OrchestrationEngine.handoffFence")),
+          );
+          if (fences.length > 0)
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: envelope.command.type,
+              detail: "This agent was moved to another machine. Its original thread is read-only.",
+            });
+        }
+        if (
+          envelope.command.type === "thread.archive" &&
+          envelope.command.handoff &&
+          threadBackgroundLiveness.getThreadBackgroundLiveness(envelope.command.threadId) !== null
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "The original agent still has live background work.",
+          });
+        }
+
         // Command snapshots omit activities at startup and cap them while running.
         // Read this request's durable state before deciding how to send the answer.
         const userInputActivity =

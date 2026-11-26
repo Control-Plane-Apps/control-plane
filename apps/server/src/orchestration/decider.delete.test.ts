@@ -215,3 +215,32 @@ it.layer(NodeServices.layer)("decider deletion flows", (it) => {
     }),
   );
 });
+
+it.effect(
+  "archives a handoff atomically and refuses a later start or unarchive on the original",
+  () =>
+    Effect.gen(function* () {
+      let readModel = yield* seedReadModel;
+      const thread = readModel.threads[0]!;
+      const command = {
+        type: "thread.archive" as const,
+        commandId: asCommandId("fence"),
+        threadId: thread.id,
+        handoff: { waitId: "wait", expectedUpdatedAt: thread.updatedAt },
+      };
+      const result = yield* decideOrchestrationCommand({ readModel, command });
+      if (!Array.isArray(result)) throw new Error("Expected companion fence event.");
+      for (const event of result)
+        readModel = yield* projectEvent(readModel, {
+          ...event,
+          sequence: readModel.snapshotSequence + 1,
+        });
+      for (const type of ["thread.delete", "thread.unarchive"] as const) {
+        const error = yield* decideOrchestrationCommand({
+          readModel,
+          command: { type, threadId: thread.id, commandId: asCommandId(type) },
+        }).pipe(Effect.flip);
+        expect(error.message).toContain("read-only");
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
