@@ -132,6 +132,7 @@ export const peerProject: OrchestrationProjectShell = {
 export interface FakePeerOptions {
   /** Fails these command types with an unreachable error. */
   readonly resolveModel?: AgentMachinesShape["resolveModel"];
+  readonly dispatchFailure?: (command: PeerCommand) => PeerError | undefined;
   readonly failOn?: ReadonlyArray<PeerCommand["type"]>;
   readonly machineId?: string;
 }
@@ -188,8 +189,10 @@ export function makeFakePeer(options: FakePeerOptions = {}) {
         } as OrchestrationThreadDetailSnapshot);
       }),
     );
-  const dispatchApi: AgentMachinesShape["dispatch"] = (_machine, command) =>
-    guard(
+  const dispatchApi: AgentMachinesShape["dispatch"] = (_machine, command) => {
+    const failure = options.dispatchFailure?.(command);
+    if (failure) return Effect.fail(failure);
+    return guard(
       failOn.has(command.type)
         ? Effect.fail(new PeerError({ kind: "unreachable", detail: `${command.type} failed` }))
         : Effect.sync(() => {
@@ -207,6 +210,7 @@ export function makeFakePeer(options: FakePeerOptions = {}) {
             }
           }),
     );
+  };
 
   const service: AgentMachinesShape = {
     manage: () => Effect.die("not stubbed"),

@@ -45,6 +45,7 @@ import type { agentCreateIds } from "../orchestration/agentProtocol.ts";
 
 export class RemoteAgentError extends Schema.TaggedError<RemoteAgentError>()("RemoteAgentError", {
   detail: Schema.String,
+  commandRefused: Schema.optionalKey(Schema.Literal(true)),
   /**
    * `create`: nothing reached the peer and the record is gone, so the caller may
    * place the agent elsewhere. `start`: the peer thread may exist; only a retry
@@ -67,12 +68,14 @@ export function isRemotePeerRequestId(messageId: string): boolean {
 }
 
 const unavailable = (label: string, error: PeerError) =>
-  new RemoteAgentError({
-    detail:
-      error.kind === "unauthorized"
-        ? `${label} refused this machine's token. Link it again in Settings > Connections > Agent machines.`
-        : `Could not reach ${label}: ${error.detail}`,
-  });
+  error.code === "command_refused"
+    ? new RemoteAgentError({ detail: error.detail, commandRefused: true })
+    : new RemoteAgentError({
+        detail:
+          error.kind === "unauthorized"
+            ? `${label} refused this machine's token. Link it again in Settings > Connections > Agent machines.`
+            : `Could not reach ${label}: ${error.detail}`,
+      });
 
 export interface PlanResult {
   readonly decision: PlacementDecision;
@@ -204,7 +207,7 @@ const make = Effect.gen(function* () {
 
   const onHold = (record: RemoteAgentRecord) =>
     new RemoteAgentError({
-      detail: `Waiting for manual resume on ${record.machineLabel}. Open Settings > Connections > Agent machines to verify the original workspace.`,
+      detail: `Waiting for manual resume on ${record.machineLabel}. Open Settings > Connections > Agent machines > Waiting agents to verify the original workspace.`,
     });
 
   const startRequest = (
@@ -378,6 +381,7 @@ const make = Effect.gen(function* () {
         runtimeMode: input.runtimeMode,
         createdAt: input.createdAt,
         state: "pending",
+        createAttempted: false,
         endedAt: null,
         inFlight: null,
         queuedSends: [],
@@ -394,16 +398,18 @@ const make = Effect.gen(function* () {
       if (record.firstMessageAccepted || record.state !== "pending") return record;
 
       if (record.waitId) return yield* onHold(record);
+      // Older pending records may already have dispatched their create.
+      const mayHaveDispatched = record.createAttempted !== false;
       const peerShell = yield* machines.shell(record.machineId).pipe(
         Effect.mapError((error) => unavailable(record.machineLabel, error)),
         Effect.tapError(() =>
-          record.createAttempted ? Effect.void : store.remove(record.threadId).pipe(Effect.ignore),
+          mayHaveDispatched ? Effect.void : store.remove(record.threadId).pipe(Effect.ignore),
         ),
         Effect.mapError(
           (error) =>
             new RemoteAgentError({
               detail: error.detail,
-              stage: record.createAttempted ? "start" : "create",
+              stage: mayHaveDispatched ? "start" : "create",
             }),
         ),
       );
@@ -420,13 +426,11 @@ const make = Effect.gen(function* () {
             (error) =>
               new RemoteAgentError({
                 detail: error.detail,
-                stage: record.createAttempted ? "start" : "create",
+                stage: mayHaveDispatched ? "start" : "create",
               }),
           ),
           Effect.tapError(() =>
-            record.createAttempted
-              ? Effect.void
-              : store.remove(record.threadId).pipe(Effect.ignore),
+            mayHaveDispatched ? Effect.void : store.remove(record.threadId).pipe(Effect.ignore),
           ),
         );
 
@@ -657,6 +661,15 @@ const make = Effect.gen(function* () {
       if (latest.waitId) return yield* onHold(latest);
       const createdAt = yield* nowIso;
       const messageId = `${REMOTE_SEND_PREFIX}${record.threadId}:${input.peer === true ? REMOTE_PEER_SEGMENT : ""}${input.receiptId ?? NodeCrypto.randomUUID()}`;
+      if (input.peer) {
+        const previous = latest.peerReceipts?.find(
+          (entry) => entry.senderThreadId === input.sender.id && entry.text === input.text,
+        );
+        const refusal =
+          latest.refusedPeerMessages?.[messageId] ??
+          (previous && latest.refusedPeerMessages?.[previous.messageId]);
+        if (refusal) return yield* new RemoteAgentError({ detail: refusal, commandRefused: true });
+      }
       const detail = yield* readView(record, 1);
       if (Option.isNone(detail)) return yield* lostError(record);
       const view = viewOf(detail.value.thread);
@@ -671,7 +684,9 @@ const make = Effect.gen(function* () {
             if (current.state !== "open" || current.stoppingAt || current.waitId) return current;
             const previous = current.peerReceipts ?? [];
             decision = decidePeerBudget({
-              window: previous.map((entry) => ({ ...entry, role: "user" })),
+              window: previous
+                .filter((entry) => current.refusedPeerMessages?.[entry.messageId] === undefined)
+                .map((entry) => ({ ...entry, role: "user" })),
               senderThreadId: receipt.senderThreadId,
               text: receipt.text,
             });
@@ -759,7 +774,24 @@ const make = Effect.gen(function* () {
         sender: next.sender ?? { id: next.replyTo, title: "Project thread" },
         baselineTurnId: view.latestTurn?.turnId ?? null,
         createdAt,
-      });
+      }).pipe(
+        Effect.tapError((error) =>
+          error.commandRefused && isRemotePeerRequestId(next.messageId)
+            ? store
+                .update(record.threadId, (current) => ({
+                  ...current,
+                  queuedSends: current.queuedSends.filter(
+                    (entry) => entry.messageId !== next.messageId,
+                  ),
+                  refusedPeerMessages: {
+                    ...current.refusedPeerMessages,
+                    [next.messageId]: error.detail,
+                  },
+                }))
+                .pipe(Effect.mapError(storeFailed))
+            : Effect.void,
+        ),
+      );
     });
 
   return {

@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
+import { PeerError } from "./AgentMachineClient.ts";
 import { agentCreateIds } from "../orchestration/agentProtocol.ts";
 import { RemoteAgents, RemoteAgentsLive, type CreateRemoteInput } from "./RemoteAgents.ts";
 import { RemoteAgentStore } from "./RemoteAgentStore.ts";
@@ -95,6 +96,32 @@ describe("RemoteAgents.reserve and start", () => {
         baselineTurnId: null,
         suppressed: false,
       });
+    }),
+  );
+
+  it.effect("only releases an explicitly undispatched reservation after a failed probe", () =>
+    Effect.gen(function* () {
+      const { peer, run } = harness();
+      yield* run(
+        Effect.gen(function* () {
+          const remote = yield* RemoteAgents;
+          const store = yield* RemoteAgentStore;
+          const input = createInput();
+          const fresh = (yield* remote.reserve(input)).record;
+          expect(fresh.createAttempted).toBe(false);
+          peer.state.reachable = false;
+          expect((yield* Effect.flip(remote.start(input, fresh))).stage).toBe("create");
+          expect(Option.isNone(yield* store.get(input.threadId))).toBe(true);
+          const legacy = makeRecord({ state: "pending", inFlight: null });
+          yield* store.put(legacy);
+          expect((yield* Effect.flip(remote.start(input, legacy))).stage).toBe("start");
+          expect(Option.getOrThrow(yield* store.get(input.threadId))).toEqual(legacy);
+          peer.state.reachable = true;
+          const retried = yield* remote.reserve(input);
+          expect(retried.existed).toBe(true);
+          expect((yield* remote.start(input, retried.record)).state).toBe("open");
+        }),
+      );
     }),
   );
 
@@ -518,6 +545,107 @@ describe("RemoteAgents.send and startQueued", () => {
         }),
       );
     }),
+  );
+
+  it.effect("persists a refused peer receipt and lets the next queued message run", () =>
+    Effect.gen(function* () {
+      const { peer, run } = harness({
+        dispatchFailure: (command) =>
+          command.type === "thread.turn.start" && command.message.text === "first"
+            ? new PeerError({
+                kind: "rejected",
+                code: "command_refused",
+                detail: "Command refused",
+              })
+            : undefined,
+      });
+      const view = makePeerThread("remote-1");
+      peer.threads.set(view.id, view);
+      yield* run(
+        Effect.gen(function* () {
+          const remote = yield* RemoteAgents;
+          const store = yield* RemoteAgentStore;
+          const record = makeRecord({
+            inFlight: {
+              messageId: "busy",
+              replyTo: sender.id,
+              sentAt: TEST_NOW,
+              baselineTurnId: null,
+              suppressed: false,
+            },
+          });
+          yield* store.put(record);
+          const send = (text: string) =>
+            remote.send(record, {
+              text,
+              sender,
+              peer: true,
+              receiptId: text,
+              replyTo: null,
+              runtimeMode: record.runtimeMode,
+            });
+          const first = yield* send("first");
+          const second = yield* send("second");
+          const idle = Option.getOrThrow(
+            yield* store.update(record.threadId, (current) => ({ ...current, inFlight: null })),
+          );
+          const refused = yield* Effect.flip(remote.startQueued(idle, view));
+          const saved = Option.getOrThrow(yield* store.get(record.threadId));
+          expect(saved.queuedSends.map((item) => item.messageId)).toEqual([second.messageId]);
+          expect(saved.refusedPeerMessages).toEqual({ [String(first.messageId)]: refused.detail });
+          yield* remote.startQueued(saved, view);
+          peer.state.reachable = false;
+          expect((yield* Effect.flip(send("first"))).detail).toBe(refused.detail);
+          expect(peer.commands).toHaveLength(1);
+        }),
+      );
+    }),
+  );
+
+  it.effect(
+    "keeps a peer message queued with the same ID after opaque and transport failures",
+    () =>
+      Effect.gen(function* () {
+        const failures = [
+          new PeerError({ kind: "rejected", detail: "Opaque server error" }),
+          new PeerError({ kind: "timeout", detail: "No acknowledgement" }),
+        ];
+        const attempted: string[] = [];
+        const { peer, run } = harness({
+          dispatchFailure: (command) => {
+            attempted.push(command.commandId);
+            return failures.shift();
+          },
+        });
+        const view = makePeerThread("remote-1");
+        peer.threads.set(view.id, view);
+        yield* run(
+          Effect.gen(function* () {
+            const remote = yield* RemoteAgents;
+            const store = yield* RemoteAgentStore;
+            const record = makeRecord();
+            yield* store.put(record);
+            const send = remote.send(record, {
+              text: "message",
+              sender,
+              peer: true,
+              receiptId: "retry",
+              replyTo: null,
+              runtimeMode: record.runtimeMode,
+            });
+            yield* Effect.flip(send);
+            const pending = Option.getOrThrow(yield* store.get(record.threadId));
+            expect(pending.queuedSends).toHaveLength(1);
+            expect(pending.refusedPeerMessages).toBeUndefined();
+            yield* Effect.flip(remote.startQueued(pending, view));
+            expect(yield* send).toMatchObject({ duplicate: true, queued: true });
+            yield* remote.startQueued(pending, view);
+            const accepted = Option.getOrThrow(yield* store.get(record.threadId));
+            expect(accepted.queuedSends).toEqual([]);
+            expect(attempted).toEqual(Array(3).fill(accepted.inFlight?.messageId));
+          }),
+        );
+      }),
   );
 
   it.effect("recovers the pre-dispatch baseline when an acknowledgement was lost", () =>

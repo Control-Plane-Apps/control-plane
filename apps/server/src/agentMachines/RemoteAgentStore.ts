@@ -73,6 +73,8 @@ export const RemoteAgentRecord = Schema.Struct({
   workspaceCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
   createAttempted: Schema.optionalKey(Schema.Boolean),
   firstMessageAccepted: Schema.optionalKey(Schema.Boolean),
+  /** Terminal dispatch outcomes survive the sender budget window. */
+  refusedPeerMessages: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   peerReceipts: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({

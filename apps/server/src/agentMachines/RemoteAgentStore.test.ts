@@ -161,7 +161,14 @@ it.layer(NodeServices.layer)("RemoteAgentStore", (it) => {
         replyTo: "coordinator",
         queuedAt: iso(NOW),
       };
-      const full = record("a", { inFlight, queuedSends: [queued], lastPhase: "running" });
+      const full = record("a", {
+        inFlight,
+        queuedSends: [queued],
+        lastPhase: "running",
+        refusedPeerMessages: {
+          "cp-remote-send:a:peer:refused": "The linked machine refused the command.",
+        },
+      });
       yield* withStore(baseDir, (store) =>
         Effect.gen(function* () {
           yield* store.put(full);

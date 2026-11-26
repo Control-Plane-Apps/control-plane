@@ -526,7 +526,7 @@ describe("RemoteAgentBridge machine health", () => {
         Effect.gen(function* () {
           const bridge = yield* RemoteAgentBridge;
           const store = yield* RemoteAgentStore;
-          yield* seed(h, {}, {}, finishedMessages);
+          yield* seed(h, { creatorThreadId: STANDING }, {}, finishedMessages);
           h.peer.state.reachable = false;
           yield* bridge.pollOnce;
           yield* TestClock.adjust(Duration.days(3));
@@ -538,7 +538,18 @@ describe("RemoteAgentBridge machine health", () => {
       expect(record.inFlight).not.toBeNull();
       expect(
         h.appended.filter((command) => command.type === "thread.activity.append"),
-      ).toHaveLength(1);
+      ).toMatchObject([
+        {
+          threadId: COORDINATOR,
+          activity: {
+            payload: {
+              detail: expect.stringContaining(
+                "Settings > Connections > Agent machines > Waiting agents",
+              ),
+            },
+          },
+        },
+      ]);
       expect(record.lastPhase).toBe("stale");
       expect(h.pushes()).toEqual([]);
     }),
@@ -569,10 +580,14 @@ describe("RemoteAgentBridge machine health", () => {
         Effect.gen(function* () {
           const bridge = yield* RemoteAgentBridge;
           const store = yield* RemoteAgentStore;
-          yield* store.put(makeRecord({ state: "pending", inFlight: null }));
+          yield* store.put(
+            makeRecord({ state: "pending", inFlight: null, createAttempted: false }),
+          );
+          yield* store.put(makeRecord({ state: "pending", threadId: "legacy", inFlight: null }));
           h.peer.threads.set("remote-1", makePeerThread("remote-1"));
           yield* TestClock.adjust(Duration.minutes(5));
           yield* bridge.pollOnce;
+          expect(Option.getOrThrow(yield* store.get("legacy")).state).toBe("pending");
           return Option.getOrThrow(yield* store.get("remote-1"));
         }),
       );

@@ -111,7 +111,7 @@ const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
 const isPeerError = Schema.is(PeerError);
 
-/** Maps any transport or HTTP failure to a `PeerError`. Peer dispatch errors are opaque 500s. */
+/** Maps any transport or HTTP failure to a `PeerError`. Only a structured command refusal confirms a terminal dispatch outcome. */
 export function classifyPeerFailure(error: unknown): PeerError {
   if (isPeerError(error)) return error;
   const tag = (error as { readonly _tag?: string } | null)?._tag ?? "";
@@ -142,6 +142,16 @@ export function classifyPeerFailure(error: unknown): PeerError {
     return new PeerError({
       kind: "timeout",
       detail: "The linked machine did not answer in time.",
+    });
+  }
+  if (
+    tag === "EnvironmentRequestInvalidError" &&
+    (error as { reason?: string }).reason === "command_refused"
+  ) {
+    return new PeerError({
+      kind: "rejected",
+      code: "command_refused",
+      detail: "The linked machine refused the command.",
     });
   }
   if (tag.startsWith("Environment")) {
@@ -321,9 +331,8 @@ export const fetchPeerThread = (
   >;
 
 /**
- * Sends one allowlisted command. The peer answers every failure with an opaque
- * 500, so a failure here means "unknown": read the thread to learn what
- * happened, and retry with the same command id.
+ * Sends one allowlisted command. Only an explicit command refusal is terminal. A transport
+ * failure or opaque server error can follow a successful dispatch.
  */
 export const dispatchPeerCommand = (baseUrl: string, token: string, command: PeerCommand) =>
   isPeerCommand(command)

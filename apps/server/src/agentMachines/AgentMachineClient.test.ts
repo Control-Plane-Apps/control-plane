@@ -41,7 +41,13 @@ const decodeJson = Schema.decodeUnknownSync(JsonString);
 const BASE_URL = "http://mini.tailnet.ts.net:3773";
 
 const failureOf = <A, R>(effect: Effect.Effect<A, PeerError, R>) =>
-  Effect.flip(effect).pipe(Effect.map((error) => ({ kind: error.kind, detail: error.detail })));
+  Effect.flip(effect).pipe(
+    Effect.map((error) => ({
+      kind: error.kind,
+      detail: error.detail,
+      ...(error.code ? { code: error.code } : {}),
+    })),
+  );
 
 describe("validatePeerBaseUrl", () => {
   it.effect("accepts https anywhere and http to loopback, private and tailnet hosts", () =>
@@ -471,6 +477,24 @@ describe("dispatchPeerCommand", () => {
     }).pipe(Effect.provide(peer.layer));
   });
 
+  it.effect("recognizes an explicit peer command refusal", () => {
+    const peer = fakePeer(() => ({
+      status: 400,
+      body: {
+        _tag: "EnvironmentRequestInvalidError",
+        code: "invalid_request",
+        reason: "command_refused",
+        traceId: "trace-3",
+      },
+    }));
+    return failureOf(
+      dispatchPeerCommand(BASE_URL, "t", command("thread.archive") as PeerCommand),
+    ).pipe(
+      Effect.map((failure) => expect(failure.code).toBe("command_refused")),
+      Effect.provide(peer.layer),
+    );
+  });
+
   it.effect("an opaque peer failure (500) is rejected", () => {
     const peer = fakePeer(() => ({
       status: 500,
@@ -484,7 +508,10 @@ describe("dispatchPeerCommand", () => {
     return failureOf(
       dispatchPeerCommand(BASE_URL, "t", command("thread.archive") as PeerCommand),
     ).pipe(
-      Effect.map((failure) => expect(failure.kind).toBe("rejected")),
+      Effect.map((failure) => {
+        expect(failure.kind).toBe("rejected");
+        expect(failure.code).toBeUndefined();
+      }),
       Effect.provide(peer.layer),
     );
   });

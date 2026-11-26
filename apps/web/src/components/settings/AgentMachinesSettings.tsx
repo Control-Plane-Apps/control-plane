@@ -942,9 +942,9 @@ function AddAgentMachineDialog({
           </DialogTitle>
           <DialogDescription>
             {relink === null ? "On the other machine" : `On ${relink.label}`}, open Settings →
-            Connections → Agent machines → Create link, or run{" "}
-            <code>t3 pair --machine-link --tailscale</code>, and paste the link here. A general
-            pairing link also links, but does not renew.
+            Connections → Agent machines → Create link, or run <code>t3 pair --machine-link</code>{" "}
+            (add <code>--tailscale</code> if needed), and paste the link here. A general pairing
+            link also links, but does not renew.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>

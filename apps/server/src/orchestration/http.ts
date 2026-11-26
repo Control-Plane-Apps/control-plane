@@ -17,6 +17,8 @@ import { workspaceFingerprint } from "../agentMachines/workspaceFingerprint.ts";
 import { cleanWorkspace } from "../agentMachines/workspaceResume.ts";
 import { resolveAgentModel } from "../mcp/toolkits/agents/agentScope.ts";
 import { isThreadBusy } from "../agentMachines/remoteAgentState.ts";
+import { isPeerDelivery } from "./agentPeers.ts";
+import { isOrchestrationCommandRejection } from "./Errors.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
@@ -298,7 +300,16 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
               cleanupFailedUploadedAttachments(args.payload, normalizedCommand),
             ),
             Effect.catch((cause) =>
-              failEnvironmentInternal("orchestration_dispatch_failed", cause),
+              Effect.gen(function* () {
+                if (
+                  normalizedCommand.type === "thread.turn.start" &&
+                  isPeerDelivery(normalizedCommand.message.messageId) &&
+                  (isOrchestrationCommandRejection(cause) ||
+                    cause._tag === "OrchestrationCommandPreviouslyRejectedError")
+                )
+                  return yield* failEnvironmentInvalidRequest("command_refused");
+                return yield* failEnvironmentInternal("orchestration_dispatch_failed", cause);
+              }),
             ),
           );
           yield* ProjectCloneTracker.discardCloneForDeletedProject(

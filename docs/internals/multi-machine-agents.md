@@ -222,9 +222,9 @@ peer's own reactor never mistakes them for deliveries.
 
 **Client allowlist.** The home's peer client can dispatch only `thread.create`,
 `thread.turn.start`, `thread.turn.interrupt`, `thread.session.stop`, `thread.archive` and
-`thread.settle`. Peer dispatch errors are opaque (every failure is a 500), so any non-2xx or
-timeout is treated as unknown and resolved by reading the thread; retries reuse the same command
-ids, which the peer dedupes.
+`thread.settle`. When the peer explicitly refuses a queued peer message, the home records the refusal and
+removes that message from the queue. A timeout or opaque server error leaves the message queued
+with its original command ID so the peer can replay its receipt.
 
 **RemoteAgentBridge.** One poll per machine with open records (every 3 seconds, jittered), reading
 the shell snapshot, which carries each thread's `latestTurn`, `session`, pending flags and
@@ -281,7 +281,7 @@ waking or reconnecting the machine, select **Refresh**. **Resume** becomes avail
 server verifies the original checkout and thread are ready to continue. Resuming releases held
 work on that machine. If the queue is empty, the agent waits for its next request.
 
-The home manager receives a waiting notice when the bridge loses contact with an agent. For
+The Project coordinator receives a waiting notice when the bridge loses contact with an agent. For
 an alternate machine, prepare a separate destination Project checkout with the same repository, branch,
 commit, staged changes, working tree changes and non-ignored untracked files. Ignored local
 configuration stays on each machine. Select the destination in **Waiting agents** and choose
