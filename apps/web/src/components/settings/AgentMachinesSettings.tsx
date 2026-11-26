@@ -912,7 +912,7 @@ function AddAgentMachineDialog({
               <Label htmlFor="agent-machine-pairing-url">Pairing link</Label>
               <Input
                 id="agent-machine-pairing-url"
-                placeholder="https://mini.tailnet.ts.net/pair#token=…"
+                placeholder="Paste the pairing link from the other machine"
                 autoComplete="off"
                 value={pairingUrl}
                 onChange={(event) => setPairingUrl(event.target.value)}
@@ -935,7 +935,7 @@ function AddAgentMachineDialog({
             </div>
             <label className="flex items-start gap-2 text-sm">
               <Switch
-                aria-label="Let that machine reach this one too"
+                aria-label={`Let that machine reach ${environmentLabel} too`}
                 checked={linkBack}
                 onCheckedChange={setLinkBack}
               />
@@ -953,7 +953,7 @@ function AddAgentMachineDialog({
                 </Label>
                 <Input
                   id="agent-machine-self-url"
-                  placeholder="http://100.x.y.z:3773"
+                  placeholder="URL the other machine can use to reach this one"
                   autoComplete="off"
                   value={selfAddress ?? suggested ?? ""}
                   onChange={(event) => setSelfAddress(event.target.value)}
@@ -1070,7 +1070,7 @@ function LinkBackDialog({
             </Label>
             <Input
               id="agent-machine-link-back-url"
-              placeholder="http://100.x.y.z:3773"
+              placeholder="URL the other machine can use to reach this one"
               autoComplete="off"
               value={edited ?? suggested ?? ""}
               onChange={(event) => setEdited(event.target.value)}
@@ -1159,7 +1159,7 @@ function CreateMachineLinkDialog({
               </Label>
               <Input
                 id="agent-machine-create-link-address"
-                placeholder="http://100.x.y.z:3773"
+                placeholder="URL the other machine can use to reach this one"
                 autoComplete="off"
                 value={edited ?? selfAddress ?? ""}
                 onChange={(event) => {

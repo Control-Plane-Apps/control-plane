@@ -1,6 +1,6 @@
 # Project coordinator move (Stage B design)
 
-The move applies to one Project. The Project owner selects a linked destination, reviews the preflight and approves the move. Hometrace requires verified readiness and Nick's explicit go before cutover.
+The move applies to one Project. The Project owner selects a linked destination, reviews the preflight and explicitly approves cutover after readiness is verified.
 
 1. Resolve both environment identities and the unambiguous destination checkout. Verify repository identity, branch, commit, clean worktree or an explicitly transferred workspace, provider access and the Project's required integrations. Configuration presence is only preliminary evidence. Verify the destination can perform the required operations with authorized read-only checks. Keep credentials local to each machine.
 2. Inventory coordinator history, active state, attachments, Project memory files, schedules and their last execution receipts. Identify agents with pending work and their original workspace. Refuse cutover while a turn, schedule or delivery can still write without participating in the move.

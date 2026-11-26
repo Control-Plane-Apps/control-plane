@@ -1,7 +1,7 @@
 # Multi-machine agents
 
 A coordinator (or a standing agent) can start one-off agents on another machine linked to its own
-server, such as a Mac Mini on the same tailnet. Where a new agent runs follows a server-owned
+server. Where a new agent runs follows a server-owned
 setting. Code: `apps/server/src/agentMachines/` and `apps/server/src/mcp/toolkits/agents/`.
 
 ## What exists today
@@ -83,7 +83,7 @@ agentPlacement: {
   `t3 pair --machine-link`). Migration 59 tags 0.0.91 link sessions as untagged:
   `one-time-token`, bearer, exact read and operate scopes, not revoked, and either the labels this
   fork gave them (`Agent placement from`/`Link back from`) or user agent `node` (the server's own
-  HTTP client; a pairing link's label replaces the fork's, as on the real MacBook and mini link).
+  HTTP client; a pairing link's label replaces the fork's).
   A script with the same scopes (`Python-urllib`) is left alone. A general
   pairing link narrowed to read and operate still links, but its token never renews (Settings says
   so).
@@ -310,7 +310,7 @@ work on that machine. If the queue is empty, the agent waits for its next reques
   standing stays local, runtime mode never looser, list, read, stop and send on remote agents.
 - Settings schema and patch tests; web logic tests for the section; visual check of the UI.
 
-## Decisions for Nick
+## Placement and linking decisions
 
 1. **This machine is a candidate in Balance** with its own preference. Manual only makes it
    coordination-only.
