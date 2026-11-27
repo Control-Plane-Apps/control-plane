@@ -6,6 +6,7 @@ import {
   ProjectMoveBundle,
   ThreadId,
   type AgentMachinesInput,
+  type OrchestrationProjectShell,
   type AgentMachinesResult,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -41,12 +42,19 @@ import {
   releaseProjectMoveFence,
   projectMoveFenceOwner,
 } from "./projectMoveFence.ts";
-import { MoveRequirements, ProjectMoveReply, type ProjectMoveStep } from "./projectMoveProtocol.ts";
+import {
+  CheckoutSelection,
+  MoveRequirements,
+  ProjectMoveReply,
+  type ProjectMoveStep,
+} from "./projectMoveProtocol.ts";
+import { checkoutOptions, checkCheckoutRoots } from "./projectCheckoutSelection.ts";
 import { verifyProjectIntegrations } from "./projectMoveReadiness.ts";
 
 type Input = Extract<AgentMachinesInput, { action: "coordinatorMove" }>;
 type Status = NonNullable<AgentMachinesResult["coordinatorMove"]>;
 type Requirements = typeof MoveRequirements.Type;
+type Selection = NonNullable<Requirements["checkoutSelection"]>;
 type Receipt = {
   readonly project_id: string;
   readonly move_id: string;
@@ -73,6 +81,7 @@ export class ProjectCoordinatorMove extends Context.Reference<Service>(
     }),
   },
 ) {}
+const sameSelection = Schema.toEquivalence(Schema.UndefinedOr(CheckoutSelection));
 const requirementsJson = Schema.fromJsonString(MoveRequirements);
 const encodeRequirements = Schema.encodeEffect(requirementsJson);
 const decodeRequirements = Schema.decodeUnknownEffect(requirementsJson);
@@ -150,14 +159,26 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
             : Effect.fail(refusal("Select an active Project.")),
         ),
       );
-  const checkout = (id: string, returning = false) =>
+  const verificationProject = (id: string, expectedRoot?: string) =>
+    project(id).pipe(
+      Effect.flatMap((p) =>
+        !expectedRoot || p.workspaceRoot === expectedRoot
+          ? Effect.succeed(p)
+          : Effect.fail(refusal("The selected checkout registration changed.")),
+      ),
+    );
+  const checkout = (
+    p: OrchestrationProjectShell,
+    excludeProjectFiles = false,
+    splitProjectFiles = false,
+  ) =>
     Effect.gen(function* () {
-      const p = yield* project(id);
       if (!p.repositoryIdentity)
         return yield* refusal("Register the Project repository on both machines.");
       const identity = p.repositoryIdentity;
       const fp = yield* Effect.tryPromise({
-        try: () => workspaceFingerprint(p.workspaceRoot, identity, returning),
+        try: () =>
+          workspaceFingerprint(p.workspaceRoot, identity, excludeProjectFiles, splitProjectFiles),
         catch: () => refusal("Could not verify the Project checkout."),
       });
       return {
@@ -165,9 +186,11 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
         branch: fp.branch,
         commit: fp.commit,
         digest: fp.digest,
+        ...(fp.postInstallDigest ? { postInstallDigest: fp.postInstallDigest } : {}),
+        ...(fp.projectFilesDigest ? { projectFilesDigest: fp.projectFilesDigest } : {}),
       };
     });
-  const requirements = (id: string, returning = false) =>
+  const requirements = (id: string, returning = false, selection?: Selection) =>
     Effect.gen(function* () {
       const p = yield* project(id);
       if (!p.assistant) return yield* refusal("Select a Project with a coordinator.");
@@ -176,15 +199,42 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
       );
       if (Option.isNone(thread)) return yield* refusal("The coordinator thread is unavailable.");
       const cfg = yield* settings.getSettings;
+      const verification = returning
+        ? yield* verificationProject(id, selection?.destinationRoot)
+        : yield* verificationProject(selection?.sourceProjectId ?? id, selection?.sourceRoot);
+      if (selection) yield* checkCheckoutRoots(sql, verification.id, returning ? undefined : id);
+      const separateSource = !!selection && !returning && verification.id !== p.id;
+      const { projectFilesDigest, ...proof } = yield* checkout(
+        verification,
+        returning,
+        separateSource,
+      );
+      const boundSelection =
+        selection && projectFilesDigest
+          ? { ...selection, sourceProjectFilesDigest: projectFilesDigest }
+          : selection;
       return {
-        checkout: yield* checkout(id, returning),
+        ...(boundSelection ? { checkoutSelection: boundSelection } : {}),
+        checkout: proof,
         workers: openWorkerRoutes(yield* agentStore.listForMove, self, id),
         scheduleZone: p.assistant.schedules?.length ? hostZone().zone : null,
         model: thread.value.modelSelection,
-        integrations: cfg.agentPlacement.projectRequirements?.[id] ?? [],
+        integrations: separateSource
+          ? [
+              ...new Set([
+                ...(cfg.agentPlacement.projectRequirements?.[id] ?? []),
+                ...(cfg.agentPlacement.projectRequirements?.[verification.id] ?? []),
+              ]),
+            ]
+          : (cfg.agentPlacement.projectRequirements?.[id] ?? []),
       };
     });
-  const checkTarget = (id: string, req: Requirements, returning = false) =>
+  const checkTarget = (
+    id: string,
+    req: Requirements,
+    mode: "destination" | "staged" | "source" = "destination",
+    sourceSelection?: Selection,
+  ) =>
     Effect.gen(function* () {
       for (const worker of req.workers)
         if (yield* hasReturnedWorkerRoute(sql, worker.threadId))
@@ -192,15 +242,36 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
       yield* verifyWorkers(reach, req.workers);
       if (req.scheduleZone && hostZone().zone !== req.scheduleZone)
         return yield* refusal("The schedule time zones differ.");
-      const local = yield* checkout(id, returning);
+      if (
+        mode !== "source" &&
+        req.checkoutSelection &&
+        req.checkoutSelection.destinationProjectId !== id
+      )
+        return yield* refusal("The selected destination Project changed.");
+      const p =
+        mode === "source"
+          ? yield* verificationProject(
+              sourceSelection?.sourceProjectId ?? id,
+              sourceSelection?.sourceRoot,
+            )
+          : yield* verificationProject(id, req.checkoutSelection?.destinationRoot);
+      if (mode === "source" ? sourceSelection : req.checkoutSelection)
+        yield* checkCheckoutRoots(sql, p.id, mode === "source" ? id : undefined);
+      const separateSource =
+        mode === "source" && !!sourceSelection && sourceSelection.sourceProjectId !== id;
+      const stagedDigest = mode === "staged" ? req.checkout.postInstallDigest : undefined;
+      const local = yield* checkout(p, mode === "source" || !!stagedDigest, separateSource);
+      if (separateSource && local.projectFilesDigest !== sourceSelection.sourceProjectFilesDigest)
+        return yield* refusal(
+          "The Project files in the separate source verification checkout changed.",
+        );
       if (
         local.repository !== req.checkout.repository ||
         local.branch !== req.checkout.branch ||
         local.commit !== req.checkout.commit ||
-        local.digest !== req.checkout.digest
+        local.digest !== (stagedDigest ?? req.checkout.digest)
       )
         return yield* refusal("The repository, branch, commit or workspace contents differ.");
-      const p = yield* project(id);
       const provider = yield* (
         providers.probeMoveProvider?.(req.model.instanceId) ?? Effect.succeed(undefined)
       );
@@ -211,7 +282,11 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
       const evidence = yield* readiness(p, provider);
       const cfg = yield* settings.getSettings;
       const needed = [
-        ...new Set([...req.integrations, ...(cfg.agentPlacement.projectRequirements?.[id] ?? [])]),
+        ...new Set([
+          ...req.integrations,
+          ...(cfg.agentPlacement.projectRequirements?.[id] ?? []),
+          ...(cfg.agentPlacement.projectRequirements?.[p.id] ?? []),
+        ]),
       ];
       const missing = missingReadiness(evidence, needed);
       if (missing) return yield* refusal(missing);
@@ -221,11 +296,66 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
         req.checkout.repository,
         providers.verifyWorkspaceMcp?.(req.model.instanceId, p.workspaceRoot),
       );
+      if (mode === "source" && id !== p.id && needed.includes("mcp")) {
+        const coordinator = yield* project(id);
+        yield* verifyProjectIntegrations(
+          ["mcp"],
+          coordinator.workspaceRoot,
+          req.checkout.repository,
+          providers.verifyWorkspaceMcp?.(req.model.instanceId, coordinator.workspaceRoot),
+        );
+      }
     });
 
+  const acquireCheckout = (id: string, moveId: string, selection?: Selection) =>
+    selection && selection.sourceProjectId !== id
+      ? acquireProjectMoveFence(selection.sourceProjectId, moveId, id)
+      : Effect.void;
+  const confirmCheckout = (id: string, moveId: string, selection?: Selection) =>
+    Effect.gen(function* () {
+      if (!selection || selection.sourceProjectId === id) return;
+      const [owned] =
+        yield* sql`SELECT 1 FROM project_move_fences WHERE project_id=${selection.sourceProjectId}
+        AND move_id=${moveId} AND checkout_for_project=${id}`;
+      if (!owned) return yield* refusal("The selected source checkout fence cannot be confirmed.");
+    });
+  const releaseCheckout = (id: string, moveId: string, selection?: Selection) =>
+    Effect.gen(function* () {
+      if (!selection || selection.sourceProjectId === id) return;
+      const [owned] =
+        yield* sql`SELECT 1 FROM project_move_fences WHERE project_id=${selection.sourceProjectId}
+        AND move_id=${moveId} AND checkout_for_project=${id}`;
+      if (owned) yield* releaseProjectMoveFence(selection.sourceProjectId, moveId, id);
+    });
   const step: Service["step"] = (peer, input) =>
     serialize(
       Effect.gen(function* () {
+        if (input.action === "checkoutOptions") {
+          const rows = yield* sql<{
+            project_id: string;
+          }>`SELECT DISTINCT t.project_id FROM projection_threads t
+            WHERE t.deleted_at IS NULL OR NOT EXISTS (
+              SELECT 1 FROM orchestration_events e WHERE e.aggregate_kind='thread' AND e.stream_id=t.thread_id
+                AND e.event_type='thread.deleted' AND substr(e.command_id,1,19)='cp-project-cleanup:'
+                AND NOT EXISTS (SELECT 1 FROM orchestration_events later WHERE later.aggregate_kind='thread'
+                  AND later.stream_id=t.thread_id AND later.sequence>e.sequence))`;
+          const occupied = new Set(rows.map((row) => row.project_id));
+          for (const a of yield* agentStore.listForMove) occupied.add(a.homeProjectId);
+          const shell = yield* snapshots.getShellSnapshot();
+          for (const p of shell.projects) if (p.assistant) occupied.add(p.id);
+          return {
+            phase: "options",
+            destinationProjects: (yield* checkoutOptions(shell.projects)).map((option) =>
+              occupied.has(option.projectId)
+                ? {
+                    ...option,
+                    blockedReason:
+                      "This Project already contains coordinator, thread or agent history.",
+                  }
+                : option,
+            ),
+          };
+        }
         const { projectId, moveId, peerProjectId } = input;
         const [history] = yield* sql<{
           role: string;
@@ -282,13 +412,25 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
             return { phase: "active", digest: input.digest };
           if (r && !["preparing", "staging"].includes(r.phase))
             return yield* refusal("This move is closed.");
-          yield* checkTarget(projectId, input.requirements);
+          if (r && r.requirements !== (yield* encodeRequirements(input.requirements)))
+            return yield* refusal("The destination verification requirements changed.");
+          yield* checkTarget(
+            projectId,
+            input.requirements,
+            r?.phase === "staging" ? "staged" : "destination",
+          );
           if (!r) {
             const backup = yield* data.capture(projectId);
             if (backup.coordinator || backup.threads.length || backup.agents.length)
               return yield* refusal("Choose an empty destination Project.");
             if (input.action === "preflight")
-              return { phase: "ready", digest: data.digest(backup) };
+              return {
+                phase: "ready",
+                digest: data.digest(backup),
+                ...(input.requirements.checkoutSelection
+                  ? { checkoutSelectionVerified: true as const }
+                  : {}),
+              };
             if (input.targetDigest !== data.digest(backup))
               return yield* refusal(
                 "Destination changed after review. Roll back and review a new move.",
@@ -340,7 +482,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
             return yield* refusal("The move is no longer available for activation.");
           if (r.phase === "staging") {
             if (!r.requirements) return yield* refusal("Missing destination readiness record.");
-            yield* checkTarget(projectId, yield* decodeRequirements(r.requirements));
+            yield* checkTarget(projectId, yield* decodeRequirements(r.requirements), "staged");
             if (data.digest(yield* data.capture(projectId)) !== input.digest)
               return yield* refusal("Destination verification failed.");
             yield* sql.withTransaction(
@@ -365,7 +507,13 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
               const bundle = yield* data.capture(projectId);
               return {
                 phase: "active",
-                requirements: yield* requirements(projectId, true),
+                requirements: yield* requirements(
+                  projectId,
+                  true,
+                  r?.requirements
+                    ? (yield* decodeRequirements(r.requirements)).checkoutSelection
+                    : undefined,
+                ),
                 bundle,
                 digest: data.digest(bundle),
               };
@@ -390,7 +538,13 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
             const captured = yield* Effect.result(
               Effect.gen(function* () {
                 const bundle = yield* data.capture(projectId);
-                const req = yield* requirements(projectId, true);
+                const req = yield* requirements(
+                  projectId,
+                  true,
+                  r?.requirements
+                    ? (yield* decodeRequirements(r.requirements)).checkoutSelection
+                    : undefined,
+                );
                 const digest = data.digest(bundle);
                 if (
                   digest !== input.digest ||
@@ -497,7 +651,9 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
             const result = (s: Status) => ({ machines: [], coordinatorMove: s });
             if (
               r?.phase === "rolled-back" &&
-              (input.operation === "move" || input.operation === "preflight") &&
+              (input.operation === "move" ||
+                input.operation === "preflight" ||
+                input.operation === "options") &&
               r.move_id !== input.moveId
             )
               r = undefined;
@@ -528,19 +684,59 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                 { fresh: true, timeout: Duration.minutes(2) },
               );
             if (!r) {
-              if (input.operation !== "move" && input.operation !== "preflight")
+              if (!["move", "preflight", "options"].includes(input.operation))
                 return yield* refusal("There is no move to recover.");
-              const p = yield* project(id);
+              yield* project(id);
               const linked = (yield* settings.getSettings).agentPlacement.machines[peer.id];
               if (!linked?.enabled) return yield* refusal("Enable the linked destination first.");
-              const match = matchPeerProject(
-                p,
-                (yield* machines.shell(peer.id, { fresh: true })).projects,
-                true,
-              );
+              if (input.operation === "options") {
+                const reply = yield* call({ action: "checkoutOptions" });
+                if (!reply.destinationProjects)
+                  return yield* refusal(
+                    "The linked machine could not list registered destination Projects.",
+                  );
+                return result({
+                  ...status(),
+                  destinationId: peer.id,
+                  sourceCheckouts: yield* checkoutOptions(
+                    (yield* snapshots.getShellSnapshot()).projects,
+                    id,
+                  ),
+                  destinationProjects: reply.destinationProjects,
+                });
+              }
+              const verification = yield* project(input.sourceCheckoutProjectId ?? id);
+              const remote = (yield* machines.shell(peer.id, { fresh: true })).projects;
+              const match = input.destinationProjectId
+                ? { kind: "matched" as const, projectId: input.destinationProjectId }
+                : matchPeerProject(verification, remote, true);
               if (match.kind !== "matched")
                 return yield* refusal("Register an unambiguous matching destination Project.");
-              const req = yield* requirements(id);
+              const destinationProject = remote.find(
+                (p) =>
+                  p.id === match.projectId &&
+                  p.assistant?.scope !== "global" &&
+                  !p.assistant?.archivedAt,
+              );
+              if (
+                !destinationProject ||
+                !verification.repositoryIdentity ||
+                destinationProject.repositoryIdentity?.canonicalKey !==
+                  verification.repositoryIdentity.canonicalKey
+              )
+                return yield* refusal(
+                  "Select registered source and destination checkouts for the same repository.",
+                );
+              const selection =
+                input.sourceCheckoutProjectId || input.destinationProjectId
+                  ? {
+                      sourceProjectId: verification.id,
+                      sourceRoot: verification.workspaceRoot,
+                      destinationProjectId: destinationProject.id,
+                      destinationRoot: destinationProject.workspaceRoot,
+                    }
+                  : undefined;
+              const req = yield* requirements(id, false, selection);
               if (
                 req.workers.some(
                   (worker) => worker.origin.machineId !== self || worker.origin.projectId !== id,
@@ -562,7 +758,11 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                 moveId,
                 requirements: req,
               });
-              if (preflight.phase !== "ready" || !preflight.digest)
+              if (
+                preflight.phase !== "ready" ||
+                !preflight.digest ||
+                (selection && !preflight.checkoutSelectionVerified)
+              )
                 return yield* refusal("Destination readiness was not verified.");
               const targetDigest = preflight.digest;
               const approvalDigest = NodeCrypto.createHash("sha256")
@@ -583,6 +783,8 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                   ready: true,
                   approvalDigest,
                   destinationId: peer.id,
+                  sourceCheckoutProjectId: verification.id,
+                  destinationProjectId: destinationProject.id,
                   detail: `Verified ${req.checkout.branch} at ${req.checkout.commit.slice(0, 12)} and provider access for ${req.model.model}.${req.integrations.length ? " Checked " + req.integrations.join(", ") + "." : ""} The move includes ${backup.threads.length} threads, ${backup.attachments.length} attachments and ${backup.project.assistant?.schedules?.length ?? 0} schedules.`,
                 });
               if (input.approvalDigest !== approvalDigest)
@@ -592,6 +794,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
               r = yield* sql.withTransaction(
                 Effect.gen(function* () {
                   yield* acquireProjectMoveFence(id, moveId);
+                  yield* acquireCheckout(id, moveId, selection);
                   const record: Receipt = {
                     project_id: id,
                     move_id: moveId,
@@ -610,9 +813,25 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                 }),
               );
             }
+            const selection = r.requirements
+              ? (yield* decodeRequirements(r.requirements)).checkoutSelection
+              : undefined;
+            if (
+              (input.sourceCheckoutProjectId &&
+                input.sourceCheckoutProjectId !== (selection?.sourceProjectId ?? id)) ||
+              (input.destinationProjectId && input.destinationProjectId !== r.peer_project_id)
+            )
+              return yield* refusal("This request does not match the selected checkouts.");
             if (r.phase !== "rolled-back" && (yield* projectMoveFenceOwner(sql, id)) !== r.move_id)
               return yield* refusal("The source fence cannot be confirmed.");
             const binding = { projectId: r.peer_project_id, peerProjectId: id, moveId: r.move_id };
+            const confirmedDestinationActive = (record: Receipt) =>
+              sql.withTransaction(
+                phase(record, "active").pipe(
+                  Effect.andThen(data.releaseReturnIdentities(id, record.move_id)),
+                  Effect.andThen(releaseCheckout(id, record.move_id, selection)),
+                ),
+              );
             if (
               input.operation === "rollback" ||
               r.phase === "rolling-back" ||
@@ -631,8 +850,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                   // A retry can discover that the target recovered its tentative
                   // fence after a crash. Persist its confirmed authority before
                   // any local readiness check can refuse the return.
-                  if (r.phase !== "active") yield* phase(r, "active");
-                  yield* data.releaseReturnIdentities(id, r.move_id);
+                  yield* confirmedDestinationActive(r);
                   if (proposed.detail) return yield* refusal(proposed.detail);
                   if (
                     !proposed.requirements ||
@@ -643,10 +861,27 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                     proposed.digest !== data.digest(proposed.bundle)
                   )
                     return yield* refusal("Invalid rollback preflight snapshot.");
-                  yield* checkTarget(id, proposed.requirements, true);
-                  yield* data.verifyReturn(id, r.move_id, proposed.bundle);
+                  if (!sameSelection(selection, proposed.requirements.checkoutSelection))
+                    return yield* refusal(
+                      "The rollback checkout selection differs from the approved move.",
+                    );
+                  yield* sql.withTransaction(
+                    acquireCheckout(id, r.move_id, selection).pipe(
+                      Effect.andThen(phase(r, "rolling-back")),
+                    ),
+                  );
+                  const validated = yield* Effect.result(
+                    checkTarget(id, proposed.requirements, "source", selection).pipe(
+                      Effect.andThen(data.verifyReturn(id, r.move_id, proposed.bundle)),
+                    ),
+                  );
+                  if (validated._tag === "Failure") {
+                    yield* confirmedDestinationActive(r);
+                    return yield* Effect.fail(validated.failure);
+                  }
+                } else {
+                  yield* phase(r, "rolling-back");
                 }
-                yield* phase(r, "rolling-back");
                 const back = yield* call({
                   ...binding,
                   action: "reverse",
@@ -657,11 +892,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                 if (back.phase === "active") {
                   // The target explicitly confirmed that it released its tentative
                   // fence. Display its running ownership and allow a fresh rollback.
-                  yield* sql.withTransaction(
-                    phase(r, "active").pipe(
-                      Effect.andThen(data.releaseReturnIdentities(id, r.move_id)),
-                    ),
-                  );
+                  yield* confirmedDestinationActive(r);
                   return yield* refusal(
                     back.detail ?? "The destination is active. Review and retry rollback.",
                   );
@@ -670,12 +901,14 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                   if (
                     !back.bundle ||
                     !back.requirements ||
+                    !sameSelection(selection, back.requirements.checkoutSelection) ||
                     back.bundle.project.projectId !== r.peer_project_id ||
                     !back.bundle.coordinator ||
                     back.digest !== data.digest(back.bundle)
                   )
                     return yield* refusal("The rollback snapshot checksum differs.");
-                  yield* checkTarget(id, back.requirements, true);
+                  yield* confirmCheckout(id, r.move_id, selection);
+                  yield* checkTarget(id, back.requirements, "source", selection);
                   yield* data.install(id, r.move_id, back.bundle);
                   if (data.digest(yield* data.capture(id)) !== back.digest)
                     return yield* refusal("Source recovery verification failed.");
@@ -703,12 +936,19 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
               )
                 return yield* refusal("Destination recovery is pending.");
               if (r.digest) {
+                yield* confirmCheckout(id, r.move_id, selection);
                 if (!r.requirements || data.digest(yield* data.capture(id)) !== r.digest)
                   return yield* refusal("Source recovery verification failed.");
-                yield* checkTarget(id, yield* decodeRequirements(r.requirements), true);
+                yield* checkTarget(
+                  id,
+                  yield* decodeRequirements(r.requirements),
+                  "source",
+                  selection,
+                );
               }
               yield* sql.withTransaction(
                 phase(r, "rolled-back").pipe(
+                  Effect.andThen(releaseCheckout(id, r.move_id, selection)),
                   Effect.andThen(releaseProjectMoveFence(id, r.move_id)),
                 ),
               );
@@ -718,9 +958,11 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
             if (!["retry", "move"].includes(input.operation) || !r.digest || !r.backup)
               return yield* refusal("Resume the current coordinator move.");
             const bundle = yield* decodeBackup(r.backup);
+            yield* confirmCheckout(id, r.move_id, selection);
             if (
               !r.requirements ||
-              (yield* encodeRequirements(yield* requirements(id))) !== r.requirements
+              (yield* encodeRequirements(yield* requirements(id, false, selection))) !==
+                r.requirements
             )
               return yield* refusal(
                 "The source checkout, provider or required integrations changed after approval.",
@@ -744,10 +986,19 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
             }
             if (data.digest(yield* data.capture(id)) !== r.digest)
               return yield* refusal("Source changed before ownership was confirmed.");
+            if (
+              selection &&
+              selection.sourceProjectId !== id &&
+              (yield* encodeRequirements(yield* requirements(id, false, selection))) !==
+                r.requirements
+            )
+              return yield* refusal("The selected source checkout changed before activation.");
             const activated = yield* call({ ...binding, action: "activate", digest: r.digest });
             if (activated.phase !== "active" || activated.digest !== r.digest)
               return yield* refusal("Destination activation is unconfirmed.");
-            yield* phase(r, "active");
+            yield* sql.withTransaction(
+              phase(r, "active").pipe(Effect.andThen(releaseCheckout(id, r.move_id, selection))),
+            );
             return result(status({ ...r, phase: "active" }));
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(safeError)),
         );

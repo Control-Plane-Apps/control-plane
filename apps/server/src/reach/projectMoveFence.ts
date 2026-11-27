@@ -2,7 +2,6 @@
 import * as NodeChildProcess from "node:child_process";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as NodeFS from "node:fs";
-import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { ProjectId } from "@t3tools/contracts";
@@ -11,6 +10,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { actualPath, workspaceRootsOverlap } from "./projectWorkspacePaths.ts";
 import { makeAgentPushQueries } from "../orchestration/agentPushes.ts";
 
 export class ProjectMoveFenceError extends Data.TaggedError("ProjectMoveFenceError")<{
@@ -66,8 +66,11 @@ export function registerProjectTerminalCheck(sql: SqlClient.SqlClient, check: Te
 }
 
 const canonicalRoot = (root: string) =>
-  Effect.tryPromise(() => NodeFSP.realpath(root)).pipe(
-    Effect.orElseSucceed(() => NodePath.resolve(root)),
+  Effect.tryPromise(() => actualPath(NodePath.resolve(root))).pipe(
+    Effect.mapError(
+      () =>
+        new ProjectMoveFenceError({ message: "Could not verify the registered workspace path." }),
+    ),
   );
 
 export const assertProjectWorkspaceAvailable = (
@@ -83,7 +86,7 @@ export const assertProjectWorkspaceAvailable = (
     if (!others.length) return;
     const currentRoot = yield* canonicalRoot(root);
     for (const other of others) {
-      if ((yield* canonicalRoot(other.workspace_root)) === currentRoot)
+      if (workspaceRootsOverlap(yield* canonicalRoot(other.workspace_root), currentRoot))
         return yield* new ProjectMoveFenceError({
           message: "Another moving Project owns this workspace.",
         });
@@ -298,15 +301,18 @@ const reconcileProjectWriters = (sql: SqlClient.SqlClient, projectId: string) =>
 export const acquireProjectMoveFence = Effect.fn("projectMoveFence.acquire")(function* (
   projectId: string,
   moveId: string,
+  checkoutForProject: string | null = null,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql.withTransaction(
     Effect.gen(function* () {
       yield* sql`
-      INSERT INTO project_move_fences (project_id, move_id) VALUES (${projectId}, ${moveId})
+      INSERT INTO project_move_fences (project_id, move_id, checkout_for_project) VALUES (${projectId}, ${moveId}, ${checkoutForProject})
       ON CONFLICT (project_id) DO NOTHING
     `;
-      if ((yield* projectMoveFenceOwner(sql, projectId)) !== moveId) {
+      const [owned] = yield* sql`SELECT 1 FROM project_move_fences
+        WHERE project_id=${projectId} AND move_id=${moveId} AND checkout_for_project IS ${checkoutForProject}`;
+      if (!owned) {
         return yield* new ProjectMoveFenceError({
           message: "Another move holds the Project fence.",
         });
@@ -374,22 +380,27 @@ export const acquireProjectMoveFence = Effect.fn("projectMoveFence.acquire")(fun
 export const releaseProjectMoveFence = Effect.fn("projectMoveFence.release")(function* (
   projectId: string,
   moveId: string,
+  checkoutForProject: string | null = null,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      const owner = yield* projectMoveFenceOwner(sql, projectId);
-      if (owner !== null && owner !== moveId) {
+      const [owner] = yield* sql<{ move_id: string; checkout_for_project: string | null }>`
+        SELECT move_id, checkout_for_project FROM project_move_fences WHERE project_id=${projectId}`;
+      if (
+        owner &&
+        (owner.move_id !== moveId || owner.checkout_for_project !== checkoutForProject)
+      ) {
         return yield* new ProjectMoveFenceError({
           message: "Another move holds the Project fence.",
         });
       }
-      if (owner === null)
+      if (!owner)
         return yield* new ProjectMoveFenceError({
           message: "The Project fence is missing. Verify ownership before resuming execution.",
         });
       yield* reconcileProjectWriters(sql, projectId);
-      yield* sql`DELETE FROM project_move_fences WHERE project_id = ${projectId} AND move_id = ${moveId}`;
+      yield* sql`DELETE FROM project_move_fences WHERE project_id = ${projectId} AND move_id = ${moveId} AND checkout_for_project IS ${checkoutForProject}`;
     }),
   );
 });

@@ -52,14 +52,18 @@ import { HostTimeZoneSource } from "../schedules/hostZone.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { ProjectCoordinatorMove, ProjectCoordinatorMoveLive } from "./ProjectCoordinatorMove.ts";
 import { Reach, ReachError, unlinkedReach } from "./Reach.ts";
+import { withGitWorkspaceWriter } from "./projectWorkspaceWriter.ts";
 import { ProjectMoveStep } from "./projectMoveProtocol.ts";
 
 const decodeProvider = Schema.decodeUnknownSync(ServerProvider);
 const decodeStep = Schema.decodeUnknownEffect(ProjectMoveStep);
 
-it("recovers each lost ownership acknowledgement across restarts and returns destination writes", async () => {
+it("recovers a non-Git coordinator move using the selected registered checkout and returns destination writes", async () => {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "project-move-pair-"));
-  const sourceRoot = NodePath.join(root, "source-checkout"),
+  const sourceRoot = NodePath.join(root, "coordinator-workspace"),
+    verifyRoot = NodePath.join(root, "registered-checkout"),
+    populatedRoot = NodePath.join(root, "populated-checkout"),
+    wrongRoot = NodePath.join(root, "unrelated-repository"),
     targetRoot = NodePath.join(root, "target-checkout");
   const at = "2026-01-01T00:00:00Z";
   const model = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
@@ -75,6 +79,9 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     models: [{ slug: "gpt-5.4", name: "gpt-5.4", isCustom: false, capabilities: null }],
   });
   const sourceId = ProjectId.make("source-project"),
+    verificationId = ProjectId.make("verification-project"),
+    populatedId = ProjectId.make("populated-project"),
+    wrongId = ProjectId.make("wrong-repository"),
     targetId = ProjectId.make("target-project"),
     threadId = ThreadId.make("synthetic-coordinator");
   let send: (peerId: string, input: ProjectMoveStep) => Promise<unknown>;
@@ -197,8 +204,14 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
   const cid = () => CommandId.make("fixture-command-" + ++nextId);
   let approvalDigest: string | undefined;
   const request = (
-    operation: "preflight" | "move" | "retry" | "rollback" | "status",
+    operation: "options" | "preflight" | "move" | "retry" | "rollback" | "status",
     moveId = "synthetic-move",
+    selection: {
+      sourceCheckoutProjectId?: ProjectId;
+      destinationProjectId?: ProjectId;
+    } = operation === "preflight" || operation === "move"
+      ? { sourceCheckoutProjectId: verificationId, destinationProjectId: targetId }
+      : {},
   ) =>
     source.runPromise(
       Effect.flatMap(ProjectCoordinatorMove, (s) =>
@@ -208,6 +221,7 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
           projectId: sourceId,
           destinationId: "destination",
           moveId,
+          ...selection,
           ...(approvalDigest ? { approvalDigest } : {}),
         }),
       ),
@@ -240,11 +254,15 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     await NodeFSP.mkdir(sourceRoot);
     const git = (cwd: string, ...args: string[]) =>
       NodeChildProcess.execFileSync("git", args, { cwd, stdio: "pipe" });
-    git(sourceRoot, "init", "-b", "main");
+    await NodeFSP.mkdir(verifyRoot);
+    git(verifyRoot, "init", "-b", "main");
+    const memoryAt = (cwd: string) => NodeFSP.readFile(NodePath.join(cwd, "MEMORY.md"), "utf8");
+    const checkoutMemory = "Verification checkout memory";
+    await NodeFSP.writeFile(NodePath.join(verifyRoot, "MEMORY.md"), checkoutMemory);
     await NodeFSP.writeFile(NodePath.join(sourceRoot, "MEMORY.md"), "Synthetic memory");
-    git(sourceRoot, "add", ".");
+    git(verifyRoot, "add", ".");
     git(
-      sourceRoot,
+      verifyRoot,
       "-c",
       "user.name=Fixture",
       "-c",
@@ -253,11 +271,17 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
       "-m",
       "fixture",
     );
-    git(root, "clone", "--local", sourceRoot, targetRoot);
-    git(sourceRoot, "remote", "add", "origin", "https://example.invalid/demo/project.git");
+    for (const repo of [targetRoot, populatedRoot, wrongRoot])
+      git(root, "clone", "--local", verifyRoot, repo);
+    git(verifyRoot, "remote", "add", "origin", "https://example.invalid/demo/project.git");
     git(targetRoot, "remote", "set-url", "origin", "https://example.invalid/demo/project.git");
+    git(populatedRoot, "remote", "set-url", "origin", "https://example.invalid/demo/project.git");
+    git(wrongRoot, "remote", "set-url", "origin", "https://example.invalid/demo/other.git");
     for (const [runtime, id, cwd] of [
       [source, sourceId, sourceRoot],
+      [source, verificationId, verifyRoot],
+      [dest, populatedId, populatedRoot],
+      [dest, wrongId, wrongRoot],
       [dest, targetId, targetRoot],
     ] as const) {
       await runtime.runPromise(
@@ -306,6 +330,61 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
         },
       }),
     );
+    const untouchedThread = ThreadId.make("already-running-here");
+    await dest.runPromise(
+      command({
+        type: "thread.create",
+        commandId: cid(),
+        projectId: populatedId,
+        threadId: untouchedThread,
+        title: "Existing destination history",
+        modelSelection: model,
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt: at,
+      }),
+    );
+    await dest.runPromise(
+      command({
+        type: "thread.message.user.append",
+        commandId: cid(),
+        threadId: untouchedThread,
+        createdAt: at,
+        message: {
+          messageId: MessageId.make("untouched-message"),
+          text: "Keep existing history",
+          attachments: [],
+        },
+      }),
+    );
+    const options = (
+      await request("options", "synthetic-move", { sourceCheckoutProjectId: verificationId })
+    ).coordinatorMove;
+    expect(options?.sourceCheckouts?.map((item) => item.projectId)).toContain(verificationId);
+    expect(options?.destinationProjects?.map((item) => item.projectId)).toEqual(
+      expect.arrayContaining([targetId, populatedId]),
+    );
+    expect(
+      options?.destinationProjects?.find((item) => item.projectId === populatedId)?.blockedReason,
+    ).toBeTruthy();
+    const blockedSelection = (destinationProjectId: ProjectId) => ({
+      sourceCheckoutProjectId: verificationId,
+      destinationProjectId,
+    });
+    await expect(
+      request("preflight", "synthetic-move", blockedSelection(wrongId)),
+    ).rejects.toThrow();
+    await expect(
+      request("preflight", "synthetic-move", blockedSelection(populatedId)),
+    ).rejects.toThrow();
+    await expect(
+      request("preflight", "synthetic-move", {
+        sourceCheckoutProjectId: wrongId,
+        destinationProjectId: targetId,
+      }),
+    ).rejects.toThrow();
     const reviewed = (await request("preflight")).coordinatorMove;
     expect(reviewed?.ready).toBe(true);
     await expect(request("move")).rejects.toThrow("proposal changed");
@@ -348,9 +427,32 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
         ),
       ),
     );
+    // Even a valid approval for the selected empty Project cannot authorize a sibling.
+    for (const rejected of [wrongId, populatedId])
+      await expect(request("move", "synthetic-move", blockedSelection(rejected))).rejects.toThrow();
+    expect((await request("status")).coordinatorMove).toMatchObject({
+      ownerId: "local",
+      phase: "idle",
+    });
+    const writeVerificationRef = () =>
+      source.runPromise(
+        Effect.flatMap(SqlClient.SqlClient, (sql) =>
+          withGitWorkspaceWriter(
+            sql,
+            { cwd: verifyRoot },
+            "update-ref",
+            Effect.sync(() =>
+              git(verifyRoot, "update-ref", "refs/heads/verification-probe", "HEAD"),
+            ),
+          ),
+        ),
+      );
+    const assertVerificationPaused = () =>
+      expect(writeVerificationRef()).rejects.toThrow(/paused|checkout.*move|verification.*move/i);
     const abortId = "abort-before-activation";
     drop = "stage";
     await expect(request("move", abortId)).rejects.toThrow("Lost acknowledgement");
+    await assertVerificationPaused();
     // Fail the final receipt commit once. The stage was never active, so the
     // source has no returned digest to present when it resumes the cleanup.
     await dest.runPromise(
@@ -380,14 +482,20 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     ).rejects.toThrow("checksum");
     expect(await restoreState(abortId)).toEqual(aborted);
     expect((await request("retry", abortId)).coordinatorMove?.phase).toBe("rolled-back");
+    await writeVerificationRef();
     approvalDigest = (await request("preflight")).coordinatorMove?.approvalDigest;
     drop = "stage";
     await expect(request("move")).rejects.toThrow("Lost acknowledgement");
     await restart();
+    await assertVerificationPaused();
     drop = "activate";
     await expect(request("retry")).rejects.toThrow("Lost acknowledgement");
     await restart();
+    await assertVerificationPaused();
     expect((await request("retry")).coordinatorMove?.phase).toBe("active");
+    await writeVerificationRef();
+    expect(await memoryAt(targetRoot)).toBe("Synthetic memory");
+    expect(await memoryAt(verifyRoot)).toBe(checkoutMemory);
     // The runner receives the same OS fire on both machines, including after both restart.
     const tomorrow = DateTime.nowUnsafe().pipe(
       DateTime.startOf("day"),
@@ -576,6 +684,15 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     await expect(request("rollback")).rejects.toThrow("workspace contents differ");
     expect((await request("status")).coordinatorMove?.phase).toBe("active");
     await NodeFSP.unlink(drift);
+    const verificationDrift = NodePath.join(verifyRoot, "local-unprepared.txt");
+    await NodeFSP.writeFile(verificationDrift, "Change only the registered source checkout");
+    await expect(request("rollback")).rejects.toThrow("workspace contents differ");
+    expect((await request("status")).coordinatorMove).toMatchObject({
+      phase: "active",
+      ownerId: "destination",
+    });
+    await writeVerificationRef();
+    await NodeFSP.unlink(verificationDrift);
     // A writer can win the interval between proposal and fence acquisition.
     // The destination releases the tentative fence if recapture fails.
     beforeReverse = async () => {
@@ -638,7 +755,9 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     await NodeFSP.writeFile(NodePath.join(targetRoot, "MEMORY.md"), "Destination memory");
     drop = "reverse";
     await expect(request("rollback")).rejects.toThrow("Lost acknowledgement");
+    await assertVerificationPaused();
     await restart();
+    await assertVerificationPaused();
     interruptFinish = true;
     await expect(request("retry")).rejects.toThrow();
     await restart();
@@ -664,6 +783,18 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     drop = "finishRollback";
     await expect(request("retry")).rejects.toThrow("Lost acknowledgement");
     await restart();
+    await assertVerificationPaused();
+    expect(await memoryAt(targetRoot)).toBe(checkoutMemory);
+    expect(await memoryAt(verifyRoot)).toBe(checkoutMemory);
+    expect(await memoryAt(sourceRoot)).toBe("Destination memory");
+    expect(await memoryAt(populatedRoot)).toBe(checkoutMemory);
+    expect(await memoryAt(wrongRoot)).toBe(checkoutMemory);
+    const untouched = await dest.runPromise(
+      Effect.flatMap(ProjectionSnapshotQuery, (q) => q.getThreadDetailById(untouchedThread)),
+    );
+    expect(Option.getOrNull(untouched)?.messages.map((message) => message.text)).toEqual([
+      "Keep existing history",
+    ]);
     // A distinct origin reuses the checkout before the original source
     // receives its acknowledgement. Each origin has its own database and history.
     git(root, "clone", "--local", targetRoot, secondRoot);
@@ -728,6 +859,7 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
             projectId: secondId,
             destinationId: "destination",
             moveId: "next-move",
+            destinationProjectId: targetId,
             ...(approved ? { approvalDigest: approved } : {}),
           }),
         ),
@@ -752,6 +884,7 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
       "superseded",
     );
     expect((await request("retry")).coordinatorMove?.phase).toBe("rolled-back");
+    await writeVerificationRef();
     await dest.runPromise(appendToSecond("after-old-ack"));
     await expect(second.runPromise(appendToSecond("fenced-original"))).rejects.toThrow();
     const current = await dest.runPromise(

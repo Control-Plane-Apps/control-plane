@@ -20,6 +20,7 @@ export async function workspaceFingerprint(
   directory: string,
   repository?: RepositoryIdentity,
   excludeProjectFiles = false,
+  splitProjectFiles = false,
 ) {
   const root = await NodeFSP.realpath(directory);
   const run = async (...args: string[]) =>
@@ -46,47 +47,89 @@ export async function workspaceFingerprint(
   const index = await run("ls-files", "--stage", "-z");
   const others = await run("ls-files", "--others", "--exclude-standard", "-z");
   const files = new Set<string>();
+  const trackedProjectEntries: string[] = [];
+  const transferred = (name: string) => /^(?:MEMORY\.md|(?:[a-z0-9-]+\/)?AGENTS\.md)$/.test(name);
   for (const entry of decode.decode(index).split("\0").filter(Boolean)) {
     const match = /^(100644|100755|120000) [a-f\d]+ 0\t([\s\S]+)$/.exec(entry);
     if (!match)
       throw new Error("Finish resolving conflicts or prepare a checkout without submodules.");
     files.add(match[2]!);
+    if (splitProjectFiles && transferred(match[2]!)) trackedProjectEntries.push(entry);
   }
   // Coordinator rollback reconciles these files from a verified bundle. All
   // other working-tree bytes, plus the complete index, must match beforehand.
-  const transferred = (name: string) =>
-    excludeProjectFiles && /^(?:MEMORY\.md|(?:[a-z0-9-]+\/)?AGENTS\.md)$/.test(name);
   const otherPaths = decode.decode(others).split("\0").filter(Boolean);
   for (const entry of otherPaths) files.add(entry);
-  const hash = NodeCrypto.createHash("sha256");
-  hash.update(NodeCrypto.createHash("sha256").update(index).digest());
-  const includedOthers = excludeProjectFiles
-    ? Buffer.from(
-        otherPaths
-          .filter((name) => !transferred(name))
-          .map((name) => name + "\0")
-          .join(""),
-      )
-    : others;
-  hash.update(NodeCrypto.createHash("sha256").update(includedOthers).digest());
+  // A separate source checkout never receives the coordinator's files. Record
+  // their original bytes and modes, including ignored role files, so rollback
+  // can check them independently of matching code updates on both machines.
+  const gitFiles = splitProjectFiles ? new Set(files) : files;
+  if (splitProjectFiles) {
+    files.add("MEMORY.md");
+    files.add("AGENTS.md");
+    for (const dir of await NodeFSP.readdir(root, { withFileTypes: true })) {
+      if (!dir.isDirectory() || !/^[a-z0-9-]+$/.test(dir.name)) continue;
+      const name = dir.name + "/AGENTS.md";
+      const exists = await NodeFSP.lstat(NodePath.join(root, name)).catch(
+        (e: NodeJS.ErrnoException) => {
+          if (e.code === "ENOENT") return null;
+          throw e;
+        },
+      );
+      if (exists) files.add(name);
+    }
+  }
+  const nulDelimited = (entries: string[]) =>
+    Buffer.from(entries.map((entry) => entry + "\0").join(""));
+  const workspaceHash = (withoutProjectFiles: boolean) => {
+    const hash = NodeCrypto.createHash("sha256");
+    hash.update(NodeCrypto.createHash("sha256").update(index).digest());
+    const inventory = withoutProjectFiles
+      ? nulDelimited(otherPaths.filter((n) => !transferred(n)))
+      : others;
+    hash.update(NodeCrypto.createHash("sha256").update(inventory).digest());
+    return hash;
+  };
+  const hash = workspaceHash(excludeProjectFiles);
+  const afterInstall = splitProjectFiles && !excludeProjectFiles ? workspaceHash(true) : undefined;
+  const projectHash = splitProjectFiles ? NodeCrypto.createHash("sha256") : undefined;
+  if (projectHash) {
+    projectHash.update(
+      NodeCrypto.createHash("sha256").update(nulDelimited(trackedProjectEntries)).digest(),
+    );
+    projectHash.update(
+      NodeCrypto.createHash("sha256")
+        .update(nulDelimited(otherPaths.filter(transferred)))
+        .digest(),
+    );
+  }
   const buffer = Buffer.allocUnsafe(128 * 1024);
   for (const name of [...files].sort()) {
-    if (transferred(name)) continue;
+    const projectFile = transferred(name);
+    const sinks: NodeCrypto.Hash[] = [];
+    if (gitFiles.has(name) && (!excludeProjectFiles || !projectFile)) sinks.push(hash);
+    if (!projectFile && afterInstall) sinks.push(afterInstall);
+    if (projectFile && projectHash) sinks.push(projectHash);
+    if (!sinks.length) continue;
+    const update = (bytes: string | Buffer) => {
+      for (const sink of sinks) sink.update(bytes);
+    };
     const path = NodePath.resolve(root, name);
     if (!path.startsWith(root + NodePath.sep)) throw new Error("Invalid repository path.");
-    hash.update(JSON.stringify(name));
+    update(JSON.stringify(name));
     const info = await NodeFSP.lstat(path).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return null;
       throw error;
     });
     if (!info) {
-      hash.update("absent");
+      update("absent");
       continue;
     }
     if ((await NodeFSP.realpath(NodePath.dirname(path))) !== NodePath.dirname(path))
       throw new Error("Unexpected symlink parent.");
     if (info.isSymbolicLink()) {
-      hash.update("link").update(
+      update("link");
+      update(
         NodeCrypto.createHash("sha256")
           .update(await NodeFSP.readlink(path, { encoding: "buffer" }))
           .digest(),
@@ -110,7 +153,8 @@ export async function workspaceFingerprint(
       const after = await handle.stat();
       if (before.ctimeMs !== after.ctimeMs || before.size !== after.size)
         throw new Error("Workspace changed during verification.");
-      hash.update(String(before.mode & 0o777)).update(content.digest());
+      update(String(before.mode & 0o777));
+      update(content.digest());
     } finally {
       await handle.close();
     }
@@ -122,5 +166,17 @@ export async function workspaceFingerprint(
     decode.decode(await run("symbolic-ref", "--short", "HEAD")).trimEnd() !== branch
   )
     throw new Error("Repository changed during verification.");
-  return { root, branch, commit, digest: hash.digest("hex") };
+  const digest = hash.digest("hex");
+  return {
+    root,
+    branch,
+    commit,
+    digest,
+    ...(projectHash
+      ? {
+          projectFilesDigest: projectHash.digest("hex"),
+          postInstallDigest: afterInstall?.digest("hex") ?? digest,
+        }
+      : {}),
+  };
 }

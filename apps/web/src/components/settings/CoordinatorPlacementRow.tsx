@@ -44,6 +44,7 @@ export function CoordinatorPlacementRow({
           <CoordinatorPlacementPicker
             key={JSON.stringify([environmentId, projectId])}
             localLabel={environment.label}
+            projectId={projectId}
             projectKey={JSON.stringify([environmentId, projectId])}
             machines={linkedAgentMachines(placement).filter((machine) => machine.enabled)}
             run={run}
