@@ -7,6 +7,7 @@ import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
+  MessageId,
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
   ThreadId,
@@ -72,7 +73,8 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
   const sourceId = ProjectId.make("source-project"),
     targetId = ProjectId.make("target-project"),
     threadId = ThreadId.make("synthetic-coordinator");
-  let send: (input: ProjectMoveStep) => Promise<unknown>;
+  let send: (peerId: string, input: ProjectMoveStep) => Promise<unknown>;
+  const completions: Extract<ProjectMoveStep, { action: "finishRollback" }>[] = [];
   let beforeReverse: (() => Promise<unknown>) | undefined;
   let shell: () => Promise<OrchestrationShellSnapshot>;
   let drop: ProjectMoveStep["action"] | null = null;
@@ -109,7 +111,10 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
             call: (machine, _op, input, _caller, result) =>
               Effect.gen(function* () {
                 const step = yield* decodeStep(input);
-                const reply = yield* Effect.tryPromise({ try: () => send(step), catch: String });
+                const reply = yield* Effect.tryPromise({
+                  try: () => send(id, step),
+                  catch: String,
+                });
                 if (step.action === drop) {
                   drop = null;
                   return yield* Effect.fail("Lost acknowledgement.");
@@ -151,13 +156,18 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
   };
   let source = boot("origin", sourceRoot),
     dest = boot("destination", targetRoot);
-  send = async (input) => {
+  const secondRoot = NodePath.join(root, "second-source-checkout");
+  const second = boot("second-origin", secondRoot);
+  const peerStep = (peerId: string, input: ProjectMoveStep) =>
+    dest.runPromise(Effect.flatMap(ProjectCoordinatorMove, (s) => s.step(peerId, input)));
+  send = async (peerId, input) => {
+    if (input.action === "finishRollback") completions.push(input);
     if (input.action === "reverse" && beforeReverse) {
       const mutate = beforeReverse;
       beforeReverse = undefined;
       await mutate();
     }
-    return dest.runPromise(Effect.flatMap(ProjectCoordinatorMove, (s) => s.step("origin", input)));
+    return peerStep(peerId, input);
   };
   shell = () =>
     dest.runPromise(Effect.flatMap(ProjectionSnapshotQuery, (q) => q.getShellSnapshot()));
@@ -378,6 +388,71 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
           worktreePath,
         }),
       );
+    // An unrelated source Project owns an ID added independently at the destination.
+    // Refuse while the destination is still writable, then exercise the same race
+    // through normal engine dispatch between verification and the reverse call.
+    const outsiderProject = ProjectId.make("unrelated-project"),
+      outsider = ThreadId.make("unrelated-thread");
+    const otherCheckout = NodePath.join(root, "other-checkout");
+    await NodeFSP.mkdir(otherCheckout);
+    await source.runPromise(
+      command({
+        type: "project.create",
+        projectId: outsiderProject,
+        commandId: cid(),
+        title: "Other",
+        workspaceRoot: otherCheckout,
+        createdAt: at,
+      }),
+    );
+    const createOutsider = (thread: ThreadId) =>
+      source.runPromise(
+        command({
+          type: "thread.create",
+          projectId: outsiderProject,
+          commandId: cid(),
+          threadId: thread,
+          title: "Other",
+          modelSelection: model,
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: at,
+        }),
+      );
+    await createOutsider(outsider);
+    const append = (
+      runtime: typeof source,
+      thread: ThreadId,
+      messageId: string,
+      commandId = cid(),
+    ) =>
+      runtime.runPromise(
+        command({
+          type: "thread.message.user.append",
+          commandId,
+          threadId: thread,
+          createdAt: at,
+          message: {
+            messageId: MessageId.make(messageId),
+            text: "Synthetic " + messageId,
+            attachments: [],
+          },
+        }),
+      );
+    await append(source, outsider, "duplicate-message");
+    await append(dest, threadId, "duplicate-message");
+    await expect(request("rollback")).rejects.toThrow("message identity collides");
+    expect((await request("status")).coordinatorMove?.phase).toBe("active");
+    const reservedCommand = cid();
+    await append(dest, threadId, "new-after-refusal", reservedCommand);
+    await source.runPromise(
+      command({ type: "thread.delete", threadId: outsider, commandId: cid() }),
+    );
+    // Recreating a deleted synthetic draft resets its old projection rows.
+    const racingThread = outsider;
+    await createOutsider(racingThread);
     await setWorktree(NodePath.join(root, "worktree"));
     await expect(request("rollback")).rejects.toThrow("worktree");
     expect((await request("status")).coordinatorMove?.phase).toBe("active");
@@ -391,7 +466,15 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     await NodeFSP.unlink(drift);
     // A writer can win the interval between proposal and fence acquisition.
     // The destination releases the tentative fence if recapture fails.
-    beforeReverse = () => setWorktree(NodePath.join(root, "new-worktree"));
+    beforeReverse = async () => {
+      await expect(append(source, racingThread, "new-after-refusal")).rejects.toThrow();
+      await expect(
+        append(source, racingThread, "different-message", reservedCommand),
+      ).rejects.toThrow();
+      await expect(createOutsider(worker)).rejects.toThrow();
+      await append(source, racingThread, "unrelated-allowed");
+      await setWorktree(NodePath.join(root, "new-worktree"));
+    };
     await expect(request("rollback")).rejects.toThrow("worktree");
     expect((await request("status")).coordinatorMove).toMatchObject({
       phase: "active",
@@ -419,10 +502,21 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     await expect(request("rollback")).rejects.toThrow("Destination process exited");
     expect(crashed).toBe(true);
     await restart();
+    const outstandingClaims = () =>
+      source.runPromise(
+        Effect.flatMap(
+          SqlClient.SqlClient,
+          (sql) =>
+            sql`SELECT identity FROM project_move_history_claims WHERE project_id=${sourceId}`,
+        ),
+      );
+    // Transport ambiguity keeps the original verified IDs reserved through restart.
+    expect((await outstandingClaims()).length).toBeGreaterThan(0);
     // Recovery releases the tentative fence before returning a new proposal.
     // A failed return preflight leaves this destination writable.
     await NodeFSP.writeFile(drift, "Changed after hard exit");
     await expect(request("retry")).rejects.toThrow("workspace contents differ");
+    expect(await outstandingClaims()).toHaveLength(0);
     expect((await request("status")).coordinatorMove).toMatchObject({
       phase: "active",
       ownerId: "destination",
@@ -436,7 +530,122 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     drop = "finishRollback";
     await expect(request("retry")).rejects.toThrow("Lost acknowledgement");
     await restart();
+    // A distinct origin reuses the checkout before the original source
+    // receives its acknowledgement. Each origin has its own database and history.
+    git(root, "clone", "--local", targetRoot, secondRoot);
+    // Git clones preserve the executable bit. The readiness fingerprint also
+    // compares ordinary permission bits and working bytes of the restored file.
+    const targetMemory = NodePath.join(targetRoot, "MEMORY.md");
+    const secondMemory = NodePath.join(secondRoot, "MEMORY.md");
+    await NodeFSP.copyFile(targetMemory, secondMemory);
+    await NodeFSP.chmod(secondMemory, (await NodeFSP.stat(targetMemory)).mode & 0o777);
+
+    git(secondRoot, "remote", "set-url", "origin", "https://example.invalid/demo/project.git");
+    const secondId = ProjectId.make("second-project");
+    const secondCoordinator = ThreadId.make("second-coordinator");
+    await second.runPromise(
+      command({
+        type: "project.create",
+        commandId: cid(),
+        projectId: secondId,
+        title: "Second Project",
+        workspaceRoot: secondRoot,
+        createdAt: at,
+      }),
+    );
+    await second.runPromise(
+      command({
+        type: "thread.create",
+        commandId: cid(),
+        projectId: secondId,
+        threadId: secondCoordinator,
+        title: "Second coordinator",
+        modelSelection: model,
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt: at,
+      }),
+    );
+    await second.runPromise(
+      command({
+        type: "project.meta.update",
+        commandId: cid(),
+        projectId: secondId,
+        assistant: { coordinatorThreadId: secondCoordinator },
+      }),
+    );
+    const appendToSecond = (text: string) =>
+      command({
+        type: "thread.message.user.append",
+        commandId: cid(),
+        threadId: secondCoordinator,
+        createdAt: at,
+        message: { messageId: MessageId.make(text), text, attachments: [] },
+      });
+    await second.runPromise(appendToSecond("distinct-source-history"));
+    const secondRequest = (operation: "preflight" | "move", approved?: string) =>
+      second.runPromise(
+        Effect.flatMap(ProjectCoordinatorMove, (service) =>
+          service.manage({
+            action: "coordinatorMove",
+            operation,
+            projectId: secondId,
+            destinationId: "destination",
+            moveId: "next-move",
+            ...(approved ? { approvalDigest: approved } : {}),
+          }),
+        ),
+      );
+    const secondReview = await secondRequest("preflight");
+    expect(secondReview.coordinatorMove?.ready).toBe(true);
+    expect(
+      (await secondRequest("move", secondReview.coordinatorMove?.approvalDigest)).coordinatorMove
+        ?.phase,
+    ).toBe("active");
+    await dest.runPromise(appendToSecond("before-old-ack"));
+    const oldFinish = completions.at(-1)!;
+    expect(oldFinish.returnedDigest).toBeTruthy();
+    await expect(peerStep("second-origin", oldFinish)).rejects.toThrow("does not match");
+    await expect(
+      peerStep("origin", { ...oldFinish, peerProjectId: "different-project" }),
+    ).rejects.toThrow("does not match");
+    await expect(
+      peerStep("origin", { ...oldFinish, returnedDigest: "different-digest" }),
+    ).rejects.toThrow("does not match");
+    await expect(peerStep("origin", { ...oldFinish, action: "reverse" })).rejects.toThrow(
+      "superseded",
+    );
     expect((await request("retry")).coordinatorMove?.phase).toBe("rolled-back");
+    await dest.runPromise(appendToSecond("after-old-ack"));
+    await expect(second.runPromise(appendToSecond("fenced-original"))).rejects.toThrow();
+    const current = await dest.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const receipts =
+          yield* sql`SELECT r.move_id, r.peer_id, r.peer_project_id, r.phase, f.move_id AS fence
+        FROM project_move_receipts r LEFT JOIN project_move_fences f USING(project_id)
+        WHERE r.project_id=${targetId} AND r.move_id='next-move'`;
+        const query = yield* ProjectionSnapshotQuery;
+        const detail = Option.getOrNull(yield* query.getThreadDetailById(secondCoordinator));
+        return { receipts, messages: detail?.messages.map((message) => message.text) };
+      }),
+    );
+    expect(current.receipts).toEqual([
+      {
+        move_id: "next-move",
+        peer_id: "second-origin",
+        peer_project_id: secondId,
+        phase: "active",
+        fence: null,
+      },
+    ]);
+    expect(current.messages?.toSorted()).toEqual([
+      "after-old-ack",
+      "before-old-ack",
+      "distinct-source-history",
+    ]);
     expect(await NodeFSP.readFile(NodePath.join(sourceRoot, "MEMORY.md"), "utf8")).toBe(
       "Destination memory",
     );
@@ -456,8 +665,11 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     await fire(source, followingSlot);
     expect(await deliveries(source, followingSlot)).toEqual(["Check"]);
     expect(await deliveries(dest, followingSlot)).toEqual([]);
-    expect((await shell()).projects.find((p) => p.id === targetId)?.assistant).toBeFalsy();
+    expect(
+      (await shell()).projects.find((p) => p.id === targetId)?.assistant?.coordinatorThreadId,
+    ).toBe(secondCoordinator);
   } finally {
+    await second.dispose();
     await source.dispose();
     await dest.dispose();
     await NodeFSP.rm(root, { recursive: true, force: true });

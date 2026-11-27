@@ -1,5 +1,13 @@
 import { expect, it } from "@effect/vitest";
-import { CommandId, MessageId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EventId,
+  OrchestrationProposedPlanId,
+  CommandId,
+  MessageId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -7,7 +15,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { OrchestrationProjectionPipeline } from "../orchestration/Services/ProjectionPipeline.ts";
 
 import { AgentLineage } from "../orchestration/agentLineage.ts";
-import { RemoteAgentStoreLive } from "../agentMachines/RemoteAgentStore.ts";
+import { makeRecord } from "../agentMachines/testFixtures.ts";
+import { RemoteAgentStore, RemoteAgentStoreLive } from "../agentMachines/RemoteAgentStore.ts";
 import { ProjectionProjectRepositoryLive } from "../persistence/Layers/ProjectionProjects.ts";
 import { ServerConfig } from "../config.ts";
 import {
@@ -195,6 +204,36 @@ it.effect(
             source: { kind: "agent", threadId: agent, threadTitle: "Worker" },
           },
         });
+        yield* dst.fixture.dispatch({
+          type: "thread.proposed-plan.upsert",
+          commandId: CommandId.make("new-plan"),
+          threadId: coordinator,
+          createdAt: stamp,
+          proposedPlan: {
+            id: OrchestrationProposedPlanId.make("return-plan"),
+            turnId: null,
+            planMarkdown: "Test plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: stamp,
+            updatedAt: stamp,
+          },
+        });
+        yield* dst.fixture.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("new-activity"),
+          threadId: coordinator,
+          createdAt: stamp,
+          activity: {
+            id: EventId.make("return-activity"),
+            tone: "info",
+            kind: "synthetic",
+            summary: "Test",
+            turnId: null,
+            payload: { requestId: "return-request" },
+            createdAt: stamp,
+          },
+        });
         const temporary = ThreadId.make("synthetic-removed-agent");
         yield* dst.fixture.dispatch({
           type: "thread.create",
@@ -225,6 +264,66 @@ it.effect(
         expect(yield* src.fs.readFileString(receivedPath)).toBe("wrong");
         expect(src.data.digest(yield* src.data.capture(original))).toBe(src.data.digest(bundle));
         yield* src.fs.remove(receivedPath);
+        // A single transfer can carry conflicting ownership even on an otherwise empty source.
+        const from = back.threads.find((t) => t.id === coordinator)!;
+        const other = back.threads.find((t) => t.id === agent)!;
+        for (const event of from.events) {
+          if (
+            event.type !== "thread.proposed-plan-upserted" &&
+            event.type !== "thread.activity-appended"
+          )
+            continue;
+          const conflicting =
+            event.type === "thread.proposed-plan-upserted"
+              ? { ...event, aggregateId: agent, payload: { ...event.payload, threadId: agent } }
+              : { ...event, aggregateId: agent, payload: { ...event.payload, threadId: agent } };
+          const invalid = {
+            ...back,
+            threads: back.threads.map((t) =>
+              t.id === agent ? { ...other, events: [...other.events, conflicting] } : t,
+            ),
+          };
+          expect(
+            (yield* Effect.result(src.data.verifyReturn(original, moveId, invalid)))._tag,
+          ).toBe("Failure");
+        }
+        const sql = yield* Effect.provide(SqlClient.SqlClient, source);
+        // Exercise the exact projection keys used by ordinary upserts, including approval IDs
+        // that are independent of the activity ID itself.
+        const outsider = ThreadId.make("unrelated-owner");
+        for (const [insert, remove] of [
+          [
+            sql`INSERT INTO projection_thread_proposed_plans(plan_id,thread_id,plan_markdown,created_at,updated_at) VALUES ('return-plan',${outsider},'Other',${stamp},${stamp})`,
+            sql`DELETE FROM projection_thread_proposed_plans WHERE plan_id='return-plan'`,
+          ],
+          [
+            sql`INSERT INTO projection_thread_activities(activity_id,thread_id,tone,kind,summary,payload_json,created_at) VALUES ('return-activity',${outsider},'info','synthetic','Other','{}',${stamp})`,
+            sql`DELETE FROM projection_thread_activities WHERE activity_id='return-activity'`,
+          ],
+          [
+            sql`INSERT INTO projection_pending_approvals(request_id,thread_id,status,created_at) VALUES ('return-request',${outsider},'resolved',${stamp})`,
+            sql`DELETE FROM projection_pending_approvals WHERE request_id='return-request'`,
+          ],
+        ] as const) {
+          yield* insert;
+          expect((yield* Effect.result(src.data.verifyReturn(original, moveId, back)))._tag).toBe(
+            "Failure",
+          );
+          yield* remove;
+        }
+        // The file-registry check occurs after the cross-Project SQL reservation.
+        // A local refusal must release every claim before the destination is contacted.
+        const registry = yield* Effect.provide(RemoteAgentStore, source);
+        yield* registry.put(
+          makeRecord({ threadId: temporary, homeProjectId: "unrelated-registry-owner" }),
+        );
+        expect((yield* Effect.result(src.data.verifyReturn(original, moveId, back)))._tag).toBe(
+          "Failure",
+        );
+        expect(
+          yield* sql`SELECT identity FROM project_move_history_claims WHERE project_id=${original}`,
+        ).toHaveLength(0);
+        yield* registry.remove(temporary);
         yield* src.data.verifyReturn(original, moveId, back);
         expect(yield* src.fs.exists(receivedPath)).toBe(false);
         yield* src.data.install(original, moveId, back);

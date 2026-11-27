@@ -381,50 +381,64 @@ it.live(
         yield* dst.sql`DELETE FROM project_move_receipts WHERE move_id='replacement'`;
         // A queued peer message must be consumed before the coordinator can move back.
         // Exercise the durable delivery and turn lifecycle without starting a model provider.
-        const pendingReply = delivered[0]!;
-        const createdAt = yield* dst.fixture.now;
-        yield* dst.fixture.dispatch({
-          type: "thread.turn.start",
-          commandId: CommandId.make(agentDeliveryStartId(pendingReply.id)),
-          threadId: coordinator,
-          message: {
-            messageId: pendingReply.id,
-            role: "user",
-            text: pendingReply.text,
-            attachments: [],
-            ...(pendingReply.source ? { source: pendingReply.source } : {}),
-          },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          createdAt,
-        });
-        for (const status of ["running", "stopped"] as const) {
-          yield* dst.fixture.dispatch({
-            type: "thread.session.set",
-            threadId: coordinator,
-            commandId: CommandId.make("synthetic-session-" + status),
-            createdAt,
-            session: {
-              threadId: coordinator,
-              status,
-              providerName: "codex",
-              providerInstanceId: ProviderInstanceId.make("codex"),
-              runtimeMode: "full-access",
-              activeTurnId: status === "running" ? TurnId.make("reply-turn") : null,
-              lastError: null,
-              updatedAt: createdAt,
-            },
-          });
-        }
         const laterWorker = ThreadId.make("destination-worker");
         yield* attachWorker(dst, target, laterWorker);
+        const formerHome = addresses.get("origin")!;
+        addresses.delete("origin");
+        expect((yield* Effect.result(guest.message(worker, "Former home is asleep")))._tag).toBe(
+          "Failure",
+        );
+        expect(yield* messages(dst.query)).toHaveLength(1);
+        const reachableReply = "Reply directly to the active destination";
+        yield* guest.message(laterWorker, reachableReply);
+        const directMessages = yield* messages(dst.query, laterWorker);
+        expect(directMessages).toHaveLength(1);
+        expect(directMessages[0]?.text).toContain(reachableReply);
+        addresses.set("origin", formerHome);
+
+        for (const pendingReply of [...delivered, ...directMessages]) {
+          const createdAt = yield* dst.fixture.now;
+          yield* dst.fixture.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(agentDeliveryStartId(pendingReply.id)),
+            threadId: coordinator,
+            message: {
+              messageId: pendingReply.id,
+              role: "user",
+              text: pendingReply.text,
+              attachments: [],
+              ...(pendingReply.source ? { source: pendingReply.source } : {}),
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt,
+          });
+          for (const status of ["running", "stopped"] as const) {
+            yield* dst.fixture.dispatch({
+              type: "thread.session.set",
+              threadId: coordinator,
+              commandId: CommandId.make("synthetic-session-" + pendingReply.id + status),
+              createdAt,
+              session: {
+                threadId: coordinator,
+                status,
+                providerName: "codex",
+                providerInstanceId: ProviderInstanceId.make("codex"),
+                runtimeMode: "full-access",
+                activeTurnId: status === "running" ? TurnId.make("turn-" + pendingReply.id) : null,
+                lastError: null,
+                updatedAt: createdAt,
+              },
+            });
+          }
+        }
         const rolledBack = (yield* src.manage("rollback")).coordinatorMove;
         expect(rolledBack?.phase, rolledBack?.detail).toBe("rolled-back");
         expect(yield* dst.store.listForMove).toHaveLength(0);
         yield* guest.message(worker, "Synthetic reply after return");
         expect(yield* messages(src.query)).toHaveLength(2);
         yield* guest.message(laterWorker, "Reply from agent placed at destination");
-        expect(yield* messages(src.query, laterWorker)).toHaveLength(1);
+        expect(yield* messages(src.query, laterWorker)).toHaveLength(2);
       }),
     ),
 );

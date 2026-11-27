@@ -219,11 +219,30 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
     serialize(
       Effect.gen(function* () {
         const { projectId, moveId, peerProjectId } = input;
+        const [history] = yield* sql<{
+          role: string;
+          phase: string;
+          peer_id: string;
+          peer_project_id: string;
+          returned_digest: string | null;
+        }>`SELECT role, phase, peer_id, peer_project_id,
+            CASE WHEN return_bundle IS NOT NULL THEN digest END AS returned_digest
+          FROM project_move_receipts WHERE project_id=${projectId} AND move_id=${moveId}`;
+        // A source may lose the final acknowledgement and retry after this
+        // checkout accepts another move. A completed receipt can acknowledge
+        // only its authenticated peer's exact return, without touching the new owner.
+        if (input.action === "finishRollback" && history?.phase === "rolled-back") {
+          if (
+            history.role !== "target" ||
+            history.peer_id !== peer ||
+            history.peer_project_id !== peerProjectId ||
+            history.returned_digest !== (input.returnedDigest ?? null)
+          )
+            return yield* refusal("The rollback acknowledgement does not match its receipt.");
+          return { phase: "rolled-back" };
+        }
         let r = yield* latest(projectId);
-        const history =
-          yield* sql<Receipt>`SELECT * FROM project_move_receipts WHERE project_id=${projectId} AND move_id=${moveId}`;
-        if (history[0] && history[0].move_id !== r?.move_id)
-          return yield* refusal("This move was superseded.");
+        if (history && moveId !== r?.move_id) return yield* refusal("This move was superseded.");
         if (r && r.move_id !== moveId && r.phase === "rolled-back") r = undefined;
         if (
           r &&
@@ -599,6 +618,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                   // fence after a crash. Persist its confirmed authority before
                   // any local readiness check can refuse the return.
                   if (r.phase !== "active") yield* phase(r, "active");
+                  yield* data.releaseReturnIdentities(id, r.move_id);
                   if (proposed.detail) return yield* refusal(proposed.detail);
                   if (
                     !proposed.requirements ||
@@ -623,7 +643,11 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                 if (back.phase === "active") {
                   // The target explicitly confirmed that it released its tentative
                   // fence. Display its running ownership and allow a fresh rollback.
-                  yield* phase(r, "active");
+                  yield* sql.withTransaction(
+                    phase(r, "active").pipe(
+                      Effect.andThen(data.releaseReturnIdentities(id, r.move_id)),
+                    ),
+                  );
                   return yield* refusal(
                     back.detail ?? "The destination is active. Review and retry rollback.",
                   );

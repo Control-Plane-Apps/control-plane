@@ -47,6 +47,55 @@ export default Effect.gen(function* () {
       PRIMARY KEY(home_project_id,move_id,worker_id,worker_project_id,thread_id)
     )
   `;
+  yield* sql`CREATE TABLE project_move_history_claims (
+    kind TEXT NOT NULL, identity TEXT NOT NULL, owner TEXT NOT NULL, proof TEXT,
+    project_id TEXT NOT NULL, move_id TEXT NOT NULL, PRIMARY KEY(kind,identity)
+  )`;
+  yield* sql`CREATE INDEX project_move_history_claims_move ON project_move_history_claims(project_id,move_id)`;
+  yield* sql`CREATE TRIGGER project_move_release_history AFTER DELETE ON project_move_fences
+    BEGIN DELETE FROM project_move_history_claims WHERE project_id=OLD.project_id AND move_id=OLD.move_id; END`;
+  // These UPSERT targets use database-wide IDs. Protect both sides of the rollback
+  // handshake, including other server processes and background projection writers.
+  for (const [kind, table, id, owner] of [
+    ["thread", "projection_threads", "thread_id", "'local:'||NEW.project_id"],
+    ["message", "projection_thread_messages", "message_id", "NEW.thread_id"],
+    ["activity", "projection_thread_activities", "activity_id", "NEW.thread_id"],
+    ["plan", "projection_thread_proposed_plans", "plan_id", "NEW.thread_id"],
+    ["approval", "projection_pending_approvals", "request_id", "NEW.thread_id"],
+    [
+      "receipt",
+      "orchestration_command_receipts",
+      "command_id",
+      "NEW.aggregate_kind||':'||NEW.aggregate_id",
+    ],
+  ] as const) {
+    const proof =
+      kind === "receipt" ? " OR proof <> json_array(NEW.accepted_at,NEW.status,NEW.error)" : "";
+    for (const action of ["INSERT", "UPDATE"]) {
+      yield* sql.unsafe(`CREATE TRIGGER project_move_guard_${kind}_${action} BEFORE ${action} ON ${table}
+        WHEN EXISTS(SELECT 1 FROM project_move_history_claims WHERE kind='${kind}' AND identity=NEW.${id}
+        AND (owner <> (${owner})${proof}))
+        BEGIN SELECT RAISE(ABORT,'History identity is reserved for a Project move'); END`);
+    }
+  }
+  // Some projectors update an existing row using its stored owner. Check the
+  // actual incoming event as well, before a competing thread can alter that row.
+  for (const [kind, type, identity] of [
+    ["message", "thread.message-sent", "NEW.payload_json->>'messageId'"],
+    ["activity", "thread.activity-appended", "NEW.payload_json->>'$.activity.id'"],
+    ["plan", "thread.proposed-plan-upserted", "NEW.payload_json->>'$.proposedPlan.id'"],
+    [
+      "approval",
+      "thread.activity-appended",
+      "coalesce(NEW.payload_json->>'$.activity.payload.requestId', NEW.metadata_json->>'requestId')",
+    ],
+    ["approval", "thread.approval-response-requested", "NEW.payload_json->>'requestId'"],
+  ] as const) {
+    yield* sql.unsafe(`CREATE TRIGGER project_move_event_${kind}_${type.replaceAll(/[.-]/g, "_")} BEFORE INSERT ON orchestration_events
+      WHEN NEW.event_type='${type}' AND EXISTS(SELECT 1 FROM project_move_history_claims
+      WHERE kind='${kind}' AND identity=(${identity}) AND owner<>NEW.stream_id)
+      BEGIN SELECT RAISE(ABORT,'History identity is reserved for a Project move'); END`);
+  }
   yield* sql`
     CREATE TABLE project_move_receipts (
       move_id TEXT NOT NULL,

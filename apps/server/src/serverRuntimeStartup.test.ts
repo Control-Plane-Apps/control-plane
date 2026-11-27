@@ -7,10 +7,16 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { makeSqlitePersistenceLive, SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
+import { acquireProjectMoveFence, releaseProjectMoveFence } from "./reach/projectMoveFence.ts";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
@@ -46,8 +52,10 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
           };
         }),
     } as unknown as GitVcsDriver.GitVcsDriver["Service"];
-    const project = (workspaceRoot: string) =>
-      ({ id: ProjectId.make(workspaceRoot), workspaceRoot }) as never;
+    const project = (workspaceRoot: string) => ({
+      id: ProjectId.make(workspaceRoot),
+      workspaceRoot,
+    });
     const overrides = (entries: Record<string, boolean>) => ({
       ...DEFAULT_SERVER_SETTINGS,
       projectSettingsOverrides: Object.fromEntries(
@@ -85,7 +93,111 @@ it.effect("automatic pull only updates enabled, behind, clean default-branch che
       { ...overrides({ "/opted-out": false }), defaultAutoPull: true },
     ).pipe(Effect.provideService(GitVcsDriver.GitVcsDriver, git));
     assert.deepStrictEqual(pulled, ["/inherited"]);
-  }),
+  }).pipe(Effect.provide(SqlitePersistenceMemory)),
+);
+
+it.effect(
+  "startup auto-pull keeps a fenced checkout and tracked memory unchanged after reopening the database",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const temp = yield* fs.makeTempDirectoryScoped({ prefix: "startup-pull-" });
+      const cwd = path.join(temp, "checkout");
+      const author = path.join(temp, "author");
+      const remote = path.join(temp, "remote.git");
+      const memory = path.join(cwd, "MEMORY.md");
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const gitCommand = (workingDirectory: string, args: string[]) =>
+        driver
+          .execute({ operation: "test.startupAutoPull", cwd: workingDirectory, args })
+          .pipe(Effect.map((result) => result.stdout.trim()));
+      yield* gitCommand(temp, ["init", "--bare", "--initial-branch=main", remote]);
+      yield* gitCommand(temp, ["clone", remote, author]);
+      yield* gitCommand(author, ["config", "user.email", "synthetic@example.invalid"]);
+      yield* gitCommand(author, ["config", "user.name", "Synthetic"]);
+      yield* gitCommand(author, ["config", "commit.gpgSign", "false"]);
+      yield* gitCommand(author, ["config", "core.hooksPath", path.join(temp, "empty-hooks")]);
+      const publishMemory = (contents: string) =>
+        Effect.gen(function* () {
+          yield* fs.writeFileString(path.join(author, "MEMORY.md"), contents);
+          yield* gitCommand(author, ["add", "MEMORY.md"]);
+          yield* gitCommand(author, ["commit", "-m", contents.trim()]);
+          yield* gitCommand(author, ["push", "origin", "main"]);
+          return yield* gitCommand(author, ["rev-parse", "HEAD"]);
+        });
+      const before = "Original Project memory.\n";
+      const after = "Updated Project memory.\n";
+      const oldHead = yield* publishMemory(before);
+      yield* gitCommand(temp, ["clone", remote, cwd]);
+      const newHead = yield* publishMemory(after);
+      yield* gitCommand(cwd, ["fetch", "origin"]);
+      assert.strictEqual(
+        yield* gitCommand(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD"]),
+        "refs/remotes/origin/main",
+      );
+      assert.strictEqual(yield* gitCommand(cwd, ["branch", "--show-current"]), "main");
+      assert.strictEqual(yield* gitCommand(cwd, ["status", "--porcelain"]), "");
+      assert.strictEqual(yield* gitCommand(cwd, ["rev-list", "--count", "HEAD..@{upstream}"]), "1");
+      const dbPath = path.join(temp, "state.sqlite");
+      const id = ProjectId.make("startup-pull");
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+                 VALUES (${id}, 'Synthetic startup Project', ${cwd}, '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`;
+        yield* acquireProjectMoveFence(id, "move");
+      }).pipe(Effect.provide(makeSqlitePersistenceLive(dbPath)));
+
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const operations: string[] = [];
+        const writerIds = new Set<string>();
+        const record = (name: string) =>
+          Effect.gen(function* () {
+            const writers = yield* sql<{
+              kind: string;
+              operation_id: string;
+            }>`SELECT kind, operation_id FROM project_move_writers WHERE project_id = ${id}`;
+            assert.deepStrictEqual(
+              writers.map((writer) => writer.kind),
+              ["git"],
+            );
+            writerIds.add(writers[0]!.operation_id);
+            operations.push(name);
+          });
+        const observedDriver = GitVcsDriver.GitVcsDriver.of({
+          ...driver,
+          statusDetails: (directory) =>
+            record("status").pipe(Effect.orDie, Effect.andThen(driver.statusDetails(directory))),
+          pullCurrentBranch: (directory) =>
+            record("pull").pipe(Effect.orDie, Effect.andThen(driver.pullCurrentBranch(directory))),
+        });
+        const startup = ServerRuntimeStartup.autoPullProjects([{ id, workspaceRoot: cwd }], {
+          ...DEFAULT_SERVER_SETTINGS,
+          projectSettingsOverrides: { [id]: { defaultAutoPull: true } },
+        }).pipe(Effect.provideService(GitVcsDriver.GitVcsDriver, observedDriver));
+        yield* startup;
+        assert.deepStrictEqual(operations, []);
+        assert.strictEqual(yield* gitCommand(cwd, ["rev-parse", "HEAD"]), oldHead);
+        assert.strictEqual(yield* fs.readFileString(memory), before);
+        yield* releaseProjectMoveFence(id, "move");
+        yield* startup;
+        assert.deepStrictEqual(operations, ["status", "pull"]);
+        assert.strictEqual(writerIds.size, 1);
+        assert.strictEqual(yield* gitCommand(cwd, ["rev-parse", "HEAD"]), newHead);
+        assert.strictEqual(yield* fs.readFileString(memory), after);
+        assert.strictEqual((yield* sql`SELECT 1 FROM project_move_writers`).length, 0);
+      }).pipe(Effect.provide(makeSqlitePersistenceLive(dbPath)));
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        GitVcsDriver.layer.pipe(
+          Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "startup-pull-config-" })),
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+  30_000,
 );
 
 it.effect("enqueueCommand waits for readiness and then drains queued work", () =>

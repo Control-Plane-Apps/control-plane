@@ -29,6 +29,10 @@ import {
   toSafeThreadAttachmentSegment,
   resolveAttachmentPath,
 } from "../attachmentStore.ts";
+import {
+  reserveHistoryIdentities,
+  releaseReturnIdentities,
+} from "./projectMoveHistoryIdentities.ts";
 import { projectMoveFenceOwner, withProjectMovePermit } from "./projectMoveFence.ts";
 import { sha256Hex } from "./assistantHistory.ts";
 
@@ -462,7 +466,6 @@ export const makeProjectMoveData = Effect.gen(function* () {
       if (collision.length)
         return yield* fail("A linked agent collides with a thread on this machine.");
     }
-    yield* remoteStore.replaceForMove(id, moveId, agentRecords, true);
     for (const thread of bundle.threads) {
       const old = byId.get(thread.id);
       const ownership = yield* sql<{
@@ -562,14 +565,6 @@ export const makeProjectMoveData = Effect.gen(function* () {
         return yield* Effect.fail(fail("An execution receipt belongs to another Project."));
     }
     if (verifyOnly) {
-      for (const receipt of bundle.receipts) {
-        const aggregate = receipt.aggregateKind === "project" ? id : receipt.aggregateId;
-        const [collision] = yield* sql`SELECT 1 FROM orchestration_command_receipts
-          WHERE command_id=${receipt.commandId} AND NOT (aggregate_kind=${receipt.aggregateKind}
-          AND aggregate_id=${aggregate} AND accepted_at=${receipt.acceptedAt}
-          AND status=${receipt.status} AND error IS ${receipt.error})`;
-        if (collision) return yield* fail("An execution receipt collides on this machine.");
-      }
       for (const key of Object.keys(bundle.roles)) {
         const file = rolePath(project.workspaceRoot, key);
         if (key.includes("/")) {
@@ -583,8 +578,16 @@ export const makeProjectMoveData = Effect.gen(function* () {
         }
         yield* io(() => readFile(file));
       }
-      return;
     }
+    yield* reserveHistoryIdentities(sql, id, moveId, bundle);
+    // The registry's lock also waits for a write which began before the SQL reservation.
+    const registryCheck = remoteStore.replaceForMove(id, moveId, agentRecords, true, [
+      ...targetIds,
+    ]);
+    yield* verifyOnly
+      ? registryCheck.pipe(Effect.tapError(() => releaseReturnIdentities(sql, id, moveId)))
+      : registryCheck;
+    if (verifyOnly) return;
     const prefix = cleanupDigest ? "cp-project-cleanup" : "cp-project-restore";
     const key = `${prefix}:${moveId}:${projectMoveDigest(bundle)}`;
     yield* withProjectMovePermit(
@@ -667,5 +670,12 @@ export const makeProjectMoveData = Effect.gen(function* () {
   });
   const verifyReturn = (id: string, moveId: string, bundle: ProjectMoveBundle) =>
     install(id, moveId, bundle, undefined, false, true);
-  return { capture, install, verifyReturn, digest: projectMoveDigest };
+  return {
+    capture,
+    install,
+    verifyReturn,
+    releaseReturnIdentities: (id: string, moveId: string) =>
+      releaseReturnIdentities(sql, id, moveId),
+    digest: projectMoveDigest,
+  };
 });
