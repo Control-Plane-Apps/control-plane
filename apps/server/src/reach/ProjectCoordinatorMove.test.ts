@@ -277,6 +277,28 @@ it("recovers a non-Git coordinator move using the selected registered checkout a
     git(targetRoot, "remote", "set-url", "origin", "https://example.invalid/demo/project.git");
     git(populatedRoot, "remote", "set-url", "origin", "https://example.invalid/demo/project.git");
     git(wrongRoot, "remote", "set-url", "origin", "https://example.invalid/demo/other.git");
+    const sourceMemory = NodePath.join(sourceRoot, "MEMORY.md");
+    const selectedMemory = NodePath.join(targetRoot, "MEMORY.md");
+    const permissions = async (file: string) => (await NodeFSP.stat(file)).mode & 0o777;
+    await NodeFSP.chmod(sourceMemory, 0o664);
+    await NodeFSP.chmod(selectedMemory, 0o640);
+    await NodeFSP.chmod(NodePath.join(verifyRoot, "MEMORY.md"), 0o640);
+    const targetRole = NodePath.join(targetRoot, "operator", "AGENTS.md");
+    const targetRoleContents = "Destination-only role";
+    await NodeFSP.mkdir(NodePath.dirname(targetRole));
+    await NodeFSP.appendFile(
+      NodePath.join(targetRoot, ".git", "info", "exclude"),
+      "\n/operator/AGENTS.md\n",
+    );
+    await NodeFSP.writeFile(targetRole, targetRoleContents);
+    await NodeFSP.chmod(targetRole, 0o604);
+    git(targetRoot, "check-ignore", "--quiet", "operator/AGENTS.md");
+    const expectOriginalPermissions = async () => {
+      expect(await permissions(sourceMemory)).toBe(0o664);
+      expect(await permissions(selectedMemory)).toBe(0o640);
+      expect(await NodeFSP.readFile(targetRole, "utf8")).toBe(targetRoleContents);
+      expect(await permissions(targetRole)).toBe(0o604);
+    };
     const verificationRole = NodePath.join(verifyRoot, "reviewer", "AGENTS.md");
     const originalRole = "Keep the verification Project role";
     await NodeFSP.mkdir(NodePath.dirname(verificationRole));
@@ -461,6 +483,8 @@ it("recovers a non-Git coordinator move using the selected registered checkout a
     const abortId = "abort-before-activation";
     drop = "stage";
     await expect(request("move", abortId)).rejects.toThrow("Lost acknowledgement");
+    expect(await memoryAt(targetRoot)).toBe("Synthetic memory");
+    await expect(NodeFSP.stat(targetRole)).rejects.toMatchObject({ code: "ENOENT" });
     await assertVerificationPaused();
     // Fail the final receipt commit once. The stage was never active, so the
     // source has no returned digest to present when it resumes the cleanup.
@@ -491,6 +515,7 @@ it("recovers a non-Git coordinator move using the selected registered checkout a
     ).rejects.toThrow("checksum");
     expect(await restoreState(abortId)).toEqual(aborted);
     expect((await request("retry", abortId)).coordinatorMove?.phase).toBe("rolled-back");
+    await expectOriginalPermissions();
     await writeVerificationRef();
     approvalDigest = (await request("preflight")).coordinatorMove?.approvalDigest;
     drop = "stage";
@@ -806,6 +831,7 @@ it("recovers a non-Git coordinator move using the selected registered checkout a
     await restart();
     await assertVerificationPaused();
     expect(await memoryAt(targetRoot)).toBe(checkoutMemory);
+    await expectOriginalPermissions();
     expect(await memoryAt(verifyRoot)).toBe(checkoutMemory);
     expect(await memoryAt(sourceRoot)).toBe("Destination memory");
     expect(await NodeFSP.readFile(verificationRole, "utf8")).toBe(originalRole);
