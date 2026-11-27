@@ -17,7 +17,12 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { RemoteAgentStore } from "../agentMachines/RemoteAgentStore.ts";
-import { openWorkerRoutes, verifyWorkers, rememberWorkerRoutes } from "./projectMoveAgentRoutes.ts";
+import {
+  hasReturnedWorkerRoute,
+  openWorkerRoutes,
+  verifyWorkers,
+  rememberWorkerRoutes,
+} from "./projectMoveAgentRoutes.ts";
 import { AgentMachines } from "../agentMachines/AgentMachines.ts";
 import { ServerConfig } from "../config.ts";
 import { matchPeerProject } from "../agentMachines/projectMatch.ts";
@@ -181,6 +186,9 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
     });
   const checkTarget = (id: string, req: Requirements, returning = false) =>
     Effect.gen(function* () {
+      for (const worker of req.workers)
+        if (yield* hasReturnedWorkerRoute(sql, worker.threadId))
+          return yield* refusal("An existing worker still uses this machine for its return route.");
       yield* verifyWorkers(reach, req.workers);
       if (req.scheduleZone && hostZone().zone !== req.scheduleZone)
         return yield* refusal("The schedule time zones differ.");
@@ -437,7 +445,13 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
         }
         if (!["aborting", "returning", "restoring"].includes(r.phase) || !r.backup)
           return yield* refusal("Fence the destination before restoring it.");
-        if (r.phase === "returning" && input.returnedDigest !== r.digest)
+        // The return snapshot persists through restoring. An aborted stage
+        // has no return snapshot, even though its internal cleanup has a digest.
+        if (
+          !history ||
+          (r.phase === "returning" && history.returned_digest === null) ||
+          history.returned_digest !== (input.returnedDigest ?? null)
+        )
           return yield* refusal("The source has not verified this rollback checksum.");
         const backup = yield* decodeBackup(r.backup);
         const cleanupDigest =

@@ -68,7 +68,10 @@ it.live(
         const coordinator = ThreadId.make("coordinator"),
           worker = ThreadId.make("worker-thread");
         const move = "transfer";
-        const machines = ["origin", "target", "worker"].map((id) => ({ id, label: id }));
+        const machines = ["origin", "target", "worker", "next-origin"].map((id) => ({
+          id,
+          label: id,
+        }));
         const provider = yield* decodeProvider({
           instanceId: "codex",
           driver: "codex",
@@ -273,13 +276,14 @@ it.live(
                 const manage = (
                   operation: "preflight" | "move" | "rollback",
                   approvalDigest?: string,
+                  moveId = move,
                 ) =>
                   management.manage({
                     action: "coordinatorMove",
                     operation,
                     projectId: id,
                     destinationId: "target",
-                    moveId: move,
+                    moveId,
                     ...(approvalDigest ? { approvalDigest } : {}),
                   });
                 return {
@@ -302,8 +306,10 @@ it.live(
         const src = yield* setup("origin", origin),
           dst = yield* setup("target", target),
           guest = yield* setup("worker", workerProject);
-        for (const holder of [src, dst, guest])
-          for (const issuer of [src, dst, guest]) {
+        const replacementProject = ProjectId.make("replacement-project");
+        const replacement = yield* setup("next-origin", replacementProject);
+        for (const holder of [src, dst, guest, replacement])
+          for (const issuer of [src, dst, guest, replacement]) {
             if (holder.machine !== issuer.machine)
               yield* holder.save(issuer.machine, yield* issuer.issue(holder.machine));
           }
@@ -439,6 +445,59 @@ it.live(
         expect(yield* messages(src.query)).toHaveLength(2);
         yield* guest.message(laterWorker, "Reply from agent placed at destination");
         expect(yield* messages(src.query, laterWorker)).toHaveLength(2);
+        // A second origin occupies the returned checkout. It has an independent
+        // coordinator and never acquires authority for the first Project's worker.
+        const nextCoordinator = ThreadId.make("next-coordinator");
+        yield* replacement.fixture.createThread(
+          replacementProject,
+          nextCoordinator,
+          "Next coordinator",
+        );
+        yield* replacement.fixture.dispatch({
+          type: "project.meta.update",
+          projectId: replacementProject,
+          commandId: CommandId.make("mark-next"),
+          assistant: { coordinatorThreadId: nextCoordinator },
+        });
+        const nextMove = "replacement-move";
+        const ready = (yield* replacement.manage("preflight", undefined, nextMove)).coordinatorMove;
+        expect(ready?.ready, ready?.detail).toBe(true);
+        const active = (yield* replacement.manage("move", ready?.approvalDigest, nextMove))
+          .coordinatorMove;
+        expect(active?.phase, active?.detail).toBe("active");
+        const duplicate = makeRecord({
+          threadId: laterWorker,
+          machineId: "worker",
+          peerProjectId: workerProject,
+          homeProjectId: target,
+          creatorThreadId: nextCoordinator,
+        });
+        expect((yield* Effect.result(dst.store.put(duplicate)))._tag).toBe("Failure");
+        yield* guest.message(laterWorker, "Return reply after another origin reuses the checkout");
+        expect(yield* messages(src.query, laterWorker)).toHaveLength(3);
+        const wrongTarget = {
+          ...reply,
+          threadId: laterWorker,
+          thread: nextCoordinator,
+          message: "Wrong coordinator",
+        };
+        expect((yield* Effect.result(guest.send("target", wrongTarget, laterWorker)))._tag).toBe(
+          "Failure",
+        );
+        const unrelated = Option.getOrThrow(yield* dst.query.getThreadDetailById(nextCoordinator));
+        expect(
+          unrelated.messages.filter((message) => message.source?.threadId === laterWorker),
+        ).toHaveLength(0);
+        // Even a duplicate historical route to the same peer is ambiguous. Do not
+        // choose a receipt by insertion order when the durable routes disagree.
+        yield* dst.sql`INSERT INTO project_move_receipts (project_id,peer_id,peer_project_id,move_id,role,phase) VALUES
+          (${target},'origin',${origin},'stale-duplicate','target','rolled-back')`;
+        yield* dst.sql`INSERT INTO project_move_agent_relays (home_project_id,move_id,worker_id,worker_project_id,thread_id)
+          VALUES (${target},'stale-duplicate','worker',${workerProject},${laterWorker})`;
+        expect((yield* Effect.result(guest.message(laterWorker, "Ambiguous callback")))._tag).toBe(
+          "Failure",
+        );
+        expect(yield* messages(src.query, laterWorker)).toHaveLength(3);
       }),
     ),
 );

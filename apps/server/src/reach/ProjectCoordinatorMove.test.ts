@@ -20,6 +20,7 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schedule from "effect/Schedule";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -40,7 +41,10 @@ import * as ThreadBackgroundLiveness from "../orchestration/ThreadBackgroundLive
 import * as ThreadPlanProgress from "../orchestration/ThreadPlanProgress.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
-import { layerConfig } from "../persistence/Layers/Sqlite.ts";
+import { layerConfig, makeSqlitePersistenceLive } from "../persistence/Layers/Sqlite.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
+import * as NodePtyAdapter from "../terminal/NodePtyAdapter.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
 import * as ScheduleRunner from "../schedules/ScheduleRunner.ts";
@@ -75,6 +79,7 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     threadId = ThreadId.make("synthetic-coordinator");
   let send: (peerId: string, input: ProjectMoveStep) => Promise<unknown>;
   const completions: Extract<ProjectMoveStep, { action: "finishRollback" }>[] = [];
+  let interruptFinish = false;
   let beforeReverse: (() => Promise<unknown>) | undefined;
   let shell: () => Promise<OrchestrationShellSnapshot>;
   let drop: ProjectMoveStep["action"] | null = null;
@@ -162,6 +167,21 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     dest.runPromise(Effect.flatMap(ProjectCoordinatorMove, (s) => s.step(peerId, input)));
   send = async (peerId, input) => {
     if (input.action === "finishRollback") completions.push(input);
+    if (input.action === "finishRollback" && interruptFinish) {
+      interruptFinish = false;
+      // Prevent capture of the active destination after the returning digest
+      // is recorded and before any cleanup projections or files can change.
+      const memory = NodePath.join(targetRoot, "MEMORY.md");
+      const saved = NodePath.join(root, "interrupted-memory");
+      await NodeFSP.rename(memory, saved);
+      await NodeFSP.mkdir(memory);
+      try {
+        return await peerStep(peerId, input);
+      } finally {
+        await NodeFSP.rmdir(memory);
+        await NodeFSP.rename(saved, memory);
+      }
+    }
     if (input.action === "reverse" && beforeReverse) {
       const mutate = beforeReverse;
       beforeReverse = undefined;
@@ -176,7 +196,10 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
   let nextId = 0;
   const cid = () => CommandId.make("fixture-command-" + ++nextId);
   let approvalDigest: string | undefined;
-  const request = (operation: "preflight" | "move" | "retry" | "rollback" | "status") =>
+  const request = (
+    operation: "preflight" | "move" | "retry" | "rollback" | "status",
+    moveId = "synthetic-move",
+  ) =>
     source.runPromise(
       Effect.flatMap(ProjectCoordinatorMove, (s) =>
         s.manage({
@@ -184,7 +207,7 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
           operation,
           projectId: sourceId,
           destinationId: "destination",
-          moveId: "synthetic-move",
+          moveId,
           ...(approvalDigest ? { approvalDigest } : {}),
         }),
       ),
@@ -195,6 +218,24 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     source = boot("origin", sourceRoot);
     dest = boot("destination", targetRoot);
   };
+  const restoreState = (moveId: string) =>
+    dest.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const [state] = yield* sql<{
+          phase: string;
+          fence: string | null;
+          digest: string;
+          returned: number;
+          sequence: number;
+        }>`
+      SELECT r.phase, f.move_id AS fence, r.digest, r.return_bundle IS NOT NULL AS returned,
+        (SELECT COALESCE(MAX(sequence), 0) FROM orchestration_events) AS sequence
+      FROM project_move_receipts r LEFT JOIN project_move_fences f USING(project_id)
+      WHERE r.project_id=${targetId} AND r.move_id=${moveId}`;
+        return state;
+      }),
+    );
   try {
     await NodeFSP.mkdir(sourceRoot);
     const git = (cwd: string, ...args: string[]) =>
@@ -269,6 +310,75 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     expect(reviewed?.ready).toBe(true);
     await expect(request("move")).rejects.toThrow("proposal changed");
     approvalDigest = reviewed?.approvalDigest;
+    // A linked server can host a shell for this Project using its own SQL connection.
+    const sourceDb = (await source.runPromise(Effect.service(ServerConfig))).dbPath;
+    await source.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const terminal = yield* TerminalManager.makeWithOptions({
+          sql,
+          logsDir: NodePath.join(root, "terminal-logs"),
+          ptyAdapter: yield* NodePtyAdapter.make(),
+          env: { PATH: process.env.PATH, HOME: root, SHELL: "/bin/sh" },
+        });
+        const session = { threadId, terminalId: "review" };
+        const opened = yield* terminal.open({ ...session, cwd: sourceRoot, cols: 80, rows: 24 });
+        expect(opened.status).toBe("running");
+        const previousOwner = (yield* Effect.promise(() => request("status"))).coordinatorMove;
+        yield* Effect.promise(() => expect(request("move")).rejects.toThrow("unfinished terminal"));
+        expect((yield* Effect.promise(() => request("status"))).coordinatorMove).toEqual(
+          previousOwner,
+        );
+        expect(previousOwner).toMatchObject({ ownerId: "local", phase: "idle" });
+        expect(yield* Effect.promise(() => restoreState("synthetic-move"))).toBeUndefined();
+        yield* terminal.write({ ...session, data: "exit\r" });
+        yield* sql`SELECT 1 FROM project_move_writers WHERE kind = 'terminal'`.pipe(
+          Effect.repeat({
+            while: (rows) => rows.length > 0,
+            schedule: Schedule.spaced("10 millis"),
+          }),
+          Effect.timeout("5 seconds"),
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(makeSqlitePersistenceLive(sourceDb)),
+        Effect.provide(ProcessRunner.layer),
+        Effect.provide(NodeServices.layer),
+      ),
+    );
+    const abortId = "abort-before-activation";
+    drop = "stage";
+    await expect(request("move", abortId)).rejects.toThrow("Lost acknowledgement");
+    // Fail the final receipt commit once. The stage was never active, so the
+    // source has no returned digest to present when it resumes the cleanup.
+    await dest.runPromise(
+      Effect.flatMap(
+        SqlClient.SqlClient,
+        (sql) => sql`
+      CREATE TRIGGER interrupt_aborted_cleanup BEFORE UPDATE OF phase ON project_move_receipts
+      WHEN NEW.phase='rolled-back' BEGIN SELECT RAISE(ABORT,'interrupted cleanup'); END`,
+      ),
+    );
+    await expect(request("rollback", abortId)).rejects.toThrow();
+    await restart();
+    await dest.runPromise(
+      Effect.flatMap(SqlClient.SqlClient, (sql) => sql`DROP TRIGGER interrupt_aborted_cleanup`),
+    );
+    const aborted = await restoreState(abortId);
+    expect(aborted).toMatchObject({ phase: "restoring", fence: abortId, returned: 0 });
+    expect(aborted?.digest).toBeTruthy();
+    await expect(
+      peerStep("origin", {
+        action: "finishRollback",
+        projectId: targetId,
+        peerProjectId: sourceId,
+        moveId: abortId,
+        returnedDigest: aborted!.digest,
+      }),
+    ).rejects.toThrow("checksum");
+    expect(await restoreState(abortId)).toEqual(aborted);
+    expect((await request("retry", abortId)).coordinatorMove?.phase).toBe("rolled-back");
+    approvalDigest = (await request("preflight")).coordinatorMove?.approvalDigest;
     drop = "stage";
     await expect(request("move")).rejects.toThrow("Lost acknowledgement");
     await restart();
@@ -527,6 +637,28 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     drop = "reverse";
     await expect(request("rollback")).rejects.toThrow("Lost acknowledgement");
     await restart();
+    interruptFinish = true;
+    await expect(request("retry")).rejects.toThrow();
+    await restart();
+    const restoring = await restoreState("synthetic-move");
+    expect(restoring).toMatchObject({ phase: "restoring", fence: "synthetic-move", returned: 1 });
+    expect(restoring?.digest).toEqual(completions.at(-1)?.returnedDigest);
+    const finish = {
+      action: "finishRollback" as const,
+      projectId: targetId,
+      peerProjectId: sourceId,
+      moveId: "synthetic-move",
+    };
+    for (const invalid of [finish, { ...finish, returnedDigest: "wrong-digest" }]) {
+      await expect(peerStep("origin", invalid)).rejects.toThrow("checksum");
+      expect(await restoreState("synthetic-move")).toEqual(restoring);
+      expect(
+        (await shell()).projects.find((p) => p.id === targetId)?.assistant?.coordinatorThreadId,
+      ).toBe(threadId);
+      expect(await NodeFSP.readFile(NodePath.join(targetRoot, "MEMORY.md"), "utf8")).toBe(
+        "Destination memory",
+      );
+    }
     drop = "finishRollback";
     await expect(request("retry")).rejects.toThrow("Lost acknowledgement");
     await restart();

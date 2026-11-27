@@ -6,6 +6,7 @@
  *
  * @module RemoteAgentStore
  */
+import { hasReturnedWorkerRoute } from "../reach/projectMoveAgentRoutes.ts";
 import { RemoteAgentRecord } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -175,6 +176,10 @@ const make = Effect.gen(function* () {
   const listForMove = lock.withPermits(1)(loadForMove);
   const checkRemoteClaim = (threadId: string, projectId: string) =>
     Effect.gen(function* () {
+      if (yield* hasReturnedWorkerRoute(sql, threadId))
+        return yield* new RemoteAgentStoreError({
+          detail: "An existing worker still uses this machine for its return route.",
+        });
       const occupied =
         yield* sql`SELECT 1 FROM project_move_history_claims WHERE kind='thread' AND identity=${threadId}
       AND owner<>${"remote:" + projectId}`;

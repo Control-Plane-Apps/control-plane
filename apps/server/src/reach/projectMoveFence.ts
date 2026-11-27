@@ -101,9 +101,15 @@ export type ProjectWriterKind =
 
 interface WriterRow {
   readonly operation_id: string;
+  readonly project_id: string | null;
+  readonly terminal_cwd: string | null;
+  readonly terminal_worktree: string | null;
+  readonly terminal_thread: string | null;
   readonly owner_pid: number;
   readonly owner_host: string;
   readonly owner_generation: string | null;
+  readonly terminal_pid: number | null;
+  readonly terminal_generation: string | null;
   readonly kind: ProjectWriterKind;
 }
 
@@ -164,6 +170,61 @@ function ownerIsGone(writer: WriterRow, platform: NodeJS.Platform) {
   }
 }
 
+function terminalProcessGone(writer: WriterRow, platform: NodeJS.Platform) {
+  return (
+    writer.terminal_pid !== null &&
+    ownerIsGone(
+      {
+        ...writer,
+        owner_pid: writer.terminal_pid,
+        owner_generation: writer.terminal_generation,
+      },
+      platform,
+    )
+  );
+}
+
+// Ownership can be established after a terminal opened, for example by
+// registering its existing checkout. Resolve against the current projections
+// and the paths recorded at spawn even when the launch had no Project ID.
+const projectWriters = (sql: SqlClient.SqlClient, projectId: string) =>
+  Effect.gen(function* () {
+    const rows = yield* sql<WriterRow>`SELECT * FROM project_move_writers
+    WHERE project_id = ${projectId} OR terminal_cwd IS NOT NULL ORDER BY started_at, operation_id`;
+    if (!rows.some((row) => row.project_id !== projectId)) return rows;
+    const threads = yield* sql<{
+      thread_id: string;
+      worktree_path: string | null;
+    }>`SELECT thread_id, worktree_path FROM projection_threads WHERE project_id = ${projectId}`;
+    const projects = yield* sql<{
+      workspace_root: string;
+    }>`SELECT workspace_root FROM projection_projects WHERE project_id = ${projectId}`;
+    const roots = yield* Effect.forEach(
+      [
+        ...projects.map((p) => p.workspace_root),
+        ...threads.flatMap((t) => (t.worktree_path ? [t.worktree_path] : [])),
+      ],
+      canonicalRoot,
+    );
+    const belongs = (target: string | null) =>
+      target !== null &&
+      roots.some((root) => {
+        const relative = NodePath.relative(root, target);
+        return (
+          relative !== ".." &&
+          !relative.startsWith(`..${NodePath.sep}`) &&
+          !NodePath.isAbsolute(relative)
+        );
+      });
+    return rows.filter(
+      (row) =>
+        row.project_id === projectId ||
+        threads.some((t) => row.terminal_thread === t.thread_id) ||
+        belongs(row.terminal_cwd) ||
+        belongs(row.terminal_worktree),
+    );
+  });
+
 // Operator-only recovery, intentionally absent from RPC. Stable operator evidence
 // records who checked the surviving peer, child processes and durable results.
 export const reconcileAbandonedProjectWriter = Effect.fn(
@@ -176,9 +237,9 @@ export const reconcileAbandonedProjectWriter = Effect.fn(
     });
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      const [writer] =
-        yield* sql<WriterRow>`SELECT operation_id, owner_pid, owner_host, owner_generation, kind
-      FROM project_move_writers WHERE project_id = ${projectId} AND operation_id = ${operationId}`;
+      const writer = (yield* projectWriters(sql, projectId)).find(
+        (row) => row.operation_id === operationId,
+      );
       if (!writer) {
         const recorded =
           yield* sql`SELECT 1 FROM project_move_writer_reconciliations WHERE project_id = ${projectId}
@@ -186,13 +247,18 @@ export const reconcileAbandonedProjectWriter = Effect.fn(
         if (recorded.length) return;
         return yield* new ProjectMoveFenceError({ message: "No matching unfinished writer." });
       }
-      if (!ownerIsGone(writer, yield* HostProcessPlatform))
+      const platform = yield* HostProcessPlatform;
+      if (writer.terminal_pid !== null && !terminalProcessGone(writer, platform))
+        return yield* new ProjectMoveFenceError({
+          message: "The terminal process is still alive or its exit cannot be verified.",
+        });
+      if (!ownerIsGone(writer, platform))
         return yield* new ProjectMoveFenceError({
           message: "The writer owner is still alive or its death cannot be verified on this host.",
         });
       yield* sql`INSERT INTO project_move_writer_reconciliations (project_id, operation_id, kind, owner_pid, owner_host, evidence)
       VALUES (${projectId}, ${operationId}, ${writer.kind}, ${writer.owner_pid}, ${writer.owner_host}, ${evidence})`;
-      yield* sql`DELETE FROM project_move_writers WHERE project_id = ${projectId} AND operation_id = ${operationId}`;
+      yield* sql`DELETE FROM project_move_writers WHERE operation_id = ${operationId}`;
     }),
   );
 });
@@ -203,11 +269,16 @@ export const reconcileAbandonedProjectWriter = Effect.fn(
 // their current durable results before granting execution on the other side.
 const reconcileProjectWriters = (sql: SqlClient.SqlClient, projectId: string) =>
   Effect.gen(function* () {
-    const writers =
-      yield* sql<WriterRow>`SELECT operation_id, owner_pid, owner_host, owner_generation, kind
-      FROM project_move_writers WHERE project_id = ${projectId} ORDER BY started_at, operation_id`;
+    const writers = yield* projectWriters(sql, projectId);
     for (const writer of writers) {
-      const gone = ownerIsGone(writer, yield* HostProcessPlatform);
+      const platform = yield* HostProcessPlatform;
+      const gone = ownerIsGone(writer, platform);
+      // A manager can close before its exit callback finishes persisting. A
+      // recorded PTY generation that demonstrably ended may be retired.
+      if (writer.kind === "terminal" && !gone && terminalProcessGone(writer, platform)) {
+        yield* sql`DELETE FROM project_move_writers WHERE operation_id = ${writer.operation_id}`;
+        continue;
+      }
       if (
         gone &&
         (writer.kind === "file" || writer.kind === "schedule" || writer.kind === "status")
@@ -326,19 +397,19 @@ export const releaseProjectMoveFence = Effect.fn("projectMoveFence.release")(fun
 // Filesystem and peer writes span more than one SQL statement. Reserve them
 // before any side effect. An interrupted process leaves a durable writer for
 // recovery rather than letting a second owner claim an uncertain operation.
-export function withProjectWriter<A, E, R>(
+export function acquireProjectWriter(
   sql: SqlClient.SqlClient,
-  projectId: string,
-  effect: Effect.Effect<A, E, R>,
-  kind: ProjectWriterKind = "peer",
+  projectId: string | null,
+  kind: ProjectWriterKind,
+  terminal?: { cwd: string; threadId: string; worktreePath: string | null },
 ) {
-  const acquire = sql.withTransaction(
+  return sql.withTransaction(
     Effect.gen(function* () {
       const [writer] = yield* sql<{ operation_id: string }>`
-        INSERT INTO project_move_writers (project_id, operation_id, owner_pid, owner_host, owner_generation, kind)
-        VALUES (${projectId}, lower(hex(randomblob(16))), ${process.pid}, ${NodeOS.hostname()}, ${currentGeneration(yield* HostProcessPlatform)}, ${kind}) RETURNING operation_id
+        INSERT INTO project_move_writers (project_id, operation_id, owner_pid, owner_host, owner_generation, kind, terminal_cwd, terminal_thread, terminal_worktree)
+        VALUES (${projectId}, lower(hex(randomblob(16))), ${process.pid}, ${NodeOS.hostname()}, ${currentGeneration(yield* HostProcessPlatform)}, ${kind}, ${terminal?.cwd ?? null}, ${terminal?.threadId ?? null}, ${terminal?.worktreePath ?? null}) RETURNING operation_id
       `;
-      const owner = yield* projectMoveFenceOwner(sql, projectId);
+      const owner = projectId === null ? null : yield* projectMoveFenceOwner(sql, projectId);
       const permit = yield* ProjectMovePermitRef;
       if (permit?.projectId === projectId ? owner !== permit.moveId : owner !== null) {
         return yield* new ProjectMoveFenceError({
@@ -348,8 +419,28 @@ export function withProjectWriter<A, E, R>(
       return writer!.operation_id;
     }),
   );
+}
+
+export const bindTerminalProcess = (
+  sql: SqlClient.SqlClient,
+  ids: readonly string[],
+  pid: number,
+) =>
+  Effect.gen(function* () {
+    if (!ids.length) return;
+    const generation = processGeneration(yield* HostProcessPlatform, pid);
+    yield* sql`UPDATE project_move_writers SET terminal_pid = ${pid}, terminal_generation = ${generation}
+      WHERE ${sql.in("operation_id", ids)} AND kind = 'terminal'`;
+  });
+
+export function withProjectWriter<A, E, R>(
+  sql: SqlClient.SqlClient,
+  projectId: string,
+  effect: Effect.Effect<A, E, R>,
+  kind: ProjectWriterKind = "peer",
+) {
   return Effect.acquireUseRelease(
-    acquire,
+    acquireProjectWriter(sql, projectId, kind),
     () => effect,
     (operationId) =>
       sql`DELETE FROM project_move_writers WHERE operation_id = ${operationId}`.pipe(Effect.orDie),

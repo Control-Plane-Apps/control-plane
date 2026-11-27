@@ -68,11 +68,10 @@ async function commonGitDirectory(target: string): Promise<string | null> {
   }
 }
 
-export function withWorkspaceWriter<A, E, R>(
+export function workspaceWriterProjects(
   sql: SqlClient.SqlClient,
   cwd: string,
   relativePath: string,
-  operation: Effect.Effect<A, E, R>,
   threadId?: string,
   kind: "file" | "terminal" | "git" = "file",
   recursive = false,
@@ -84,7 +83,7 @@ export function withWorkspaceWriter<A, E, R>(
         JOIN projection_projects p ON p.project_id = t.project_id
         WHERE p.deleted_at IS NULL AND t.deleted_at IS NULL AND t.worktree_path IS NOT NULL
     `;
-    if (!projects.length) return yield* operation;
+    if (!projects.length) return [];
     const threads =
       threadId === undefined
         ? []
@@ -94,7 +93,7 @@ export function withWorkspaceWriter<A, E, R>(
     const target = yield* Effect.tryPromise(() =>
       actualPath(NodePath.resolve(cwd, relativePath.trim())),
     );
-    let guarded: Effect.Effect<A, E | ProjectMoveFenceError | SqlError, R> = operation;
+
     const common =
       kind === "git" && projects.length
         ? yield* Effect.tryPromise(() => commonGitDirectory(target))
@@ -121,9 +120,32 @@ export function withWorkspaceWriter<A, E, R>(
           !NodePath.isAbsolute(relative))
       ) {
         guardedIds.add(project.project_id);
-        guarded = withProjectWriter(sql, project.project_id, guarded, kind);
       }
     }
+    return [...guardedIds];
+  });
+}
+
+export function withWorkspaceWriter<A, E, R>(
+  sql: SqlClient.SqlClient,
+  cwd: string,
+  relativePath: string,
+  operation: Effect.Effect<A, E, R>,
+  threadId?: string,
+  kind: "file" | "terminal" | "git" = "file",
+  recursive = false,
+) {
+  return Effect.gen(function* () {
+    const projects = yield* workspaceWriterProjects(
+      sql,
+      cwd,
+      relativePath,
+      threadId,
+      kind,
+      recursive,
+    );
+    let guarded: Effect.Effect<A, E | ProjectMoveFenceError | SqlError, R> = operation;
+    for (const id of projects) guarded = withProjectWriter(sql, id, guarded, kind);
     return yield* guarded;
   });
 }

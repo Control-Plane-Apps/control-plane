@@ -53,6 +53,7 @@ import {
   ScheduleUpdateInput,
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
+import { RemoteAgentStore } from "../agentMachines/RemoteAgentStore.ts";
 import { checkWorkerRoute, routePlacedPeer } from "./projectMoveAgentRoutes.ts";
 import { makePlacedAgentPeerHost } from "./placedAgentPeers.ts";
 import { Reach } from "./Reach.ts";
@@ -125,6 +126,7 @@ export const make = Effect.gen(function* () {
   const move = yield* ProjectCoordinatorMove;
   const reach = yield* Reach;
   const settings = yield* ServerSettingsService;
+  const remoteStore = Option.getOrUndefined(yield* Effect.serviceOption(RemoteAgentStore));
   const placedPeers = yield* makePlacedAgentPeerHost;
   const scheduleCore = yield* makeScheduleCore;
 
@@ -432,7 +434,7 @@ export const make = Effect.gen(function* () {
         return checkWorkerRoute(reach, snapshots, request);
       case "agent.peers":
       case "agent.peerRelay":
-        return routePlacedPeer(sql, reach, placedPeers, request);
+        return routePlacedPeer(sql, reach, placedPeers, request, remoteStore?.listForMove);
       case "describe":
         return describe;
       case "authority.poke":

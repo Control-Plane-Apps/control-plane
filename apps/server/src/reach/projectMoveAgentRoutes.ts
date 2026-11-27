@@ -123,6 +123,15 @@ export const rememberWorkerRoutes = (
     { discard: true },
   );
 
+/** A worker created on a former target still sends callbacks here after rollback.
+ * Its original thread ID cannot be reassigned to another local placement. */
+export const hasReturnedWorkerRoute = (sql: SqlClient.SqlClient, threadId: string) =>
+  sql`SELECT 1 FROM project_move_agent_relays a JOIN project_move_receipts r
+      ON r.project_id=a.home_project_id AND r.move_id=a.move_id
+      WHERE a.thread_id=${threadId} AND r.role='target' AND r.phase='rolled-back' LIMIT 1`.pipe(
+    Effect.map((rows) => rows.length > 0),
+  );
+
 const PeerScope = Schema.Struct({ threadId: Schema.String, projectId: Schema.String });
 const decodeScope = Schema.decodeUnknownEffect(PeerScope);
 const Forward = Schema.Struct({
@@ -148,6 +157,7 @@ export const routePlacedPeer = <A, E>(
     relay?: { target: string; origin: string; project: string },
   ) => Effect.Effect<A, E>,
   request: Request,
+  localAssociations: Effect.Effect<readonly RemoteAgentRecord[], Error> | undefined,
 ) =>
   Effect.gen(function* () {
     if (request.op === "agent.peerRelay") {
@@ -187,13 +197,22 @@ export const routePlacedPeer = <A, E>(
       yield* sql<RelayRow>`SELECT a.home_project_id,r.peer_id,r.peer_project_id,r.role,r.phase,r.move_id
       FROM project_move_agent_relays a JOIN project_move_receipts r ON r.project_id=a.home_project_id AND r.move_id=a.move_id
       WHERE a.worker_id=${request.caller.environmentId} AND a.worker_project_id=${scope.projectId} AND a.thread_id=${scope.threadId}
-      AND r.rowid=(SELECT MAX(current.rowid) FROM project_move_receipts current WHERE current.project_id=r.project_id)
-      AND ((r.role='source' AND r.phase='active') OR (r.role='target' AND r.phase='rolled-back'))
+      AND ((r.role='source' AND r.phase='active' AND r.rowid=(
+          SELECT MAX(current.rowid) FROM project_move_receipts current WHERE current.project_id=r.project_id))
+        OR (r.role='target' AND r.phase='rolled-back'))
       ORDER BY r.rowid DESC LIMIT 2`;
     if (!rows.length) return yield* local(request);
     if (rows.length !== 1)
       return yield* opFailed("The worker's former home has ambiguous placement receipts.");
     const row = rows[0]!;
+    // A terminal return route belongs to this exact worker. A later occupant of
+    // the checkout has its own coordinator and cannot inherit its authority.
+    if (
+      row.role === "target" &&
+      (!localAssociations ||
+        (yield* localAssociations).some((record) => record.threadId === scope.threadId))
+    )
+      return yield* opFailed("A local association conflicts with the worker's return route.");
     if (
       row.role === "source" &&
       (yield* projectMoveFenceOwner(sql, row.home_project_id)) !== row.move_id

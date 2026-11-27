@@ -12,10 +12,15 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE TABLE project_move_writers (
       operation_id TEXT PRIMARY KEY NOT NULL,
-      project_id TEXT NOT NULL,
+      project_id TEXT,
       owner_pid INTEGER NOT NULL,
       owner_host TEXT NOT NULL,
       owner_generation TEXT,
+      terminal_cwd TEXT,
+      terminal_worktree TEXT,
+      terminal_thread TEXT,
+      terminal_pid INTEGER,
+      terminal_generation TEXT,
       kind TEXT NOT NULL,
       started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
