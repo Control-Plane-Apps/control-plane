@@ -85,6 +85,19 @@ const sameSelection = Schema.toEquivalence(Schema.UndefinedOr(CheckoutSelection)
 const requirementsJson = Schema.fromJsonString(MoveRequirements);
 const encodeRequirements = Schema.encodeEffect(requirementsJson);
 const decodeRequirements = Schema.decodeUnknownEffect(requirementsJson);
+const localBackupJson = Schema.fromJsonString(
+  Schema.Struct({
+    ...ProjectMoveBundle.fields,
+    localFileModes: Schema.optionalKey(
+      Schema.Record(
+        Schema.String,
+        Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 0o777 })),
+      ),
+    ),
+  }),
+);
+const encodeLocalBackup = Schema.encodeEffect(localBackupJson);
+const decodeLocalBackup = Schema.decodeUnknownEffect(localBackupJson);
 const encodeBackup = Schema.encodeEffect(Schema.fromJsonString(ProjectMoveBundle));
 const encodeApproval = Schema.encodeEffect(
   Schema.fromJsonString(
@@ -440,7 +453,10 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
               requirements: yield* encodeRequirements(input.requirements),
               phase: "preparing",
               digest: input.digest,
-              backup: yield* encodeBackup(backup),
+              backup: yield* encodeLocalBackup({
+                ...backup,
+                localFileModes: yield* data.fileModes(projectId, backup),
+              }),
             };
             yield* sql.withTransaction(
               Effect.gen(function* () {
@@ -607,14 +623,14 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
           history.returned_digest !== (input.returnedDigest ?? null)
         )
           return yield* refusal("The source has not verified this rollback checksum.");
-        const backup = yield* decodeBackup(r.backup);
+        const { localFileModes, ...backup } = yield* decodeLocalBackup(r.backup);
         const cleanupDigest =
           r.phase === "restoring" || r.phase === "returning"
             ? r.digest
             : data.digest(yield* data.capture(projectId));
         if (!cleanupDigest) return yield* refusal("Missing rollback checksum.");
         yield* phase(r, "restoring", cleanupDigest);
-        yield* data.install(projectId, moveId, backup, cleanupDigest);
+        yield* data.recover(projectId, moveId, backup, localFileModes, cleanupDigest);
         if (data.digest(yield* data.capture(projectId)) !== data.digest(backup))
           return yield* refusal("Destination recovery copy differs.");
         yield* sql.withTransaction(
@@ -803,7 +819,10 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                     role: "source",
                     phase: "fenced",
                     digest: data.digest(backup),
-                    backup: yield* encodeBackup(backup),
+                    backup: yield* encodeLocalBackup({
+                      ...backup,
+                      localFileModes: yield* data.fileModes(id, backup),
+                    }),
                     target_digest: targetDigest,
                     requirements: yield* encodeRequirements(req),
                   };
@@ -909,7 +928,10 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                     return yield* refusal("The rollback snapshot checksum differs.");
                   yield* confirmCheckout(id, r.move_id, selection);
                   yield* checkTarget(id, back.requirements, "source", selection);
-                  yield* data.install(id, r.move_id, back.bundle);
+                  const modes = r.backup
+                    ? (yield* decodeLocalBackup(r.backup)).localFileModes
+                    : undefined;
+                  yield* data.recover(id, r.move_id, back.bundle, modes);
                   if (data.digest(yield* data.capture(id)) !== back.digest)
                     return yield* refusal("Source recovery verification failed.");
                 } else if (!["aborting", "rolled-back"].includes(back.phase))

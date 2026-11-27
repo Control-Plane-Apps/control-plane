@@ -59,7 +59,7 @@ const canonicalJson = (value: unknown) =>
   );
 const hash = (value: unknown) => sha256Hex(Buffer.from(canonicalJson(value)));
 
-async function readFile(file: string): Promise<Buffer | null> {
+async function readFileRecord(file: string) {
   const handle = await NodeFSP.open(
     file,
     NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
@@ -74,22 +74,41 @@ async function readFile(file: string): Promise<Buffer | null> {
       throw fail("Unsupported or oversized Project move file.");
     const content = await handle.readFile();
     if (content.length > LIMIT) throw fail("Project move file exceeds the transfer limit.");
-    return content;
+    if ((await handle.stat()).ctimeMs !== stat.ctimeMs)
+      throw fail("A Project file changed during verification.");
+    return { bytes: content, mode: stat.mode & 0o777 };
   } finally {
     await handle.close();
   }
 }
 
-async function replaceFile(file: string, bytes: Buffer | null) {
-  const before = await readFile(file);
-  if (before === null ? bytes === null : bytes !== null && bytes.equals(before)) return;
+async function readFile(file: string): Promise<Buffer | null> {
+  return (await readFileRecord(file))?.bytes ?? null;
+}
+
+async function replaceFile(file: string, bytes: Buffer | null, restoreMode?: number) {
+  const before = await readFileRecord(file);
+  if (
+    before === null
+      ? bytes === null
+      : bytes !== null &&
+        bytes.equals(before.bytes) &&
+        (restoreMode === undefined || restoreMode === before.mode)
+  )
+    return;
   if (bytes === null) {
     await NodeFSP.unlink(file);
     return;
   }
   const temp = NodePath.join(NodePath.dirname(file), `.cp-move-${NodeCrypto.randomUUID()}`);
   try {
-    await NodeFSP.writeFile(temp, bytes, { flag: "wx", mode: 0o600 });
+    const handle = await NodeFSP.open(temp, "wx", 0o600);
+    try {
+      await handle.writeFile(bytes);
+      if (restoreMode !== undefined) await handle.chmod(restoreMode);
+    } finally {
+      await handle.close();
+    }
     await NodeFSP.rename(temp, file);
   } finally {
     await NodeFSP.rm(temp, { force: true });
@@ -421,6 +440,30 @@ export const makeProjectMoveData = Effect.gen(function* () {
     return bundle;
   });
 
+  // Permissions belong to the local recovery journal. Never apply modes
+  // supplied by the peer when staging its coordinator files.
+  const fileModes = (id: string, bundle: ProjectMoveBundle) =>
+    Effect.gen(function* () {
+      const project = yield* projectOf(id);
+      return yield* io(async () => {
+        const files = {
+          ...bundle.roles,
+          ...(bundle.memory === null ? {} : { "MEMORY.md": bundle.memory }),
+        };
+        const result: Record<string, number> = {};
+        for (const [name, text] of Object.entries(files)) {
+          const file =
+            name === "MEMORY.md"
+              ? NodePath.join(project.workspaceRoot, name)
+              : rolePath(project.workspaceRoot, name);
+          const entry = await readFileRecord(file);
+          if (!entry || entry.bytes.toString("base64") !== text)
+            throw fail("The Project files changed while saving their recovery modes.");
+          result[name] = entry.mode;
+        }
+        return result;
+      });
+    });
   const install = Effect.fn("projectMove.install")(function* (
     id: string,
     moveId: string,
@@ -428,6 +471,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
     cleanupDigest?: string,
     retainAttachmentProof = false,
     verifyOnly = false,
+    restoreModes?: Readonly<Record<string, number>>,
   ) {
     if ((yield* projectMoveFenceOwner(sql, id)) !== moveId)
       return yield* Effect.fail(fail("The Project move fence is missing."));
@@ -651,17 +695,26 @@ export const makeProjectMoveData = Effect.gen(function* () {
         await replaceFile(
           target,
           bundle.roles[key] === undefined ? null : Buffer.from(bundle.roles[key], "base64"),
+          restoreModes?.[key],
         );
       }
       await replaceFile(
         NodePath.join(project.workspaceRoot, "MEMORY.md"),
         bundle.memory === null ? null : Buffer.from(bundle.memory, "base64"),
+        restoreModes?.["MEMORY.md"],
       );
     });
     yield* remoteStore.replaceForMove(id, moveId, agentRecords, false);
     const actual = yield* capture(id);
     if (projectMoveDigest(actual) !== projectMoveDigest(bundle))
       return yield* Effect.fail(fail("The restored Project failed readback verification."));
+    if (restoreModes) {
+      const actualModes = yield* fileModes(id, bundle);
+      for (const [name, mode] of Object.entries(actualModes)) {
+        if (restoreModes[name] !== undefined && restoreModes[name] !== mode)
+          return yield* fail("The restored Project file permissions failed verification.");
+      }
+    }
     if (!retainAttachmentProof) {
       yield* io(() =>
         finishAttachments(stagingDirectory, retainedAttachments, cleanupDigest !== undefined),
@@ -674,6 +727,14 @@ export const makeProjectMoveData = Effect.gen(function* () {
     capture,
     install,
     verifyReturn,
+    fileModes,
+    recover: (
+      id: string,
+      moveId: string,
+      bundle: ProjectMoveBundle,
+      restoreModes: Readonly<Record<string, number>> | undefined,
+      cleanupDigest?: string,
+    ) => install(id, moveId, bundle, cleanupDigest, false, false, restoreModes),
     releaseReturnIdentities: (id: string, moveId: string) =>
       releaseReturnIdentities(sql, id, moveId),
     digest: projectMoveDigest,
