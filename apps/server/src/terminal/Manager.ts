@@ -2507,6 +2507,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           ".",
           operation,
           input.threadId,
+          "terminal",
         ).pipe(
           Effect.mapError((error) =>
             error._tag === "SqlError" ||

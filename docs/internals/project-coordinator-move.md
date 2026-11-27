@@ -15,4 +15,40 @@ Stage B requires a two-environment rehearsal covering a crash at each ownership 
 
 Open the source Project settings and choose a linked environment under **Coordinator runs on**. The destination needs a registered, empty workspace for the same repository. Review the checkout and access checks before selecting **Move coordinator**. After an interrupted request, reopen those settings and refresh the receipt. Retry continues the recorded move. Rollback fences the destination and verifies the returned state before enabling the source.
 
-The move keeps each machine’s original Project ID and checkout path. Coordinator and agent thread IDs remain stable. The source retains its history and a durable recovery copy while its write fence is held. A different worktree or an agent whose responses still route through a third environment requires separate verified routing. The move stops during inventory in those cases.
+The move keeps each machine’s original Project ID and checkout path. Coordinator and agent thread IDs remain stable. The source retains its history and a durable recovery copy while its write fence is held. A live thread using a separate worktree must be detached before a move. Retained history can still name that worktree. Rollback checks the returning snapshot and checkout while the destination is still active, then checks them again under its fence. Root MEMORY.md, root AGENTS.md and supported immediate role directories return with the Project. An unrelated file difference must be reconciled while the destination is still active.
+
+### Agents on linked machines
+
+An idle placed agent keeps its thread ID, execution Project and checkout on its worker machine. Both coordinators need reciprocal links to that worker. Preflight checks the worker's original placement prompt, execution Project and idle state over those links. Its peer messages continue to reach its original home, which checks the active move receipt and forwards them to the current coordinator. Keep the former home reachable while these agents use it. New agents created at the destination use that machine as their original home. Rollback preserves their return path through it.
+
+Finish pending agent turns, deliveries, holds and handoffs before moving. A worker running inside the proposed destination Project makes that Project ineligible as an empty destination. A Project hosting another coordinator's agent or an agent whose return path already requires a second forwarding hop also needs its placement reconciled before another move.
+
+## What readiness establishes
+
+Preflight checks the registered repository identity, branch, HEAD, index and workspace fingerprint. Schedules require the same host time zone. The destination refreshes the selected provider instance, checks its installed, enabled and authenticated status, and looks up the coordinator model in the returned catalog. This check exercises provider discovery. A successful model turn requires separate evidence.
+
+The move probes integrations required by either Project's placement settings, using destination credentials. An integration omitted from both settings receives no probe.
+
+| Integration  | Read performed on the destination                                                                                                                        |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GitHub       | Read repository metadata and compare the returned owner and repository to the checkout identity.                                                         |
+| Vercel       | Inspect the Project linked by the checkout's Vercel organization and Project IDs.                                                                        |
+| EAS          | Read the configured Expo app by ID and compare its returned ID. The ID comes from app.json or the destination environment.                               |
+| Sentry       | List releases in the organization and Project named by the destination environment. An empty successful list passes.                                     |
+| PostHog      | Read the Project named by the destination configuration and compare the returned numeric ID.                                                             |
+| Read replica | Connect using the configured read-only URL and require PostgreSQL to return `on` for `SHOW transaction_read_only`.                                       |
+| MCP          | Compare the enabled workspace server definitions with the machine definitions, then verify each has a live Codex connection and a nonempty tool catalog. |
+
+These reads establish access to the resources selected on the destination. For identifiers supplied by its environment, an operator must independently match them to the intended Project. In particular, transaction read-only mode does not identify a database, and an MCP catalog does not exercise an individual tool. The synthetic rehearsal supplies no evidence about mini credentials or Hometrace resource identity. A Hometrace move requires mini readiness for the intended resources and Nick's explicit go.
+
+### Interrupted writer recovery
+
+A paused move identifies the unfinished operation, kind, host and server PID. Retry after a live owner completes. For a terminated owner on this host, Retry automatically reclaims in-process file, schedule and Status writes. Normal busy checks, fresh inventory and verification still run. Linux compares the boot ID and process start tick. macOS compares the process start time. A reused PID with a different generation proves the original process exited. When the generation is unavailable, retry requires the PID to disappear. A host rename requires restoring the recorded hostname on the original machine before recovery. An ambiguous identity leaves the writer in place.
+
+Git commands, terminal launches, provider calls and peer deliveries can continue outside the server. Inspect the original checkout and its child processes for Git or terminal work. For provider or peer writes, check the provider session or the receiving environment and match the outcome to its durable turn or delivery receipt. If the outcome or quiescence is uncertain, leave the writer paused. Once the owner has exited and an operator has verified that the external work has finished, run the following on the original host with the exact Project and operation IDs from the pause reason.
+
+```sh
+node apps/server/scripts/reconcile-project-writer.ts "$DATABASE" "$PROJECT_ID" "$OPERATION_ID" "$VERIFIED_OUTCOME_AND_EVIDENCE_REFERENCE"
+```
+
+The command records the evidence and removes only that abandoned writer in one transaction. Repeating the same command returns the existing receipt. Retry the move to recheck its fence, activity and inventories.

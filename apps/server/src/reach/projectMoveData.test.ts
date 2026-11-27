@@ -3,6 +3,8 @@ import { CommandId, MessageId, ProjectId, ProviderInstanceId, ThreadId } from "@
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { OrchestrationProjectionPipeline } from "../orchestration/Services/ProjectionPipeline.ts";
 
 import { AgentLineage } from "../orchestration/agentLineage.ts";
 import { RemoteAgentStoreLive } from "../agentMachines/RemoteAgentStore.ts";
@@ -177,10 +179,19 @@ it.effect(
         ).toBe("proof");
         yield* Effect.provide(releaseProjectMoveFence(destination, moveId), target);
         const response = append("new-message", "Destination wrote after activation");
+        const responseFile = {
+          ...attachment,
+          id: "synthetic-manager-785d58f4-3fa3-4f41-8e25-6f383aade104-txt",
+        };
+        yield* dst.fs.writeFileString(
+          dst.config.attachmentsDir + "/" + responseFile.id + ".txt",
+          "reply",
+        );
         yield* dst.fixture.dispatch({
           ...response,
           message: {
             ...response.message,
+            attachments: [responseFile],
             source: { kind: "agent", threadId: agent, threadTitle: "Worker" },
           },
         });
@@ -206,7 +217,18 @@ it.effect(
         yield* dst.fs.writeFileString(dst.root + "/MEMORY.md", "Destination memory\n");
         yield* Effect.provide(acquireProjectMoveFence(destination, moveId), target);
         const back = yield* dst.data.capture(destination);
+        const receivedPath = src.config.attachmentsDir + "/" + responseFile.id + ".txt";
+        yield* src.fs.writeFileString(receivedPath, "wrong");
+        expect((yield* Effect.result(src.data.verifyReturn(original, moveId, back)))._tag).toBe(
+          "Failure",
+        );
+        expect(yield* src.fs.readFileString(receivedPath)).toBe("wrong");
+        expect(src.data.digest(yield* src.data.capture(original))).toBe(src.data.digest(bundle));
+        yield* src.fs.remove(receivedPath);
+        yield* src.data.verifyReturn(original, moveId, back);
+        expect(yield* src.fs.exists(receivedPath)).toBe(false);
         yield* src.data.install(original, moveId, back);
+        expect(yield* src.fs.readFileString(receivedPath)).toBe("reply");
         expect(src.data.digest(yield* src.data.capture(original))).toBe(dst.data.digest(back));
         expect(yield* src.fs.readFileString(src.root + "/MEMORY.md")).toBe("Destination memory\n");
         yield* dst.data.install(destination, moveId, backup, dst.data.digest(back));
@@ -214,8 +236,23 @@ it.effect(
         expect(dst.data.digest(yield* dst.data.capture(destination))).toBe(dst.data.digest(backup));
         yield* Effect.provide(releaseProjectMoveFence(destination, moveId), target);
         yield* Effect.provide(acquireProjectMoveFence(destination, "second-move"), target);
-        yield* dst.data.install(destination, "second-move", back);
+        // This matching file belongs to the destination independently of the
+        // second move. Neither staging nor rollback may claim or remove it.
+        yield* dst.fs.writeFileString(targetFile, "proof");
+        yield* dst.data.install(destination, "second-move", back, undefined, true);
         expect(dst.data.digest(yield* dst.data.capture(destination))).toBe(dst.data.digest(back));
+        yield* dst.data.install(destination, "second-move", backup, dst.data.digest(back));
+        expect(yield* dst.fs.readFileString(targetFile)).toBe("proof");
+        yield* Effect.provide(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`DELETE FROM projection_state WHERE projector='projection.attachment-cleanup'`;
+            const pipeline = yield* OrchestrationProjectionPipeline;
+            yield* pipeline.bootstrap;
+          }),
+          target,
+        );
+        expect(yield* dst.fs.readFileString(targetFile)).toBe("proof");
       }),
     ),
 );

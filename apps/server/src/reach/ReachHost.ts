@@ -53,6 +53,7 @@ import {
   ScheduleUpdateInput,
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
+import { checkWorkerRoute, routePlacedPeer } from "./projectMoveAgentRoutes.ts";
 import { makePlacedAgentPeerHost } from "./placedAgentPeers.ts";
 import { Reach } from "./Reach.ts";
 import { describeTaskState, pokeTaskAuthority } from "./taskAuthority.ts";
@@ -427,8 +428,11 @@ export const make = Effect.gen(function* () {
         return decode(ProjectMoveStep)(request.input).pipe(
           Effect.flatMap((input) => move.step(request.caller.environmentId, input)),
         );
+      case "agent.routeCheck":
+        return checkWorkerRoute(reach, snapshots, request);
       case "agent.peers":
-        return placedPeers(request);
+      case "agent.peerRelay":
+        return routePlacedPeer(sql, reach, placedPeers, request);
       case "describe":
         return describe;
       case "authority.poke":

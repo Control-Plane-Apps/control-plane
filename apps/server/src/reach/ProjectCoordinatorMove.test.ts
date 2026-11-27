@@ -3,21 +3,29 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
   ThreadId,
+  TurnId,
   ProviderInstanceId,
   ServerProvider,
   type OrchestrationCommand,
   type OrchestrationShellSnapshot,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { makeAgentPushQueries } from "../orchestration/agentPushes.ts";
+import { agentDeliveryStartId } from "../orchestration/agentProtocol.ts";
 import { it, expect } from "vite-plus/test";
 import { MemoryRemoteAgentStore } from "../agentMachines/testFixtures.ts";
 import { AgentMachines } from "../agentMachines/AgentMachines.ts";
@@ -34,6 +42,8 @@ import { OrchestrationEventStoreLive } from "../persistence/Layers/Orchestration
 import { layerConfig } from "../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
+import * as ScheduleRunner from "../schedules/ScheduleRunner.ts";
+import { HostTimeZoneSource } from "../schedules/hostZone.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { ProjectCoordinatorMove, ProjectCoordinatorMoveLive } from "./ProjectCoordinatorMove.ts";
 import { Reach, ReachError, unlinkedReach } from "./Reach.ts";
@@ -63,6 +73,7 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     targetId = ProjectId.make("target-project"),
     threadId = ThreadId.make("synthetic-coordinator");
   let send: (input: ProjectMoveStep) => Promise<unknown>;
+  let beforeReverse: (() => Promise<unknown>) | undefined;
   let shell: () => Promise<OrchestrationShellSnapshot>;
   let drop: ProjectMoveStep["action"] | null = null;
   const peer = { id: "destination", label: "Destination" };
@@ -81,7 +92,11 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     );
     // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- Each machine must dispose and reopen independent services over its persistent database.
     return ManagedRuntime.make(
-      ProjectCoordinatorMoveLive.pipe(
+      Layer.merge(ProjectCoordinatorMoveLive, ScheduleRunner.layer).pipe(
+        Layer.tap((services) => Context.get(services, ScheduleRunner.ScheduleRunner).start()),
+        Layer.provide(
+          Layer.succeed(HostTimeZoneSource, () => ({ zone: "UTC", processZone: "UTC" })),
+        ),
         Layer.provideMerge(engine),
         Layer.provide(makeProviderRegistryLayer([provider])),
         Layer.provide(MemoryRemoteAgentStore),
@@ -94,7 +109,7 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
             call: (machine, _op, input, _caller, result) =>
               Effect.gen(function* () {
                 const step = yield* decodeStep(input);
-                const reply = yield* Effect.tryPromise(() => send(step));
+                const reply = yield* Effect.tryPromise({ try: () => send(step), catch: String });
                 if (step.action === drop) {
                   drop = null;
                   return yield* Effect.fail("Lost acknowledgement.");
@@ -136,8 +151,14 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
   };
   let source = boot("origin", sourceRoot),
     dest = boot("destination", targetRoot);
-  send = (input) =>
-    dest.runPromise(Effect.flatMap(ProjectCoordinatorMove, (s) => s.step("origin", input)));
+  send = async (input) => {
+    if (input.action === "reverse" && beforeReverse) {
+      const mutate = beforeReverse;
+      beforeReverse = undefined;
+      await mutate();
+    }
+    return dest.runPromise(Effect.flatMap(ProjectCoordinatorMove, (s) => s.step("origin", input)));
+  };
   shell = () =>
     dest.runPromise(Effect.flatMap(ProjectionSnapshotQuery, (q) => q.getShellSnapshot()));
   const command = (c: OrchestrationCommand) =>
@@ -245,17 +266,169 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     await expect(request("retry")).rejects.toThrow("Lost acknowledgement");
     await restart();
     expect((await request("retry")).coordinatorMove?.phase).toBe("active");
-    const write = (id: ProjectId) =>
+    // The runner receives the same OS fire on both machines, including after both restart.
+    const tomorrow = DateTime.nowUnsafe().pipe(
+      DateTime.startOf("day"),
+      DateTime.add({ days: 1, hours: 8 }),
+    );
+    const nextSlot = DateTime.toDateUtc(tomorrow);
+    const slot = nextSlot.toISOString();
+    const fire = (runtime: typeof source, tick = nextSlot) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const runner = yield* ScheduleRunner.ScheduleRunner;
+          yield* runner.drain;
+          yield* runner.requestFire(tick);
+          yield* runner.drain;
+        }),
+      );
+    const deliveries = (runtime: typeof source, tick = nextSlot) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const query = yield* ProjectionSnapshotQuery;
+          const detail = Option.getOrNull(yield* query.getThreadDetailById(threadId));
+          const messageId = `cp-schedule:${sourceId}:sample:${tick.toISOString()}`;
+          return (
+            detail?.messages
+              .filter((message) => message.id === messageId)
+              .map((message) => message.text) ?? []
+          );
+        }),
+      );
+    await fire(source);
+    await fire(dest);
+    await fire(dest);
+    expect(await deliveries(source)).toEqual([]);
+    expect(await deliveries(dest)).toEqual(["Check"]);
+    expect(
+      (await shell()).projects.find((p) => p.id === targetId)?.assistant?.scheduleRuns?.sample,
+    ).toMatchObject({ slot, trigger: "cron", outcome: "sent" });
+    const held = () =>
+      dest.runPromise(
+        Effect.flatMap(SqlClient.SqlClient, (sql) =>
+          makeAgentPushQueries(sql).listDeliveries(targetId),
+        ),
+      );
+    const pending = await held();
+    expect(pending).toHaveLength(1);
+    const delivery = pending[0]!;
+    expect(delivery.messageId).toBe(`cp-schedule:${sourceId}:sample:${slot}`);
+    await dest.runPromise(
       command({
-        type: "project.schedule.record",
-        projectId: id,
+        type: "thread.turn.start",
+        commandId: CommandId.make(agentDeliveryStartId(delivery.messageId)),
+        threadId: delivery.threadId,
+        runtimeMode: delivery.runtimeMode,
+        interactionMode: delivery.interactionMode,
+        createdAt: slot,
+        message: {
+          messageId: delivery.messageId,
+          text: delivery.text,
+          role: "user",
+          attachments: [],
+          ...(delivery.source ? { source: delivery.source } : {}),
+        },
+      }),
+    );
+    // The synthetic provider completes the actual scheduled turn before the
+    // coordinator is eligible for the reverse fence.
+    for (const status of ["running", "ready"] as const) {
+      await dest.runPromise(
+        command({
+          type: "thread.session.set",
+          commandId: cid(),
+          threadId,
+          createdAt: slot,
+          session: {
+            threadId,
+            status,
+            providerName: "codex",
+            providerInstanceId: model.instanceId,
+            runtimeMode: "approval-required",
+            activeTurnId: status === "running" ? TurnId.make("synthetic-cron-turn") : null,
+            lastError: null,
+            updatedAt: slot,
+          },
+        }),
+      );
+    }
+    expect(await held()).toEqual([]);
+    const worker = ThreadId.make("synthetic-worktree-agent");
+    await dest.runPromise(
+      command({
+        type: "thread.create",
         commandId: cid(),
-        scheduleId: "sample",
+        threadId: worker,
+        projectId: targetId,
+        modelSelection: model,
+        title: "Worktree agent",
+        interactionMode: "default",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
         createdAt: at,
-        run: { at, slot: at, trigger: "cron", outcome: "sent" },
-      });
-    await expect(source.runPromise(write(sourceId))).rejects.toThrow();
-    await dest.runPromise(write(targetId));
+      }),
+    );
+    const setWorktree = (worktreePath: string | null) =>
+      dest.runPromise(
+        command({
+          type: "thread.meta.update",
+          commandId: cid(),
+          threadId: worker,
+          worktreePath,
+        }),
+      );
+    await setWorktree(NodePath.join(root, "worktree"));
+    await expect(request("rollback")).rejects.toThrow("worktree");
+    expect((await request("status")).coordinatorMove?.phase).toBe("active");
+    await setWorktree(null);
+    // Transfer-owned files may change. Other repository changes require repair
+    // while the destination coordinator is still able to run.
+    const drift = NodePath.join(targetRoot, "unprepared.txt");
+    await NodeFSP.writeFile(drift, "Destination checkout changed");
+    await expect(request("rollback")).rejects.toThrow("workspace contents differ");
+    expect((await request("status")).coordinatorMove?.phase).toBe("active");
+    await NodeFSP.unlink(drift);
+    // A writer can win the interval between proposal and fence acquisition.
+    // The destination releases the tentative fence if recapture fails.
+    beforeReverse = () => setWorktree(NodePath.join(root, "new-worktree"));
+    await expect(request("rollback")).rejects.toThrow("worktree");
+    expect((await request("status")).coordinatorMove).toMatchObject({
+      phase: "active",
+      ownerId: "destination",
+    });
+    await setWorktree(null);
+    const db = (await dest.runPromise(Effect.service(ServerConfig))).dbPath;
+    let crashed = false;
+    beforeReverse = async () => {
+      const child = NodeChildProcess.spawnSync(
+        process.execPath,
+        [
+          "--experimental-transform-types",
+          NodeURL.fileURLToPath(new URL("./projectMoveCrash.fixture.ts", import.meta.url)),
+          db,
+          targetId,
+          "synthetic-move",
+        ],
+        { timeout: 15_000, encoding: "utf8" },
+      );
+      if (child.signal !== "SIGKILL") throw new Error("Crash fixture failed: " + child.stderr);
+      crashed = true;
+      throw new Error("Destination process exited");
+    };
+    await expect(request("rollback")).rejects.toThrow("Destination process exited");
+    expect(crashed).toBe(true);
+    await restart();
+    // Recovery releases the tentative fence before returning a new proposal.
+    // A failed return preflight leaves this destination writable.
+    await NodeFSP.writeFile(drift, "Changed after hard exit");
+    await expect(request("retry")).rejects.toThrow("workspace contents differ");
+    expect((await request("status")).coordinatorMove).toMatchObject({
+      phase: "active",
+      ownerId: "destination",
+    });
+    await NodeFSP.unlink(drift);
+    await setWorktree(null);
     await NodeFSP.writeFile(NodePath.join(targetRoot, "MEMORY.md"), "Destination memory");
     drop = "reverse";
     await expect(request("rollback")).rejects.toThrow("Lost acknowledgement");
@@ -272,7 +445,17 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
     );
     expect(
       restored.projects.find((p) => p.id === sourceId)?.assistant?.scheduleRuns?.sample?.slot,
-    ).toBe(at);
+    ).toBe(slot);
+    await fire(dest);
+    await fire(source);
+    expect(await deliveries(source)).toEqual(["Check"]);
+    expect(await deliveries(dest)).toEqual([]);
+    const followingSlot = DateTime.toDateUtc(DateTime.add(tomorrow, { days: 1 }));
+    await fire(dest, followingSlot);
+    await fire(source, followingSlot);
+    await fire(source, followingSlot);
+    expect(await deliveries(source, followingSlot)).toEqual(["Check"]);
+    expect(await deliveries(dest, followingSlot)).toEqual([]);
     expect((await shell()).projects.find((p) => p.id === targetId)?.assistant).toBeFalsy();
   } finally {
     await source.dispose();

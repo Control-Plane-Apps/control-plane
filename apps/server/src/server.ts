@@ -411,11 +411,13 @@ const GitLayerLive = Layer.empty.pipe(
 );
 
 const GitWorkflowLayerLive = GitWorkflowService.layer.pipe(
+  Layer.provide(PersistenceLayerLive),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
 );
 
 const SourceControlRepositoryServiceLayerLive = SourceControlRepositoryService.layer.pipe(
+  Layer.provide(PersistenceLayerLive),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
 );

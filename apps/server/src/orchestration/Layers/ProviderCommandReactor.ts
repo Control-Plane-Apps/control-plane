@@ -1744,6 +1744,7 @@ const make = Effect.gen(function* () {
             event.payload.messageId,
           );
         }),
+        "provider",
       ).pipe(
         Effect.andThen(restoreCompaction(event.payload.threadId, true)),
         Effect.andThen(clearCompacting),
@@ -1823,6 +1824,7 @@ const make = Effect.gen(function* () {
       sql,
       thread.projectId,
       providerService.sendTurn(sendTurnRequest.value.request),
+      "provider",
     ).pipe(
       Effect.tap(() =>
         sendTurnRequest.value.handoffDelivered
@@ -2187,7 +2189,8 @@ const make = Effect.gen(function* () {
       const [thread] = yield* sql<{ project_id: string }>`
         SELECT project_id FROM projection_threads WHERE thread_id = ${event.payload.threadId}
       `;
-      if (thread) yield* withProjectWriter(sql, thread.project_id, processDomainEvent(event));
+      if (thread)
+        yield* withProjectWriter(sql, thread.project_id, processDomainEvent(event), "provider");
     }).pipe(
       // A replay that returned before forking its send still holds its entry; settle it so
       // the compaction queue moves on. Forked sends drop the entry first and settle it themselves.

@@ -1,6 +1,8 @@
 import { AgentIntegration, ModelSelection, ProjectMoveBundle } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { WorkerRoute } from "./projectMoveAgentRoutes.ts";
+
 export const CheckoutProof = Schema.Struct({
   repository: Schema.String,
   branch: Schema.String,
@@ -9,6 +11,7 @@ export const CheckoutProof = Schema.Struct({
 });
 export const MoveRequirements = Schema.Struct({
   checkout: CheckoutProof,
+  workers: Schema.Array(WorkerRoute),
   scheduleZone: Schema.NullOr(Schema.String),
   model: ModelSelection,
   integrations: Schema.Array(AgentIntegration),
@@ -33,7 +36,13 @@ export const ProjectMoveStep = Schema.Union([
     bundle: ProjectMoveBundle,
   }),
   Schema.Struct({ ...binding, action: Schema.Literal("activate"), digest: Schema.String }),
-  Schema.Struct({ ...binding, action: Schema.Literal("reverse") }),
+  Schema.Struct({ ...binding, action: Schema.Literal("reversePreflight") }),
+  Schema.Struct({
+    ...binding,
+    action: Schema.Literal("reverse"),
+    digest: Schema.optionalKey(Schema.String),
+    requirements: Schema.optionalKey(MoveRequirements),
+  }),
   Schema.Struct({
     ...binding,
     action: Schema.Literal("finishRollback"),
@@ -43,6 +52,8 @@ export const ProjectMoveStep = Schema.Union([
 export type ProjectMoveStep = typeof ProjectMoveStep.Type;
 export const ProjectMoveReply = Schema.Struct({
   phase: Schema.String,
+  detail: Schema.optionalKey(Schema.String),
+  requirements: Schema.optionalKey(MoveRequirements),
   digest: Schema.optionalKey(Schema.String),
   bundle: Schema.optionalKey(ProjectMoveBundle),
 });

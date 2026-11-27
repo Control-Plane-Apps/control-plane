@@ -22,6 +22,7 @@ import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSna
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
 import { HostTimeZoneSource } from "../schedules/hostZone.ts";
+import { Reach } from "./Reach.ts";
 import { RemoteAgentStore } from "../agentMachines/RemoteAgentStore.ts";
 import {
   parseThreadSegmentFromAttachmentId,
@@ -165,6 +166,7 @@ export const projectMoveDigest = (bundle: ProjectMoveBundle) =>
     ...bundle,
     zone: bundle.project.assistant?.schedules?.length ? bundle.zone : null,
     project: { ...bundle.project, projectId: portableId },
+    agents: bundle.agents.map((record) => ({ ...record, homeProjectId: portableId })),
     receipts: bundle.receipts.map((r) => ({
       ...r,
       aggregateId: r.aggregateKind === "project" ? portableId : r.aggregateId,
@@ -227,6 +229,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
          SELECT thread_id FROM projection_threads WHERE project_id=${id}))
     ORDER BY command_id`;
   const remoteStore = yield* RemoteAgentStore;
+  const reach = yield* Reach;
 
   const projectOf = (id: string) =>
     Effect.gen(function* () {
@@ -238,10 +241,30 @@ export const makeProjectMoveData = Effect.gen(function* () {
 
   const capture = Effect.fn("projectMove.capture")(function* (id: string) {
     const project = yield* projectOf(id);
-    if ((yield* remoteStore.listForMove).some((a) => a.homeProjectId === id)) {
-      return yield* Effect.fail(
-        fail("An agent placement needs verified routing on its original machine."),
-      );
+    const self = yield* reach.self;
+    const agents = (yield* remoteStore.listForMove)
+      .filter((record) => record.homeProjectId === id)
+      .sort((a, b) => a.threadId.localeCompare(b.threadId))
+      .map((record) => ({
+        ...record,
+        placementOrigin: record.placementOrigin ?? { machineId: self.environmentId, projectId: id },
+      }));
+    for (const record of agents) {
+      if (
+        record.state === "pending" ||
+        record.inFlight ||
+        record.queuedSends.length ||
+        record.handoff ||
+        record.stoppingAt ||
+        record.waitId ||
+        record.abandonedHolds?.length ||
+        record.resumeCheckpoint
+      )
+        return yield* fail(
+          "Wait for linked agent work, holds and handoffs to finish before moving.",
+        );
+      if (!record.placementOrigin.machineId)
+        return yield* fail("The agent's original coordinator machine is unavailable.");
     }
     const head = yield* engine.latestSequence;
     const ids = yield* sql<{ thread_id: string; deleted_at: string | null }>`
@@ -297,13 +320,13 @@ export const makeProjectMoveData = Effect.gen(function* () {
           persisted.type === "thread.history-restored" ? persisted.payload.event : persisted,
           project.projectId,
         );
-        if ("worktreePath" in event.payload && event.payload.worktreePath != null)
-          return yield* Effect.fail(fail("A Project thread references an original worktree."));
         if (
           !row.deleted_at &&
           event.type === "thread.message-sent" &&
-          event.payload.source?.kind === "agent" &&
-          event.payload.source.placementHome
+          ((event.payload.source?.kind === "agent" && event.payload.source.placementHome) ||
+            (event.payload.role === "user" &&
+              event.payload.text.startsWith("You are running on ") &&
+              event.payload.text.includes("This machine has its own copy of the Project folder:")))
         )
           return yield* Effect.fail(
             fail("A local thread still belongs to a coordinator on another machine."),
@@ -383,6 +406,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
       },
       threads,
       receipts: yield* executionReceipts(id),
+      agents,
       attachments: [...attachments.values()].sort((a, b) => a.file.id.localeCompare(b.file.id)),
       memory: memory?.toString("base64") ?? null,
       roles: yield* io(() => readRoles(project.workspaceRoot)),
@@ -399,6 +423,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
     input: ProjectMoveBundle,
     cleanupDigest?: string,
     retainAttachmentProof = false,
+    verifyOnly = false,
   ) {
     if ((yield* projectMoveFenceOwner(sql, id)) !== moveId)
       return yield* Effect.fail(fail("The Project move fence is missing."));
@@ -423,6 +448,21 @@ export const makeProjectMoveData = Effect.gen(function* () {
     const pending: HistoricalOrchestrationEvent[] = [];
     if (targetIds.size !== bundle.threads.length)
       return yield* Effect.fail(fail("Duplicate Project thread id."));
+    const agentRecords = bundle.agents.map((record) => ({ ...record, homeProjectId: id }));
+    for (const record of bundle.agents) {
+      if (
+        record.homeProjectId !== bundle.project.projectId ||
+        !record.placementOrigin ||
+        targetIds.has(ThreadId.make(record.threadId)) ||
+        !targetIds.has(ThreadId.make(record.creatorThreadId))
+      )
+        return yield* fail("A linked agent has an invalid Project or creator association.");
+      const collision =
+        yield* sql`SELECT 1 FROM projection_threads WHERE thread_id=${record.threadId}`;
+      if (collision.length)
+        return yield* fail("A linked agent collides with a thread on this machine.");
+    }
+    yield* remoteStore.replaceForMove(id, moveId, agentRecords, true);
     for (const thread of bundle.threads) {
       const old = byId.get(thread.id);
       const ownership = yield* sql<{
@@ -444,6 +484,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
         (old && old.events.length > thread.events.length)
       )
         return yield* Effect.fail(fail("The two thread histories diverged."));
+      let currentWorktree: string | null = null;
       for (const [i, event] of thread.events.entries()) {
         if (
           event.aggregateKind !== "thread" ||
@@ -451,10 +492,11 @@ export const makeProjectMoveData = Effect.gen(function* () {
           !("threadId" in event.payload) ||
           event.payload.threadId !== thread.id ||
           (event.type === "thread.created" &&
-            (event.payload.projectId !== bundle.project.projectId || i !== 0)) ||
-          ("worktreePath" in event.payload && event.payload.worktreePath != null)
+            (event.payload.projectId !== bundle.project.projectId || i !== 0))
         )
           return yield* Effect.fail(fail("Invalid Project thread history."));
+        if ("worktreePath" in event.payload && event.payload.worktreePath !== undefined)
+          currentWorktree = event.payload.worktreePath;
         const next = normalize(event, projectId);
         if (old && i < old.events.length) {
           if (hash(next) !== hash(old.events[i]))
@@ -463,6 +505,8 @@ export const makeProjectMoveData = Effect.gen(function* () {
           pending.push(next);
         }
       }
+      if (currentWorktree !== null && thread.events.at(-1)?.type !== "thread.deleted")
+        return yield* fail("Detach the thread from its worktree before moving the Project.");
     }
     const removeThreads = before.threads
       .filter((thread) => !targetIds.has(thread.id))
@@ -493,7 +537,13 @@ export const makeProjectMoveData = Effect.gen(function* () {
       yield* io(async () => {
         const target = attachmentPath(config.attachmentsDir, threadId, file);
         retainedAttachments.add(NodePath.basename(target));
-        await stageAttachment(stagingDirectory, target, data);
+        if (verifyOnly) {
+          const existing = await readFile(target);
+          if (existing && !existing.equals(data))
+            throw fail("An attachment identity collides on the destination.");
+        } else {
+          await stageAttachment(stagingDirectory, target, data);
+        }
       });
     }
     const receiptIds = new Set(bundle.receipts.map((r) => r.commandId));
@@ -510,6 +560,30 @@ export const makeProjectMoveData = Effect.gen(function* () {
             );
       if (!valid)
         return yield* Effect.fail(fail("An execution receipt belongs to another Project."));
+    }
+    if (verifyOnly) {
+      for (const receipt of bundle.receipts) {
+        const aggregate = receipt.aggregateKind === "project" ? id : receipt.aggregateId;
+        const [collision] = yield* sql`SELECT 1 FROM orchestration_command_receipts
+          WHERE command_id=${receipt.commandId} AND NOT (aggregate_kind=${receipt.aggregateKind}
+          AND aggregate_id=${aggregate} AND accepted_at=${receipt.acceptedAt}
+          AND status=${receipt.status} AND error IS ${receipt.error})`;
+        if (collision) return yield* fail("An execution receipt collides on this machine.");
+      }
+      for (const key of Object.keys(bundle.roles)) {
+        const file = rolePath(project.workspaceRoot, key);
+        if (key.includes("/")) {
+          const parent = yield* io(() =>
+            NodeFSP.lstat(NodePath.dirname(file)).catch((e: NodeJS.ErrnoException) => {
+              if (e.code === "ENOENT") return null;
+              throw e;
+            }),
+          );
+          if (parent && !parent.isDirectory()) return yield* fail("Invalid role directory.");
+        }
+        yield* io(() => readFile(file));
+      }
+      return;
     }
     const prefix = cleanupDigest ? "cp-project-cleanup" : "cp-project-restore";
     const key = `${prefix}:${moveId}:${projectMoveDigest(bundle)}`;
@@ -581,6 +655,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
         bundle.memory === null ? null : Buffer.from(bundle.memory, "base64"),
       );
     });
+    yield* remoteStore.replaceForMove(id, moveId, agentRecords, false);
     const actual = yield* capture(id);
     if (projectMoveDigest(actual) !== projectMoveDigest(bundle))
       return yield* Effect.fail(fail("The restored Project failed readback verification."));
@@ -590,5 +665,7 @@ export const makeProjectMoveData = Effect.gen(function* () {
       );
     }
   });
-  return { capture, install, digest: projectMoveDigest };
+  const verifyReturn = (id: string, moveId: string, bundle: ProjectMoveBundle) =>
+    install(id, moveId, bundle, undefined, false, true);
+  return { capture, install, verifyReturn, digest: projectMoveDigest };
 });

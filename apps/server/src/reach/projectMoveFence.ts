@@ -1,5 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - compare the canonical roots owned by registered Projects.
+import * as NodeChildProcess from "node:child_process";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { ProjectId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -86,6 +90,140 @@ export const assertProjectWorkspaceAvailable = (
     }
   });
 
+export type ProjectWriterKind =
+  | "file"
+  | "git"
+  | "terminal"
+  | "schedule"
+  | "status"
+  | "provider"
+  | "peer";
+
+interface WriterRow {
+  readonly operation_id: string;
+  readonly owner_pid: number;
+  readonly owner_host: string;
+  readonly owner_generation: string | null;
+  readonly kind: ProjectWriterKind;
+}
+
+// Prefer a kernel boot identifier plus start tick on Linux. Darwin's ps
+// reports a process start second. A matching or unavailable token is always
+// treated as live, including an ambiguous same-second PID reuse.
+function processGeneration(platform: NodeJS.Platform, pid: number): string | null {
+  try {
+    if (platform === "linux") {
+      const stat = NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const started = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+      const bootId = NodeFS.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      return started && /^\d+$/.test(started) && bootId ? `${bootId}/${started}` : null;
+    }
+    if (platform === "darwin") {
+      const started = NodeChildProcess.execFileSync(
+        "/bin/ps",
+        ["-p", String(pid), "-o", "lstart="],
+        {
+          encoding: "utf8",
+          env: { LC_ALL: "C", TZ: "UTC" },
+          timeout: 1000,
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      ).trim();
+      return started || null;
+    }
+  } catch {
+    /* Unavailable process metadata never proves death. */
+  }
+  return null;
+}
+const ownGenerations = new Map<NodeJS.Platform, string | null>();
+function currentGeneration(platform: NodeJS.Platform) {
+  if (!ownGenerations.has(platform))
+    ownGenerations.set(platform, processGeneration(platform, process.pid));
+  return ownGenerations.get(platform) ?? null;
+}
+
+function ownerIsGone(writer: WriterRow, platform: NodeJS.Platform) {
+  if (
+    writer.owner_host !== NodeOS.hostname() ||
+    !Number.isSafeInteger(writer.owner_pid) ||
+    writer.owner_pid <= 0
+  )
+    return false;
+  try {
+    process.kill(writer.owner_pid, 0);
+    const observed =
+      writer.owner_pid === process.pid
+        ? currentGeneration(platform)
+        : processGeneration(platform, writer.owner_pid);
+    return (
+      writer.owner_generation !== null && observed !== null && observed !== writer.owner_generation
+    );
+  } catch (cause) {
+    return (cause as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+// Operator-only recovery, intentionally absent from RPC. Stable operator evidence
+// records who checked the surviving peer, child processes and durable results.
+export const reconcileAbandonedProjectWriter = Effect.fn(
+  "projectMoveFence.reconcileAbandonedWriter",
+)(function* (projectId: string, operationId: string, evidence: string) {
+  const sql = yield* SqlClient.SqlClient;
+  if (!evidence.trim())
+    return yield* new ProjectMoveFenceError({
+      message: "Supply the evidence used to verify that external work ended.",
+    });
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const [writer] =
+        yield* sql<WriterRow>`SELECT operation_id, owner_pid, owner_host, owner_generation, kind
+      FROM project_move_writers WHERE project_id = ${projectId} AND operation_id = ${operationId}`;
+      if (!writer) {
+        const recorded =
+          yield* sql`SELECT 1 FROM project_move_writer_reconciliations WHERE project_id = ${projectId}
+        AND operation_id = ${operationId} AND evidence = ${evidence}`;
+        if (recorded.length) return;
+        return yield* new ProjectMoveFenceError({ message: "No matching unfinished writer." });
+      }
+      if (!ownerIsGone(writer, yield* HostProcessPlatform))
+        return yield* new ProjectMoveFenceError({
+          message: "The writer owner is still alive or its death cannot be verified on this host.",
+        });
+      yield* sql`INSERT INTO project_move_writer_reconciliations (project_id, operation_id, kind, owner_pid, owner_host, evidence)
+      VALUES (${projectId}, ${operationId}, ${writer.kind}, ${writer.owner_pid}, ${writer.owner_host}, ${evidence})`;
+      yield* sql`DELETE FROM project_move_writers WHERE project_id = ${projectId} AND operation_id = ${operationId}`;
+    }),
+  );
+});
+
+// Called after the first write in the fence transaction. The process may be
+// gone while its child or peer still works. Only in-process file and engine
+// operations can be reclaimed from process death alone. Capture and verify
+// their current durable results before granting execution on the other side.
+const reconcileProjectWriters = (sql: SqlClient.SqlClient, projectId: string) =>
+  Effect.gen(function* () {
+    const writers =
+      yield* sql<WriterRow>`SELECT operation_id, owner_pid, owner_host, owner_generation, kind
+      FROM project_move_writers WHERE project_id = ${projectId} ORDER BY started_at, operation_id`;
+    for (const writer of writers) {
+      const gone = ownerIsGone(writer, yield* HostProcessPlatform);
+      if (
+        gone &&
+        (writer.kind === "file" || writer.kind === "schedule" || writer.kind === "status")
+      ) {
+        yield* sql`DELETE FROM project_move_writers WHERE operation_id = ${writer.operation_id}`;
+      } else {
+        const detail = gone
+          ? "Verify the external operation and reconcile its receipt before retrying."
+          : "Wait for its owner to finish.";
+        return yield* new ProjectMoveFenceError({
+          message: `The Project has an unfinished ${writer.kind} operation ${writer.operation_id} (owner ${writer.owner_host}, PID ${writer.owner_pid}). ${detail}`,
+        });
+      }
+    }
+  });
+
 export const acquireProjectMoveFence = Effect.fn("projectMoveFence.acquire")(function* (
   projectId: string,
   moveId: string,
@@ -102,9 +240,8 @@ export const acquireProjectMoveFence = Effect.fn("projectMoveFence.acquire")(fun
           message: "Another move holds the Project fence.",
         });
       }
-      const writers =
-        yield* sql`SELECT 1 FROM project_move_writers WHERE project_id = ${projectId} LIMIT 1`;
-      if (writers.length || heldSchedules.get(sql)?.(projectId)) {
+      yield* reconcileProjectWriters(sql, projectId);
+      if (heldSchedules.get(sql)?.(projectId)) {
         return yield* new ProjectMoveFenceError({
           message: "The Project has an unfinished schedule or linked-agent operation.",
         });
@@ -180,12 +317,7 @@ export const releaseProjectMoveFence = Effect.fn("projectMoveFence.release")(fun
         return yield* new ProjectMoveFenceError({
           message: "The Project fence is missing. Verify ownership before resuming execution.",
         });
-      const writers =
-        yield* sql`SELECT 1 FROM project_move_writers WHERE project_id = ${projectId} LIMIT 1`;
-      if (writers.length)
-        return yield* new ProjectMoveFenceError({
-          message: "A Project operation has not finished.",
-        });
+      yield* reconcileProjectWriters(sql, projectId);
       yield* sql`DELETE FROM project_move_fences WHERE project_id = ${projectId} AND move_id = ${moveId}`;
     }),
   );
@@ -198,12 +330,13 @@ export function withProjectWriter<A, E, R>(
   sql: SqlClient.SqlClient,
   projectId: string,
   effect: Effect.Effect<A, E, R>,
+  kind: ProjectWriterKind = "peer",
 ) {
   const acquire = sql.withTransaction(
     Effect.gen(function* () {
       const [writer] = yield* sql<{ operation_id: string }>`
-        INSERT INTO project_move_writers (project_id, operation_id)
-        VALUES (${projectId}, lower(hex(randomblob(16)))) RETURNING operation_id
+        INSERT INTO project_move_writers (project_id, operation_id, owner_pid, owner_host, owner_generation, kind)
+        VALUES (${projectId}, lower(hex(randomblob(16))), ${process.pid}, ${NodeOS.hostname()}, ${currentGeneration(yield* HostProcessPlatform)}, ${kind}) RETURNING operation_id
       `;
       const owner = yield* projectMoveFenceOwner(sql, projectId);
       const permit = yield* ProjectMovePermitRef;

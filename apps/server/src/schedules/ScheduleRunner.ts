@@ -316,6 +316,7 @@ export const make = Effect.gen(function* () {
           });
         }),
       ),
+      "schedule",
     ).pipe(
       Effect.catchTag("ProjectMoveFenceError", () =>
         Effect.fail(new ScheduleUnavailableError({ reason: "project-moving" })),
@@ -491,7 +492,12 @@ export const make = Effect.gen(function* () {
       if (!served.has(threadId) && !busy.has(threadId)) {
         if (yield* isIdleForDelivery(threadId, now)) {
           served.add(threadId);
-          const result = yield* withProjectWriter(sql, held.projectId, append(held, ready, now));
+          const result = yield* withProjectWriter(
+            sql,
+            held.projectId,
+            append(held, ready, now),
+            "schedule",
+          );
           holds.delete(key);
           results.set(held.runKey, result);
           continue;

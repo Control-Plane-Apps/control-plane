@@ -2,7 +2,7 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
-import { withWorkspaceWriter } from "./reach/projectWorkspaceWriter.ts";
+import { withGitWorkspaceWriter, withWorkspaceWriter } from "./reach/projectWorkspaceWriter.ts";
 import { ensureAssistant } from "./assistant/ensureAssistant.ts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -38,6 +38,7 @@ import {
   type OrchestrationClientOrigin,
   type OrchestrationCommand,
   type GitActionProgressEvent,
+  VcsRepositoryDetectionError,
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
@@ -3477,39 +3478,44 @@ const makeWsRpcLayer = (
           observeRpcStream(
             WS_METHODS.gitRunStackedAction,
             Stream.callback<GitActionProgressEvent, GitManagerServiceError>((queue) =>
-              gitWorkflow
-                .runStackedAction(input, {
-                  actionId: input.actionId,
-                  progressReporter: {
-                    publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
-                  },
-                })
-                .pipe(
-                  Effect.matchCauseEffect({
-                    onFailure: (cause) => Queue.failCause(queue, cause),
-                    onSuccess: (result) =>
-                      (input.threadId === undefined
-                        ? Effect.void
-                        : linkCreatedPullRequest({
-                            threadId: input.threadId,
-                            result,
-                            commandId: serverCommandId("pr-created-link"),
-                          }).pipe(
-                            Effect.provideService(
-                              OrchestrationEngine.OrchestrationEngineService,
-                              orchestrationEngine,
-                            ),
-                            Effect.provideService(
-                              ProjectionSnapshotQuery.ProjectionSnapshotQuery,
-                              projectionSnapshotQuery,
-                            ),
-                          )
-                      ).pipe(
-                        Effect.andThen(refreshGitStatus(input.cwd)),
-                        Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
-                      ),
-                  }),
-                ),
+              withGitWorkspaceWriter(
+                sql,
+                input,
+                "runStackedAction",
+                gitWorkflow
+                  .runStackedAction(input, {
+                    actionId: input.actionId,
+                    progressReporter: {
+                      publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
+                    },
+                  })
+                  .pipe(
+                    Effect.matchCauseEffect({
+                      onFailure: (cause) => Queue.failCause(queue, cause),
+                      onSuccess: (result) =>
+                        (input.threadId === undefined
+                          ? Effect.void
+                          : linkCreatedPullRequest({
+                              threadId: input.threadId,
+                              result,
+                              commandId: serverCommandId("pr-created-link"),
+                            }).pipe(
+                              Effect.provideService(
+                                OrchestrationEngine.OrchestrationEngineService,
+                                orchestrationEngine,
+                              ),
+                              Effect.provideService(
+                                ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+                                projectionSnapshotQuery,
+                              ),
+                            )
+                        ).pipe(
+                          Effect.andThen(refreshGitStatus(input.cwd)),
+                          Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
+                        ),
+                    }),
+                  ),
+              ).pipe(Effect.catch((error) => Queue.fail(queue, error))),
             ),
             { "rpc.aggregate": "vcs" },
           ),
@@ -3560,9 +3566,24 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsInit]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsInit,
-            vcsProvisioning
-              .initRepository(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            withGitWorkspaceWriter(
+              sql,
+              input,
+              "initRepository",
+              vcsProvisioning.initRepository(input),
+            ).pipe(
+              Effect.catchTag("GitCommandError", (cause) =>
+                Effect.fail(
+                  new VcsRepositoryDetectionError({
+                    operation: "initRepository",
+                    cwd: input.cwd,
+                    detail: cause.detail,
+                    cause,
+                  }),
+                ),
+              ),
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.reviewGetDiffPreview]: (input) =>

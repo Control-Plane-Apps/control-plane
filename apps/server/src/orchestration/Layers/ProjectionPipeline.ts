@@ -2063,6 +2063,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const applyAttachmentSideEffects = Effect.fn("applyAttachmentSideEffects")(
       function* (event: OrchestrationEvent, sideEffects: AttachmentSideEffects) {
+        // A transfer owns only blobs proven by its private hard links. Apply
+        // its projection changes without the ordinary thread-wide file sweep,
+        // both on the live path and when cleanup is replayed after restart.
+        if (
+          event.type === "thread.history-restored" ||
+          (event.type === "thread.deleted" &&
+            event.metadata.historyImport === true &&
+            event.commandId?.startsWith("cp-project-cleanup:"))
+        )
+          return;
         if (
           sideEffects.deletedThreadIds.size === 0 &&
           sideEffects.prunedThreadRelativePaths.size === 0

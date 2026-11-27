@@ -16,7 +16,11 @@ const decode = new TextDecoder("utf-8", { fatal: true });
 
 /** A prepared copy must preserve HEAD, branch, index, permissions and all tracked and
  * non-ignored untracked bytes. Only the digest and Git position leave the machine. */
-export async function workspaceFingerprint(directory: string, repository?: RepositoryIdentity) {
+export async function workspaceFingerprint(
+  directory: string,
+  repository?: RepositoryIdentity,
+  excludeProjectFiles = false,
+) {
   const root = await NodeFSP.realpath(directory);
   const run = async (...args: string[]) =>
     (
@@ -48,12 +52,26 @@ export async function workspaceFingerprint(directory: string, repository?: Repos
       throw new Error("Finish resolving conflicts or prepare a checkout without submodules.");
     files.add(match[2]!);
   }
-  for (const entry of decode.decode(others).split("\0").filter(Boolean)) files.add(entry);
+  // Coordinator rollback reconciles these files from a verified bundle. All
+  // other working-tree bytes, plus the complete index, must match beforehand.
+  const transferred = (name: string) =>
+    excludeProjectFiles && /^(?:MEMORY\.md|(?:[a-z0-9-]+\/)?AGENTS\.md)$/.test(name);
+  const otherPaths = decode.decode(others).split("\0").filter(Boolean);
+  for (const entry of otherPaths) files.add(entry);
   const hash = NodeCrypto.createHash("sha256");
   hash.update(NodeCrypto.createHash("sha256").update(index).digest());
-  hash.update(NodeCrypto.createHash("sha256").update(others).digest());
+  const includedOthers = excludeProjectFiles
+    ? Buffer.from(
+        otherPaths
+          .filter((name) => !transferred(name))
+          .map((name) => name + "\0")
+          .join(""),
+      )
+    : others;
+  hash.update(NodeCrypto.createHash("sha256").update(includedOthers).digest());
   const buffer = Buffer.allocUnsafe(128 * 1024);
   for (const name of [...files].sort()) {
+    if (transferred(name)) continue;
     const path = NodePath.resolve(root, name);
     if (!path.startsWith(root + NodePath.sep)) throw new Error("Invalid repository path.");
     hash.update(JSON.stringify(name));

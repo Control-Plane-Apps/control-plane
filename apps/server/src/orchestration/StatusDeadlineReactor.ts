@@ -461,7 +461,8 @@ export const make = Effect.gen(function* () {
     const result = dueDeadlines(rows, nowMs);
     yield* Effect.forEach(
       result.due,
-      (entry) => isolated(entry, withProjectWriter(sql, entry.projectId, handleDeadline(entry))),
+      (entry) =>
+        isolated(entry, withProjectWriter(sql, entry.projectId, handleDeadline(entry), "status")),
       {
         discard: true,
       },

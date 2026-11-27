@@ -34,6 +34,8 @@ export const ReachOp = Schema.Literals([
   "describe",
   "confirm",
   "agent.peers",
+  "agent.peerRelay",
+  "agent.routeCheck",
   "overview",
   "ask",
   "results",
@@ -257,6 +259,8 @@ export const ConfirmResult = Schema.Struct({ sent: Schema.Boolean });
  */
 export const REACH_VERIFIED_OPS: ReadonlySet<string> = new Set([
   "agent.peers",
+  "agent.peerRelay",
+  "agent.routeCheck",
   "ask",
   "status.set",
   "status.reply",

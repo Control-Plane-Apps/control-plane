@@ -53,6 +53,12 @@ export const makeMemoryRemoteAgentStore = Effect.sync(() => {
   return {
     list,
     listForMove: list,
+    replaceForMove: (id, _move, next, verifyOnly) =>
+      Effect.sync(() => {
+        if (verifyOnly) return;
+        for (const [key, record] of records) if (record.homeProjectId === id) records.delete(key);
+        for (const record of next) records.set(record.threadId, record);
+      }),
     get: (threadId) => Effect.sync(() => Option.fromNullishOr(records.get(threadId))),
     put: (record) => Effect.sync(() => void records.set(record.threadId, record)),
     update: (threadId, change) =>

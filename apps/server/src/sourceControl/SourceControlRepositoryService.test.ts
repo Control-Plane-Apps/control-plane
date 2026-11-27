@@ -1,3 +1,4 @@
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -60,6 +61,7 @@ function makeLayer(input: {
   readonly fileSystem?: FileSystem.FileSystem;
 }) {
   const serviceLayer = SourceControlRepositoryService.layer.pipe(
+    Layer.provide(SqlitePersistenceMemory),
     Layer.provide(
       Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
         resolveLink: () => undefined,

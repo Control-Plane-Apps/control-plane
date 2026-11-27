@@ -4,6 +4,7 @@ import {
   HistoricalOrchestrationEvent,
   ProjectMetaUpdatedPayload,
 } from "./orchestration.ts";
+import { RemoteAgentRecord } from "./remoteAgentRecord.ts";
 import { ThreadId } from "./baseSchemas.ts";
 
 /** Identifiers inside histories remain stable across environments. */
@@ -12,6 +13,7 @@ export const ProjectMoveBundle = Schema.Struct({
   coordinator: Schema.NullOr(ThreadId),
   project: ProjectMetaUpdatedPayload,
   zone: Schema.String,
+  agents: Schema.Array(RemoteAgentRecord),
   threads: Schema.Array(
     Schema.Struct({
       id: ThreadId,

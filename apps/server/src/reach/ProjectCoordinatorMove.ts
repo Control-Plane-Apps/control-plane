@@ -16,6 +16,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { RemoteAgentStore } from "../agentMachines/RemoteAgentStore.ts";
+import { openWorkerRoutes, verifyWorkers, rememberWorkerRoutes } from "./projectMoveAgentRoutes.ts";
 import { AgentMachines } from "../agentMachines/AgentMachines.ts";
 import { ServerConfig } from "../config.ts";
 import { matchPeerProject } from "../agentMachines/projectMatch.ts";
@@ -27,6 +29,7 @@ import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { HostTimeZoneSource } from "../schedules/hostZone.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { Reach } from "./Reach.ts";
+import { reserveProjectReturn } from "./projectMoveReturnFence.ts";
 import { makeProjectMoveData } from "./projectMoveData.ts";
 import {
   acquireProjectMoveFence,
@@ -116,6 +119,8 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
   const snapshots = yield* ProjectionSnapshotQuery;
   const machines = yield* AgentMachines;
   const reach = yield* Reach;
+  const self = (yield* reach.self).environmentId;
+  const agentStore = yield* RemoteAgentStore;
   const settings = yield* ServerSettingsService;
   const hostZone = yield* HostTimeZoneSource;
   const providers = yield* ProviderRegistry;
@@ -140,14 +145,14 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
             : Effect.fail(refusal("Select an active Project.")),
         ),
       );
-  const checkout = (id: string) =>
+  const checkout = (id: string, returning = false) =>
     Effect.gen(function* () {
       const p = yield* project(id);
       if (!p.repositoryIdentity)
         return yield* refusal("Register the Project repository on both machines.");
       const identity = p.repositoryIdentity;
       const fp = yield* Effect.tryPromise({
-        try: () => workspaceFingerprint(p.workspaceRoot, identity),
+        try: () => workspaceFingerprint(p.workspaceRoot, identity, returning),
         catch: () => refusal("Could not verify the Project checkout."),
       });
       return {
@@ -157,7 +162,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
         digest: fp.digest,
       };
     });
-  const requirements = (id: string) =>
+  const requirements = (id: string, returning = false) =>
     Effect.gen(function* () {
       const p = yield* project(id);
       if (!p.assistant) return yield* refusal("Select a Project with a coordinator.");
@@ -167,17 +172,19 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
       if (Option.isNone(thread)) return yield* refusal("The coordinator thread is unavailable.");
       const cfg = yield* settings.getSettings;
       return {
-        checkout: yield* checkout(id),
+        checkout: yield* checkout(id, returning),
+        workers: openWorkerRoutes(yield* agentStore.listForMove, self, id),
         scheduleZone: p.assistant.schedules?.length ? hostZone().zone : null,
         model: thread.value.modelSelection,
         integrations: cfg.agentPlacement.projectRequirements?.[id] ?? [],
       };
     });
-  const checkTarget = (id: string, req: Requirements) =>
+  const checkTarget = (id: string, req: Requirements, returning = false) =>
     Effect.gen(function* () {
+      yield* verifyWorkers(reach, req.workers);
       if (req.scheduleZone && hostZone().zone !== req.scheduleZone)
         return yield* refusal("The schedule time zones differ.");
-      const local = yield* checkout(id);
+      const local = yield* checkout(id, returning);
       if (
         local.repository !== req.checkout.repository ||
         local.branch !== req.checkout.branch ||
@@ -251,7 +258,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
           yield* checkTarget(projectId, input.requirements);
           if (!r) {
             const backup = yield* data.capture(projectId);
-            if (backup.coordinator || backup.threads.length)
+            if (backup.coordinator || backup.threads.length || backup.agents.length)
               return yield* refusal("Choose an empty destination Project.");
             if (input.action === "preflight")
               return { phase: "ready", digest: data.digest(backup) };
@@ -291,6 +298,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
           return { phase: "staging", digest: input.digest };
         }
         if (!r) {
+          if (input.action === "reversePreflight") return { phase: "unprepared" };
           if (input.action !== "reverse") return yield* refusal("Unknown coordinator move.");
           yield* insert({ ...newReceipt, phase: "rolled-back" });
           return { phase: "rolled-back" };
@@ -315,20 +323,87 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
           return { phase: "active", digest: input.digest };
         }
         if (r.phase === "rolled-back") return { phase: "rolled-back" };
-        if (input.action === "reverse") {
-          if (r.phase === "active") {
+        if (input.action === "reversePreflight") {
+          // A crash before publishing a return snapshot has transferred no
+          // authority. Restore the running owner before evaluating a new proposal.
+          if (r.phase === "checking-return") {
             yield* sql.withTransaction(
-              acquireProjectMoveFence(projectId, moveId).pipe(
-                Effect.andThen(phase(r, "returning")),
-              ),
+              phase(r, "active").pipe(Effect.andThen(releaseProjectMoveFence(projectId, moveId))),
             );
-            r = { ...r, phase: "returning" };
+            r = { ...r, phase: "active" };
+          }
+          if (r.phase !== "active") return { phase: r.phase };
+          const proposal = yield* Effect.result(
+            Effect.gen(function* () {
+              const bundle = yield* data.capture(projectId);
+              return {
+                phase: "active",
+                requirements: yield* requirements(projectId, true),
+                bundle,
+                digest: data.digest(bundle),
+              };
+            }),
+          );
+          return proposal._tag === "Failure"
+            ? { phase: "active", detail: proposal.failure.message }
+            : proposal.success;
+        }
+        if (input.action === "reverse") {
+          if (r.phase === "active" || r.phase === "checking-return") {
+            if (!input.digest || !input.requirements)
+              return yield* refusal("Verify the returning Project before fencing its coordinator.");
+            const reservation = yield* Effect.result(reserveProjectReturn(projectId, moveId));
+            if (reservation._tag === "Failure") {
+              if (r.phase === "active" && !(yield* projectMoveFenceOwner(sql, projectId)))
+                return { phase: "active", detail: reservation.failure.message };
+              return yield* Effect.fail(reservation.failure);
+            }
+            // Keep registry/file reads outside the SQLite transaction. A failed
+            // capture restores the active owner, including after a race with a writer.
+            const captured = yield* Effect.result(
+              Effect.gen(function* () {
+                const bundle = yield* data.capture(projectId);
+                const req = yield* requirements(projectId, true);
+                const digest = data.digest(bundle);
+                if (
+                  digest !== input.digest ||
+                  (yield* encodeRequirements(req)) !==
+                    (yield* encodeRequirements(input.requirements!))
+                )
+                  return yield* refusal(
+                    "The active Project changed during rollback preflight. Retry.",
+                  );
+                return { bundle, digest, req, encoded: yield* encodeBackup(bundle) };
+              }),
+            );
+            if (captured._tag === "Failure") {
+              yield* sql.withTransaction(
+                phase(r, "active").pipe(Effect.andThen(releaseProjectMoveFence(projectId, moveId))),
+              );
+              return { phase: "active", detail: captured.failure.message };
+            }
+            const snapshot = captured.success;
+            yield* rememberWorkerRoutes(sql, projectId, moveId, self, snapshot.bundle.agents);
+            yield* sql`UPDATE project_move_receipts SET phase='returning', digest=${snapshot.digest},
+              return_bundle=${snapshot.encoded}, requirements=${yield* encodeRequirements(snapshot.req)} WHERE project_id=${projectId} AND move_id=${moveId}`;
+            return {
+              phase: "returning",
+              bundle: snapshot.bundle,
+              digest: snapshot.digest,
+              requirements: snapshot.req,
+            };
           }
           if (r.phase === "returning") {
-            const bundle = yield* data.capture(projectId);
-            const digest = data.digest(bundle);
-            yield* phase(r, "returning", digest);
-            return { phase: "returning", bundle, digest };
+            const [stored] = yield* sql<{ return_bundle: string | null }>`
+              SELECT return_bundle FROM project_move_receipts WHERE project_id=${projectId} AND move_id=${moveId}`;
+            if (!stored?.return_bundle || !r.digest || !r.requirements)
+              return yield* refusal("Missing recovery snapshot.");
+            return {
+              phase: "returning",
+              bundle: yield* decodeBackup(stored.return_bundle),
+              digest: r.digest,
+              requirements: yield* decodeRequirements(r.requirements),
+            };
           }
           if (r.phase === "preparing") {
             yield* sql.withTransaction(
@@ -433,6 +508,15 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
               if (match.kind !== "matched")
                 return yield* refusal("Register an unambiguous matching destination Project.");
               const req = yield* requirements(id);
+              if (
+                req.workers.some(
+                  (worker) => worker.origin.machineId !== self || worker.origin.projectId !== id,
+                )
+              )
+                return yield* refusal(
+                  "An agent already relies on another former home. Reconcile its route before moving again.",
+                );
+              yield* verifyWorkers(reach, req.workers);
               const backup = yield* data.capture(id);
               const moveId = input.moveId ?? (yield* cryptoService.randomUUIDv4);
               const previous =
@@ -488,6 +572,7 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                     requirements: yield* encodeRequirements(req),
                   };
                   yield* insert(record);
+                  yield* rememberWorkerRoutes(sql, id, moveId, self, backup.agents);
                   return record;
                 }),
               );
@@ -508,24 +593,68 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                   data.digest(yield* data.capture(id)) !== r.digest
                 )
                   return yield* refusal("The fenced source no longer matches its recovery copy.");
+                const proposed = yield* call({ ...binding, action: "reversePreflight" });
+                if (proposed.phase === "active") {
+                  // A retry can discover that the target recovered its tentative
+                  // fence after a crash. Persist its confirmed authority before
+                  // any local readiness check can refuse the return.
+                  if (r.phase !== "active") yield* phase(r, "active");
+                  if (proposed.detail) return yield* refusal(proposed.detail);
+                  if (
+                    !proposed.requirements ||
+                    !proposed.bundle ||
+                    !proposed.digest ||
+                    proposed.bundle.project.projectId !== r.peer_project_id ||
+                    !proposed.bundle.coordinator ||
+                    proposed.digest !== data.digest(proposed.bundle)
+                  )
+                    return yield* refusal("Invalid rollback preflight snapshot.");
+                  yield* checkTarget(id, proposed.requirements, true);
+                  yield* data.verifyReturn(id, r.move_id, proposed.bundle);
+                }
                 yield* phase(r, "rolling-back");
-                const back = yield* call({ ...binding, action: "reverse" });
+                const back = yield* call({
+                  ...binding,
+                  action: "reverse",
+                  ...(proposed.phase === "active" && proposed.requirements && proposed.digest
+                    ? { requirements: proposed.requirements, digest: proposed.digest }
+                    : {}),
+                });
+                if (back.phase === "active") {
+                  // The target explicitly confirmed that it released its tentative
+                  // fence. Display its running ownership and allow a fresh rollback.
+                  yield* phase(r, "active");
+                  return yield* refusal(
+                    back.detail ?? "The destination is active. Review and retry rollback.",
+                  );
+                }
                 if (back.phase === "returning") {
                   if (
                     !back.bundle ||
+                    !back.requirements ||
                     back.bundle.project.projectId !== r.peer_project_id ||
                     !back.bundle.coordinator ||
                     back.digest !== data.digest(back.bundle)
                   )
                     return yield* refusal("The rollback snapshot checksum differs.");
+                  yield* checkTarget(id, back.requirements, true);
                   yield* data.install(id, r.move_id, back.bundle);
                   if (data.digest(yield* data.capture(id)) !== back.digest)
                     return yield* refusal("Source recovery verification failed.");
                 } else if (!["aborting", "rolled-back"].includes(back.phase))
                   return yield* refusal("The destination fence is unconfirmed.");
                 const returnedDigest = back.phase === "returning" ? (back.digest ?? null) : null;
-                yield* phase(r, "finishing-rollback", returnedDigest);
-                r = { ...r, phase: "finishing-rollback", digest: returnedDigest };
+                const recoveryRequirements = back.requirements
+                  ? yield* encodeRequirements(back.requirements)
+                  : r.requirements;
+                yield* sql`UPDATE project_move_receipts SET phase='finishing-rollback', digest=${returnedDigest},
+                  requirements=${recoveryRequirements} WHERE project_id=${id} AND move_id=${r.move_id}`;
+                r = {
+                  ...r,
+                  phase: "finishing-rollback",
+                  digest: returnedDigest,
+                  requirements: recoveryRequirements,
+                };
               }
               if (
                 (yield* call({
@@ -535,6 +664,11 @@ export const makeProjectCoordinatorMove = Effect.gen(function* () {
                 })).phase !== "rolled-back"
               )
                 return yield* refusal("Destination recovery is pending.");
+              if (r.digest) {
+                if (!r.requirements || data.digest(yield* data.capture(id)) !== r.digest)
+                  return yield* refusal("Source recovery verification failed.");
+                yield* checkTarget(id, yield* decodeRequirements(r.requirements), true);
+              }
               yield* sql.withTransaction(
                 phase(r, "rolled-back").pipe(
                   Effect.andThen(releaseProjectMoveFence(id, r.move_id)),

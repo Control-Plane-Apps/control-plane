@@ -60,3 +60,4 @@ export * from "./usage.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 export * from "./projectCoordinatorMove.ts";
+export * from "./remoteAgentRecord.ts";
