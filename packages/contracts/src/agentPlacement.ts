@@ -95,11 +95,22 @@ export type AgentPlacementSettingsPatch = typeof AgentPlacementSettingsPatch.Typ
 
 // ── RPC ────────────────────────────────────────────────────────────
 
+export const CoordinatorCheckoutOption = Schema.Struct({
+  projectId: TrimmedNonEmptyString,
+  title: Schema.String,
+  workspaceRoot: TrimmedNonEmptyString,
+  repository: TrimmedNonEmptyString,
+  blockedReason: Schema.optionalKey(Schema.String),
+});
+export type CoordinatorCheckoutOption = typeof CoordinatorCheckoutOption.Type;
+
 export const CoordinatorMoveInput = Schema.Struct({
   action: Schema.Literal("coordinatorMove"),
   projectId: TrimmedNonEmptyString,
-  operation: Schema.Literals(["status", "preflight", "move", "retry", "rollback"]),
+  operation: Schema.Literals(["status", "options", "preflight", "move", "retry", "rollback"]),
   destinationId: Schema.optionalKey(AgentMachineId),
+  sourceCheckoutProjectId: Schema.optionalKey(TrimmedNonEmptyString),
+  destinationProjectId: Schema.optionalKey(TrimmedNonEmptyString),
   moveId: Schema.optionalKey(TrimmedNonEmptyString),
   approvalDigest: Schema.optionalKey(TrimmedNonEmptyString),
 });
@@ -110,6 +121,10 @@ export const CoordinatorMoveStatus = Schema.Struct({
   ownerId: Schema.String,
   moveId: Schema.optionalKey(Schema.String),
   destinationId: Schema.optionalKey(Schema.String),
+  sourceCheckoutProjectId: Schema.optionalKey(TrimmedNonEmptyString),
+  destinationProjectId: Schema.optionalKey(TrimmedNonEmptyString),
+  sourceCheckouts: Schema.optionalKey(Schema.Array(CoordinatorCheckoutOption)),
+  destinationProjects: Schema.optionalKey(Schema.Array(CoordinatorCheckoutOption)),
   incoming: Schema.optionalKey(Schema.Boolean),
   approvalDigest: Schema.optionalKey(TrimmedNonEmptyString),
   detail: Schema.String,

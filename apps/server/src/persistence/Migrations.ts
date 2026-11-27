@@ -72,6 +72,7 @@ import Migration0057 from "./Migrations/057_AgentPushLookupIndexes.ts";
 import Migration0058 from "./Migrations/058_ProjectionTasks.ts";
 import Migration0059 from "./Migrations/059_AgentMachineLinkRenewals.ts";
 import Migration0060 from "./Migrations/060_ProjectMoveFences.ts";
+import Migration0061 from "./Migrations/061_ProjectCheckoutFenceOwner.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -144,6 +145,7 @@ const migrationEntries = [
   [58, "ProjectionTasks", Migration0058],
   [59, "AgentMachineLinkRenewals", Migration0059],
   [60, "ProjectMoveFences", Migration0060],
+  [61, "ProjectCheckoutFenceOwner", Migration0061],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

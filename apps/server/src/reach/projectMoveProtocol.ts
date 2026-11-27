@@ -1,4 +1,9 @@
-import { AgentIntegration, ModelSelection, ProjectMoveBundle } from "@t3tools/contracts";
+import {
+  CoordinatorCheckoutOption,
+  AgentIntegration,
+  ModelSelection,
+  ProjectMoveBundle,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { WorkerRoute } from "./projectMoveAgentRoutes.ts";
@@ -8,9 +13,18 @@ export const CheckoutProof = Schema.Struct({
   branch: Schema.String,
   commit: Schema.String,
   digest: Schema.String,
+  postInstallDigest: Schema.optionalKey(Schema.String),
+});
+export const CheckoutSelection = Schema.Struct({
+  sourceProjectId: Schema.NonEmptyString,
+  sourceRoot: Schema.NonEmptyString,
+  sourceProjectFilesDigest: Schema.optionalKey(Schema.String),
+  destinationProjectId: Schema.NonEmptyString,
+  destinationRoot: Schema.NonEmptyString,
 });
 export const MoveRequirements = Schema.Struct({
   checkout: CheckoutProof,
+  checkoutSelection: Schema.optionalKey(CheckoutSelection),
   workers: Schema.Array(WorkerRoute),
   scheduleZone: Schema.NullOr(Schema.String),
   model: ModelSelection,
@@ -22,6 +36,7 @@ const binding = {
   moveId: Schema.NonEmptyString,
 };
 export const ProjectMoveStep = Schema.Union([
+  Schema.Struct({ action: Schema.Literal("checkoutOptions") }),
   Schema.Struct({
     ...binding,
     action: Schema.Literal("preflight"),
@@ -52,6 +67,8 @@ export const ProjectMoveStep = Schema.Union([
 export type ProjectMoveStep = typeof ProjectMoveStep.Type;
 export const ProjectMoveReply = Schema.Struct({
   phase: Schema.String,
+  checkoutSelectionVerified: Schema.optionalKey(Schema.Literal(true)),
+  destinationProjects: Schema.optionalKey(Schema.Array(CoordinatorCheckoutOption)),
   detail: Schema.optionalKey(Schema.String),
   requirements: Schema.optionalKey(MoveRequirements),
   digest: Schema.optionalKey(Schema.String),

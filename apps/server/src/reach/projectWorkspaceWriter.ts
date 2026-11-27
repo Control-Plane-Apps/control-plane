@@ -8,29 +8,7 @@ import type * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 import { type ProjectMoveFenceError, withProjectWriter } from "./projectMoveFence.ts";
 
-// A new file or directory may not exist yet. Its nearest existing parent
-// still tells us whether a workspace symlink leads into a fenced Project.
-async function actualPath(input: string, links = new Set<string>()): Promise<string> {
-  try {
-    return await NodeFSP.realpath(input);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
-    // realpath also returns ENOENT for a dangling link. A write follows it
-    // and may create the missing target in another Project.
-    const link = await NodeFSP.readlink(input).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT" || error.code === "EINVAL") return null;
-      throw error;
-    });
-    if (link !== null) {
-      if (links.has(input)) throw new Error("Workspace path contains a symlink loop.", { cause });
-      links.add(input);
-      return actualPath(NodePath.resolve(NodePath.dirname(input), link), links);
-    }
-    const parent = NodePath.dirname(input);
-    if (parent === input) throw cause;
-    return NodePath.join(await actualPath(parent, links), NodePath.basename(input));
-  }
-}
+import { actualPath } from "./projectWorkspacePaths.ts";
 
 // Linked worktrees have different paths but mutate refs in one Git directory.
 async function commonGitDirectory(target: string): Promise<string | null> {
