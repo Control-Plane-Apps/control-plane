@@ -277,6 +277,15 @@ it("recovers a non-Git coordinator move using the selected registered checkout a
     git(targetRoot, "remote", "set-url", "origin", "https://example.invalid/demo/project.git");
     git(populatedRoot, "remote", "set-url", "origin", "https://example.invalid/demo/project.git");
     git(wrongRoot, "remote", "set-url", "origin", "https://example.invalid/demo/other.git");
+    const verificationRole = NodePath.join(verifyRoot, "reviewer", "AGENTS.md");
+    const originalRole = "Keep the verification Project role";
+    await NodeFSP.mkdir(NodePath.dirname(verificationRole));
+    await NodeFSP.appendFile(
+      NodePath.join(verifyRoot, ".git", "info", "exclude"),
+      "\n/reviewer/AGENTS.md\n",
+    );
+    await NodeFSP.writeFile(verificationRole, originalRole);
+    git(verifyRoot, "check-ignore", "--quiet", "reviewer/AGENTS.md");
     for (const [runtime, id, cwd] of [
       [source, sourceId, sourceRoot],
       [source, verificationId, verifyRoot],
@@ -684,6 +693,18 @@ it("recovers a non-Git coordinator move using the selected registered checkout a
     await expect(request("rollback")).rejects.toThrow("workspace contents differ");
     expect((await request("status")).coordinatorMove?.phase).toBe("active");
     await NodeFSP.unlink(drift);
+    await NodeFSP.writeFile(verificationRole, "Independent verification role changed");
+    await expect(request("rollback")).rejects.toThrow(
+      /Project files in the separate source verification checkout changed/,
+    );
+    expect((await request("status")).coordinatorMove).toMatchObject({
+      phase: "active",
+      ownerId: "destination",
+    });
+    expect(await NodeFSP.readFile(verificationRole, "utf8")).toBe(
+      "Independent verification role changed",
+    );
+    await NodeFSP.writeFile(verificationRole, originalRole);
     const verificationDrift = NodePath.join(verifyRoot, "local-unprepared.txt");
     await NodeFSP.writeFile(verificationDrift, "Change only the registered source checkout");
     await expect(request("rollback")).rejects.toThrow("workspace contents differ");
@@ -787,6 +808,7 @@ it("recovers a non-Git coordinator move using the selected registered checkout a
     expect(await memoryAt(targetRoot)).toBe(checkoutMemory);
     expect(await memoryAt(verifyRoot)).toBe(checkoutMemory);
     expect(await memoryAt(sourceRoot)).toBe("Destination memory");
+    expect(await NodeFSP.readFile(verificationRole, "utf8")).toBe(originalRole);
     expect(await memoryAt(populatedRoot)).toBe(checkoutMemory);
     expect(await memoryAt(wrongRoot)).toBe(checkoutMemory);
     const untouched = await dest.runPromise(
