@@ -48,6 +48,8 @@ import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDi
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { withGitWorkspaceWriter } from "./reach/projectWorkspaceWriter.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import {
   formatHeadlessServeOutput,
@@ -838,9 +840,10 @@ interface StartupOptions {
 }
 
 export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
-  projects: ReadonlyArray<OrchestrationProjectShell>,
+  projects: ReadonlyArray<Pick<OrchestrationProjectShell, "id" | "workspaceRoot">>,
   settings: ServerSettingsValue = DEFAULT_SERVER_SETTINGS,
 ) {
+  const sql = yield* SqlClient.SqlClient;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const workspaceRoots = [
     ...new Set(
@@ -853,39 +856,46 @@ export const autoPullProjects = Effect.fn("autoPullProjects")(function* (
   yield* Effect.forEach(
     workspaceRoots,
     (cwd) =>
-      Effect.gen(function* () {
-        const status = yield* git.statusDetails(cwd);
-        if (
-          !status.isRepo ||
-          !status.isDefaultBranch ||
-          !status.hasUpstream ||
-          status.hasWorkingTreeChanges ||
-          status.aheadCount > 0
-        ) {
-          yield* Effect.logDebug("Skipped automatic project pull", {
+      // statusDetails may fetch upstream refs. Hold the same durable writer as
+      // an interactive pull across both the status check and the checkout.
+      withGitWorkspaceWriter(
+        sql,
+        { cwd },
+        "autoPullProjects",
+        Effect.gen(function* () {
+          const status = yield* git.statusDetails(cwd);
+          if (
+            !status.isRepo ||
+            !status.isDefaultBranch ||
+            !status.hasUpstream ||
+            status.hasWorkingTreeChanges ||
+            status.aheadCount > 0
+          ) {
+            yield* Effect.logDebug("Skipped automatic project pull", {
+              cwd,
+              reason: !status.isRepo
+                ? "not-a-repository"
+                : !status.isDefaultBranch
+                  ? "not-on-default-branch"
+                  : !status.hasUpstream
+                    ? "no-upstream"
+                    : status.hasWorkingTreeChanges
+                      ? "working-tree-changes"
+                      : "local-commits",
+            });
+            return;
+          }
+
+          if (status.behindCount <= 0) return;
+
+          const result = yield* git.pullCurrentBranch(cwd);
+          yield* Effect.logDebug("Automatic project pull completed", {
             cwd,
-            reason: !status.isRepo
-              ? "not-a-repository"
-              : !status.isDefaultBranch
-                ? "not-on-default-branch"
-                : !status.hasUpstream
-                  ? "no-upstream"
-                  : status.hasWorkingTreeChanges
-                    ? "working-tree-changes"
-                    : "local-commits",
+            status: result.status,
+            refName: result.refName,
           });
-          return;
-        }
-
-        if (status.behindCount <= 0) return;
-
-        const result = yield* git.pullCurrentBranch(cwd);
-        yield* Effect.logDebug("Automatic project pull completed", {
-          cwd,
-          status: result.status,
-          refName: result.refName,
-        });
-      }).pipe(
+        }),
+      ).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("Automatic project pull failed", {
             cwd,

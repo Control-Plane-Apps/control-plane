@@ -92,6 +92,7 @@ import { RemoteAgentStoreLive } from "./agentMachines/RemoteAgentStore.ts";
 import { ReachLive } from "./reach/Reach.ts";
 import { ReachBridgeLive } from "./reach/ReachBridge.ts";
 import { TaskAuthorityLive } from "./reach/TaskAuthorityLive.ts";
+import { ProjectCoordinatorMoveLive } from "./reach/ProjectCoordinatorMove.ts";
 import { AssistantHomeLive } from "./reach/AssistantHome.ts";
 import { AssistantNeedsYouLive } from "./reach/AssistantNeedsYou.ts";
 import { reachRouteLayer } from "./reach/route.ts";
@@ -282,6 +283,7 @@ const BaseReactorLayerLive = Layer.empty.pipe(
       ReachBridgeLive,
       TaskAuthorityLive,
       AssistantHomeLive,
+      ProjectCoordinatorMoveLive,
       AssistantNeedsYouLive,
       AgentMachineLinkRenewalLive,
     ).pipe(
@@ -409,11 +411,13 @@ const GitLayerLive = Layer.empty.pipe(
 );
 
 const GitWorkflowLayerLive = GitWorkflowService.layer.pipe(
+  Layer.provide(PersistenceLayerLive),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
   Layer.provideMerge(GitLayerLive),
 );
 
 const SourceControlRepositoryServiceLayerLive = SourceControlRepositoryService.layer.pipe(
+  Layer.provide(PersistenceLayerLive),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(SourceControlProviderRegistryLayerLive),
 );

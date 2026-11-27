@@ -65,6 +65,8 @@ export interface ProjectionFullThreadDiffContext {
 }
 
 export interface ProjectionThreadDetailQuery {
+  /** Include archived history when capturing a fenced Project. */
+  readonly includeArchived?: boolean;
   /**
    * Limit activities before SQLite returns and decodes their payloads.
    * Any explicit filter omits pinned-request reads. An empty list also skips

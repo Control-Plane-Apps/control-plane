@@ -1,6 +1,8 @@
 import { EventId, CommandId, MessageId, ThreadId, isStandingAgent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { projectMoveFenceOwner } from "./projectMoveFence.ts";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
@@ -82,10 +84,11 @@ export const readLocalPeer = (
 
 export const makePlacedAgentPeerHost = Effect.gen(function* () {
   const agents = yield* Effect.serviceOption(RemoteAgents);
+  const sql = yield* SqlClient.SqlClient;
   const query = yield* ProjectionSnapshotQuery;
   const engine = yield* OrchestrationEngineService;
   const rows = yield* ProjectionThreadMessageRepository;
-  return (request: ReachRequest) =>
+  return (request: ReachRequest, relay?: { target: string; origin: string; project: string }) =>
     Effect.gen(function* () {
       const input = yield* decodePeerInput(request.input);
       const denied = opFailed("No active placement for this caller on this machine.");
@@ -94,11 +97,17 @@ export const makePlacedAgentPeerHost = Effect.gen(function* () {
       const caller = Option.getOrUndefined(yield* remote.get(input.threadId));
       if (
         !caller ||
+        (relay &&
+          (caller.homeProjectId !== relay.target ||
+            caller.placementOrigin?.machineId !== relay.origin ||
+            caller.placementOrigin.projectId !== relay.project)) ||
         caller.machineId !== request.caller.environmentId ||
         caller.peerProjectId !== input.projectId ||
         (caller.state !== "open" && caller.state !== "pending")
       )
         return yield* denied;
+      if (yield* projectMoveFenceOwner(sql, caller.homeProjectId))
+        return yield* opFailed("The coordinator is paused while its worker route is verified.");
       const snapshot = yield* query.getShellSnapshot();
       const project = snapshot.projects.find((p) => p.id === caller.homeProjectId);
       if (!project?.assistant || project.assistant.archivedAt != null) return yield* denied;

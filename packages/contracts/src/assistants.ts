@@ -94,6 +94,8 @@ export type ProjectAssistantScope = typeof ProjectAssistantScope.Type;
 
 export const ProjectAssistant = Schema.Struct({
   coordinatorThreadId: ThreadId,
+  /** Stable namespace of scheduled prompt and execution receipt IDs after coordinator migration. */
+  scheduleProjectId: Schema.optional(TrimmedNonEmptyString),
   scope: Schema.optional(ProjectAssistantScope),
   /** The current coordinator's title from before it was promoted, restored if it is replaced. */
   formerTitle: Schema.optional(TrimmedNonEmptyString),

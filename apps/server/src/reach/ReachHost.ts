@@ -53,12 +53,16 @@ import {
   ScheduleUpdateInput,
   StatusSetInput,
 } from "../mcp/toolkits/agents/tools.ts";
+import { RemoteAgentStore } from "../agentMachines/RemoteAgentStore.ts";
+import { checkWorkerRoute, routePlacedPeer } from "./projectMoveAgentRoutes.ts";
 import { makePlacedAgentPeerHost } from "./placedAgentPeers.ts";
 import { Reach } from "./Reach.ts";
 import { describeTaskState, pokeTaskAuthority } from "./taskAuthority.ts";
 import { acceptOnce, reachInputHash, wasAccepted, wasSent } from "./reachSent.ts";
 import { linkSubjectHolder } from "../agentMachines/linkToken.ts";
 import { assistantNoteText, remoteSenderTitle } from "./reachText.ts";
+import { ProjectMoveStep } from "./projectMoveProtocol.ts";
+import { ProjectCoordinatorMove } from "./ProjectCoordinatorMove.ts";
 import { AssistantHome } from "./AssistantHome.ts";
 import { makeStatusQuestionReply } from "./statusQuestionReply.ts";
 import {
@@ -119,8 +123,10 @@ export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const statusCore = yield* makeStatusCore;
   const home = yield* AssistantHome;
+  const move = yield* ProjectCoordinatorMove;
   const reach = yield* Reach;
   const settings = yield* ServerSettingsService;
+  const remoteStore = Option.getOrUndefined(yield* Effect.serviceOption(RemoteAgentStore));
   const placedPeers = yield* makePlacedAgentPeerHost;
   const scheduleCore = yield* makeScheduleCore;
 
@@ -420,8 +426,15 @@ export const make = Effect.gen(function* () {
 
   const run = (request: ReachRequest): Effect.Effect<unknown, Error> => {
     switch (request.op) {
+      case "project.moveStep":
+        return decode(ProjectMoveStep)(request.input).pipe(
+          Effect.flatMap((input) => move.step(request.caller.environmentId, input)),
+        );
+      case "agent.routeCheck":
+        return checkWorkerRoute(reach, snapshots, request);
       case "agent.peers":
-        return placedPeers(request);
+      case "agent.peerRelay":
+        return routePlacedPeer(sql, reach, placedPeers, request, remoteStore?.listForMove);
       case "describe":
         return describe;
       case "authority.poke":

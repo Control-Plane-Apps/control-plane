@@ -6,6 +6,8 @@
  *
  * @module RemoteAgents
  */
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { withProjectWriter } from "../reach/projectMoveFence.ts";
 import {
   CommandId,
   MessageId,
@@ -191,6 +193,13 @@ const isCounted = (record: RemoteAgentRecord): boolean =>
   record.state === "pending" || (record.state === "open" && record.inFlight !== null);
 
 const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const write = <A>(id: string, operation: Effect.Effect<A, RemoteAgentError>) =>
+    withProjectWriter(sql, id, operation).pipe(
+      Effect.mapError((e) =>
+        e._tag === "RemoteAgentError" ? e : new RemoteAgentError({ detail: e.message }),
+      ),
+    );
   const machines = yield* AgentMachines;
   const store = yield* RemoteAgentStore;
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -815,17 +824,20 @@ const make = Effect.gen(function* () {
   return {
     plan,
     homeLabel: machines.homeLabel,
-    reserve,
+    reserve: (input) => write(input.home.project.id, reserve(input)),
     start: (input, record) =>
-      withRemoteAgentLock(
-        record.threadId,
-        Effect.gen(function* () {
-          const current = yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed));
-          return yield* start(
-            input,
-            Option.getOrElse(current, () => record),
-          );
-        }),
+      write(
+        record.homeProjectId,
+        withRemoteAgentLock(
+          record.threadId,
+          Effect.gen(function* () {
+            const current = yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed));
+            return yield* start(
+              input,
+              Option.getOrElse(current, () => record),
+            );
+          }),
+        ),
       ),
     get: (threadId) => store.get(threadId).pipe(Effect.orDie),
     find: ({ projectId, ref }) =>
@@ -863,33 +875,41 @@ const make = Effect.gen(function* () {
       ),
     read,
     stop: (record, options) =>
-      withRemoteAgentLock(
-        record.threadId,
-        Effect.gen(function* () {
-          const current = yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed));
-          if (
-            Option.isNone(current) ||
-            current.value.handoff ||
-            current.value.machineId !== record.machineId
-          )
-            return yield* lostError(record);
-          return yield* stop(current.value, options);
-        }),
+      write(
+        record.homeProjectId,
+        withRemoteAgentLock(
+          record.threadId,
+          Effect.gen(function* () {
+            const current = yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed));
+            if (
+              Option.isNone(current) ||
+              current.value.handoff ||
+              current.value.machineId !== record.machineId
+            )
+              return yield* lostError(record);
+            return yield* stop(current.value, options);
+          }),
+        ),
       ),
     settle: (record, options) =>
-      withRemoteAgentLock(
-        record.threadId,
-        Effect.gen(function* () {
-          const current = Option.getOrNull(
-            yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
-          );
-          if (!current || current.handoff || current.machineId !== record.machineId)
-            return yield* lostError(record);
-          return yield* settle(current, options);
-        }),
+      write(
+        record.homeProjectId,
+        withRemoteAgentLock(
+          record.threadId,
+          Effect.gen(function* () {
+            const current = Option.getOrNull(
+              yield* store.get(record.threadId).pipe(Effect.mapError(storeFailed)),
+            );
+            if (!current || current.handoff || current.machineId !== record.machineId)
+              return yield* lostError(record);
+            return yield* settle(current, options);
+          }),
+        ),
       ),
-    send: (record, input) => withRemoteAgentLock(record.threadId, sendMessage(record, input)),
-    startQueued: (record, view) => withRemoteAgentLock(record.threadId, startQueued(record, view)),
+    send: (record, input) =>
+      write(record.homeProjectId, withRemoteAgentLock(record.threadId, sendMessage(record, input))),
+    startQueued: (record, view) =>
+      write(record.homeProjectId, withRemoteAgentLock(record.threadId, startQueued(record, view))),
   } satisfies RemoteAgentsShape;
 });
 

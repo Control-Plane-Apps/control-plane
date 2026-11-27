@@ -1,3 +1,6 @@
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { acquireProjectMoveFence } from "../reach/projectMoveFence.ts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { assert, describe, expect, it, vi } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -15,6 +18,7 @@ function makeLayer(input: {
   readonly detect: VcsDriverRegistry.VcsDriverRegistry["Service"]["detect"];
 }) {
   return GitWorkflowService.layer.pipe(
+    Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provide(
       Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
         detect: input.detect,
@@ -26,6 +30,33 @@ function makeLayer(input: {
 }
 
 describe("GitWorkflowService", () => {
+  it.effect(
+    "refuses pull, stacked action and PR preparation before starting Git in a paused Project",
+    () => {
+      const detect = vi.fn(() => Effect.succeed(null));
+      return Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const cwd = "/synthetic/fenced-checkout";
+        yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('synthetic', 'Fixture', ${cwd}, '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`;
+        yield* acquireProjectMoveFence("synthetic", "move");
+        const workflow = yield* GitWorkflowService.GitWorkflowService;
+        expect((yield* Effect.flip(workflow.pullCurrentBranch(cwd))).message).toMatch(/paused/);
+        expect(
+          (yield* Effect.flip(
+            workflow.runStackedAction({ cwd, action: "commit", actionId: "demo" }),
+          )).message,
+        ).toMatch(/paused/);
+        expect(
+          (yield* Effect.flip(
+            workflow.preparePullRequestThread({ cwd, mode: "worktree", reference: "1" }),
+          )).message,
+        ).toMatch(/paused/);
+        expect(detect).not.toHaveBeenCalled();
+      }).pipe(Effect.provide(makeLayer({ detect })));
+    },
+  );
+
   it.effect("reports a non-Git VCS repository as not a Git repository", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
@@ -118,6 +149,7 @@ describe("GitWorkflowService", () => {
     const status = vi.fn();
 
     const testLayer = GitWorkflowService.layer.pipe(
+      Layer.provide(SqlitePersistenceMemory),
       Layer.provide(
         Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
           detect: () => Effect.succeed(null),

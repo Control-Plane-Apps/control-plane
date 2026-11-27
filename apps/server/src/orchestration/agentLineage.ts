@@ -42,11 +42,14 @@ const makeAgentLineage = Effect.gen(function* () {
     Result: Schema.Struct({ createdByThreadId: Schema.NullOr(ThreadId) }),
     execute: ({ threadId }) =>
       sql`
-        SELECT json_extract(payload_json, '$.createdByThreadId') AS "createdByThreadId"
+        SELECT CASE WHEN event_type = 'thread.history-restored'
+                    THEN json_extract(payload_json, '$.event.payload.createdByThreadId')
+                    ELSE json_extract(payload_json, '$.createdByThreadId') END AS "createdByThreadId"
         FROM orchestration_events
         WHERE aggregate_kind = 'thread'
           AND stream_id = ${threadId}
-          AND event_type = 'thread.created'
+          AND (event_type = 'thread.created' OR (event_type = 'thread.history-restored'
+            AND json_extract(payload_json, '$.event.type') = 'thread.created'))
         ORDER BY sequence DESC
         LIMIT 1
       `,

@@ -732,6 +732,7 @@ const buildAppUnderTest = (options?: {
       NativeAppIconResolver.layer,
     );
     const gitWorkflowLayer = GitWorkflowService.layer.pipe(
+      Layer.provide(SqlitePersistenceMemory),
       Layer.provideMerge(vcsDriverRegistryLayer),
       Layer.provideMerge(gitVcsDriverLayer),
       Layer.provideMerge(gitManagerLayer),

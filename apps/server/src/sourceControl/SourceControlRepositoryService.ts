@@ -1,3 +1,5 @@
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { withGitWorkspaceWriter } from "../reach/projectWorkspaceWriter.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -156,6 +158,7 @@ function selectRemoteUrl(
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const config = yield* ServerConfig;
+  const sql = yield* SqlClient.SqlClient;
   const fileSystem = yield* FileSystem.FileSystem;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const path = yield* Path.Path;
@@ -442,19 +445,36 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const writeDestination = <A, E, R>(
+    destinationPath: string,
+    name: string,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    normalizeDestinationPath(destinationPath).pipe(
+      Effect.flatMap((cwd) => withGitWorkspaceWriter(sql, { cwd }, name, effect, true)),
+    );
+
   return SourceControlRepositoryService.of({
     lookupRepository: (input) =>
       lookupRepository(input).pipe(mapRepositoryError("lookupRepository", input.provider)),
     prepareClone: (input) =>
-      prepareClone(input).pipe(mapRepositoryError("cloneRepository", input.provider ?? "unknown")),
-    cloneRepository: (input, options) =>
-      cloneRepository(input, options).pipe(
+      writeDestination(input.destinationPath, "prepareClone", prepareClone(input)).pipe(
         mapRepositoryError("cloneRepository", input.provider ?? "unknown"),
       ),
+    cloneRepository: (input, options) =>
+      writeDestination(
+        input.destinationPath,
+        "cloneRepository",
+        cloneRepository(input, options),
+      ).pipe(mapRepositoryError("cloneRepository", input.provider ?? "unknown")),
     discardClone: (destinationPath) =>
-      discardClone(destinationPath).pipe(mapRepositoryError("discardClone", "unknown")),
+      writeDestination(destinationPath, "discardClone", discardClone(destinationPath)).pipe(
+        mapRepositoryError("discardClone", "unknown"),
+      ),
     publishRepository: (input) =>
-      publishRepository(input).pipe(mapRepositoryError("publishRepository", input.provider)),
+      withGitWorkspaceWriter(sql, input, "publishRepository", publishRepository(input)).pipe(
+        mapRepositoryError("publishRepository", input.provider),
+      ),
   });
 });
 

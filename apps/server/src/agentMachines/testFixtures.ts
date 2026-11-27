@@ -49,8 +49,16 @@ const LONG_AGO = "2026-08-20T00:00:00.000Z";
 /** A store that keeps records in a Map, for tests that do not need the file. */
 export const makeMemoryRemoteAgentStore = Effect.sync(() => {
   const records = new Map<string, RemoteAgentRecord>();
+  const list = Effect.sync(() => [...records.values()]);
   return {
-    list: Effect.sync(() => [...records.values()]),
+    list,
+    listForMove: list,
+    replaceForMove: (id, _move, next, verifyOnly) =>
+      Effect.sync(() => {
+        if (verifyOnly) return;
+        for (const [key, record] of records) if (record.homeProjectId === id) records.delete(key);
+        for (const record of next) records.set(record.threadId, record);
+      }),
     get: (threadId) => Effect.sync(() => Option.fromNullishOr(records.get(threadId))),
     put: (record) => Effect.sync(() => void records.set(record.threadId, record)),
     update: (threadId, change) =>

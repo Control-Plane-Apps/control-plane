@@ -514,7 +514,8 @@ describe("ProviderCommandReactor", () => {
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     const sessionDirectory = await runtime.runPromise(Effect.service(ProviderSessionDirectory));
-    const runEffect = <A, E>(effect: Effect.Effect<A, E>) => runtime!.runPromise(effect);
+    const runEffect = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+      runtime!.runPromise(effect);
 
     await Effect.runPromise(
       engine.dispatch({
@@ -3759,6 +3760,40 @@ describe("ProviderCommandReactor", () => {
     Option.getOrUndefined(
       await harness.runEffect(harness.sessionDirectory.getBinding(ThreadId.make("thread-1"))),
     )?.runtimePayload;
+
+  it("starts a moved Project thread fresh on the same provider and hands it its restored conversation", async () => {
+    const harness = await createHarness();
+    await dispatchUserTurn(harness, { id: "before-move", text: "Original coordinator history" });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const threadId = ThreadId.make("thread-1");
+    await harness.runEffect(
+      harness.sessionDirectory.upsert({
+        threadId,
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        resumeCursor: { nativeThread: "stale-native-thread" },
+      }),
+    );
+    await harness.runEffect(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO project_move_provider_restarts(thread_id,move_id) VALUES (${threadId},'synthetic-move')`;
+      }),
+    );
+    await dispatchUserTurn(harness, { id: "after-move", text: "Continue on this machine" });
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.stopSession).toHaveBeenCalledTimes(1);
+    expect(harness.startSession).toHaveBeenCalledTimes(2);
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+    const body = (harness.sendTurn.mock.calls[1]?.[0] as { input?: string } | undefined)?.input;
+    expect(body).toContain("USER:\nOriginal coordinator history");
+    expect(body).toContain("Continue on this machine");
+    await waitFor(
+      async () =>
+        ((await readBindingPayload(harness)) as { pendingProviderHandoff?: unknown })
+          ?.pendingProviderHandoff === null,
+    );
+  });
 
   it("hands a started thread to another provider with the conversation so far", async () => {
     const harness = await createHarness();

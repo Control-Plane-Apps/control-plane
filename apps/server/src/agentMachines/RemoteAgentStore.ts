@@ -6,7 +6,8 @@
  *
  * @module RemoteAgentStore
  */
-import { AgentHandoffPhase, AgentWorkspaceCheckpoint, RuntimeMode } from "@t3tools/contracts";
+import { hasReturnedWorkerRoute } from "../reach/projectMoveAgentRoutes.ts";
+import { RemoteAgentRecord } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -17,114 +18,15 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { projectMoveFenceOwner, withProjectWriter } from "../reach/projectMoveFence.ts";
 import { writeFileStringAtomically } from "../atomicWrite.ts";
 import * as ServerConfig from "../config.ts";
-import { AgentPhase } from "./agentPhase.ts";
 
 /** Settled and lost records are kept this long, then pruned. */
 export const REMOTE_AGENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
-export const RemoteAgentRequest = Schema.Struct({
-  /** `cp-remote:*`, the message id the peer stores. */
-  messageId: Schema.String,
-  /** The home thread the result goes to (the manager that asked). */
-  replyTo: Schema.String,
-  noResult: Schema.optionalKey(Schema.Literal(true)),
-  sentAt: Schema.String,
-  /** The peer thread's latest turn before the send, so its own turn can be told apart. */
-  baselineTurnId: Schema.NullOr(Schema.String),
-  /** A stop cut the request off: its result is not pushed. */
-  suppressed: Schema.Boolean,
-});
-export type RemoteAgentRequest = typeof RemoteAgentRequest.Type;
-
-export const RemoteAgentQueuedSend = Schema.Struct({
-  messageId: Schema.String,
-  text: Schema.String,
-  replyTo: Schema.String,
-  noResult: Schema.optionalKey(Schema.Literal(true)),
-  queuedAt: Schema.String,
-  baselineTurnId: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  sender: Schema.optionalKey(Schema.Struct({ id: Schema.String, title: Schema.String })),
-});
-export type RemoteAgentQueuedSend = typeof RemoteAgentQueuedSend.Type;
-
-export const RemoteAgentRecord = Schema.Struct({
-  /** The peer thread's id, derived from the create like a local agent's. */
-  threadId: Schema.String,
-  machineId: Schema.String,
-  machineLabel: Schema.String,
-  peerProjectId: Schema.String,
-  homeProjectId: Schema.String,
-  title: Schema.String,
-  /** The home thread that started it; ownership follows this. */
-  creatorThreadId: Schema.String,
-  runtimeMode: RuntimeMode,
-  createdAt: Schema.String,
-  /** `pending` until the peer accepted the create; `lost` when the peer thread is gone. */
-  state: Schema.Literals(["pending", "open", "settled", "lost"]),
-  /** When it reached `settled` or `lost`, for pruning. */
-  endedAt: Schema.NullOr(Schema.String),
-  inFlight: Schema.NullOr(RemoteAgentRequest),
-  queuedSends: Schema.Array(RemoteAgentQueuedSend),
-  lastPhase: AgentPhase,
-  lastActivityAt: Schema.NullOr(Schema.String),
-  workspacePosition: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
-  workspaceCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
-  createAttempted: Schema.optionalKey(Schema.Boolean),
-  firstMessageAccepted: Schema.optionalKey(Schema.Boolean),
-  peerReceipts: Schema.optionalKey(
-    Schema.Array(
-      Schema.Struct({
-        messageId: Schema.String,
-        senderThreadId: Schema.String,
-        text: Schema.String,
-        refusal: Schema.optionalKey(Schema.String),
-        refusalWindowClosed: Schema.optionalKey(Schema.Literal(true)),
-      }),
-    ),
-  ),
-  stoppingAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  workspaceObservedFor: Schema.optionalKey(Schema.String),
-  handoffContext: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  handoffHomeMachine: Schema.optionalKey(Schema.String),
-  handoff: Schema.optionalKey(
-    Schema.NullOr(
-      Schema.Struct({
-        waitId: Schema.String,
-        phase: Schema.optionalKey(AgentHandoffPhase),
-        sourceKey: Schema.optionalKey(Schema.String),
-        destinationKey: Schema.optionalKey(Schema.String),
-        replacementKey: Schema.optionalKey(Schema.String),
-        destinationId: Schema.String,
-        projectId: Schema.String,
-        sourceRoot: Schema.String,
-        targetRoot: Schema.String,
-        branch: Schema.String,
-        commit: Schema.String,
-        digest: Schema.String,
-        createdAt: Schema.String,
-      }),
-    ),
-  ),
-  notifiedCoordinatorId: Schema.optionalKey(Schema.String),
-  notifiedWaitId: Schema.optionalKey(Schema.String),
-  waitId: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  resumeCheckpoint: Schema.optionalKey(Schema.NullOr(AgentWorkspaceCheckpoint)),
-  abandonedHolds: Schema.optionalKey(
-    Schema.Array(
-      Schema.Struct({
-        destinationId: Schema.String,
-        projectId: Schema.String,
-        waitId: Schema.String,
-        key: Schema.String,
-      }),
-    ),
-  ),
-  lastRecoveredWaitId: Schema.optionalKey(Schema.String),
-  lastResumedWaitId: Schema.optionalKey(Schema.String),
-});
-export type RemoteAgentRecord = typeof RemoteAgentRecord.Type;
+export { RemoteAgentRequest, RemoteAgentQueuedSend, RemoteAgentRecord } from "@t3tools/contracts";
 
 const StoreFile = Schema.Struct({
   version: Schema.Literal(1),
@@ -142,6 +44,16 @@ export class RemoteAgentStoreError extends Schema.TaggedError<RemoteAgentStoreEr
 
 export interface RemoteAgentStoreShape {
   readonly list: Effect.Effect<ReadonlyArray<RemoteAgentRecord>, RemoteAgentStoreError>;
+  /** Verify the on-disk association inventory before a coordinator move. */
+  readonly listForMove: Effect.Effect<ReadonlyArray<RemoteAgentRecord>, RemoteAgentStoreError>;
+  /** Atomically replace this fenced Project's associations, preserving records belonging to others. */
+  readonly replaceForMove: (
+    projectId: string,
+    moveId: string,
+    agents: readonly RemoteAgentRecord[],
+    verifyOnly: boolean,
+    localThreads?: readonly string[],
+  ) => Effect.Effect<void, RemoteAgentStoreError>;
   readonly get: (
     threadId: string,
   ) => Effect.Effect<Option.Option<RemoteAgentRecord>, RemoteAgentStoreError>;
@@ -158,52 +70,79 @@ export class RemoteAgentStore extends Context.Service<RemoteAgentStore, RemoteAg
   "t3/agentMachines/RemoteAgentStore",
 ) {}
 
+const isRemoteAgentStoreError = Schema.is(RemoteAgentStoreError);
+
 const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
   const filePath = `${config.stateDir}/remote-agents.json`;
   const lock = yield* Semaphore.make(1);
-  let cache: Array<RemoteAgentRecord> | null = null;
 
   const fail = (detail: string) => (cause: unknown) => new RemoteAgentStoreError({ detail, cause });
 
-  const load = Effect.gen(function* () {
-    if (cache !== null) return cache;
-    const exists = yield* fileSystem.exists(filePath).pipe(Effect.mapError(fail("read")));
-    if (!exists) {
-      cache = [];
-      return cache;
-    }
+  // Take the SQLite write lock before reading the file. The registry is one atomic
+  // file shared by all Projects and every server using this state directory.
+  const registryWrite = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+    sql
+      .withTransaction(
+        sql`UPDATE project_move_fences SET move_id=move_id WHERE 0`.pipe(Effect.andThen(work)),
+      )
+      .pipe(
+        Effect.mapError((cause) =>
+          isRemoteAgentStoreError(cause) ? cause : fail("write registry")(cause),
+        ),
+      );
+  const read = Effect.gen(function* () {
+    if (!(yield* fileSystem.exists(filePath).pipe(Effect.mapError(fail("read")))))
+      return Option.some([] as RemoteAgentRecord[]);
     const raw = yield* fileSystem.readFileString(filePath).pipe(Effect.mapError(fail("read")));
-    const decoded = decodeStoreFile(raw);
-    if (Option.isNone(decoded)) {
-      // A file this build cannot read is set aside, not overwritten silently.
-      yield* Effect.logWarning("remote-agents.json could not be read; starting empty", {
-        filePath,
-      });
-      yield* fileSystem
-        .rename(filePath, `${filePath}.unreadable`)
-        .pipe(Effect.catch(() => Effect.void));
-      cache = [];
-      return cache;
-    }
-    cache = [...decoded.value.agents];
-    return cache;
+    return Option.map(decodeStoreFile(raw), (stored) => [...stored.agents]);
+  });
+  const load = Effect.gen(function* () {
+    const records = yield* read;
+    if (Option.isSome(records)) return records.value;
+    // Re-read under the shared writer lock before setting aside a legacy unreadable file.
+    return yield* registryWrite(
+      Effect.gen(function* () {
+        const current = yield* read;
+        if (Option.isSome(current)) return current.value;
+        yield* Effect.logWarning("remote-agents.json could not be read; starting empty", {
+          filePath,
+        });
+        yield* fileSystem
+          .rename(filePath, filePath + ".unreadable")
+          .pipe(Effect.catch(() => Effect.void));
+        return [] as RemoteAgentRecord[];
+      }),
+    );
   });
 
-  const prune = (records: ReadonlyArray<RemoteAgentRecord>, nowMs: number) =>
+  const prune = (
+    records: ReadonlyArray<RemoteAgentRecord>,
+    nowMs: number,
+    fenced: ReadonlySet<string>,
+  ) =>
     records.filter(
       (record) =>
+        fenced.has(record.homeProjectId) ||
         record.endedAt === null ||
         nowMs - DateTime.toEpochMillis(DateTime.makeUnsafe(record.endedAt)) <
           REMOTE_AGENT_RETENTION_MS,
     );
 
-  const persist = (next: ReadonlyArray<RemoteAgentRecord>) =>
+  const persist = (next: ReadonlyArray<RemoteAgentRecord>, preserveAll = false) =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
-      const kept = prune(next, DateTime.toEpochMillis(now));
+      const fences = yield* sql<{
+        project_id: string;
+      }>`SELECT project_id FROM project_move_fences`.pipe(
+        Effect.mapError(fail("read Project fences")),
+      );
+      const kept = preserveAll
+        ? next
+        : prune(next, DateTime.toEpochMillis(now), new Set(fences.map((row) => row.project_id)));
       yield* writeFileStringAtomically({
         filePath,
         contents: encodeStoreFile({ version: 1, agents: kept }),
@@ -212,10 +151,87 @@ const make = Effect.gen(function* () {
         Effect.provideService(Path.Path, path),
         Effect.mapError(fail("write")),
       );
-      cache = [...kept];
     });
 
   const list = lock.withPermits(1)(load.pipe(Effect.map((records) => [...records])));
+
+  const loadForMove = Effect.gen(function* () {
+    const unreadable = new RemoteAgentStoreError({
+      detail: "Recover the unreadable linked-agent registry before moving a coordinator.",
+    });
+    if (yield* fileSystem.exists(`${filePath}.unreadable`).pipe(Effect.mapError(() => unreadable)))
+      return yield* unreadable;
+    const exists = yield* fileSystem.exists(filePath).pipe(Effect.mapError(() => unreadable));
+    const records: RemoteAgentRecord[] = [];
+    if (exists) {
+      const raw = yield* fileSystem
+        .readFileString(filePath)
+        .pipe(Effect.mapError(() => unreadable));
+      const decoded = decodeStoreFile(raw);
+      if (Option.isNone(decoded)) return yield* unreadable;
+      records.push(...decoded.value.agents);
+    }
+    return records;
+  });
+  const listForMove = lock.withPermits(1)(loadForMove);
+  const checkRemoteClaim = (threadId: string, projectId: string) =>
+    Effect.gen(function* () {
+      if (yield* hasReturnedWorkerRoute(sql, threadId))
+        return yield* new RemoteAgentStoreError({
+          detail: "An existing worker still uses this machine for its return route.",
+        });
+      const occupied =
+        yield* sql`SELECT 1 FROM project_move_history_claims WHERE kind='thread' AND identity=${threadId}
+      AND owner<>${"remote:" + projectId}`;
+      if (occupied.length)
+        return yield* new RemoteAgentStoreError({
+          detail: "An agent thread identity is reserved for a Project move.",
+        });
+    });
+  const replaceForMove: RemoteAgentStoreShape["replaceForMove"] = (
+    projectId,
+    moveId,
+    agents,
+    verifyOnly,
+    localThreads = [],
+  ) =>
+    lock.withPermits(1)(
+      registryWrite(
+        Effect.gen(function* () {
+          if ((yield* projectMoveFenceOwner(sql, projectId)) !== moveId)
+            return yield* new RemoteAgentStoreError({
+              detail: "The Project move fence is missing.",
+            });
+          const records = yield* loadForMove;
+          const other = records.filter((record) => record.homeProjectId !== projectId);
+          const localIds = new Set(localThreads);
+          if (records.some((record) => localIds.has(record.threadId)))
+            return yield* new RemoteAgentStoreError({
+              detail: "A Project thread collides with a linked agent.",
+            });
+          const occupied = new Set(other.map((record) => record.threadId));
+          for (const agent of agents) {
+            yield* checkRemoteClaim(agent.threadId, projectId);
+            if (agent.homeProjectId !== projectId || occupied.has(agent.threadId))
+              return yield* new RemoteAgentStoreError({
+                detail: "A linked agent identity collides on this machine.",
+              });
+            occupied.add(agent.threadId);
+          }
+          const next = [...other, ...agents];
+          if (
+            !verifyOnly &&
+            encodeStoreFile({ version: 1, agents: records }) !==
+              encodeStoreFile({ version: 1, agents: next })
+          )
+            yield* persist(next, true);
+        }),
+      ).pipe(
+        Effect.mapError((cause) =>
+          isRemoteAgentStoreError(cause) ? cause : fail("restore linked agents")(cause),
+        ),
+      ),
+    );
 
   const get = (threadId: string) =>
     list.pipe(
@@ -224,34 +240,79 @@ const make = Effect.gen(function* () {
 
   const put = (record: RemoteAgentRecord) =>
     lock.withPermits(1)(
-      Effect.gen(function* () {
-        const records = yield* load;
-        yield* persist([...records.filter((r) => r.threadId !== record.threadId), record]);
-      }),
+      registryWrite(
+        Effect.gen(function* () {
+          const records = yield* load;
+          const previous = records.find((r) => r.threadId === record.threadId);
+          if (previous && previous.homeProjectId !== record.homeProjectId)
+            return yield* new RemoteAgentStoreError({
+              detail: "The agent belongs to another Project.",
+            });
+          yield* withProjectWriter(
+            sql,
+            record.homeProjectId,
+            sql.withTransaction(
+              checkRemoteClaim(record.threadId, record.homeProjectId).pipe(
+                Effect.andThen(
+                  persist([...records.filter((r) => r.threadId !== record.threadId), record]),
+                ),
+              ),
+            ),
+            "file",
+          ).pipe(Effect.mapError(fail("write agent")));
+        }),
+      ),
     );
 
   const update = (threadId: string, change: (record: RemoteAgentRecord) => RemoteAgentRecord) =>
     lock.withPermits(1)(
-      Effect.gen(function* () {
-        const records = yield* load;
-        const current = records.find((r) => r.threadId === threadId);
-        if (current === undefined) return Option.none<RemoteAgentRecord>();
-        const next = change(current);
-        yield* persist(records.map((r) => (r.threadId === threadId ? next : r)));
-        return Option.some(next);
-      }),
+      registryWrite(
+        Effect.gen(function* () {
+          const records = yield* load;
+          const current = records.find((r) => r.threadId === threadId);
+          if (current === undefined) return Option.none<RemoteAgentRecord>();
+          const next = change(current);
+          if (threadId !== next.threadId || current.homeProjectId !== next.homeProjectId)
+            return yield* new RemoteAgentStoreError({
+              detail: "An agent update must preserve its thread and home Project.",
+            });
+          yield* withProjectWriter(
+            sql,
+            current.homeProjectId,
+            persist(records.map((r) => (r.threadId === threadId ? next : r))),
+            "file",
+          ).pipe(Effect.mapError(fail("update agent")));
+          return Option.some(next);
+        }),
+      ),
     );
 
   const remove = (threadId: string) =>
     lock.withPermits(1)(
-      Effect.gen(function* () {
-        const records = yield* load;
-        if (!records.some((r) => r.threadId === threadId)) return;
-        yield* persist(records.filter((r) => r.threadId !== threadId));
-      }),
+      registryWrite(
+        Effect.gen(function* () {
+          const records = yield* load;
+          const current = records.find((r) => r.threadId === threadId);
+          if (!current) return;
+          yield* withProjectWriter(
+            sql,
+            current.homeProjectId,
+            persist(records.filter((r) => r.threadId !== threadId)),
+            "file",
+          ).pipe(Effect.mapError(fail("remove agent")));
+        }),
+      ),
     );
 
-  return { list, get, put, update, remove } satisfies RemoteAgentStoreShape;
+  return {
+    list,
+    listForMove,
+    replaceForMove,
+    get,
+    put,
+    update,
+    remove,
+  } satisfies RemoteAgentStoreShape;
 });
 
 export const RemoteAgentStoreLive = Layer.effect(RemoteAgentStore, make);

@@ -1,5 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { withGitWorkspaceWriter } from "../reach/projectWorkspaceWriter.ts";
 import * as Layer from "effect/Layer";
 
 import {
@@ -151,6 +153,7 @@ function nonRepositoryListRefs(): VcsListRefsResult {
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
   const registry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
@@ -269,7 +272,7 @@ export const make = Effect.gen(function* () {
     (input: Input) =>
       ensureGit(operation, input.cwd).pipe(Effect.andThen(run(input)));
 
-  return GitWorkflowService.of({
+  const workflow = GitWorkflowService.of({
     isRepository: (cwd) =>
       registry.detect({ cwd }).pipe(
         Effect.map((handle) => handle?.kind === "git"),
@@ -380,6 +383,33 @@ export const make = Effect.gen(function* () {
       ensureGit("GitWorkflowService.renameBranch", input.cwd).pipe(
         Effect.andThen(git.renameBranch(input)),
       ),
+  });
+  const write = <A, E, R>(
+    input: { cwd: string; path?: string | null | undefined; threadId?: string | undefined },
+    name: string,
+    effect: Effect.Effect<A, E, R>,
+  ) => withGitWorkspaceWriter(sql, input, name, effect);
+  return GitWorkflowService.of({
+    ...workflow,
+    status: (input) => write(input, "status", workflow.status(input)),
+    remoteStatus: (input, options) =>
+      options?.refreshUpstream === false
+        ? workflow.remoteStatus(input, options)
+        : write(input, "remoteStatus", workflow.remoteStatus(input, options)),
+    pullCurrentBranch: (cwd) =>
+      write({ cwd }, "pullCurrentBranch", workflow.pullCurrentBranch(cwd)),
+    runStackedAction: (input, options) =>
+      write(input, "runStackedAction", workflow.runStackedAction(input, options)),
+    preparePullRequestThread: (input) =>
+      write(input, "preparePullRequestThread", workflow.preparePullRequestThread(input)),
+    createWorktree: (input, options) =>
+      write(input, "createWorktree", workflow.createWorktree(input, options)),
+    fetchRemote: (input) => write(input, "fetchRemote", workflow.fetchRemote(input)),
+    removeWorktree: (input) => write(input, "removeWorktree", workflow.removeWorktree(input)),
+    pruneWorktrees: (input) => write(input, "pruneWorktrees", workflow.pruneWorktrees(input)),
+    createRef: (input) => write(input, "createRef", workflow.createRef(input)),
+    switchRef: (input) => write(input, "switchRef", workflow.switchRef(input)),
+    renameBranch: (input) => write(input, "renameBranch", workflow.renameBranch(input)),
   });
 });
 

@@ -368,7 +368,17 @@ export class TerminalResizeError extends Schema.TaggedError<TerminalResizeError>
   }
 }
 
+export class TerminalProjectMoveError extends Schema.TaggedError<TerminalProjectMoveError>()(
+  "TerminalProjectMoveError",
+  { detail: Schema.String },
+) {
+  override get message() {
+    return this.detail;
+  }
+}
+
 export const TerminalError = Schema.Union([
+  TerminalProjectMoveError,
   TerminalCwdError,
   TerminalHistoryError,
   TerminalSessionLookupError,

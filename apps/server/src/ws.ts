@@ -2,6 +2,7 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
+import { withGitWorkspaceWriter, withWorkspaceWriter } from "./reach/projectWorkspaceWriter.ts";
 import { ensureAssistant } from "./assistant/ensureAssistant.ts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -37,9 +38,11 @@ import {
   type OrchestrationClientOrigin,
   type OrchestrationCommand,
   type GitActionProgressEvent,
+  VcsRepositoryDetectionError,
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  projectionEvent,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   OrchestrationGetFullThreadDiffError,
@@ -113,6 +116,7 @@ import {
   observeRpcStream as instrumentRpcStream,
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
+import { ProjectCoordinatorMove } from "./reach/ProjectCoordinatorMove.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ProviderMaintenance from "./provider/providerMaintenance.ts";
@@ -685,6 +689,7 @@ const makeWsRpcLayer = (
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const agentMachines = yield* AgentMachines;
       const assistantHome = yield* AssistantHome;
+      const coordinatorMove = yield* ProjectCoordinatorMove;
       const assistantNeedsYou = yield* AssistantNeedsYou;
       const hostResources = yield* HostResources.HostResources;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
@@ -2233,6 +2238,7 @@ const makeWsRpcLayer = (
                 isThreadDetailEvent(event);
 
               const liveStream = orchestrationEngine.streamDomainEvents.pipe(
+                Stream.map(projectionEvent),
                 Stream.filter(isThisThreadDetailEvent),
                 Stream.map((event) => ({
                   kind: "event" as const,
@@ -2303,6 +2309,7 @@ const makeWsRpcLayer = (
                   const catchUpStream = orchestrationEngine
                     .readThreadEvents({ ...range, limit: THREAD_RESUME_MAX_EVENTS })
                     .pipe(
+                      Stream.map(projectionEvent),
                       Stream.filter(isThisThreadDetailEvent),
                       Stream.map((event) => ({
                         kind: "event" as const,
@@ -2721,24 +2728,26 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverAgentMachines]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverAgentMachines,
-            input.action === "linkBack"
-              ? assistantHome.linkBack(input).pipe(
-                  Effect.mapError((error) => new AgentMachinesError({ detail: error.detail })),
-                  Effect.flatMap((linked) =>
-                    agentMachines
-                      .manage({ action: "check" })
-                      .pipe(Effect.map((result) => ({ ...result, linked }))),
-                  ),
-                )
-              : agentMachines
-                  .manage(input)
-                  .pipe(
-                    Effect.tap(() =>
-                      input.action === "unlink"
-                        ? revokeIssuedLinkTokens(serverAuth, input.id)
-                        : Effect.void,
+            input.action === "coordinatorMove"
+              ? coordinatorMove.manage(input)
+              : input.action === "linkBack"
+                ? assistantHome.linkBack(input).pipe(
+                    Effect.mapError((error) => new AgentMachinesError({ detail: error.detail })),
+                    Effect.flatMap((linked) =>
+                      agentMachines
+                        .manage({ action: "check" })
+                        .pipe(Effect.map((result) => ({ ...result, linked }))),
                     ),
-                  ),
+                  )
+                : agentMachines
+                    .manage(input)
+                    .pipe(
+                      Effect.tap(() =>
+                        input.action === "unlink"
+                          ? revokeIssuedLinkTokens(serverAuth, input.id)
+                          : Effect.void,
+                      ),
+                    ),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverAgentMachinePairing]: (input) =>
@@ -3209,7 +3218,12 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectsWriteFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsWriteFile,
-            workspaceFileSystem.writeFile(input).pipe(
+            withWorkspaceWriter(
+              sql,
+              input.cwd,
+              input.relativePath,
+              workspaceFileSystem.writeFile(input),
+            ).pipe(
               // A saved MEMORY.md or role file restarts its Project thread at the next turn.
               Effect.tap((result) =>
                 Effect.sync(() => noteProjectFileWritten(input.cwd, result.relativePath)),
@@ -3219,7 +3233,15 @@ const makeWsRpcLayer = (
                   new ProjectWriteFileError({
                     cwd: input.cwd,
                     relativePath: input.relativePath,
-                    ...projectFileFailureContext(cause),
+                    ...(cause._tag === "SqlError" ||
+                    cause._tag === "UnknownError" ||
+                    cause._tag === "ProjectMoveFenceError"
+                      ? {
+                          failure: "operation_failed" as const,
+                          operation: "write-file" as const,
+                          message: cause.message,
+                        }
+                      : projectFileFailureContext(cause)),
                     cause,
                   }),
               ),
@@ -3456,39 +3478,44 @@ const makeWsRpcLayer = (
           observeRpcStream(
             WS_METHODS.gitRunStackedAction,
             Stream.callback<GitActionProgressEvent, GitManagerServiceError>((queue) =>
-              gitWorkflow
-                .runStackedAction(input, {
-                  actionId: input.actionId,
-                  progressReporter: {
-                    publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
-                  },
-                })
-                .pipe(
-                  Effect.matchCauseEffect({
-                    onFailure: (cause) => Queue.failCause(queue, cause),
-                    onSuccess: (result) =>
-                      (input.threadId === undefined
-                        ? Effect.void
-                        : linkCreatedPullRequest({
-                            threadId: input.threadId,
-                            result,
-                            commandId: serverCommandId("pr-created-link"),
-                          }).pipe(
-                            Effect.provideService(
-                              OrchestrationEngine.OrchestrationEngineService,
-                              orchestrationEngine,
-                            ),
-                            Effect.provideService(
-                              ProjectionSnapshotQuery.ProjectionSnapshotQuery,
-                              projectionSnapshotQuery,
-                            ),
-                          )
-                      ).pipe(
-                        Effect.andThen(refreshGitStatus(input.cwd)),
-                        Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
-                      ),
-                  }),
-                ),
+              withGitWorkspaceWriter(
+                sql,
+                input,
+                "runStackedAction",
+                gitWorkflow
+                  .runStackedAction(input, {
+                    actionId: input.actionId,
+                    progressReporter: {
+                      publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
+                    },
+                  })
+                  .pipe(
+                    Effect.matchCauseEffect({
+                      onFailure: (cause) => Queue.failCause(queue, cause),
+                      onSuccess: (result) =>
+                        (input.threadId === undefined
+                          ? Effect.void
+                          : linkCreatedPullRequest({
+                              threadId: input.threadId,
+                              result,
+                              commandId: serverCommandId("pr-created-link"),
+                            }).pipe(
+                              Effect.provideService(
+                                OrchestrationEngine.OrchestrationEngineService,
+                                orchestrationEngine,
+                              ),
+                              Effect.provideService(
+                                ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+                                projectionSnapshotQuery,
+                              ),
+                            )
+                        ).pipe(
+                          Effect.andThen(refreshGitStatus(input.cwd)),
+                          Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
+                        ),
+                    }),
+                  ),
+              ).pipe(Effect.catch((error) => Queue.fail(queue, error))),
             ),
             { "rpc.aggregate": "vcs" },
           ),
@@ -3539,9 +3566,24 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsInit]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsInit,
-            vcsProvisioning
-              .initRepository(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            withGitWorkspaceWriter(
+              sql,
+              input,
+              "initRepository",
+              vcsProvisioning.initRepository(input),
+            ).pipe(
+              Effect.catchTag("GitCommandError", (cause) =>
+                Effect.fail(
+                  new VcsRepositoryDetectionError({
+                    operation: "initRepository",
+                    cwd: input.cwd,
+                    detail: cause.detail,
+                    cause,
+                  }),
+                ),
+              ),
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.reviewGetDiffPreview]: (input) =>

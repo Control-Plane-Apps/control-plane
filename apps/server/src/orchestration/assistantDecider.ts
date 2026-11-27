@@ -306,6 +306,7 @@ export const decideAssistantMetaUpdate = Effect.fn("decideAssistantMetaUpdate")(
     next = {
       coordinatorThreadId,
       ...(scope !== undefined ? { scope } : {}),
+      ...(current?.scheduleProjectId ? { scheduleProjectId: current.scheduleProjectId } : {}),
       ...(formerTitle !== undefined ? { formerTitle } : {}),
       ...(archivedAt !== undefined ? { archivedAt } : {}),
       ...(retiredAt !== undefined && retiredAt !== null ? { retiredAt } : {}),

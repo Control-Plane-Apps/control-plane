@@ -95,7 +95,30 @@ export type AgentPlacementSettingsPatch = typeof AgentPlacementSettingsPatch.Typ
 
 // ── RPC ────────────────────────────────────────────────────────────
 
+export const CoordinatorMoveInput = Schema.Struct({
+  action: Schema.Literal("coordinatorMove"),
+  projectId: TrimmedNonEmptyString,
+  operation: Schema.Literals(["status", "preflight", "move", "retry", "rollback"]),
+  destinationId: Schema.optionalKey(AgentMachineId),
+  moveId: Schema.optionalKey(TrimmedNonEmptyString),
+  approvalDigest: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type CoordinatorMoveInput = typeof CoordinatorMoveInput.Type;
+
+export const CoordinatorMoveStatus = Schema.Struct({
+  phase: Schema.String,
+  ownerId: Schema.String,
+  moveId: Schema.optionalKey(Schema.String),
+  destinationId: Schema.optionalKey(Schema.String),
+  incoming: Schema.optionalKey(Schema.Boolean),
+  approvalDigest: Schema.optionalKey(TrimmedNonEmptyString),
+  detail: Schema.String,
+  ready: Schema.Boolean,
+});
+export type CoordinatorMoveStatus = typeof CoordinatorMoveStatus.Type;
+
 export const AgentMachinesInput = Schema.Union([
+  CoordinatorMoveInput,
   Schema.Struct({
     action: Schema.Literal("link"),
     /** The pairing link created on the other machine. */
@@ -243,6 +266,7 @@ export const WaitingAgent = Schema.Struct({
 export type WaitingAgent = typeof WaitingAgent.Type;
 
 export const AgentMachinesResult = Schema.Struct({
+  coordinatorMove: Schema.optionalKey(CoordinatorMoveStatus),
   waitingAgents: Schema.optionalKey(Schema.Array(WaitingAgent)),
   /** The entry `link` added. */
   linked: Schema.optionalKey(Schema.Struct({ id: AgentMachineId, label: Schema.String })),

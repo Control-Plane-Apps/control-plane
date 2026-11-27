@@ -871,6 +871,38 @@ export const ProviderRegistryLive = Layer.effect(
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
+      probeMoveProvider: (instanceId) =>
+        Effect.gen(function* () {
+          const instance = yield* instanceRegistry.getInstance(instanceId);
+          if (!instance?.enabled) return undefined;
+          const probe = yield* instance.snapshot.refresh;
+          if (
+            probe.instanceId !== instanceId ||
+            probe.status !== "ready" ||
+            !probe.enabled ||
+            !probe.installed ||
+            probe.auth.status !== "authenticated" ||
+            probe.availability === "unavailable" ||
+            (yield* instanceRegistry.getInstance(instanceId)) !== instance
+          )
+            return undefined;
+          return probe;
+        }).pipe(
+          Effect.timeout("30 seconds"),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(undefined),
+          ),
+        ),
+      verifyWorkspaceMcp: (instanceId, cwd) =>
+        instanceRegistry
+          .getInstance(instanceId)
+          .pipe(
+            Effect.flatMap((instance) =>
+              instance?.enabled && instance.verifyWorkspaceMcp
+                ? instance.verifyWorkspaceMcp(cwd)
+                : Effect.succeed(false),
+            ),
+          ),
       refreshWorkspaceSnapshot: (input) =>
         refreshWorkspaceSnapshot(input).pipe(Effect.catchCause(recoverRefreshFailure)),
       getProviderMaintenanceCapabilitiesForInstance,

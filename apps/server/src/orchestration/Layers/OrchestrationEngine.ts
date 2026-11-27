@@ -32,9 +32,16 @@ import {
 } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import {
+  assertProjectWorkspaceAvailable,
+  ProjectMovePermitRef,
+  projectMoveFenceOwner,
+  type ProjectMovePermit,
+} from "../../reach/projectMoveFence.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
   isOrchestrationCommandRejection,
+  OrchestrationProjectMoveFencedError,
   OrchestrationCommandIdConflictError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
@@ -60,6 +67,7 @@ interface CommandEnvelope {
   origin: OrchestrationClientOrigin | undefined;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
+  movePermit: ProjectMovePermit | null;
 }
 
 const TASK_SYNC_AGGREGATE_ID = "task-sync" as TaskId;
@@ -89,6 +97,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
         aggregateKind: "task",
         aggregateId: taskIntentKey(command.horizon, command.startsOn),
       };
+    case "project.coordinator.restore":
     case "project.create":
     case "project.meta.update":
     case "project.reorder":
@@ -335,6 +344,54 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              if (
+                envelope.command.type === "project.coordinator.restore" &&
+                envelope.movePermit?.projectId !== envelope.command.projectId
+              ) {
+                return yield* new OrchestrationProjectMoveFencedError({
+                  projectId: envelope.command.projectId,
+                });
+              }
+              // Check every affected Project inside the same write transaction as
+              // the events. This includes new threads and multi-aggregate commands.
+              const projectIds = new Set<string>();
+              for (const event of eventBases) {
+                if (event.aggregateKind === "project") {
+                  projectIds.add(event.aggregateId);
+                  if (
+                    "workspaceRoot" in event.payload &&
+                    typeof event.payload.workspaceRoot === "string"
+                  ) {
+                    yield* assertProjectWorkspaceAvailable(
+                      sql,
+                      event.aggregateId,
+                      event.payload.workspaceRoot,
+                    ).pipe(
+                      Effect.catchTag("ProjectMoveFenceError", () =>
+                        Effect.fail(
+                          new OrchestrationProjectMoveFencedError({ projectId: event.aggregateId }),
+                        ),
+                      ),
+                    );
+                  }
+                }
+                if (event.aggregateKind === "thread") {
+                  const thread = commandReadModel.threads.find(
+                    (entry) => entry.id === event.aggregateId,
+                  );
+                  if (thread !== undefined) projectIds.add(thread.projectId);
+                }
+                if ("projectId" in event.payload && typeof event.payload.projectId === "string") {
+                  projectIds.add(event.payload.projectId);
+                }
+              }
+              for (const projectId of projectIds) {
+                const owner = yield* projectMoveFenceOwner(sql, projectId);
+                const permit = envelope.movePermit;
+                if (permit?.projectId === projectId ? owner !== permit.moveId : owner !== null) {
+                  return yield* new OrchestrationProjectMoveFencedError({ projectId });
+                }
+              }
               const committedEvents: OrchestrationEvent[] = [];
               const attachmentCleanups: Effect.Effect<void>[] = [];
               let nextCommandReadModel = commandReadModel;
@@ -453,16 +510,32 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             );
 
             if (isOrchestrationCommandRejection(error)) {
-              yield* commandReceiptRepository
-                .upsert({
-                  commandId: envelope.command.commandId,
-                  aggregateKind: aggregateRef.aggregateKind,
-                  aggregateId: aggregateRef.aggregateId,
-                  acceptedAt: yield* nowIso,
-                  resultSequence: commandReadModel.snapshotSequence,
-                  status: "rejected",
-                  error: error.message,
-                })
+              yield* sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    const projectId =
+                      "projectId" in envelope.command
+                        ? envelope.command.projectId
+                        : aggregateRef.aggregateKind === "thread"
+                          ? commandReadModel.threads.find(
+                              (entry) => entry.id === aggregateRef.aggregateId,
+                            )?.projectId
+                          : undefined;
+                    // A paused Project must not accumulate permanent refusal receipts
+                    // for deliveries that should retry on its active owner.
+                    if (projectId && (yield* projectMoveFenceOwner(sql, projectId)) !== null)
+                      return;
+                    yield* commandReceiptRepository.upsert({
+                      commandId: envelope.command.commandId,
+                      aggregateKind: aggregateRef.aggregateKind,
+                      aggregateId: aggregateRef.aggregateId,
+                      acceptedAt: yield* nowIso,
+                      resultSequence: commandReadModel.snapshotSequence,
+                      status: "rejected",
+                      error: error.message,
+                    });
+                  }),
+                )
                 .pipe(Effect.catch(() => Effect.void));
             }
           }
@@ -504,6 +577,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       yield* Queue.offer(commandQueue, {
         command,
         origin: options?.origin,
+        movePermit: yield* ProjectMovePermitRef,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
       });

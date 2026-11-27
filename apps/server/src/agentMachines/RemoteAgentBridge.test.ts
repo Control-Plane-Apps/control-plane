@@ -1,3 +1,4 @@
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import {
   ProjectId,
   ThreadId,
@@ -97,6 +98,7 @@ const harness = (options: HarnessOptions = {}) => {
     }),
   );
   const services = RemoteAgentsLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
     Layer.provideMerge(peer.layer),
     Layer.provideMerge(MemoryRemoteAgentStore),
     Layer.provideMerge(bridgeDependencies),

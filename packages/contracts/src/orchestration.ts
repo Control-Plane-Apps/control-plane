@@ -2212,6 +2212,15 @@ const TaskSyncApplyCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("project.coordinator.restore"),
+    commandId: CommandId,
+    projectId: ProjectId,
+    // Decoded against the historical event schema by the move service and decider.
+    events: Schema.Array(Schema.Unknown),
+    removeThreads: Schema.Array(ThreadId),
+    meta: Schema.Unknown,
+  }),
   TaskProposeCommand,
   TaskAgentCreateCommand,
   TaskAgentUpdateCommand,
@@ -2253,6 +2262,7 @@ export const OrchestrationCommand = Schema.Union([
 export type OrchestrationCommand = typeof OrchestrationCommand.Type;
 
 export const OrchestrationEventType = Schema.Literals([
+  "thread.history-restored",
   "project.created",
   "project.meta-updated",
   "project.deleted",
@@ -2634,7 +2644,7 @@ const EventBaseFields = {
   metadata: OrchestrationEventMetadata,
 } as const;
 
-export const OrchestrationEvent = Schema.Union([
+export const HistoricalOrchestrationEvent = Schema.Union([
   Schema.Struct({
     ...EventBaseFields,
     type: Schema.Literal("project.created"),
@@ -2816,7 +2826,23 @@ export const OrchestrationEvent = Schema.Union([
     payload: ThreadActivityAppendedPayload,
   }),
 ]);
+export type HistoricalOrchestrationEvent = typeof HistoricalOrchestrationEvent.Type;
+export const OrchestrationEvent = Schema.Union([
+  HistoricalOrchestrationEvent,
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.history-restored"),
+    payload: Schema.Struct({ threadId: ThreadId, event: HistoricalOrchestrationEvent }),
+  }),
+]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;
+
+/** Historical inputs rebuild projections without issuing live provider or delivery requests. */
+export function projectionEvent(event: OrchestrationEvent): HistoricalOrchestrationEvent {
+  return event.type === "thread.history-restored"
+    ? { ...event.payload.event, sequence: event.sequence }
+    : event;
+}
 
 export const OrchestrationThreadStreamItem = Schema.Union([
   Schema.Struct({

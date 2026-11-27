@@ -6,6 +6,8 @@
  *
  * @module AgentMachines
  */
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { withProjectWriter } from "../reach/projectMoveFence.ts";
 import * as NodeCrypto from "node:crypto";
 import {
   CommandId,
@@ -246,6 +248,21 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const store = yield* RemoteAgentStore;
+  const sql = yield* SqlClient.SqlClient;
+  const withAgentWriter = <A>(threadId: string, operation: Effect.Effect<A, AgentMachinesError>) =>
+    Effect.gen(function* () {
+      const record = Option.getOrNull(
+        yield* store.get(threadId).pipe(Effect.mapError(storeFailure)),
+      );
+      if (!record) return yield* new AgentMachinesError({ detail: "Unknown linked agent." });
+      return yield* withProjectWriter(sql, record.homeProjectId, operation).pipe(
+        Effect.mapError((error) =>
+          error._tag === "AgentMachinesError"
+            ? error
+            : new AgentMachinesError({ detail: error.message }),
+        ),
+      );
+    });
   const httpClient = yield* HttpClient.HttpClient;
 
   const health = new Map<string, Health>();
@@ -1597,6 +1614,8 @@ const make = Effect.gen(function* () {
           const linked = yield* link(input);
           return { linked, machines: yield* check };
         }
+        case "coordinatorMove":
+          return yield* new AgentMachinesError({ detail: "Use the coordinator move service." });
         case "linkBack":
           // Needs this server's own pairing and the reach route; ws.ts sends it to AssistantHome.
           return yield* new AgentMachinesError({ detail: "Link back is not available here." });
@@ -1605,12 +1624,19 @@ const make = Effect.gen(function* () {
           return { machines: yield* check };
         }
         case "recoverHandoff":
-          yield* recoverHandoff(input.threadId, input.waitId);
+          yield* withAgentWriter(input.threadId, recoverHandoff(input.threadId, input.waitId));
           return yield* checkedMachines;
         case "resume":
           if (input.destinationId)
-            yield* moveWaiting(input.threadId, input.waitId, input.destinationId);
-          else yield* withRemoteAgentLock(input.threadId, resume(input.threadId, input.waitId));
+            yield* withAgentWriter(
+              input.threadId,
+              moveWaiting(input.threadId, input.waitId, input.destinationId),
+            );
+          else
+            yield* withAgentWriter(
+              input.threadId,
+              withRemoteAgentLock(input.threadId, resume(input.threadId, input.waitId)),
+            );
           return yield* checkedMachines;
         case "check":
           return yield* checkedMachines;

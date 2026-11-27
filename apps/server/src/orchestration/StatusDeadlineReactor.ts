@@ -21,6 +21,8 @@
  *
  * @module StatusDeadlineReactor
  */
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { withProjectWriter } from "../reach/projectMoveFence.ts";
 import {
   CommandId,
   isAutoAcceptArmed,
@@ -79,6 +81,7 @@ export class StatusDeadlineReactor extends Context.Service<
 >()("t3/orchestration/StatusDeadlineReactor") {}
 
 export interface DueDeadline {
+  readonly receiptProjectId: string;
   readonly projectId: ProjectId;
   readonly coordinatorThreadId: ProjectAssistant["coordinatorThreadId"];
   readonly status: ProjectStatus;
@@ -113,6 +116,7 @@ export function dueDeadlines(
       if (at <= nowMs) {
         due.push({
           projectId: project.projectId,
+          receiptProjectId: assistant.scheduleProjectId ?? project.projectId,
           coordinatorThreadId: assistant.coordinatorThreadId,
           status,
         });
@@ -136,6 +140,7 @@ function handledDeadlines(rows: Parameters<typeof dueDeadlines>[0]) {
         : [
             {
               projectId: project.projectId,
+              receiptProjectId: assistant.scheduleProjectId ?? project.projectId,
               coordinatorThreadId: assistant.coordinatorThreadId,
               status,
               outcome: handled.outcome,
@@ -175,6 +180,7 @@ export function statusDeadlineText(
 }
 
 export interface StalledStatus {
+  readonly receiptProjectId: string;
   readonly projectId: ProjectId;
   readonly coordinatorThreadId: ProjectAssistant["coordinatorThreadId"];
   readonly status: ProjectStatus;
@@ -195,6 +201,7 @@ function stallCandidates(rows: Parameters<typeof dueDeadlines>[0]) {
       )
       .map((status) => ({
         projectId: project.projectId,
+        receiptProjectId: assistant.scheduleProjectId ?? project.projectId,
         coordinatorThreadId: assistant.coordinatorThreadId,
         status,
       }));
@@ -251,6 +258,7 @@ export function statusStallText(status: ProjectStatus, stall: StatusStall): stri
 
 export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const sql = yield* SqlClient.SqlClient;
   const projects = yield* ProjectionProjectRepository;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const settings = yield* ServerSettings.ServerSettingsService;
@@ -261,6 +269,7 @@ export const make = Effect.gen(function* () {
   // projects table only once it has passed or a status write invalidated it.
   let nextAtMs: number | null = null;
   let dirty = true;
+  let lastPaused = new Set<string>();
 
   const logRejected =
     (step: string, entry: { readonly projectId: ProjectId; readonly statusId: string }) =>
@@ -275,7 +284,11 @@ export const make = Effect.gen(function* () {
   ) => {
     const decision = entry.status.decision;
     if (decision === undefined) return Effect.void;
-    const messageId = statusReminderMessageId(entry.projectId, entry.status.id, decision.openedAt);
+    const messageId = statusReminderMessageId(
+      entry.receiptProjectId,
+      entry.status.id,
+      decision.openedAt,
+    );
     return engine
       .dispatch({
         type: "thread.message.user.append",
@@ -311,7 +324,11 @@ export const make = Effect.gen(function* () {
       : "reminded";
     const createdAt = DateTime.formatIso(yield* DateTime.now);
     const ids = { projectId: entry.projectId, statusId: entry.status.id };
-    const messageId = statusReminderMessageId(entry.projectId, entry.status.id, decision.openedAt);
+    const messageId = statusReminderMessageId(
+      entry.receiptProjectId,
+      entry.status.id,
+      decision.openedAt,
+    );
     // Record first: the decider re-checks the opt-in against the stored
     // version and turns a withdrawn one into a reminder, so the message goes
     // out for the outcome it stored, never the one this sweep guessed.
@@ -365,7 +382,11 @@ export const make = Effect.gen(function* () {
     );
 
   const sendStallNudge = (entry: StalledStatus, createdAt: string) => {
-    const messageId = statusStallMessageId(entry.projectId, entry.status.id, entry.stall.sinceMs);
+    const messageId = statusStallMessageId(
+      entry.receiptProjectId,
+      entry.status.id,
+      entry.stall.sinceMs,
+    );
     if (nudged.has(messageId)) return Effect.void;
     return engine
       .dispatch({
@@ -420,9 +441,16 @@ export const make = Effect.gen(function* () {
 
   const sweepOnce = Effect.fn("StatusDeadlineReactor.sweep")(function* (force: boolean) {
     const nowMs = yield* Clock.currentTimeMillis;
-    if (!force && !dirty && (nextAtMs === null || nextAtMs > nowMs)) return;
+    // Releasing a fence need not emit a Project event. New owners must still
+    // discover reminders that became due while the Project was staged.
+    const fences = yield* sql<{ project_id: string }>`SELECT project_id FROM project_move_fences`;
+    const paused = new Set(fences.map((row) => row.project_id));
+    const ownersChanged =
+      paused.size !== lastPaused.size || fences.some((row) => !lastPaused.has(row.project_id));
+    lastPaused = paused;
+    if (!force && !dirty && !ownersChanged && (nextAtMs === null || nextAtMs > nowMs)) return;
     dirty = false;
-    const rows = yield* projects.listAll();
+    const rows = (yield* projects.listAll()).filter((row) => !paused.has(row.projectId));
     // Resend messages for deadlines recorded before a failed send or a crash;
     // their receipts make the ones already sent a no-op.
     yield* Effect.forEach(
@@ -431,9 +459,14 @@ export const make = Effect.gen(function* () {
       { discard: true },
     );
     const result = dueDeadlines(rows, nowMs);
-    yield* Effect.forEach(result.due, (entry) => isolated(entry, handleDeadline(entry)), {
-      discard: true,
-    });
+    yield* Effect.forEach(
+      result.due,
+      (entry) =>
+        isolated(entry, withProjectWriter(sql, entry.projectId, handleDeadline(entry), "status")),
+      {
+        discard: true,
+      },
+    );
     const stallMinutes = statusStallMinutesOf((yield* settings.getSettings).statusStallMinutes);
     const stalls = stalledStatuses(rows, yield* agentShells(rows), nowMs, stallMinutes);
     const createdAt = DateTime.formatIso(yield* DateTime.now);

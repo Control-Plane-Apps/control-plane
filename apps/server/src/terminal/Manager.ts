@@ -6,6 +6,13 @@
  *
  * @module TerminalManager
  */
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import {
+  acquireProjectWriter,
+  bindTerminalProcess,
+  registerProjectTerminalCheck,
+} from "../reach/projectMoveFence.ts";
+import { withWorkspaceWriter, workspaceWriterProjects } from "../reach/projectWorkspaceWriter.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -19,6 +26,7 @@ import {
   TerminalProviderInstanceNotFoundError,
   TerminalProviderEnvironmentError,
   TerminalResizeError,
+  TerminalProjectMoveError,
   TerminalSessionLookupError,
   TerminalWriteError,
   type TerminalAttachInput,
@@ -1313,6 +1321,7 @@ function normalizedRuntimeEnv(
 }
 
 interface TerminalManagerOptions {
+  sql?: SqlClient.SqlClient;
   logsDir: string;
   historyLineLimit?: number;
   historyByteLimit?: number;
@@ -1405,6 +1414,7 @@ export const make = Effect.fn("TerminalManager.make")(function* () {
     }),
   );
   return yield* makeWithOptions({
+    sql: yield* SqlClient.SqlClient,
     logsDir: terminalLogsDir,
     ptyAdapter,
     processTable: nativeTelemetry.processTable.pipe(
@@ -2184,6 +2194,70 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return yield* trySpawn(shellCandidates, spawnEnv, session, index + 1, spawnError);
   });
 
+  const spawnWithLifetimeWriter = (
+    session: TerminalSessionState,
+    spawn: ReturnType<typeof trySpawn>,
+  ) => {
+    const sql = options.sql;
+    if (!sql) return spawn;
+    // A stopped/restarted session drops its UI listeners before the old shell
+    // exits. Its independent exit listener retains that shell's exact lease.
+    return Effect.uninterruptible(
+      Effect.gen(function* () {
+        const writerIds = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const projects = new Set(
+                yield* workspaceWriterProjects(sql, session.cwd, ".", session.threadId, "terminal"),
+              );
+              if (session.worktreePath && session.worktreePath !== session.cwd) {
+                for (const id of yield* workspaceWriterProjects(
+                  sql,
+                  session.worktreePath,
+                  ".",
+                  session.threadId,
+                  "terminal",
+                ))
+                  projects.add(id);
+              }
+              const terminal = {
+                threadId: session.threadId,
+                cwd: yield* fileSystem.realPath(session.cwd),
+                worktreePath: session.worktreePath
+                  ? yield* fileSystem
+                      .realPath(session.worktreePath)
+                      .pipe(Effect.orElseSucceed(() => path.resolve(session.worktreePath!)))
+                  : null,
+              };
+              return yield* Effect.forEach(projects.size ? [...projects] : [null], (id) =>
+                acquireProjectWriter(sql, id, "terminal", terminal),
+              );
+            }),
+          )
+          .pipe(
+            Effect.mapError((error) => new TerminalProjectMoveError({ detail: error.message })),
+          );
+        if (!writerIds.length) return yield* spawn;
+        const release =
+          sql`DELETE FROM project_move_writers WHERE ${sql.in("operation_id", writerIds)}`.pipe(
+            Effect.asVoid,
+            Effect.orDie,
+          );
+        const result = yield* spawn.pipe(Effect.tapError(() => release));
+        result.process.onExit(() => {
+          runFork(release);
+        });
+        yield* bindTerminalProcess(sql, writerIds, result.process.pid).pipe(
+          Effect.tapError(() =>
+            startKillEscalation(result.process, session.threadId, session.terminalId),
+          ),
+          Effect.mapError((error) => new TerminalProjectMoveError({ detail: error.message })),
+        );
+        return result;
+      }),
+    );
+  };
+
   const startSession = Effect.fn("terminal.startSession")(function* (
     session: TerminalSessionState,
     input: TerminalStartInput,
@@ -2224,7 +2298,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           Effect.gen(function* () {
             const shellCandidates = resolveShellCandidates(shellResolver, platform, baseEnv);
             const terminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv);
-            const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
+            const spawnResult = yield* spawnWithLifetimeWriter(
+              session,
+              trySpawn(shellCandidates, terminalEnv, session),
+            );
             ptyProcess = spawnResult.process;
             startedShell = spawnResult.shellLabel;
 
@@ -2464,6 +2541,56 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     ),
   );
 
+  if (options.sql) {
+    const removeMoveCheck = registerProjectTerminalCheck(options.sql, (threadIds, root) =>
+      Effect.gen(function* () {
+        const realRoot = yield* fileSystem
+          .realPath(root)
+          .pipe(Effect.orElseSucceed(() => path.resolve(root)));
+        for (const session of (yield* readManagerState).sessions.values()) {
+          if (session.status !== "starting" && session.status !== "running") continue;
+          if (threadIds.has(session.threadId)) return true;
+          const cwd = session.worktreePath ?? session.cwd;
+          const realCwd = yield* fileSystem
+            .realPath(cwd)
+            .pipe(Effect.orElseSucceed(() => path.resolve(cwd)));
+          const relative = path.relative(realRoot, realCwd);
+          if (
+            relative !== ".." &&
+            !relative.startsWith(`..${path.sep}`) &&
+            !path.isAbsolute(relative)
+          )
+            return true;
+        }
+        return false;
+      }),
+    );
+    yield* Effect.addFinalizer(() => Effect.sync(removeMoveCheck));
+  }
+  const guardLaunch = (
+    input: TerminalOpenInput | TerminalRestartInput,
+    operation: Effect.Effect<TerminalSessionSnapshot, TerminalError>,
+  ) => {
+    const sql = options.sql;
+    if (!sql) return operation;
+    const guard = (cwd: string, effect: typeof operation) =>
+      withWorkspaceWriter(sql, cwd, ".", effect, input.threadId, "terminal").pipe(
+        Effect.mapError((error) =>
+          error._tag === "SqlError" ||
+          error._tag === "UnknownError" ||
+          error._tag === "ProjectMoveFenceError"
+            ? new TerminalProjectMoveError({ detail: error.message })
+            : error,
+        ),
+      );
+    return guard(
+      input.cwd,
+      input.worktreePath && input.worktreePath !== input.cwd
+        ? guard(input.worktreePath, operation)
+        : operation,
+    );
+  };
+
   let subprocessSnapshotFailureCount = 0;
   yield* Effect.forever(
     hasRunningSessions.pipe(
@@ -2645,7 +2772,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const openLocked = (input: TerminalOpenInput) =>
     withWorkspaceLease(
       path.resolve(input.worktreePath ?? input.cwd),
-      openWithWorkspaceLease(input),
+      guardLaunch(input, openWithWorkspaceLease(input)),
     );
 
   const open: TerminalManager["Service"]["open"] = (input) =>
@@ -3023,7 +3150,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         Effect.flatMap((resolved) =>
           withWorkspaceLease(
             path.resolve(resolved.worktreePath ?? resolved.cwd),
-            restartResolved(resolved),
+            guardLaunch(resolved, restartResolved(resolved)),
           ),
         ),
       ),

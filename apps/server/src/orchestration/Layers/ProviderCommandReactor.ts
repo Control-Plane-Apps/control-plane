@@ -1,3 +1,5 @@
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { withProjectWriter } from "../../reach/projectMoveFence.ts";
 import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import {
   type ChatAttachment,
@@ -229,6 +231,7 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
+  const sql = yield* SqlClient.SqlClient;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerAuthService = yield* ProviderAuthService;
@@ -670,6 +673,8 @@ const make = Effect.gen(function* () {
         .listSessions()
         .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === threadId)));
 
+    const [moveRestart] = yield* sql<{ move_id: string }>`
+      SELECT move_id FROM project_move_provider_restarts WHERE thread_id=${threadId}`;
     const activeSession = yield* resolveActiveSession(threadId);
     const activeThreadSession =
       thread.session !== null && thread.session.status !== "stopped" && activeSession
@@ -719,14 +724,16 @@ const make = Effect.gen(function* () {
     // The binding, not the thread's model selection, records who holds the native
     // conversation: clients update the selection before the turn that switches.
     const binding = Option.getOrUndefined(yield* sessionDirectory.getBinding(threadId));
-    const handoffSource = yield* resolveProviderHandoffSource({
-      boundInstanceId:
-        activeSession?.providerInstanceId ??
-        binding?.providerInstanceId ??
-        thread.session?.providerInstanceId,
-      boundProvider: activeSession?.provider ?? binding?.provider,
-      desiredInfo,
-    });
+    const handoffSource = moveRestart
+      ? undefined
+      : yield* resolveProviderHandoffSource({
+          boundInstanceId:
+            activeSession?.providerInstanceId ??
+            binding?.providerInstanceId ??
+            thread.session?.providerInstanceId,
+          boundProvider: activeSession?.provider ?? binding?.provider,
+          desiredInfo,
+        });
     const desiredLabel = providerInstanceLabel(desiredInfo);
     if (handoffSource !== undefined) {
       if (options?.allowProviderHandoff !== true) {
@@ -761,7 +768,7 @@ const make = Effect.gen(function* () {
       });
     }
     // A handoff starts a fresh session, so in-session model rules don't apply to it.
-    if (thread.session !== null && handoffSource === undefined) {
+    if (!moveRestart && thread.session !== null && handoffSource === undefined) {
       yield* rejectStartedThreadModelChangeIfRequired({
         threadId,
         currentModelSelection:
@@ -832,6 +839,30 @@ const make = Effect.gen(function* () {
         });
       });
 
+    if (moveRestart) {
+      // Even on rollback the same native provider cannot resume its old local
+      // conversation. Stop the adapter first because stop persists its cursor.
+      if (activeSession) yield* providerService.stopSession({ threadId });
+      yield* sessionDirectory.upsert({
+        threadId,
+        provider: preferredProvider,
+        providerInstanceId: desiredInstanceId,
+        runtimeMode: desiredRuntimeMode,
+        resumeCursor: null,
+        status: "stopped",
+        runtimePayload: null,
+      });
+      const session = yield* startProviderSession();
+      yield* sessionDirectory.upsert({
+        threadId,
+        provider: session.provider,
+        providerInstanceId: desiredInstanceId,
+        runtimePayload: pendingProviderHandoffPayload({ fromLabel: "the previous machine" }),
+      });
+      yield* bindSessionToThread(session);
+      yield* sql`DELETE FROM project_move_provider_restarts WHERE thread_id=${threadId} AND move_id=${moveRestart.move_id}`;
+      return session.threadId;
+    }
     if (handoffSource !== undefined) {
       const detail = yield* resolveThreadDetail(threadId);
       const turnCount = (detail?.checkpoints ?? []).reduce(
@@ -985,6 +1016,7 @@ const make = Effect.gen(function* () {
   const withPendingProviderHandoff = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
+    readonly turnSequence: number;
     readonly providerInput: string | undefined;
   }) {
     const binding = Option.getOrUndefined(yield* sessionDirectory.getBinding(input.threadId));
@@ -998,9 +1030,33 @@ const make = Effect.gen(function* () {
       return { providerInput: input.providerInput, handoffDelivered: false };
     }
     const messages = (yield* resolveThreadDetail(input.threadId))?.messages ?? [];
-    const index = messages.findIndex((message) => message.id === input.messageId);
+    // Host clocks and client-provided message IDs cannot order a conversation
+    // across machines. Use the local append sequence and the triggering turn
+    // as its upper bound, including messages replayed by a coordinator move.
+    const ordered = yield* sql<{ messageId: MessageId }>`
+      WITH history AS (
+        SELECT sequence,
+          CASE WHEN event_type='thread.history-restored'
+            THEN json_extract(payload_json, '$.event.type') ELSE event_type END AS kind,
+          CASE WHEN event_type='thread.message-sent' THEN json_extract(payload_json, '$.messageId')
+            WHEN event_type='thread.history-restored' THEN json_extract(payload_json, '$.event.payload.messageId') END AS id
+        FROM orchestration_events
+        WHERE aggregate_kind='thread' AND stream_id=${input.threadId}
+          AND sequence < ${input.turnSequence}
+          AND event_type IN ('thread.created', 'thread.message-sent', 'thread.history-restored')
+      )
+      SELECT id AS messageId FROM history
+      WHERE kind='thread.message-sent' AND id != ${input.messageId}
+        AND sequence > (SELECT COALESCE(MAX(sequence),0) FROM history WHERE kind='thread.created')
+      GROUP BY id ORDER BY MIN(sequence)
+    `;
+    const byId = new Map(messages.map((message) => [message.id, message]));
+    const previous = ordered.flatMap(({ messageId }) => {
+      const message = byId.get(messageId);
+      return message ? [message] : [];
+    });
     const handoff = formatProviderHandoff({
-      messages: index >= 0 ? messages.slice(0, index) : messages,
+      messages: previous,
       fromLabel: pending.fromLabel,
       maxChars: budget,
     });
@@ -1018,6 +1074,7 @@ const make = Effect.gen(function* () {
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
+    readonly turnSequence: number;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
@@ -1041,6 +1098,7 @@ const make = Effect.gen(function* () {
     const { providerInput: normalizedInput, handoffDelivered } = yield* withPendingProviderHandoff({
       threadId: input.threadId,
       messageId: input.messageId,
+      turnSequence: input.turnSequence,
       providerInput: toNonEmptyProviderInput(input.messageText),
     });
     const normalizedAttachments = input.attachments ?? [];
@@ -1665,24 +1723,29 @@ const make = Effect.gen(function* () {
       const clearCompacting = Effect.sync(
         () => void compactingThreadIds.delete(event.payload.threadId),
       );
-      yield* Effect.gen(function* () {
-        yield* ensureSessionForThread(
-          event.payload.threadId,
-          event.payload.createdAt,
-          event.payload.modelSelection !== undefined
-            ? { modelSelection: event.payload.modelSelection, pendingTurnStart: true }
-            : { pendingTurnStart: true },
-        );
-        compactionSessionEnsured = true;
-        if (event.payload.modelSelection !== undefined) {
-          threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
-        }
-        yield* providerService.compactThread(
-          event.payload.threadId,
-          event.payload.modelSelection,
-          event.payload.messageId,
-        );
-      }).pipe(
+      yield* withProjectWriter(
+        sql,
+        thread.projectId,
+        Effect.gen(function* () {
+          yield* ensureSessionForThread(
+            event.payload.threadId,
+            event.payload.createdAt,
+            event.payload.modelSelection !== undefined
+              ? { modelSelection: event.payload.modelSelection, pendingTurnStart: true }
+              : { pendingTurnStart: true },
+          );
+          compactionSessionEnsured = true;
+          if (event.payload.modelSelection !== undefined) {
+            threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+          }
+          yield* providerService.compactThread(
+            event.payload.threadId,
+            event.payload.modelSelection,
+            event.payload.messageId,
+          );
+        }),
+        "provider",
+      ).pipe(
         Effect.andThen(restoreCompaction(event.payload.threadId, true)),
         Effect.andThen(clearCompacting),
         Effect.andThen(resumeTurnsAfterCompaction(event.payload.threadId)),
@@ -1732,6 +1795,7 @@ const make = Effect.gen(function* () {
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
       messageId: event.payload.messageId,
+      turnSequence: event.sequence,
       messageText: [
         handoffTranscript && !providerText.startsWith("/")
           ? `Recent conversation on the original machine:\n${handoffTranscript}`
@@ -1756,7 +1820,12 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const send = providerService.sendTurn(sendTurnRequest.value.request).pipe(
+    const send = withProjectWriter(
+      sql,
+      thread.projectId,
+      providerService.sendTurn(sendTurnRequest.value.request),
+      "provider",
+    ).pipe(
       Effect.tap(() =>
         sendTurnRequest.value.handoffDelivered
           ? clearPendingProviderHandoff(event.payload.threadId).pipe(
@@ -2111,7 +2180,18 @@ const make = Effect.gen(function* () {
   });
 
   const processDomainEventSafely = (event: ProviderIntentEvent) =>
-    processDomainEvent(event).pipe(
+    Effect.gen(function* () {
+      if (event.type === "thread.meta-updated" || event.type === "thread.session-set") {
+        return yield* processDomainEvent(event);
+      }
+      // An intent may already be in the reactor queue when a move fences the
+      // Project. Recheck at the provider side effect as well as at event commit.
+      const [thread] = yield* sql<{ project_id: string }>`
+        SELECT project_id FROM projection_threads WHERE thread_id = ${event.payload.threadId}
+      `;
+      if (thread)
+        yield* withProjectWriter(sql, thread.project_id, processDomainEvent(event), "provider");
+    }).pipe(
       // A replay that returned before forking its send still holds its entry; settle it so
       // the compaction queue moves on. Forked sends drop the entry first and settle it themselves.
       Effect.ensuring(

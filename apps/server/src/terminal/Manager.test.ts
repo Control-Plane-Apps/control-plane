@@ -36,7 +36,17 @@ import { expect } from "vite-plus/test";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import {
+  acquireProjectMoveFence,
+  reconcileAbandonedProjectWriter,
+  releaseProjectMoveFence,
+} from "../reach/projectMoveFence.ts";
+import * as NodePtyAdapter from "./NodePtyAdapter.ts";
+import {
+  makeSqlitePersistenceLive,
+  SqlitePersistenceMemory,
+} from "../persistence/Layers/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "./Manager.ts";
@@ -405,6 +415,100 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect(
+    "a linked runtime shares PTY lifetime fences across Project registration, alias and restart",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "shared-terminal-move-" });
+        const checkout = path.join(dir, "checkout");
+        const otherCheckout = path.join(dir, "other");
+        const alias = path.join(dir, "alias");
+        yield* fs.makeDirectory(checkout);
+        yield* fs.makeDirectory(otherCheckout);
+        yield* fs.symlink(checkout, alias);
+        const dbPath = path.join(dir, "state.sqlite");
+        const ptyAdapter = yield* NodePtyAdapter.make();
+        const settings = {
+          logsDir: path.join(dir, "logs"),
+          ptyAdapter,
+          processKillGraceMs: 50,
+          env: { PATH: process.env.PATH, HOME: dir, SHELL: "/bin/sh" },
+          subprocessInspector: () =>
+            Effect.succeed({ hasRunningSubprocess: false, childCommand: null, processIds: [] }),
+        };
+        yield* Effect.gen(function* () {
+          const sqlA = yield* SqlClient.SqlClient;
+          const owner = yield* TerminalManager.makeWithOptions({ ...settings, sql: sqlA });
+          const input = openInput({ cwd: alias, worktreePath: otherCheckout });
+          const opened = yield* owner.open(input);
+          assert.isNumber(opened.pid);
+          const existing = yield* owner.open(input);
+          assert.strictEqual(existing.pid, opened.pid);
+          yield* Effect.gen(function* () {
+            const sqlB = yield* SqlClient.SqlClient;
+            assert.notStrictEqual(sqlB, sqlA);
+            yield* TerminalManager.makeWithOptions({ ...settings, sql: sqlB });
+            for (const [projectId, root] of [
+              ["source", checkout],
+              ["worktree", otherCheckout],
+            ] as const) {
+              yield* sqlB`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+              VALUES (${projectId}, 'Synthetic', ${root}, '[]', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`;
+              assert.match(
+                (yield* Effect.flip(acquireProjectMoveFence(projectId, "move"))).message,
+                /unfinished terminal/,
+              );
+            }
+            const lease = yield* sqlB<{
+              operation_id: string;
+              terminal_pid: number;
+            }>`SELECT operation_id, terminal_pid FROM project_move_writers WHERE kind = 'terminal'`;
+            assert.strictEqual(lease.length, 1);
+            assert.strictEqual(lease[0]!.terminal_pid, opened.pid);
+            assert.match(
+              (yield* Effect.flip(
+                reconcileAbandonedProjectWriter(
+                  "source",
+                  lease[0]!.operation_id,
+                  "synthetic evidence",
+                ),
+              )).message,
+              /terminal process is still alive/,
+            );
+            const restarted = yield* owner.restart(
+              restartInput({ cwd: alias, worktreePath: otherCheckout }),
+            );
+            assert.notEqual(restarted.pid, opened.pid);
+            assert.match(
+              (yield* Effect.flip(acquireProjectMoveFence("source", "move"))).message,
+              /unfinished terminal/,
+            );
+            assert.match(
+              (yield* Effect.flip(acquireProjectMoveFence("worktree", "move"))).message,
+              /unfinished terminal/,
+            );
+            yield* owner.write({
+              threadId: input.threadId,
+              terminalId: DEFAULT_TERMINAL_ID,
+              data: "exit\r",
+            });
+            yield* waitFor(
+              sqlB`SELECT 1 FROM project_move_writers WHERE kind = 'terminal'`.pipe(
+                Effect.map((rows) => !rows.length),
+              ),
+              "5 seconds",
+            );
+            yield* acquireProjectMoveFence("source", "move");
+            assert.match((yield* Effect.flip(owner.open(input))).message, /paused/);
+            yield* releaseProjectMoveFence("source", "move");
+          }).pipe(Effect.scoped, Effect.provide(makeSqlitePersistenceLive(dbPath)));
+        }).pipe(Effect.scoped, Effect.provide(makeSqlitePersistenceLive(dbPath)));
+      }).pipe(Effect.scoped),
+    15_000,
+  );
+
   it.effect("spawns lazily and reuses running terminal per thread", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter } = yield* createManager();

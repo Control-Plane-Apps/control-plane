@@ -331,6 +331,8 @@ export function projectEvent(
   model: OrchestrationReadModel,
   event: OrchestrationEvent,
 ): Effect.Effect<OrchestrationReadModel, OrchestrationProjectorDecodeError> {
+  if (event.type === "thread.history-restored")
+    return projectEvent(model, { ...event.payload.event, sequence: event.sequence });
   const nextBase: OrchestrationReadModel = {
     ...model,
     snapshotSequence: event.sequence,

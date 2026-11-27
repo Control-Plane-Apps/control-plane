@@ -57,6 +57,11 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { isDeliveryIdle } from "../orchestration/agentPushes.ts";
+import {
+  projectMoveFenceOwner,
+  registerScheduleMoveCheck,
+  withProjectWriter,
+} from "../reach/projectMoveFence.ts";
 import { confirmAssistantHome } from "../reach/taskAuthority.ts";
 import {
   OrchestrationCommandPreviouslyRejectedError,
@@ -163,6 +168,7 @@ export const recordScheduleRun = (
       })
       .pipe(
         Effect.asVoid,
+        Effect.catchTag("OrchestrationProjectMoveFencedError", () => Effect.void),
         Effect.catchIf(isRejection, (error) =>
           Effect.logDebug("schedule run not recorded", {
             projectId: input.projectId,
@@ -252,10 +258,20 @@ export const make = Effect.gen(function* () {
   const turns = yield* ProjectionTurnRepository;
   const crypto = yield* Crypto.Crypto;
   const hostZone = yield* HostTimeZoneSource;
-  const queries = makeScheduleQueries(yield* SqlClient.SqlClient);
+  const sql = yield* SqlClient.SqlClient;
+  const queries = makeScheduleQueries(sql);
+  const fenced = (projectId: ProjectId) =>
+    projectMoveFenceOwner(sql, projectId).pipe(
+      Effect.map((owner) => owner !== null),
+      Effect.orDie,
+    );
 
   // Keyed by holdKeyOf: at most one held run per schedule.
   const holds = new Map<string, Hold>();
+  const removeMoveCheck = registerScheduleMoveCheck(sql, (projectId) =>
+    [...holds.values()].some((held) => held.projectId === projectId),
+  );
+  yield* Effect.addFinalizer(() => Effect.sync(removeMoveCheck));
   // Sent runs whose turn may still fail, keyed by holdKeyOf.
   const watched = new Map<string, WatchedRun>();
   let nextOrder = 0;
@@ -285,17 +301,26 @@ export const make = Effect.gen(function* () {
     );
 
   const hold = (input: Omit<Hold, "sinceMs" | "order" | "waited">) =>
-    Clock.currentTimeMillis.pipe(
-      Effect.map((sinceMs) => {
-        // Replaces the schedule's held run. A fire never holds an older slot
-        // over a newer one, and Run now's slot is always the newest.
-        holds.set(holdKeyOf(input.projectId, input.scheduleId), {
-          ...input,
-          sinceMs,
-          order: nextOrder++,
-          waited: false,
-        });
-      }),
+    withProjectWriter(
+      sql,
+      input.projectId,
+      Clock.currentTimeMillis.pipe(
+        Effect.map((sinceMs) => {
+          // Replaces the schedule's held run. A fire never holds an older slot
+          // over a newer one, and Run now's slot is always the newest.
+          holds.set(holdKeyOf(input.projectId, input.scheduleId), {
+            ...input,
+            sinceMs,
+            order: nextOrder++,
+            waited: false,
+          });
+        }),
+      ),
+      "schedule",
+    ).pipe(
+      Effect.catchTag("ProjectMoveFenceError", () =>
+        Effect.fail(new ScheduleUnavailableError({ reason: "project-moving" })),
+      ),
     );
 
   /** What a held run needs to go out now, or null when it should be dropped. */
@@ -441,6 +466,7 @@ export const make = Effect.gen(function* () {
     const busy = new Set<ThreadId>();
     const ordered = [...holds.entries()].sort(([, left], [, right]) => left.order - right.order);
     for (const [key, held] of ordered) {
+      if (yield* fenced(held.projectId)) continue;
       const ready = yield* readyToSend(yield* rowOf(held.projectId), held);
       if (ready === null) {
         holds.delete(key);
@@ -466,8 +492,14 @@ export const make = Effect.gen(function* () {
       if (!served.has(threadId) && !busy.has(threadId)) {
         if (yield* isIdleForDelivery(threadId, now)) {
           served.add(threadId);
+          const result = yield* withProjectWriter(
+            sql,
+            held.projectId,
+            append(held, ready, now),
+            "schedule",
+          );
           holds.delete(key);
-          results.set(held.runKey, yield* append(held, ready, now));
+          results.set(held.runKey, result);
           continue;
         }
         busy.add(threadId);
@@ -481,7 +513,7 @@ export const make = Effect.gen(function* () {
     const zone = hostZone().zone;
     for (const row of yield* projects.listAll()) {
       const assistant = activeAssistant(row);
-      if (assistant === null) continue;
+      if (assistant === null || (yield* fenced(row.projectId))) continue;
       for (const schedule of assistant.schedules ?? []) {
         if (!schedule.enabled) continue;
         const slot = scheduleSlotAt(schedule.cron, zone, at);
@@ -493,7 +525,11 @@ export const make = Effect.gen(function* () {
         const held = holds.get(holdKeyOf(row.projectId, schedule.id));
         if (held !== undefined && Date.parse(held.slot) >= slot.getTime()) continue;
         const slotIso = slot.toISOString();
-        const runKey = cronRunKey(row.projectId, schedule.id, slotIso);
+        const runKey = cronRunKey(
+          assistant.scheduleProjectId ?? row.projectId,
+          schedule.id,
+          slotIso,
+        );
         const missed = (reason: "late" | "target-missing") =>
           nowIso.pipe(
             Effect.flatMap((now) =>
@@ -528,6 +564,8 @@ export const make = Effect.gen(function* () {
     projectId: ProjectId,
     scheduleId: string,
   ) {
+    if (yield* fenced(projectId))
+      return yield* new ScheduleUnavailableError({ reason: "project-moving" });
     const row = Option.getOrNull(yield* projects.getById({ projectId }));
     const assistant = row?.deletedAt === null ? row.assistant : null;
     const schedule = assistant?.schedules?.find((entry) => entry.id === scheduleId);
@@ -538,7 +576,11 @@ export const make = Effect.gen(function* () {
       return yield* new ScheduleUnavailableError({ reason: "archived" });
     }
     const now = yield* nowIso;
-    const runKey = manualRunKey(projectId, scheduleId, yield* crypto.randomUUIDv4);
+    const runKey = manualRunKey(
+      assistant.scheduleProjectId ?? projectId,
+      scheduleId,
+      yield* crypto.randomUUIDv4,
+    );
     if ((yield* liveThread(projectId, targetOf(assistant, schedule))) === null) {
       yield* record(projectId, scheduleId, runKey, {
         slot: now,
@@ -599,12 +641,14 @@ export const make = Effect.gen(function* () {
       }
       // A cron run's id is known. After a crash between append and record,
       // its message is older than the run's `at`, so only Run now matches by time.
+      const row = Option.getOrNull(yield* projects.getById({ projectId: entry.projectId }));
+      const namespace = row?.assistant?.scheduleProjectId ?? entry.projectId;
       const messageId =
         entry.run.trigger === "cron"
-          ? scheduleMessageId(cronRunKey(entry.projectId, entry.scheduleId, entry.run.slot))
+          ? scheduleMessageId(cronRunKey(namespace, entry.scheduleId, entry.run.slot))
           : yield* queries.manualRunMessageId({
               threadId: entry.threadId,
-              projectId: entry.projectId,
+              projectId: namespace,
               scheduleId: entry.scheduleId,
               at: entry.run.at,
             });

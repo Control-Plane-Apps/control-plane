@@ -1,3 +1,4 @@
+import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import {
   EnvironmentId,
@@ -142,7 +143,11 @@ const makeHarness = Effect.fn("makeRemoteAgentsHarness")(function* (input: Harne
   // Built once and shared: layers rebuild on every `provide`, and the store
   // must be the same instance for the handlers and the test.
   const built = yield* Layer.build(
-    RemoteAgentsLive.pipe(Layer.provideMerge(machines), Layer.provideMerge(MemoryRemoteAgentStore)),
+    RemoteAgentsLive.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+      Layer.provideMerge(machines),
+      Layer.provideMerge(MemoryRemoteAgentStore),
+    ),
   );
   const store = Context.get(built, RemoteAgentStore);
   const remoteLayer = Layer.mergeAll(

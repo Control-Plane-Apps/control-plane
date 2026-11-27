@@ -1,5 +1,7 @@
+import { SqlitePersistenceMemory, layerConfig } from "../persistence/Layers/Sqlite.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -55,7 +57,10 @@ const withStore = <A, E>(
     return yield* body(store);
   }).pipe(
     Effect.provide(
-      RemoteAgentStoreLive.pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir))),
+      RemoteAgentStoreLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+        Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)),
+      ),
     ),
   );
 
@@ -88,6 +93,43 @@ it.layer(NodeServices.layer)("RemoteAgentStore", (it) => {
     }),
   );
 
+  it.effect(
+    "serializes registry updates from separate runtimes and preserves immutable agent identities",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { baseDir } = yield* setup;
+          const open = () =>
+            Layer.build(
+              RemoteAgentStoreLive.pipe(
+                Layer.provide(layerConfig),
+                Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)),
+              ),
+            ).pipe(Effect.map((ctx) => Context.get(ctx, RemoteAgentStore)));
+          const first = yield* open(),
+            second = yield* open();
+          assert.deepEqual(yield* first.list, []);
+          assert.deepEqual(yield* second.list, []);
+          yield* first.put(record("first"));
+          yield* second.put(record("second", { homeProjectId: "another-project" }));
+          const rename = yield* Effect.flip(
+            first.update("first", (agent) => ({ ...agent, threadId: "second" })),
+          );
+          assert.match(rename.detail, /preserve its thread/);
+          yield* second.update("second", (agent) => ({ ...agent, title: "New title" }));
+          yield* first.put(record("third"));
+          assert.deepEqual(
+            (yield* first.listForMove).map((agent) => [agent.threadId, agent.title]),
+            [
+              ["first", record("first").title],
+              ["second", "New title"],
+              ["third", record("third").title],
+            ],
+          );
+          assert.deepEqual(yield* second.list, yield* first.list);
+        }),
+      ),
+  );
   it.effect("puts, gets, lists, updates and removes records", () =>
     Effect.gen(function* () {
       const { baseDir } = yield* setup;
@@ -231,9 +273,15 @@ it.layer(NodeServices.layer)("RemoteAgentStore", (it) => {
       const { fs, baseDir, filePath } = yield* setup;
       yield* fs.writeFileString(filePath, "{ not json");
 
+      const strictFailure = yield* withStore(baseDir, (store) => Effect.flip(store.listForMove));
+      assert.match(strictFailure.detail, /unreadable/);
+      assert.strictEqual(yield* fs.readFileString(filePath), "{ not json");
       const listed = yield* withStore(baseDir, (store) => store.list);
       assert.deepEqual(listed, []);
       assert.isFalse(yield* fs.exists(filePath));
+      const legacyFailure = yield* withStore(baseDir, (store) => Effect.flip(store.listForMove));
+      assert.match(legacyFailure.detail, /unreadable/);
+
       assert.strictEqual(yield* fs.readFileString(`${filePath}.unreadable`), "{ not json");
 
       // A file from a newer build with an unknown version is set aside too.
