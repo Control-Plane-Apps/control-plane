@@ -341,9 +341,11 @@ it("recovers each lost ownership acknowledgement across restarts and returns des
         );
       }).pipe(
         Effect.scoped,
-        Effect.provide(makeSqlitePersistenceLive(sourceDb)),
-        Effect.provide(ProcessRunner.layer),
-        Effect.provide(NodeServices.layer),
+        Effect.provide(
+          Layer.merge(makeSqlitePersistenceLive(sourceDb), ProcessRunner.layer).pipe(
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
       ),
     );
     const abortId = "abort-before-activation";
