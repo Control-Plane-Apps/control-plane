@@ -80,6 +80,7 @@ export default Effect.gen(function* () {
   }
   // Some projectors update an existing row using its stored owner. Check the
   // actual incoming event as well, before a competing thread can alter that row.
+  // Decode only while a claim exists. Malformed history cannot be projected.
   for (const [kind, type, identity] of [
     ["message", "thread.message-sent", "NEW.payload_json->>'messageId'"],
     ["activity", "thread.activity-appended", "NEW.payload_json->>'$.activity.id'"],
@@ -87,13 +88,17 @@ export default Effect.gen(function* () {
     [
       "approval",
       "thread.activity-appended",
-      "coalesce(NEW.payload_json->>'$.activity.payload.requestId', NEW.metadata_json->>'requestId')",
+      "coalesce(NEW.payload_json->>'$.activity.payload.requestId', CASE WHEN json_valid(NEW.metadata_json) THEN NEW.metadata_json->>'requestId' END)",
     ],
     ["approval", "thread.approval-response-requested", "NEW.payload_json->>'requestId'"],
   ] as const) {
     yield* sql.unsafe(`CREATE TRIGGER project_move_event_${kind}_${type.replaceAll(/[.-]/g, "_")} BEFORE INSERT ON orchestration_events
-      WHEN NEW.event_type='${type}' AND EXISTS(SELECT 1 FROM project_move_history_claims
-      WHERE kind='${kind}' AND identity=(${identity}) AND owner<>NEW.stream_id)
+      WHEN NEW.event_type='${type}' AND CASE
+        WHEN NOT EXISTS(SELECT 1 FROM project_move_history_claims WHERE kind='${kind}') THEN 0
+        WHEN NOT json_valid(NEW.payload_json) THEN 0
+        ELSE EXISTS(SELECT 1 FROM project_move_history_claims
+          WHERE kind='${kind}' AND identity=(${identity}) AND owner<>NEW.stream_id)
+      END
       BEGIN SELECT RAISE(ABORT,'History identity is reserved for a Project move'); END`);
   }
   yield* sql`
